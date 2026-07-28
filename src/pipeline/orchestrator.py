@@ -53,12 +53,10 @@ async def _revalidate_batch(
 
     async def _revalidate_one(job: dict) -> dict | None:
         async with sem:
-            query = (
-                f"{job.get('role', '')} {job.get('company', '')} "
-                f"{' '.join(job.get('matching_skills', []))}"
-            )
+            skills = job.get("matching_skills", []) + job.get("missing_skills", [])
+            query = " ".join(skills) if skills else str(job.get("role", ""))
             chunks = await loop.run_in_executor(None, rag.retrieve, query, 5)
-            if not chunks or chunks[0][2] < 0.25:
+            if not chunks or chunks[0][2] < 0.15:
                 return None
 
             prompt = (
@@ -172,9 +170,7 @@ async def _run_pipeline() -> None:
         return text, rag
 
     full_text, rag = await loop.run_in_executor(None, _load_and_build)
-    console.print(
-        f"  [green]Indexed {len(rag.doc_texts)} chunks[/green]"
-    )
+    console.print(f"  [green]Indexed {len(rag.doc_texts)} chunks[/green]")
 
     console.rule("[bold cyan]PHASE 2: Scrape + Concurrent Match[/bold cyan]")
 

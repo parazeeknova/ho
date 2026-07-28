@@ -180,12 +180,20 @@ async def extract_index_jobs(jobs: list[QueuedJob], ctx: ContextManager) -> list
 
     async def _extract_one(job: QueuedJob) -> list[dict]:
         async with sem:
+            lines = [
+                ln
+                for ln in job.markdown.split("\n")
+                if "|" in ln and ("remote" in ln.lower() or "http" in ln.lower() or "---" in ln)
+            ]
+            clean_md = "\n".join(lines[:100])
+            if len(clean_md) < 50:
+                return []
             prompt = (
                 "Extract ALL job/internship listings from this markdown. "
                 "Return valid JSON matching the required schema. "
                 "Be exhaustive — extract every single row/listing."
             )
-            raw = await ctx.json_chat(prompt, INDEX_EXTRACT_SCHEMA, job.markdown, limit=20000)
+            raw = await ctx.json_chat(prompt, INDEX_EXTRACT_SCHEMA, clean_md, limit=12000)
             if isinstance(raw, dict) and "listings" in raw:
                 return raw["listings"]
             return []

@@ -10,6 +10,10 @@ MATCH_PROMPT = (
     "most relevant parts of the resume, not the full resume).\n\n"
     "Relevant resume snippets:\n{relevant_chunks}\n\n"
     "Full job listing:\n{job_description}\n\n"
+    "CRITICAL RULE: If the full job listing below is a company homepage, "
+    "a job search directory, an error page, or a list of multiple different "
+    "jobs rather than ONE SINGLE specific job posting, you MUST set "
+    "match_percent to 0 and verdict to NO_MATCH.\n"
     "Be conservative with scores. STRONG_MATCH only if genuine skill alignment. "
     "Return valid JSON matching the required schema."
 )
@@ -44,6 +48,10 @@ async def _match_one(
 
         required = {"role", "company", "match_percent", "shortlist_probability"}
         if not required.issubset(result.keys()):
+            return None
+
+        role_lower = str(result.get("role", "")).lower()
+        if any(kw in role_lower for kw in ("matching engine", "job search", "analysis of")):
             return None
 
         result["match_percent"] = int(result["match_percent"])
