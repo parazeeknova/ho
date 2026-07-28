@@ -1,4 +1,4 @@
-"""Tests for RAG engine: fastembed semantic retrieval, chunk building."""
+"""Tests for RAG engine: two-stage bi-encoder + cross-encoder retrieval."""
 
 import numpy as np
 import pytest
@@ -28,6 +28,16 @@ def mock_embed(mocker):
     mock_model = mocker.MagicMock()
     mock_model.embed.side_effect = _fake_embed
     mocker.patch("src.rag.engine.TextEmbedding", return_value=mock_model)
+
+    def _fake_rerank(query: str, docs: list[str]):
+        for doc in docs:
+            tag = "python" if "python" in doc.lower() else "frontend"
+            yield 0.9 if tag in query.lower() else 0.3
+
+    mock_reranker = mocker.MagicMock()
+    mock_reranker.rerank.side_effect = _fake_rerank
+    mocker.patch("src.rag.engine.TextCrossEncoder", return_value=mock_reranker)
+
     return mock_model
 
 
@@ -52,20 +62,33 @@ class TestRAGEngine:
         assert len(results) == 2
         assert all(0 <= r[2] <= 1 for r in results)
 
-    def test_retrieve_all(self, mock_embed) -> None:
+    def test_retrieve_skips_rerank_when_few_docs(self, mock_embed) -> None:
         docs = [
             ("a", "machine learning tensorflow pytorch"),
             ("b", "react css html frontend design"),
         ]
         engine = RAGEngine(docs)
-        results = engine.retrieve("react frontend developer", top_k=2)
+        results = engine.retrieve("react frontend developer", top_k=5)
         assert len(results) == 2
+        assert all(0 <= r[2] <= 1 for r in results)
 
     def test_retrieve_empty_query(self, mock_embed) -> None:
         docs = [("a", "some content here")]
         engine = RAGEngine(docs)
         results = engine.retrieve("", top_k=1)
         assert len(results) == 1
+
+    def test_reranker_prefers_semantic_match(self, mock_embed) -> None:
+        docs = [
+            ("py_0", "python django backend api rest"),
+            ("py_1", "python machine learning data science"),
+            ("fe_0", "react frontend css html design"),
+            ("fe_1", "typescript angular ui components"),
+        ]
+        engine = RAGEngine(docs)
+        results = engine.retrieve("python api developer", top_k=2, fetch_k=4)
+        assert len(results) == 2
+        assert results[0][0] in ("py_0", "py_1")
 
     def test_build_from_chunks(self, mock_embed) -> None:
         chunks = {
@@ -80,7 +103,20 @@ class TestRAGEngine:
         assert len(results) == 3
 
     def test_large_document_count(self, mock_embed) -> None:
-        docs = [(f"doc_{i}", f"content number {i} with unique terms {i}xyz") for i in range(100)]
+        docs = [
+            (f"doc_{i}", f"content number {i} with unique terms {i}xyz")
+            for i in range(100)
+        ]
         engine = RAGEngine(docs)
         results = engine.retrieve("content 50xyz", top_k=3)
         assert len(results) == 3
+
+    def test_fetch_k_limits_candidates(self, mock_embed, mocker) -> None:
+        docs = [(f"doc_{i}", f"content number {i}") for i in range(50)]
+        engine = RAGEngine(docs)
+
+        rerank_spy = mocker.spy(engine._reranker, "rerank")
+        engine.retrieve("content", top_k=3, fetch_k=10)
+        rerank_spy.assert_called_once()
+        args = rerank_spy.call_args[0]
+        assert len(args[1]) == 10
