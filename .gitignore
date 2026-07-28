@@ -1,0 +1,18 @@
+refs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+uv.lock
+
+# IDE
+.vscode/
+.idea/
+.mypy_cache
+.ruff_cache
+
+# OS
+.DS_Store
+Thumbs.db
