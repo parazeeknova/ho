@@ -16,12 +16,24 @@ MATCH_PROMPT = (
 
 
 async def _match_one(
-    jd_text: str,
-    relevant: str,
+    job: dict,
+    rag,
     ctx,
     sem: asyncio.Semaphore,
 ) -> dict | None:
+    loop = asyncio.get_running_loop()
+    jd_text = job.get("markdown", job.get("snippet", ""))
+    if len(jd_text) < 40:
+        return None
+
     async with sem:
+        retrieved = await loop.run_in_executor(None, rag.retrieve, jd_text, 8)
+        relevant = "\n".join(
+            f"[{chunk_id}] {text}" for chunk_id, text, score in retrieved if score > 0.25
+        )
+        if not relevant:
+            relevant = jd_text[:500]
+
         prompt = MATCH_PROMPT.replace("{relevant_chunks}", relevant[:3000])
         prompt = prompt.replace("{job_description}", jd_text[:5000])
 
@@ -48,35 +60,23 @@ async def batch_match(
     if not jobs:
         return []
 
-    loop = asyncio.get_running_loop()
     sem = asyncio.Semaphore(concurrency)
     tasks = []
 
     for job in jobs:
-        jd_text = job.get("markdown", job.get("snippet", ""))
-        if len(jd_text) < 100:
-            continue
-
-        retrieved = await loop.run_in_executor(None, rag.retrieve, jd_text, 8)
-        relevant = "\n".join(
-            f"[{chunk_id}] {text}" for chunk_id, text, score in retrieved if score > 0.25
-        )
-        if not relevant:
-            relevant = jd_text[:500]
-
         title = job.get("title", job.get("url", ""))[:60]
         print(f"  [match] {title}")
-        tasks.append(_match_one(jd_text, relevant, ctx, sem))
+        tasks.append(_match_one(job, rag, ctx, sem))
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     scored: list[dict] = []
-    for i, result in enumerate(results):
+    for job, result in zip(jobs, results, strict=True):
         if isinstance(result, BaseException):
             print(f"    match failed: {result}")
             continue
         if result is not None and result["match_percent"] >= 40:
-            result["source_url"] = jobs[i].get("url", jobs[i].get("source_url", ""))
+            result["source_url"] = job.get("url", job.get("source_url", ""))
             scored.append(result)
             pct = result.get("match_percent", "?")
             verdict = result.get("verdict", "?")

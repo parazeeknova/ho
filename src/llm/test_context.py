@@ -93,9 +93,7 @@ class TestContextManager:
         ctx = ContextManager()
         ctx.cumulative_output_tokens = 7000
         mock_get = mocker.AsyncMock()
-        mock_get.return_value = mocker.MagicMock(
-            json=lambda: [{"id": 0, "state": 1}]
-        )
+        mock_get.return_value = mocker.MagicMock(json=lambda: [{"id": 0, "state": 1}])
         mocker.patch.object(ctx._client, "get", mock_get)
         await ctx.flush()
         assert ctx.cumulative_output_tokens == 0

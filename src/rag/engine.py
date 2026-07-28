@@ -77,8 +77,7 @@ class RAGEngine:
             reranked = list(self._reranker.rerank(query, candidate_texts))
 
         results: list[tuple[str, str, float]] = [
-            (candidates[i][0], candidates[i][1], float(score))
-            for i, score in enumerate(reranked)
+            (candidates[i][0], candidates[i][1], float(score)) for i, score in enumerate(reranked)
         ]
 
         results.sort(key=lambda x: x[2], reverse=True)

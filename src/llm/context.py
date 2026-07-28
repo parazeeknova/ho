@@ -149,19 +149,18 @@ class ContextManager:
         await self.flush()
 
     async def flush(self) -> None:
-        with self._lock:
-            try:
-                resp = await self._client.get(f"{LLM_URL}/slots")
-                slots = resp.json()
-                for slot in slots:
-                    sid = slot.get("id")
-                    if sid is not None and slot.get("state") != 0:
-                        await self._client.get(
-                            f"{LLM_URL}/slots/{sid}", params={"action": "erase"}
-                        )
-                self.cumulative_output_tokens = 0
-                print("  [ctx flushed]")
-            except Exception:
+        try:
+            resp = await self._client.get(f"{LLM_URL}/slots")
+            slots = resp.json()
+            for slot in slots:
+                sid = slot.get("id")
+                if sid is not None and slot.get("state") != 0:
+                    await self._client.get(f"{LLM_URL}/slots/{sid}", params={"action": "erase"})
+            print("  [ctx flushed]")
+        except Exception:
+            pass
+        finally:
+            with self._lock:
                 self.cumulative_output_tokens = 0
 
     def _flush_sync(self) -> None:
@@ -177,9 +176,7 @@ class ContextManager:
                 for slot in slots:
                     sid = slot.get("id")
                     if sid is not None and slot.get("state") != 0:
-                        urllib.request.urlopen(
-                            f"{LLM_URL}/slots/{sid}?action=erase", timeout=5
-                        )
+                        urllib.request.urlopen(f"{LLM_URL}/slots/{sid}?action=erase", timeout=5)
                 self.cumulative_output_tokens = 0
                 print("  [ctx flushed]")
             except Exception:

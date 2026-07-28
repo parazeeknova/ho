@@ -108,32 +108,42 @@ async def _search_web(
     raw = await ctx.json_chat(query_prompt, SEARCH_QUERIES_SCHEMA)
     queries: list[str] = raw.get("queries", []) if isinstance(raw, dict) else []
     if not queries:
-        queries = [
-            f"{p} intern remote" for p in positions[:4]
-        ] + [
+        queries = [f"{p} intern remote" for p in positions[:4]] + [
             f"entry level {p} remote" for p in positions[:4]
         ]
         queries = queries[:8]
 
+    sem = asyncio.Semaphore(3)
+
+    async def _fetch_query(q: str) -> list[dict[str, str]]:
+        hits: list[dict[str, str]] = []
+        async with sem:
+            try:
+                search_results = await loop.run_in_executor(None, app.search, q)
+                data = getattr(search_results, "web", []) or []
+                if isinstance(data, list):
+                    for r in data[:5]:
+                        url = getattr(r, "url", "")
+                        if url and url.startswith("http"):
+                            hits.append(
+                                {
+                                    "url": url,
+                                    "title": getattr(r, "title", "") or "",
+                                    "type": "web_search",
+                                }
+                            )
+            except Exception:
+                pass
+        return hits
+
+    hit_lists = await asyncio.gather(
+        *(_fetch_query(q) for q in queries[:8]), return_exceptions=True
+    )
+
     results: list[dict[str, str]] = []
-    for q in queries[:8]:
-        try:
-            search_results = await loop.run_in_executor(None, app.search, q)
-            data = getattr(search_results, "web", []) or []
-            if isinstance(data, list):
-                for r in data[:5]:
-                    url = getattr(r, "url", "")
-                    if url and url.startswith("http"):
-                        results.append(
-                            {
-                                "url": url,
-                                "title": getattr(r, "title", "") or "",
-                                "type": "web_search",
-                            }
-                        )
-            await asyncio.sleep(0.3)
-        except Exception:
-            pass
+    for hl in hit_lists:
+        if isinstance(hl, list):
+            results.extend(hl)
 
     print(f"  Web search: {len(results)} URLs from {len(queries)} queries")
     return results

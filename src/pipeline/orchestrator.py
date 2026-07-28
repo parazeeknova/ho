@@ -37,7 +37,7 @@ def filter_recent(jobs: list[dict], max_days: int = 7) -> list[dict]:
             dt = datetime.fromisoformat(str(date_str).replace("Z", "+00:00"))
             if (now - dt).days <= max_days:
                 filtered.append(j)
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             filtered.append(j)
     return filtered
 
@@ -172,13 +172,10 @@ async def _run_pipeline() -> None:
         "Based on this resume, identify the top 2-4 best-fitting entry-level / "
         "intern / new-grad job role domains (e.g. Backend Engineer, Frontend "
         "Engineer, Fullstack Developer, DevOps Engineer, ML Engineer, Data "
-        "Engineer). Return valid JSON matching the required schema.\n\n"
-        + full_text[:3000],
+        "Engineer). Return valid JSON matching the required schema.\n\n" + full_text[:3000],
         schema=TARGET_POSITIONS_SCHEMA,
     )
-    positions: list[str] = (
-        raw_roles.get("roles", []) if isinstance(raw_roles, dict) else []
-    )
+    positions: list[str] = raw_roles.get("roles", []) if isinstance(raw_roles, dict) else []
     if not positions:
         positions = ["Software Engineer", "Backend Developer"]
     console.print(f"  [yellow]Target positions:[/yellow] {', '.join(positions)}")

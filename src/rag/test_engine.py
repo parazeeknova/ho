@@ -102,10 +102,7 @@ class TestRAGEngine:
         assert len(results) == 3
 
     def test_large_document_count(self, mock_embed) -> None:
-        docs = [
-            (f"doc_{i}", f"content number {i} with unique terms {i}xyz")
-            for i in range(100)
-        ]
+        docs = [(f"doc_{i}", f"content number {i} with unique terms {i}xyz") for i in range(100)]
         engine = RAGEngine(docs)
         results = engine.retrieve("content 50xyz", top_k=3)
         assert len(results) == 3
