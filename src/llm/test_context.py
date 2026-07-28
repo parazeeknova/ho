@@ -124,3 +124,13 @@ class TestContextManager:
         mocker.patch("urllib.request.urlopen", return_value=mocker.MagicMock(read=mock_read))
         ctx._flush_sync()
         assert ctx.cumulative_output_tokens == 0
+
+    def test_flush_sync_skips_when_locked(self) -> None:
+        ctx = ContextManager()
+        ctx.cumulative_output_tokens = 7000
+        ctx._lock.acquire()
+        try:
+            ctx._flush_sync()
+            assert ctx.cumulative_output_tokens == 7000  # unchanged — lock was held
+        finally:
+            ctx._lock.release()

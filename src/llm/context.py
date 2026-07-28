@@ -166,8 +166,11 @@ class ContextManager:
 
     def _flush_sync(self) -> None:
         """Synchronous fallback for signal handlers — uses urllib to avoid
-        needing a running event loop."""
-        with self._lock:
+        needing a running event loop.  Acquires the lock non-blocking so a
+        signal handler never deadlocks waiting on an in-flight async flush."""
+        if not self._lock.acquire(blocking=False):
+            return
+        try:
             try:
                 raw = urllib.request.urlopen(f"{LLM_URL}/slots", timeout=5).read()
                 slots = json.loads(raw)
@@ -181,6 +184,8 @@ class ContextManager:
                 print("  [ctx flushed]")
             except Exception:
                 self.cumulative_output_tokens = 0
+        finally:
+            self._lock.release()
 
     async def json_chat(
         self,

@@ -92,6 +92,8 @@ def extract_text(path: Path) -> str:
     raw = path.read_text(errors="ignore")
     if raw.strip().startswith("<"):
         soup = BeautifulSoup(raw, "html.parser")
+        for el in soup(["script", "style", "meta", "noscript", "svg"]):
+            el.decompose()
         text = soup.get_text("\n", strip=True)
     else:
         text = raw

@@ -9,6 +9,8 @@ Runs 100% locally on CPU via ONNX Runtime.  All methods are synchronous
 CPU-bound functions — callers must invoke via ``loop.run_in_executor``.
 """
 
+import threading
+
 import numpy as np
 from fastembed import TextEmbedding
 from fastembed.rerank.cross_encoder import TextCrossEncoder
@@ -23,16 +25,19 @@ class RAGEngine:
         self.doc_texts = [d[1] for d in documents]
         self._model = TextEmbedding(model_name=EMBED_MODEL)
         self._reranker = TextCrossEncoder(model_name=RERANK_MODEL)
+        self._onnx_lock = threading.Lock()
         self._embeddings: np.ndarray | None = None
         if documents:
             self._build_index()
 
     def _build_index(self) -> None:
-        raw = list(self._model.embed(self.doc_texts, batch_size=32))
+        with self._onnx_lock:
+            raw = list(self._model.embed(self.doc_texts, batch_size=32))
         self._embeddings = np.array(raw, dtype=np.float32)
 
     def _encode_query(self, query: str) -> np.ndarray:
-        raw = list(self._model.embed([query], batch_size=1))
+        with self._onnx_lock:
+            raw = list(self._model.embed([query], batch_size=1))
         return np.array(raw[0], dtype=np.float32)
 
     @staticmethod
@@ -61,14 +66,15 @@ class RAGEngine:
         ]
         scored.sort(key=lambda x: x[2], reverse=True)
 
-        if len(scored) <= top_k:
+        if len(scored) <= 1:
             return scored[:top_k]
 
         candidates = scored[: min(fetch_k, len(scored))]
 
         # ── Stage 2: cross-encoder re-ranking ───────────────────
         candidate_texts = [c[1] for c in candidates]
-        reranked = list(self._reranker.rerank(query, candidate_texts))
+        with self._onnx_lock:
+            reranked = list(self._reranker.rerank(query, candidate_texts))
 
         results: list[tuple[str, str, float]] = [
             (candidates[i][0], candidates[i][1], float(score))

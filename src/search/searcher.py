@@ -138,26 +138,28 @@ async def scrape_all(
 
     sem = asyncio.Semaphore(max_workers)
 
-    async def _limited(task: asyncio.Task) -> None:
+    async def _limited_run(coro):
         async with sem:
-            await task
+            return await coro
 
-    await asyncio.gather(*(_limited(asyncio.create_task(t)) for t in tasks))
+    await asyncio.gather(*(_limited_run(t) for t in tasks))
 
 
 async def extract_index_jobs(jobs: list[QueuedJob], ctx: ContextManager) -> list[dict]:
     extracted: list[dict] = []
+    sem = asyncio.Semaphore(2)
 
     async def _extract_one(job: QueuedJob) -> list[dict]:
-        prompt = (
-            "Extract ALL job/internship listings from this markdown. "
-            "Return valid JSON matching the required schema. "
-            "Be exhaustive — extract every single row/listing."
-        )
-        raw = await ctx.json_chat(prompt, INDEX_EXTRACT_SCHEMA, job.markdown, limit=20000)
-        if isinstance(raw, dict) and "listings" in raw:
-            return raw["listings"]
-        return []
+        async with sem:
+            prompt = (
+                "Extract ALL job/internship listings from this markdown. "
+                "Return valid JSON matching the required schema. "
+                "Be exhaustive — extract every single row/listing."
+            )
+            raw = await ctx.json_chat(prompt, INDEX_EXTRACT_SCHEMA, job.markdown, limit=20000)
+            if isinstance(raw, dict) and "listings" in raw:
+                return raw["listings"]
+            return []
 
     tasks = [asyncio.create_task(_extract_one(j)) for j in jobs]
     results = await asyncio.gather(*tasks)

@@ -228,3 +228,7 @@ async def _run_pipeline() -> None:
 
 def run() -> None:
     asyncio.run(_run_pipeline())
+
+
+if __name__ == "__main__":
+    run()

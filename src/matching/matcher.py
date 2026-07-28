@@ -22,8 +22,6 @@ async def _match_one(
     sem: asyncio.Semaphore,
 ) -> dict | None:
     async with sem:
-        await ctx.maybe_flush()
-
         prompt = MATCH_PROMPT.replace("{relevant_chunks}", relevant[:3000])
         prompt = prompt.replace("{job_description}", jd_text[:5000])
 

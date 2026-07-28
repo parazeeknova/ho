@@ -62,15 +62,14 @@ class TestRAGEngine:
         assert len(results) == 2
         assert all(0 <= r[2] <= 1 for r in results)
 
-    def test_retrieve_skips_rerank_when_few_docs(self, mock_embed) -> None:
+    def test_retrieve_skips_rerank_when_single_doc(self, mock_embed) -> None:
         docs = [
             ("a", "machine learning tensorflow pytorch"),
-            ("b", "react css html frontend design"),
         ]
         engine = RAGEngine(docs)
         results = engine.retrieve("react frontend developer", top_k=5)
-        assert len(results) == 2
-        assert all(0 <= r[2] <= 1 for r in results)
+        assert len(results) == 1
+        assert 0 <= results[0][2] <= 1
 
     def test_retrieve_empty_query(self, mock_embed) -> None:
         docs = [("a", "some content here")]
