@@ -80,7 +80,7 @@ def main() -> None:
 
     # ── Firecrawl infra ──
     console.print("[bold]Starting firecrawl infrastructure...[/bold]")
-    run(f"{DOCKER_COMPOSE} up -d redis playwright-service nuq-postgres", silent=False)
+    run(f"{DOCKER_COMPOSE} up -d redis playwright-service nuq-postgres searxng", silent=False)
 
     # ── Rabbitmq ──
     console.print("[bold]Starting rabbitmq (podman)...[/bold]")
@@ -102,6 +102,7 @@ def main() -> None:
             break
         time.sleep(2)
     api_ok = check_http("http://localhost:3002")
+    searxng_ok = check_http("http://localhost:8080")
 
     # ── Status ──
     table = Table(title="Status", box=box.SIMPLE_HEAVY, border_style="cyan")
@@ -119,6 +120,7 @@ def main() -> None:
     row("rabbitmq", container_running("firecrawl_rabbitmq"), ":5672")
     row("playwright", container_running("firecrawl_playwright"), ":3000")
     row("nuq-postgres", container_running("firecrawl_nuq-postgres"), ":5432")
+    row("searxng", searxng_ok, ":8080")
 
     console.print()
     console.print(table)

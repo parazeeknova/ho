@@ -37,4 +37,8 @@ check_container "rabbitmq"          "firecrawl_rabbitmq"
 check_container "playwright"        "firecrawl_playwright"
 check_container "nuq-postgres"      "firecrawl_nuq-postgres"
 
+echo ""
+echo "Metasearch"
+check_http "searxng          :8080"  "http://localhost:8080"
+
 exit $FAILS
