@@ -1,4 +1,4 @@
-.PHONY: check check-types test serve run match health fc-up fc-down fc-logs dev dev-down start
+.PHONY: check check-types test serve run match health fc-up fc-down fc-logs dev dev-down start overnight
 
 check:
 	uv run ruff format . && uv run ruff check . --fix
@@ -17,6 +17,9 @@ run: health
 
 match: health
 	uv run python -m src.pipeline.orchestrator
+
+overnight: health
+	OVERNIGHT_LOOP=true uv run python -m src.pipeline.orchestrator
 
 fc-up:
 	@docker compose -f docker-compose.yaml up -d redis playwright-service nuq-postgres; \

@@ -1,6 +1,7 @@
 """Pipeline: resume → search → async MQ → concurrent match → verify → output."""
 
 import asyncio
+import os
 import signal
 import sys
 from datetime import UTC, datetime
@@ -108,6 +109,18 @@ async def _scrape_index_links(
     sem = asyncio.Semaphore(max_workers)
     scraped: list[dict] = []
 
+    _dead_page_texts = (
+        "sorry, we couldn't find anything here",
+        "job not found",
+        "this position has been filled",
+    )
+
+    def _md_fallback(j: dict) -> str:
+        return (
+            f"Position: {j.get('role', '')} at {j.get('company', '')}. "
+            f"Apply Link: {j.get('apply_link', '')}"
+        )
+
     async def _scrape_one(j: dict) -> None:
         url = j.get("apply_link", "")
         if not url or not url.startswith("http"):
@@ -118,7 +131,10 @@ async def _scrape_index_links(
                     None, lambda: app.scrape_url(url, formats=["markdown"])
                 )
                 md = getattr(result, "markdown", "") or ""
-                if md and len(md) > 100:
+                md_lower = md.lower()
+                if md and len(md) > 100 and not any(
+                    dead in md_lower for dead in _dead_page_texts
+                ):
                     scraped.append(
                         {
                             "markdown": md,
@@ -127,8 +143,20 @@ async def _scrape_index_links(
                             "snippet": str(j),
                         }
                     )
+                    return
             except Exception as e:
-                print(f"    [dim]Failed to scrape {url[:40]}...: {e}[/dim]")
+                print(
+                    f"    [dim]Failed to scrape {url[:40]}...: {e}"
+                    f" -> Using table metadata fallback[/dim]"
+                )
+            scraped.append(
+                {
+                    "markdown": _md_fallback(j),
+                    "url": url,
+                    "title": j.get("role", ""),
+                    "snippet": str(j),
+                }
+            )
 
     tasks = [asyncio.create_task(_scrape_one(j)) for j in jobs]
     await asyncio.gather(*tasks)
@@ -183,6 +211,7 @@ async def _consumer(
 
 async def _run_pipeline() -> None:
     ctx = ContextManager()
+    continuous = os.getenv("OVERNIGHT_LOOP", "false").lower() == "true"
 
     def _cleanup(signum: int, frame: object) -> None:
         console.print("\n[yellow]Interrupted - flushing LLM context...[/yellow]")
@@ -194,7 +223,6 @@ async def _run_pipeline() -> None:
 
     await ctx.flush()
     app = FirecrawlApp(api_key="sk-no-auth", api_url="http://127.0.0.1:3002")
-    pipeline = JobPipeline()
 
     console.rule("[bold cyan]PHASE 1: Load Resume + Build RAG Index[/bold cyan]")
     loop = asyncio.get_running_loop()
@@ -206,8 +234,6 @@ async def _run_pipeline() -> None:
 
     full_text, rag = await loop.run_in_executor(None, _load_and_build)
     console.print(f"  [green]Indexed {len(rag.doc_texts)} chunks[/green]")
-
-    console.rule("[bold cyan]PHASE 2: Scrape + Concurrent Match[/bold cyan]")
 
     raw_roles = await ctx.json_chat(
         "Based on this resume, identify the top 2-4 best-fitting entry-level / "
@@ -221,48 +247,69 @@ async def _run_pipeline() -> None:
         positions = ["Software Engineer", "Backend Developer"]
     console.print(f"  [yellow]Target positions:[/yellow] {', '.join(positions)}")
 
-    consumer_task = asyncio.create_task(_consumer(pipeline, rag, ctx))
+    sweep = 0
+    while True:
+        sweep += 1
+        pipeline = JobPipeline()
+        matched_result: list[dict] = []
 
-    await scrape_all(app, positions, ctx, pipeline, max_workers=MAX_SCRAPE_WORKERS)
+        console.rule(f"[bold cyan]PHASE 2 (sweep {sweep}): Scrape + Concurrent Match[/bold cyan]")
 
-    console.print("  [yellow]Producers done. Signalling stop...[/yellow]")
-    pipeline.signal_done()
+        consumer_task = asyncio.create_task(_consumer(pipeline, rag, ctx))
 
-    matched_result, index_queue = await consumer_task
+        await scrape_all(app, positions, ctx, pipeline, max_workers=MAX_SCRAPE_WORKERS)
 
-    if index_queue:
-        console.rule("[bold cyan]PHASE 2b: Extract Index Jobs + Match[/bold cyan]")
-        index_jobs = await extract_index_jobs(index_queue, ctx)
-        console.print(f"  [cyan]Extracted {len(index_jobs)} jobs from indexes[/cyan]")
-        if index_jobs:
-            console.print(
-                f"  [cyan]Scraping {len(index_jobs)} GitHub apply links for JD text...[/cyan]"
+        console.print("  [yellow]Producers done. Signalling stop...[/yellow]")
+        pipeline.signal_done()
+
+        matched_result, index_queue = await consumer_task
+
+        if index_queue:
+            console.rule(
+                f"[bold cyan]PHASE 2b (sweep {sweep}): Extract Index Jobs + Match[/bold cyan]"
             )
-            idx_batch = await _scrape_index_links(
-                app, index_jobs[:30], max_workers=MAX_SCRAPE_WORKERS
-            )
-            console.print(f"  [cyan]Scraped {len(idx_batch)} JDs from links[/cyan]")
-            if idx_batch:
-                idx_scored = await batch_match(idx_batch, rag, ctx)
-                matched_result.extend(idx_scored)
+            index_jobs = await extract_index_jobs(index_queue, ctx)
+            console.print(f"  [cyan]Extracted {len(index_jobs)} jobs from indexes[/cyan]")
+            if index_jobs:
+                console.print(
+                    f"  [cyan]Scraping {len(index_jobs)} GitHub apply links for JD text...[/cyan]"
+                )
+                idx_batch = await _scrape_index_links(
+                    app, index_jobs[:30], max_workers=MAX_SCRAPE_WORKERS
+                )
+                console.print(f"  [cyan]Scraped {len(idx_batch)} JDs from links[/cyan]")
+                if idx_batch:
+                    idx_scored = await batch_match(idx_batch, rag, ctx)
+                    matched_result.extend(idx_scored)
 
-    console.rule("[bold cyan]PHASE 3: RAG Revalidation[/bold cyan]")
-    validated = await _revalidate_batch(matched_result, rag, ctx)
+        console.rule(f"[bold cyan]PHASE 3 (sweep {sweep}): RAG Revalidation[/bold cyan]")
+        validated = await _revalidate_batch(matched_result, rag, ctx)
 
-    console.rule("[bold cyan]PHASE 4: Filter + Cross-Verify[/bold cyan]")
-    scored = filter_recent(validated, max_days=7)
-    scored.sort(key=lambda j: j["match_percent"], reverse=True)
-    scored = scored[:TARGET]
+        console.rule(f"[bold cyan]PHASE 4 (sweep {sweep}): Filter + Cross-Verify[/bold cyan]")
+        scored = filter_recent(validated, max_days=7)
+        scored.sort(key=lambda j: j["match_percent"], reverse=True)
+        scored = scored[:TARGET]
 
-    verified = await verify_jobs(app, scored[:TARGET], ctx, concurrency=VERIFY_CONCURRENCY)
+        verified = await verify_jobs(
+            app, scored[:TARGET], ctx, concurrency=VERIFY_CONCURRENCY
+        )
 
-    console.rule("[bold cyan]PHASE 5: Generate Output[/bold cyan]")
-    write_md(verified)
-    await ctx.flush()
+        console.rule(f"[bold cyan]PHASE 5 (sweep {sweep}): Generate Output[/bold cyan]")
+        write_md(verified)
+        await ctx.flush()
+
+        console.print(f"\n  [dim]Queue: {pipeline.pending} items remaining[/dim]")
+        console.print(f"[bold green]Sweep {sweep} complete[/bold green]")
+
+        if not continuous:
+            break
+
+        console.print(
+            "\n[bold cyan]Sleeping for 60 minutes before next overnight sweep...[/bold cyan]"
+        )
+        await asyncio.sleep(3600)
+
     await ctx.aclose()
-
-    console.print(f"\n  [dim]Queue: {pipeline.pending} items remaining[/dim]")
-    console.print("\n[bold green]Pipeline complete[/bold green]")
 
 
 def run() -> None:
