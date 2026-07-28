@@ -126,10 +126,15 @@ async def _scrape_index_links(
             f"Apply Link: {j.get('apply_link', '')}"
         )
 
+    _image_hosts = ("i.imgur.com", "imgur.com/", ".png", ".jpg", ".jpeg", ".gif", ".webp")
+
     async def _scrape_one(j: dict) -> None:
         url = j.get("apply_link", "")
         if not url or not url.startswith("http"):
             return
+        url_lower = url.lower()
+        if any(h in url_lower for h in _image_hosts):
+            return  # image-based apply button — not a real JD page
         async with sem:
             try:
                 result = await loop.run_in_executor(
@@ -267,9 +272,10 @@ async def _run_pipeline() -> None:
 
     raw_roles = await ctx.json_chat(
         "Based on this resume, identify the top 2-4 best-fitting entry-level / "
-        "intern / new-grad job role domains (e.g. Backend Engineer, Frontend "
-        "Engineer, Fullstack Developer, DevOps Engineer, ML Engineer, Data "
-        "Engineer). Return valid JSON matching the required schema.\n\n" + full_text[:3000],
+        "intern / new-grad / early-career (NOT senior/staff/lead/principal) "
+        "job role domains (e.g. Backend Engineer, Frontend Engineer, Fullstack "
+        "Developer, DevOps Engineer, ML Engineer, Data Engineer). "
+        "Return valid JSON matching the required schema.\n\n" + full_text[:3000],
         schema=TARGET_POSITIONS_SCHEMA,
     )
     positions: list[str] = raw_roles.get("roles", []) if isinstance(raw_roles, dict) else []

@@ -263,7 +263,7 @@ async def fetch_direct_json_feeds(positions: list[str], pipeline: JobPipeline) -
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 resp = await client.get(
-                    "http://hn.algolia.com/api/v1/search_by_date",
+                    "https://hn.algolia.com/api/v1/search_by_date",
                     params={"tags": "job", "query": "remote", "hitsPerPage": 30},
                 )
                 resp.raise_for_status()

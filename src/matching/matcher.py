@@ -14,6 +14,10 @@ MATCH_PROMPT = (
     "a job search directory, an error page, or a list of multiple different "
     "jobs rather than ONE SINGLE specific job posting, you MUST set "
     "match_percent to 0 and verdict to NO_MATCH.\n"
+    "IMPORTANT: The candidate is an early-career / new-grad / intern level. "
+    "If the job requires 5+ years of experience or is titled Senior / Staff / "
+    "Lead / Principal / Manager / Director / Architect, set match_percent to 0 "
+    "and verdict to NO_MATCH.\n"
     "Be conservative with scores. STRONG_MATCH only if genuine skill alignment. "
     "Return valid JSON matching the required schema."
 )
@@ -51,6 +55,14 @@ async def _match_one(
             return None
 
         role_lower = str(result.get("role", "")).lower()
+        _senior_kws = (
+            "senior", "sr.", "staff ", "lead ", "principal", "architect",
+            "manager", "director", "head of", "vp ", "vice president",
+            "5+ year", "7+ year", "10+ year",
+        )
+        if any(kw in role_lower for kw in _senior_kws):
+            return None
+
         _echo_kws = (
             "matching engine",
             "job search",
