@@ -160,10 +160,16 @@ async def _run_pipeline() -> None:
     pipeline = JobPipeline()
 
     console.rule("[bold cyan]PHASE 1: Load Resume + Build RAG Index[/bold cyan]")
-    full_text, chunks = load_resume()
-    rag = build_rag_from_chunks(chunks)
+    loop = asyncio.get_running_loop()
+
+    def _load_and_build():
+        text, chunks = load_resume()
+        rag = build_rag_from_chunks(chunks)
+        return text, rag
+
+    full_text, rag = await loop.run_in_executor(None, _load_and_build)
     console.print(
-        f"  [green]Indexed {len(rag.doc_texts)} chunks across {len(chunks)} sections[/green]"
+        f"  [green]Indexed {len(rag.doc_texts)} chunks[/green]"
     )
 
     console.rule("[bold cyan]PHASE 2: Scrape + Concurrent Match[/bold cyan]")
