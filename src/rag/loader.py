@@ -5,39 +5,67 @@ import urllib.request
 from pathlib import Path
 
 
-def _get_pymupdf():
-    import pymupdf
-
-    return pymupdf
-
-
 def download_resume(url: str) -> Path:
     print(f"  Downloading: {url}")
     suffix = Path(url).suffix or ".pdf"
     fd, path = tempfile.mkstemp(suffix=suffix)
-    with open(fd, "wb") as f, urllib.request.urlopen(url, timeout=30) as resp:
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"},
+    )
+    with open(fd, "wb") as f, urllib.request.urlopen(req, timeout=30) as resp:
         f.write(resp.read())
     return Path(path)
 
 
-def extract_with_pymupdf(path: Path) -> str:
-    pymupdf = _get_pymupdf()
-    text_parts = []
-    doc = pymupdf.open(path)
-    for page in doc:
-        t = page.get_text()
+def extract_text(path: Path) -> str:
+    """Try markitdown first, then pymupdf, then pypdf as last resort."""
+
+    # 1. markitdown (handles PDF, DOCX, HTML, images)
+    try:
+        from markitdown import MarkItDown
+
+        md = MarkItDown()
+        result = md.convert(str(path))
+        text = result.text_content
+        if text and len(text) > 100:
+            print("    using markitdown")
+            return text
+        print(f"    markitdown returned {len(text)} chars, trying next...")
+    except Exception as e:
+        print(f"    markitdown: {e}")
+
+    # 2. pymupdf (best PDF extraction, needs libstdc++)
+    try:
+        import pymupdf
+
+        parts = []
+        doc = pymupdf.open(path)
+        for page in doc:
+            t = page.get_text()
+            if t:
+                parts.append(t)
+        doc.close()
+        text = "\n\n".join(parts)
+        if text and len(text) > 100:
+            print("    using pymupdf")
+            return text
+        print(f"    pymupdf returned {len(text)} chars, trying next...")
+    except Exception as e:
+        print(f"    pymupdf: {e}")
+
+    # 3. pypdf (pure Python, always works)
+    from pypdf import PdfReader
+
+    parts = []
+    reader = PdfReader(str(path))
+    for page in reader.pages:
+        t = page.extract_text()
         if t:
-            text_parts.append(t)
-    doc.close()
-    return "\n\n".join(text_parts)
-
-
-def extract_with_markitdown(path: Path) -> str:
-    from markitdown import MarkItDown
-
-    md = MarkItDown()
-    result = md.convert(str(path))
-    return result.text_content
+            parts.append(t)
+    text = "\n\n".join(parts)
+    print(f"    using pypdf ({len(text)} chars)")
+    return text
 
 
 def verify_extraction(text: str) -> dict[str, bool | str]:
@@ -67,15 +95,15 @@ def load_resume() -> tuple[str, dict[str, str]]:
     print(f"  Saved to: {path}")
     print(f"  Size: {path.stat().st_size} bytes")
 
-    # Try markitdown first (handles DOCX, HTML, PDF via pymupdf)
-    try:
-        print("  Extracting with markitdown...")
-        text = extract_with_markitdown(path)
-    except Exception:
-        print("  Fallback to pymupdf...")
-        text = extract_with_pymupdf(path)
+    print("  Extracting...")
+    text = extract_text(path)
 
-    # Verify
+    # Show extracted text preview
+    preview = text[:800].replace("\n", "\n    ")
+    print(f"\n  ── Extracted Text Preview (first 800/{len(text)} chars) ──")
+    print(f"    {preview}")
+    print("  ─────────────────────────────────────────────\n")
+
     checks = verify_extraction(text)
     for key, val in checks.items():
         if key not in ("passes", "length"):
@@ -86,7 +114,6 @@ def load_resume() -> tuple[str, dict[str, str]]:
     if not checks["passes"]:
         print("  WARNING: Some extraction checks failed, continuing anyway...")
 
-    # Chunk
     chunks = chunk_resume(text)
     print(f"  Sections: {list(chunks.keys())}")
 
