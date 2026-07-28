@@ -4,14 +4,14 @@ version = "0.1.0"
 description = "Thy Job shall be mine"
 requires-python = ">=3.14"
 dependencies = [
+    "fastembed>=0.6.0",
     "firecrawl-py>=4.33.1",
     "markitdown[pdf]>=0.1.6",
+    "numpy>=2.0.0",
     "pymupdf>=1.28.0",
     "pypdf>=6.14.2",
     "questionary>=2.1.1",
-    "redis>=8.0.1",
     "rich>=15.0.0",
-    "rq>=2.10.0",
 ]
 
 [tool.ruff]
@@ -45,6 +45,13 @@ known-first-party = ["ho"]
 dev = [
     "mypy>=2.3.0",
     "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
     "pytest-mock>=3.15.1",
     "ruff>=0.16.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "asyncio: mark a test as an async test",
 ]

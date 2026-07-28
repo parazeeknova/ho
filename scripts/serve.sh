@@ -10,4 +10,5 @@ exec llama-server \
   -ngl 999 \
   -fa on \
   --port "${LLAMA_PORT:-8899}" \
-  -c "${CTX_SIZE:-32768}"
+  -c "${CTX_SIZE:-16384}" \
+  --parallel "${LLAMA_PARALLEL:-2}"

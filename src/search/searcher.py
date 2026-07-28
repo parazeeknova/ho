@@ -1,10 +1,11 @@
 """Job searcher: GitHub internship indexes + web search via Firecrawl SDK."""
 
-import time
+import asyncio
 
 from firecrawl import FirecrawlApp
 
 from src.llm.context import ContextManager
+from src.pipeline.queue import JobPipeline, QueuedJob
 
 GITHUB_INDEXES = [
     "https://raw.githubusercontent.com/SimplifyJobs/Summer2026-Internships/dev/README.md",
@@ -14,39 +15,91 @@ GITHUB_INDEXES = [
     "https://raw.githubusercontent.com/DereC4/internships-and-newgrad/main/README.md",
 ]
 
+SEARCH_QUERIES_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "queries": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 8,
+            "maxItems": 8,
+        }
+    },
+    "required": ["queries"],
+}
 
-def scrape_github_indexes(app: FirecrawlApp) -> list[dict[str, str]]:
-    jobs = []
-    for url in GITHUB_INDEXES:
-        print(f"  Scraping index: {url.split('/')[-3]}/{url.split('/')[-2]}")
-        try:
-            result = app.scrape_url(url, formats=["markdown"])
-            md = getattr(result, "markdown", "") or ""
-            jobs.append({"source": url, "markdown": md, "type": "github_index"})
-            print(f"    {len(md)} chars")
-        except Exception as e:
-            print(f"    failed: {e}")
-        time.sleep(1)
-    return jobs
+INDEX_EXTRACT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "listings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "company": {"type": "string"},
+                    "role": {"type": "string"},
+                    "location": {"type": "string"},
+                    "apply_link": {"type": "string"},
+                    "posted": {"type": ["string", "null"]},
+                },
+                "required": ["company", "role"],
+            },
+        }
+    },
+    "required": ["listings"],
+}
 
 
-def search_web(app: FirecrawlApp, position: str, ctx: ContextManager) -> list[dict[str, str]]:
+async def _scrape_index(url: str, app: FirecrawlApp, pipeline: JobPipeline) -> None:
+    loop = asyncio.get_running_loop()
+    try:
+        result = await loop.run_in_executor(None, lambda: app.scrape_url(url, formats=["markdown"]))
+        md = getattr(result, "markdown", "") or ""
+        if md:
+            await pipeline.push(
+                QueuedJob(markdown=md, url=url, title=f"INDEX:{url.split('/')[-1]}")
+            )
+    except Exception as e:
+        print(f"  [red]index fail {url}: {e}[/red]")
+
+
+async def _scrape_url(item: dict, app: FirecrawlApp, pipeline: JobPipeline) -> None:
+    loop = asyncio.get_running_loop()
+    url = item.get("url", "")
+    if not url:
+        return
+    try:
+        result = await loop.run_in_executor(None, lambda: app.scrape_url(url, formats=["markdown"]))
+        md = getattr(result, "markdown", "") or ""
+        if md and len(md) > 100:
+            await pipeline.push(QueuedJob(markdown=md, url=url, title=item.get("title", "")))
+    except Exception:
+        pass
+
+
+async def _search_web(
+    app: FirecrawlApp, position: str, ctx: ContextManager
+) -> list[dict[str, str]]:
+    loop = asyncio.get_running_loop()
+
     query_prompt = (
         f"Generate 8 diverse natural-language search queries to find undergrad/"
         f"intern/entry-level remote jobs for: {position}. Target job boards that "
         f"are easy to scrape: GitHub READMEs, Wellfound, Y Combinator jobs, "
         f"company career pages (greenhouse.io, lever.co, ashbyhq.com, workable.com), "
         f"Remotive, WeWorkRemotely, RemoteOK. Avoid indeed, glassdoor, ziprecruiter, "
-        f"upwork. Return ONLY a JSON array of 8 strings. No markdown."
+        f"upwork. Return valid JSON matching the required schema."
     )
-    queries = ctx.json_chat(query_prompt)
-    if not isinstance(queries, list):
+
+    raw = await loop.run_in_executor(None, ctx.json_chat, query_prompt, SEARCH_QUERIES_SCHEMA)
+    queries: list[str] = raw.get("queries", []) if isinstance(raw, dict) else []
+    if not queries:
         queries = [f"{position} intern remote", f"entry level {position} remote"]
 
-    results = []
+    results: list[dict[str, str]] = []
     for q in queries[:8]:
         try:
-            search_results = app.search(q)
+            search_results = await loop.run_in_executor(None, app.search, q)
             data = getattr(search_results, "web", []) or []
             if isinstance(data, list):
                 for r in data[:5]:
@@ -59,7 +112,7 @@ def search_web(app: FirecrawlApp, position: str, ctx: ContextManager) -> list[di
                                 "type": "web_search",
                             }
                         )
-            time.sleep(0.5)
+            await asyncio.sleep(0.3)
         except Exception:
             pass
 
@@ -67,18 +120,52 @@ def search_web(app: FirecrawlApp, position: str, ctx: ContextManager) -> list[di
     return results
 
 
-def scrape_urls(app: FirecrawlApp, urls: list[dict]) -> list[dict[str, str]]:
-    jobs = []
-    for item in urls:
-        url = item.get("url", "")
-        if not url:
-            continue
-        try:
-            result = app.scrape_url(url, formats=["markdown"])
-            md = getattr(result, "markdown", "") or ""
-            if md and len(md) > 100:
-                jobs.append({"markdown": md, "url": url, "title": item.get("title", "")})
-            time.sleep(0.5)
-        except Exception:
-            pass
-    return jobs
+async def scrape_all(
+    app: FirecrawlApp,
+    position: str,
+    ctx: ContextManager,
+    pipeline: JobPipeline,
+    max_workers: int = 6,
+) -> None:
+    tasks = []
+
+    for url in GITHUB_INDEXES:
+        tasks.append(_scrape_index(url, app, pipeline))
+
+    web_hits = await _search_web(app, position, ctx)
+    for hit in web_hits:
+        tasks.append(_scrape_url(hit, app, pipeline))
+
+    sem = asyncio.Semaphore(max_workers)
+
+    async def _limited(task: asyncio.Task) -> None:
+        async with sem:
+            await task
+
+    await asyncio.gather(*(_limited(asyncio.create_task(t)) for t in tasks))
+
+
+async def extract_index_jobs(jobs: list[QueuedJob], ctx: ContextManager) -> list[dict]:
+    loop = asyncio.get_running_loop()
+    extracted: list[dict] = []
+
+    async def _extract_one(job: QueuedJob) -> list[dict]:
+        prompt = (
+            "Extract ALL job/internship listings from this markdown. "
+            "Return valid JSON matching the required schema. "
+            "Be exhaustive — extract every single row/listing."
+        )
+        raw = await loop.run_in_executor(
+            None,
+            lambda: ctx.json_chat(prompt, INDEX_EXTRACT_SCHEMA, job.markdown, limit=20000),
+        )
+        if isinstance(raw, dict) and "listings" in raw:
+            return raw["listings"]
+        return []
+
+    tasks = [asyncio.create_task(_extract_one(j)) for j in jobs]
+    results = await asyncio.gather(*tasks)
+    for r in results:
+        extracted.extend(r)
+
+    return extracted

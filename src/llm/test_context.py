@@ -1,35 +1,32 @@
-"""Tests for context manager: token tracking, flush, JSON parsing."""
+"""Tests for context manager: token tracking, flush, JSON schema enforcement."""
 
-from src.llm.context import ContextManager
+from src.llm.context import ContextManager, _strip_markdown
+
+
+class TestStripMarkdown:
+    def test_no_wrapping(self) -> None:
+        assert _strip_markdown('{"key": "value"}') == '{"key": "value"}'
+
+    def test_with_backticks(self) -> None:
+        raw = '```json\n{"key": "value"}\n```'
+        assert _strip_markdown(raw) == '{"key": "value"}'
+
+    def test_backticks_no_lang(self) -> None:
+        raw = '```\n{"key": "value"}\n```'
+        assert _strip_markdown(raw) == '{"key": "value"}'
+
+    def test_single_line_backticks(self) -> None:
+        raw = '```{"key": "value"}```'
+        assert _strip_markdown(raw) == '{"key": "value"}'
+
+    def test_whitespace_only(self) -> None:
+        assert _strip_markdown("  \n  ") == ""
 
 
 class TestContextManager:
     def test_init(self) -> None:
         ctx = ContextManager()
         assert ctx.cumulative_output_tokens == 0
-
-    def test_clean_json_no_wrapping(self) -> None:
-        ctx = ContextManager()
-        assert ctx.clean_json('{"key": "value"}') == '{"key": "value"}'
-
-    def test_clean_json_with_backticks(self) -> None:
-        ctx = ContextManager()
-        raw = '```json\n{"key": "value"}\n```'
-        assert ctx.clean_json(raw) == '{"key": "value"}'
-
-    def test_clean_json_backticks_no_lang(self) -> None:
-        ctx = ContextManager()
-        raw = '```\n{"key": "value"}\n```'
-        assert ctx.clean_json(raw) == '{"key": "value"}'
-
-    def test_clean_json_single_line_backticks(self) -> None:
-        ctx = ContextManager()
-        raw = '```{"key": "value"}```'
-        assert ctx.clean_json(raw) == '{"key": "value"}'
-
-    def test_clean_json_whitespace_only(self) -> None:
-        ctx = ContextManager()
-        assert ctx.clean_json("  \n  ") == ""
 
     def test_json_chat_dict(self, mocker) -> None:
         ctx = ContextManager()
@@ -48,16 +45,24 @@ class TestContextManager:
         ctx = ContextManager()
         mocker.patch.object(ctx, "chat", return_value="not json")
         result = ctx.json_chat("{")
-        assert result == {}  # fallback for dict-looking prompt
+        assert result == {}
 
     def test_json_chat_with_content(self, mocker) -> None:
         ctx = ContextManager()
         mock_chat = mocker.patch.object(ctx, "chat", return_value='{"x": 1}')
-        result = ctx.json_chat("prompt", "content", limit=100)
+        result = ctx.json_chat("prompt", content="content", limit=100)
         assert result == {"x": 1}
         sent = mock_chat.call_args[0][0]
         assert "prompt" in sent
         assert "content" in sent
+
+    def test_json_chat_with_schema(self, mocker) -> None:
+        ctx = ContextManager()
+        mock_chat = mocker.patch.object(ctx, "chat", return_value='{"name": "test"}')
+        schema = {"type": "object", "properties": {"name": {"type": "string"}}}
+        result = ctx.json_chat("prompt", schema=schema)
+        assert result == {"name": "test"}
+        mock_chat.assert_called_once_with("prompt", schema=schema)
 
     def test_maybe_flush_below_threshold(self, mocker) -> None:
         ctx = ContextManager()
@@ -65,11 +70,18 @@ class TestContextManager:
         mock_flush = mocker.patch.object(ctx, "flush")
         ctx.json_chat("prompt")
         ctx.maybe_flush()
-        assert mock_flush.call_count == 0  # below threshold
+        assert mock_flush.call_count == 0
 
     def test_flush_called_above_threshold(self, mocker) -> None:
         ctx = ContextManager()
-        ctx.cumulative_output_tokens = 10000  # above 6000 threshold
+        ctx.cumulative_output_tokens = 10000
         mock_flush = mocker.patch.object(ctx, "flush")
         ctx.maybe_flush()
         assert mock_flush.call_count == 1
+
+    def test_flush_resets_counter_even_on_error(self, mocker) -> None:
+        ctx = ContextManager()
+        ctx.cumulative_output_tokens = 7000
+        mocker.patch("urllib.request.urlopen", side_effect=OSError("down"))
+        ctx.flush()
+        assert ctx.cumulative_output_tokens == 0

@@ -15,7 +15,7 @@ def compute_days_ago(date_str: str | None) -> str:
         if days == 1:
             return "1d ago"
         return f"{days}d ago"
-    except ValueError, TypeError:
+    except (ValueError, TypeError):
         return "?"
 
 

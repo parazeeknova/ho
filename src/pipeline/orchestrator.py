@@ -1,41 +1,28 @@
-"""Pipeline: resume → search → MQ → RAG match → revalidate → verify → output."""
+"""Pipeline: resume → search → async MQ → concurrent match → verify → output."""
 
+import asyncio
 import signal
 import sys
-import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 
 from firecrawl import FirecrawlApp
 from rich.console import Console
 
-from src.llm.context import ContextManager
+from src.llm.context import REVALIDATE_SCHEMA, ContextManager
 from src.matching.matcher import batch_match
-from src.matching.verifier import verify_job
+from src.matching.verifier import verify_jobs
 from src.output.writer import write_md
 from src.pipeline.queue import JobPipeline, QueuedJob
 from src.rag.engine import build_rag_from_chunks
 from src.rag.loader import load_resume
-from src.search.searcher import GITHUB_INDEXES, search_web
+from src.search.searcher import extract_index_jobs, scrape_all
 
 console = Console()
 
 TARGET = 15
 MAX_SCRAPE_WORKERS = 6
-MATCH_BATCH_SIZE = 5
-
-
-def extract_jobs_from_index(markdown: str, ctx: ContextManager) -> list[dict]:
-    prompt = (
-        "Extract ALL job/internship listings from this markdown. "
-        "Return a JSON array. Each entry: "
-        '{{"company":"...","role":"...","location":"...",'
-        '"apply_link":"...","posted":"..."}}. '
-        "Be exhaustive — extract every single row/listing. "
-        "Return ONLY JSON array."
-    )
-    result = ctx.json_chat(prompt, markdown, limit=20000)
-    return result if isinstance(result, list) else []
+MATCH_CONCURRENCY = 4
+VERIFY_CONCURRENCY = 4
 
 
 def filter_recent(jobs: list[dict], max_days: int = 7) -> list[dict]:
@@ -50,41 +37,82 @@ def filter_recent(jobs: list[dict], max_days: int = 7) -> list[dict]:
             dt = datetime.fromisoformat(str(date_str).replace("Z", "+00:00"))
             if (now - dt).days <= max_days:
                 filtered.append(j)
-        except ValueError, TypeError:
+        except (ValueError, TypeError):
             filtered.append(j)
     return filtered
 
 
-def scrape_index_worker(url: str, app: FirecrawlApp, pipeline: JobPipeline) -> None:
-    try:
-        result = app.scrape_url(url, formats=["markdown"])
-        md = getattr(result, "markdown", "") or ""
-        if md:
-            pipeline.push(QueuedJob(markdown=md, url=url, title=f"INDEX:{url.split('/')[-1]}"))
-    except Exception as e:
-        console.print(f"  [red]✗[/red] index {url}: {e}")
+async def _revalidate_batch(
+    jobs: list[dict],
+    rag,
+    ctx: ContextManager,
+    concurrency: int = 4,
+) -> list[dict]:
+    loop = asyncio.get_running_loop()
+    sem = asyncio.Semaphore(concurrency)
+
+    async def _revalidate_one(job: dict) -> dict | None:
+        async with sem:
+            query = (
+                f"{job.get('role', '')} {job.get('company', '')} "
+                f"{' '.join(job.get('matching_skills', []))}"
+            )
+            chunks = rag.retrieve(query, top_k=5)
+            if not chunks or chunks[0][2] < 0.25:
+                return None
+
+            prompt = (
+                "Cross-check this job extraction against the candidate's relevant "
+                "resume snippets. Confirm or correct: role, company, match_percent, "
+                "shortlist_probability. Set match_percent to 0 if clearly wrong.\n\n"
+                f"Current extraction: {str(job)[:2000]}\n\n"
+                "Relevant resume:\n"
+                + "\n".join(f"[{c[0]}] {c[1]}" for c in chunks)
+                + "\n\nReturn valid JSON matching the required schema."
+            )
+
+            result = await loop.run_in_executor(None, ctx.json_chat, prompt, REVALIDATE_SCHEMA)
+            if isinstance(result, dict) and "match_percent" in result:
+                result["match_percent"] = int(result["match_percent"])
+                result["shortlist_probability"] = int(result.get("shortlist_probability", 0))
+                result["_revalidated"] = True
+                result["source_url"] = job.get("source_url", "")
+                result["apply_link"] = job.get("apply_link", "")
+                return result
+            return job
+
+    tasks = [asyncio.create_task(_revalidate_one(j)) for j in jobs]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    validated: list[dict] = []
+    for j, result in zip(jobs, results, strict=True):
+        if isinstance(result, BaseException):
+            validated.append(j)
+            continue
+        if result is not None and result.get("match_percent", 0) >= 30:
+            validated.append(result)
+            pct = result.get("match_percent", "?")
+            role = result.get("role", "?")
+            company = result.get("company", "?")
+            tag = "[reval]" if result.get("_revalidated") else "[kept]"
+            console.print(f"  [green]{tag} {pct}% | {role} @ {company}[/green]")
+
+    dropped = len(jobs) - len(validated)
+    console.print(f"  [green]Kept {len(validated)}[/green], [red]dropped {dropped}[/red]")
+    return validated
 
 
-def scrape_url_worker(item: dict, app: FirecrawlApp, pipeline: JobPipeline) -> None:
-    url = item.get("url", "")
-    if not url:
-        return
-    try:
-        result = app.scrape_url(url, formats=["markdown"])
-        md = getattr(result, "markdown", "") or ""
-        if md and len(md) > 100:
-            pipeline.push(QueuedJob(markdown=md, url=url, title=item.get("title", "")))
-    except Exception:
-        pass  # anti-bot / paywall — skip silently, counted in summary
-
-
-def consumer_loop(pipeline: JobPipeline, rag, ctx: ContextManager) -> list[dict]:
+async def _consumer(
+    pipeline: JobPipeline,
+    rag,
+    ctx: ContextManager,
+) -> tuple[list[dict], list[QueuedJob]]:
     matched: list[dict] = []
-    index_jobs: list[dict] = []
+    index_queue: list[QueuedJob] = []
     web_buf: list[QueuedJob] = []
 
     while True:
-        job = pipeline.pop(timeout=2)
+        job = await pipeline.pop(timeout=2)
         if job is None:
             if pipeline.is_done:
                 break
@@ -92,51 +120,35 @@ def consumer_loop(pipeline: JobPipeline, rag, ctx: ContextManager) -> list[dict]
 
         if job.title.startswith("INDEX:"):
             if len(job.markdown) > 500:
-                extracted = extract_jobs_from_index(job.markdown, ctx)
-                index_jobs.extend(extracted)
-                console.print(f"  [cyan][consumer][/cyan] {len(extracted)} from {job.title}")
+                index_queue.append(job)
         else:
             web_buf.append(job)
 
-        if len(web_buf) >= MATCH_BATCH_SIZE:
+        if len(web_buf) >= 5:
             batch = [{"markdown": j.markdown, "url": j.url, "title": j.title} for j in web_buf]
-            scored = batch_match(batch, rag, ctx)
+            scored = await batch_match(batch, rag, ctx)
             matched.extend(scored)
             for _ in web_buf:
-                pipeline.task_done()
+                await pipeline.task_done()
             web_buf.clear()
 
         console.print(f"  [{pipeline.log_status()}]")
 
-    # Flush remaining
-    if index_jobs:
-        idx_batch = [
-            {
-                "markdown": "",
-                "url": j.get("apply_link", ""),
-                "title": j.get("role", ""),
-                "snippet": str(j),
-            }
-            for j in index_jobs[:50]
-        ]
-        scored = batch_match(idx_batch, rag, ctx)
-        matched.extend(scored)
-
     if web_buf:
         batch = [{"markdown": j.markdown, "url": j.url, "title": j.title} for j in web_buf]
-        scored = batch_match(batch, rag, ctx)
+        scored = await batch_match(batch, rag, ctx)
         matched.extend(scored)
         for _ in web_buf:
-            pipeline.task_done()
+            await pipeline.task_done()
 
-    return matched
+    return matched, index_queue
 
 
-def run() -> None:
+async def _run_pipeline() -> None:
     ctx = ContextManager()
 
     def _cleanup(signum: int, frame: object) -> None:
-        console.print("\n[yellow]Interrupted — flushing LLM context...[/yellow]")
+        console.print("\n[yellow]Interrupted - flushing LLM context...[/yellow]")
         ctx.flush()
         sys.exit(1)
 
@@ -151,19 +163,10 @@ def run() -> None:
     full_text, chunks = load_resume()
     rag = build_rag_from_chunks(chunks)
     console.print(
-        f"  [green]✓[/green] Indexed {len(rag.doc_texts)} chunks across {len(chunks)} sections"
+        f"  [green]Indexed {len(rag.doc_texts)} chunks across {len(chunks)} sections[/green]"
     )
 
-    console.rule("[bold cyan]PHASE 2: Producer/Consumer (scrape → MQ → LLM match)[/bold cyan]")
-
-    matched_result: list[dict] = []
-
-    def _consumer_target() -> None:
-        nonlocal matched_result
-        matched_result = consumer_loop(pipeline, rag, ctx)
-
-    consumer = threading.Thread(target=_consumer_target, daemon=True)
-    consumer.start()
+    console.rule("[bold cyan]PHASE 2: Scrape + Concurrent Match[/bold cyan]")
 
     position = (
         ctx.chat(
@@ -175,59 +178,49 @@ def run() -> None:
     )
     console.print(f"  [yellow]Target position:[/yellow] {position}")
 
-    with ThreadPoolExecutor(max_workers=MAX_SCRAPE_WORKERS) as executor:
-        futures = []
-        for url in GITHUB_INDEXES:
-            futures.append(executor.submit(scrape_index_worker, url, app, pipeline))
-        web_hits = search_web(app, position, ctx)
-        for hit in web_hits:
-            futures.append(executor.submit(scrape_url_worker, hit, app, pipeline))
-        console.print(f"  {len(futures)} tasks running, consumer draining...")
-        for f in as_completed(futures):
-            f.result()
+    consumer_task = asyncio.create_task(_consumer(pipeline, rag, ctx))
+
+    await scrape_all(app, position, ctx, pipeline, max_workers=MAX_SCRAPE_WORKERS)
 
     console.print("  [yellow]Producers done. Signalling stop...[/yellow]")
     pipeline.signal_done()
-    consumer.join(timeout=300)
+
+    matched_result, index_queue = await consumer_task
+
+    if index_queue:
+        console.rule("[bold cyan]PHASE 2b: Extract Index Jobs + Match[/bold cyan]")
+        index_jobs = await extract_index_jobs(index_queue, ctx)
+        console.print(f"  [cyan]Extracted {len(index_jobs)} jobs from indexes[/cyan]")
+        if index_jobs:
+            idx_batch = [
+                {
+                    "markdown": "",
+                    "url": j.get("apply_link", ""),
+                    "title": j.get("role", ""),
+                    "snippet": str(j),
+                }
+                for j in index_jobs[:80]
+            ]
+            idx_scored = await batch_match(idx_batch, rag, ctx)
+            matched_result.extend(idx_scored)
 
     console.rule("[bold cyan]PHASE 3: RAG Revalidation[/bold cyan]")
-    validated = []
-    for j in matched_result:
-        v = rag.revalidate(j, ctx)
-        if v and v.get("match_percent", 0) >= 30:
-            validated.append(v)
-            pct = v["match_percent"]
-            role = v.get("role", "?")
-            company = v.get("company", "?")
-            tag = "[reval]" if v.get("_revalidated") else "[kept]"
-            console.print(f"  [green]{tag} {pct}% | {role} @ {company}[/green]")
-    dropped = len(matched_result) - len(validated)
-    console.print(f"  [green]Kept {len(validated)}[/green], [red]dropped {dropped}[/red]")
+    validated = await _revalidate_batch(matched_result, rag, ctx)
 
     console.rule("[bold cyan]PHASE 4: Filter + Cross-Verify[/bold cyan]")
     scored = filter_recent(validated, max_days=7)
     scored.sort(key=lambda j: j["match_percent"], reverse=True)
     scored = scored[:TARGET]
 
-    verified = []
-    for j in scored[:TARGET]:
-        role = j.get("role", "?")
-        company = j.get("company", "?")
-        url = j.get("source_url", "")
-        console.print(f"  [yellow]⟳[/yellow] Verifying: {role} @ {company}")
-        if verify_job(app, role, company, url, ctx):
-            verified.append(j)
-            console.print("    [green]✓ verified[/green]")
-        else:
-            console.print("    [red]✗ FAILED — dropped[/red]")
+    verified = await verify_jobs(app, scored[:TARGET], ctx, concurrency=VERIFY_CONCURRENCY)
 
     console.rule("[bold cyan]PHASE 5: Generate Output[/bold cyan]")
     write_md(verified)
     ctx.flush()
 
-    console.print(f"\n  [dim]Redis queue: {pipeline.pending} items remaining[/dim]")
-    console.print("\n[bold green]✓ Pipeline complete[/bold green]")
+    console.print(f"\n  [dim]Queue: {pipeline.pending} items remaining[/dim]")
+    console.print("\n[bold green]Pipeline complete[/bold green]")
 
 
-if __name__ == "__main__":
-    run()
+def run() -> None:
+    asyncio.run(_run_pipeline())

@@ -55,8 +55,8 @@ def extract_text(path: Path) -> str:
 
         parts = []
         doc = pymupdf.open(path)
-        for page in doc:
-            t = page.get_text()
+        for page_num in range(len(doc)):
+            t = doc[page_num].get_text()
             if t:
                 parts.append(t)
         doc.close()
