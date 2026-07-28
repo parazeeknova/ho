@@ -51,8 +51,17 @@ async def _match_one(
             return None
 
         role_lower = str(result.get("role", "")).lower()
-        if any(kw in role_lower for kw in ("matching engine", "job search", "analysis of")):
-            return None
+        _echo_kws = (
+            "matching engine", "job search", "analysis of",
+            "resume matcher", "scoring engine", "job matcher",
+            "match scorer", "ranking system",
+        )
+        if any(kw in role_lower for kw in _echo_kws):
+            fallback_role = (job.get("title") or "").strip()
+            if fallback_role:
+                result["role"] = fallback_role
+            else:
+                return None
 
         result["match_percent"] = int(result["match_percent"])
         result["shortlist_probability"] = int(result["shortlist_probability"])
