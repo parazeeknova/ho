@@ -52,7 +52,7 @@ def filter_recent(jobs: list[dict], max_days: int = 7) -> list[dict]:
 
 def scrape_index_worker(url: str, app: FirecrawlApp, pipeline: JobPipeline) -> None:
     try:
-        result = app.scrape_url(url, params={"formats": ["markdown"]})
+        result = app.scrape_url(url, formats=["markdown"])
         md = result.get("markdown", result.get("data", {}).get("markdown", ""))
         if md:
             pipeline.push(QueuedJob(markdown=md, url=url, title=f"INDEX:{url.split('/')[-1]}"))
@@ -65,7 +65,7 @@ def scrape_url_worker(item: dict, app: FirecrawlApp, pipeline: JobPipeline) -> N
     if not url:
         return
     try:
-        result = app.scrape_url(url, params={"formats": ["markdown"]})
+        result = app.scrape_url(url, formats=["markdown"])
         md = result.get("markdown", result.get("data", {}).get("markdown", ""))
         if md and len(md) > 100:
             pipeline.push(QueuedJob(markdown=md, url=url, title=item.get("title", "")))
@@ -156,8 +156,8 @@ def run() -> None:
 
     position = (
         ctx.chat(
-            "Based on this resume, what is the single best job title "
-            "to search for? Return just the title, nothing else.\n\n" + full_text[:2000]
+            "Based on this resume, what is the best entry-level / intern / new-grad "
+            "job title to search for? Return just the title, nothing else.\n\n" + full_text[:2000]
         )
         .strip()
         .strip('"')

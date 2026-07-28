@@ -33,7 +33,7 @@ def verify_job(
         if not alt_url:
             return True
 
-        alt_result = app.scrape_url(alt_url, params={"formats": ["markdown"]})
+        alt_result = app.scrape_url(alt_url, formats=["markdown"])
         alt_content = alt_result.get("markdown", alt_result.get("data", {}).get("markdown", ""))
         if len(alt_content) < 100:
             return True

@@ -20,7 +20,7 @@ def scrape_github_indexes(app: FirecrawlApp) -> list[dict[str, str]]:
     for url in GITHUB_INDEXES:
         print(f"  Scraping index: {url.split('/')[-3]}/{url.split('/')[-2]}")
         try:
-            result = app.scrape_url(url, params={"formats": ["markdown"]})
+            result = app.scrape_url(url, formats=["markdown"])
             md = result.get("markdown", result.get("data", {}).get("markdown", ""))
             jobs.append({"source": url, "markdown": md, "type": "github_index"})
             print(f"    {len(md)} chars")
@@ -68,7 +68,7 @@ def scrape_urls(app: FirecrawlApp, urls: list[dict]) -> list[dict[str, str]]:
         if not url:
             continue
         try:
-            result = app.scrape_url(url, params={"formats": ["markdown"]})
+            result = app.scrape_url(url, formats=["markdown"])
             md = result.get("markdown", result.get("data", {}).get("markdown", ""))
             if md and len(md) > 100:
                 jobs.append({"markdown": md, "url": url, "title": item.get("title", "")})

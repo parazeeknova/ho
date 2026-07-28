@@ -1,4 +1,4 @@
-.PHONY: check check-types test serve run fc-up fc-down fc-logs dev dev-down
+.PHONY: check check-types test serve run match health fc-up fc-down fc-logs dev dev-down
 
 check:
 	uv run ruff format . && uv run ruff check . --fix
@@ -12,7 +12,10 @@ test:
 serve:
 	./scripts/serve.sh
 
-run:
+run: health
+	uv run python -m src.pipeline.orchestrator
+
+match: health
 	uv run python -m src.pipeline.orchestrator
 
 fc-up:
@@ -35,11 +38,13 @@ fc-logs:
 	docker compose -f docker-compose.yaml logs -f
 
 dev:
-	./scripts/serve.sh & \
-	make fc-up; \
-	wait
+	./scripts/dev.sh
 
 dev-down:
-	docker compose -f docker-compose.yaml down; \
-	pkill -f llama-server; \
-	wait
+	docker compose -f docker-compose.yaml down 2>/dev/null; \
+	podman rm -f firecrawl_rabbitmq_1 2>/dev/null; \
+	killall llama-server 2>/dev/null; \
+	true
+
+health:
+	./scripts/health.sh

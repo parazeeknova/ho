@@ -9,5 +9,5 @@ exec llama-server \
   --sleep-idle-seconds 300 \
   -ngl 999 \
   -fa on \
-  --port "${PORT:-8899}" \
+  --port "${LLAMA_PORT:-8899}" \
   -c "${CTX_SIZE:-32768}"

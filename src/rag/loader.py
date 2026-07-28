@@ -5,17 +5,30 @@ import urllib.request
 from pathlib import Path
 
 
-def download_resume(url: str) -> Path:
+def download_resume(url: str) -> tuple[Path, str]:
     print(f"  Downloading: {url}")
-    suffix = Path(url).suffix or ".pdf"
-    fd, path = tempfile.mkstemp(suffix=suffix)
     req = urllib.request.Request(
         url,
         headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"},
     )
-    with open(fd, "wb") as f, urllib.request.urlopen(req, timeout=30) as resp:
-        f.write(resp.read())
-    return Path(path)
+    resp = urllib.request.urlopen(req, timeout=30)
+    content = resp.read()
+    content_type = resp.headers.get("Content-Type", "")
+
+    print(f"  Content-Type: {content_type}")
+    print(f"  Size: {len(content)} bytes")
+
+    # If it's HTML pretending to be a PDF, save as HTML
+    if content.startswith(b"<!") or b"<!doctype" in content[:100].lower():
+        print("  Detected HTML response, saving as .html")
+        suffix = ".html"
+    else:
+        suffix = Path(url).suffix or ".pdf"
+
+    fd, path = tempfile.mkstemp(suffix=suffix)
+    with open(fd, "wb") as f:
+        f.write(content)
+    return Path(path), content_type
 
 
 def extract_text(path: Path) -> str:
@@ -54,17 +67,34 @@ def extract_text(path: Path) -> str:
     except Exception as e:
         print(f"    pymupdf: {e}")
 
-    # 3. pypdf (pure Python, always works)
-    from pypdf import PdfReader
+    # 3. pypdf (pure Python, always works for PDFs)
+    try:
+        from pypdf import PdfReader
 
-    parts = []
-    reader = PdfReader(str(path))
-    for page in reader.pages:
-        t = page.extract_text()
-        if t:
-            parts.append(t)
-    text = "\n\n".join(parts)
-    print(f"    using pypdf ({len(text)} chars)")
+        parts = []
+        reader = PdfReader(str(path))
+        for page in reader.pages:
+            t = page.extract_text()
+            if t:
+                parts.append(t)
+        text = "\n\n".join(parts)
+        if text and len(text) > 50:
+            print(f"    using pypdf ({len(text)} chars)")
+            return text
+        print(f"    pypdf returned {len(text)} chars, trying next...")
+    except Exception as e:
+        print(f"    pypdf: {e}")
+
+    # 4. raw text (last resort, for HTML or unknown formats)
+    from bs4 import BeautifulSoup
+
+    raw = path.read_text(errors="ignore")
+    if raw.strip().startswith("<"):
+        soup = BeautifulSoup(raw, "html.parser")
+        text = soup.get_text("\n", strip=True)
+    else:
+        text = raw
+    print(f"    using bs4/html ({len(text)} chars)")
     return text
 
 
@@ -91,16 +121,14 @@ def load_resume() -> tuple[str, dict[str, str]]:
     if not url:
         raise ValueError("No URL provided")
 
-    path = download_resume(url)
-    print(f"  Saved to: {path}")
-    print(f"  Size: {path.stat().st_size} bytes")
+    path, content_type = download_resume(url)
 
     print("  Extracting...")
     text = extract_text(path)
 
     # Show extracted text preview
-    preview = text[:800].replace("\n", "\n    ")
-    print(f"\n  ── Extracted Text Preview (first 800/{len(text)} chars) ──")
+    preview = text[:2000].replace("\n", "\n    ")
+    print(f"\n  ── Extracted Text Preview (first 2000/{len(text)} chars) ──")
     print(f"    {preview}")
     print("  ─────────────────────────────────────────────\n")
 
@@ -127,25 +155,26 @@ def chunk_resume(text: str) -> dict[str, str]:
     current_section = "header"
 
     section_headings = {
-        "skills": ["skill"],
-        "experience": ["experience"],
-        "education": ["education"],
-        "projects": ["project"],
-        "achievements": ["achiev", "award", "certif"],
+        "skills": ["skill", "tech stack", "technologies", "languages", "tools"],
+        "experience": ["experience", "work", "employment", "internship"],
+        "education": ["education", "university", "college", "academic"],
+        "projects": ["project", "portfolio"],
+        "achievements": ["achiev", "award", "certif", "publication"],
     }
 
     for line in lines:
-        stripped = line.strip().lower()
+        stripped = line.strip()
+        stripped_lower = stripped.lower()
         matched = False
 
         if len(stripped) < 30:
             for section_name, keywords in section_headings.items():
-                if any(kw in stripped for kw in keywords):
+                if any(kw in stripped_lower for kw in keywords):
                     current_section = section_name
                     matched = True
                     break
 
-        if not matched:
-            sections.setdefault(current_section, []).append(line.strip())
+        if not matched and stripped:
+            sections.setdefault(current_section, []).append(stripped)
 
     return {k: "\n".join(v) for k, v in sections.items() if v}
