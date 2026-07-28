@@ -77,7 +77,7 @@ async def _scrape_index(url: str, app: FirecrawlApp, pipeline: JobPipeline) -> N
         print(f"  [red]index fail {url}: {e}[/red]")
 
 
-async def _scrape_url(item: dict, app: FirecrawlApp, pipeline: JobPipeline) -> None:
+async def scrape_url_to_pipeline(item: dict, app: FirecrawlApp, pipeline: JobPipeline) -> None:
     loop = asyncio.get_running_loop()
     url = item.get("url", "")
     if not url:
@@ -145,16 +145,12 @@ async def _search_web(
 ) -> list[dict[str, str]]:
     loop = asyncio.get_running_loop()
 
-    ats_boards = [
-        "greenhouse.io",
-        "lever.co",
-        "ashbyhq.com",
-        "jobs.workable.com",
-    ]
     queries: list[str] = []
     for pos in positions[:4]:
-        for board in ats_boards:
-            queries.append(f'"{pos}" remote site:{board}')
+        queries.append(f"{pos} intern remote greenhouse.io lever.co")
+        queries.append(f"{pos} entry level remote ashbyhq.com workable.com")
+    queries.append("software engineering intern remote 2026")
+    queries.append("entry level software engineer remote 2026")
     if not queries:
         queries = [f"{p} intern remote" for p in positions[:2]]
 
@@ -217,7 +213,7 @@ async def scrape_all(
 
     web_hits = await _search_web(app, positions, ctx)
     for hit in web_hits:
-        tasks.append(_scrape_url(hit, app, pipeline))
+        tasks.append(scrape_url_to_pipeline(hit, app, pipeline))
 
     sem = asyncio.Semaphore(max_workers)
 
@@ -244,6 +240,12 @@ async def fetch_direct_json_feeds(positions: list[str], pipeline: JobPipeline) -
                     title = (job.get("title") or "").lower()
                     category = (job.get("category") or "").lower()
                     if any(p in title or p in category for p in pos_lower):
+                        _senior_kws = (
+                            "senior", "sr.", "staff ", "lead ", "principal",
+                            "architect", "manager", "director", "head of",
+                        )
+                        if any(kw in title for kw in _senior_kws):
+                            continue
                         desc = job.get("description", "")
                         clean_md = (
                             f"**{job.get('title', '')}** at {job.get('company_name', '')}\n\n"
@@ -264,7 +266,11 @@ async def fetch_direct_json_feeds(positions: list[str], pipeline: JobPipeline) -
             async with httpx.AsyncClient(timeout=15.0) as client:
                 resp = await client.get(
                     "https://hn.algolia.com/api/v1/search_by_date",
-                    params={"tags": "job", "query": "remote", "hitsPerPage": 30},
+                    params={
+                        "tags": "job",
+                        "query": "remote intern entry junior",
+                        "hitsPerPage": 30,
+                    },
                 )
                 resp.raise_for_status()
                 data = resp.json()

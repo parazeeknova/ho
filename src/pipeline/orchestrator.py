@@ -20,7 +20,9 @@ from src.search.searcher import (
     TARGET_POSITIONS_SCHEMA,
     extract_index_jobs,
     fetch_direct_json_feeds,
+    map_company_careers,
     scrape_all,
+    scrape_url_to_pipeline,
 )
 
 console = Console()
@@ -298,6 +300,17 @@ async def _run_pipeline() -> None:
             scrape_all(app, positions, ctx, pipeline, max_workers=MAX_SCRAPE_WORKERS),
             fetch_direct_json_feeds(positions, pipeline),
         )
+        # Discover YC / ATS career page listings via Firecrawl /map
+        _map_domains = [
+            "https://www.ycombinator.com/jobs",
+            "https://jobs.lever.co",
+            "https://boards.greenhouse.io",
+            "https://jobs.ashbyhq.com",
+        ]
+        map_urls = await map_company_careers(app, _map_domains, keyword="software intern")
+        for mu in map_urls:
+            await scrape_url_to_pipeline(mu, app, pipeline)
+        console.print(f"  [cyan]Map discovery: {len(map_urls)} career-page URLs[/cyan]")
 
         console.print("  [yellow]Producers done. Signalling stop...[/yellow]")
         pipeline.signal_done()
