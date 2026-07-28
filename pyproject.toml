@@ -4,7 +4,10 @@ version = "0.1.0"
 description = "Thy Job shall be mine"
 requires-python = ">=3.14"
 dependencies = [
+    "firecrawl-py>=4.33.1",
     "pdfplumber>=0.11.10",
+    "redis>=8.0.1",
+    "rq>=2.10.0",
 ]
 
 [tool.ruff]

@@ -1,6 +1,6 @@
 """ho — job matching pipeline."""
 
-from src.pipeline import run
+from pipeline.orchestrator import run
 
 if __name__ == "__main__":
     run()

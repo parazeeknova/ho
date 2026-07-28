@@ -1,12 +1,13 @@
-"""Job matcher: LLM-powered semantic matching of JD against resume."""
+"""Job matcher: RAG-powered semantic matching of JD against resume."""
 
 import time
 
 MATCH_PROMPT = (
     "You are a job-resume matching engine. Compare this job description "
-    "against the candidate's resume.\n\n"
-    "Resume sections:\n{resume_summary}\n\n"
-    "Job listing:\n{job_description}\n\n"
+    "against the RELEVANT RESUME SNIPPETS below (note: these are only the "
+    "most relevant parts of the resume, not the full resume).\n\n"
+    "Relevant resume snippets:\n{relevant_chunks}\n\n"
+    "Full job listing:\n{job_description}\n\n"
     "Output ONLY valid JSON:\n"
     '{{\n  "role": "job title",\n  "company": "company name",\n'
     '  "match_percent": 0-100,\n  "shortlist_probability": 0-100,\n'
@@ -22,10 +23,10 @@ MATCH_PROMPT = (
 )
 
 
-def match_job(job_text: str, resume_summary: str, ctx) -> dict | None:
+def match_job(job_text: str, relevant_chunks: str, ctx) -> dict | None:
     ctx.maybe_flush()
 
-    prompt = MATCH_PROMPT.replace("{resume_summary}", resume_summary[:3000])
+    prompt = MATCH_PROMPT.replace("{relevant_chunks}", relevant_chunks[:3000])
     prompt = prompt.replace("{job_description}", job_text[:5000])
 
     result = ctx.json_chat(prompt)
@@ -42,7 +43,7 @@ def match_job(job_text: str, resume_summary: str, ctx) -> dict | None:
     return result
 
 
-def batch_match(jobs: list[dict], resume_summary: str, ctx) -> list[dict]:
+def batch_match(jobs: list[dict], rag, ctx) -> list[dict]:
     scored = []
     for i, job in enumerate(jobs):
         jd_text = job.get("markdown", job.get("snippet", ""))
@@ -50,9 +51,17 @@ def batch_match(jobs: list[dict], resume_summary: str, ctx) -> list[dict]:
         if len(jd_text) < 100:
             continue
 
+        # RAG: retrieve most relevant resume chunks for this JD
+        retrieved = rag.retrieve(jd_text, top_k=8)
+        relevant = "\n".join(
+            f"[{chunk_id}] {text}" for chunk_id, text, score in retrieved if score > 0.01
+        )
+        if not relevant:
+            relevant = jd_text[:500]  # fallback
+
         print(f"  [{i + 1}/{len(jobs)}] Matching: {title}")
         try:
-            result = match_job(jd_text, resume_summary, ctx)
+            result = match_job(jd_text, relevant, ctx)
             if result and result["match_percent"] >= 40:
                 result["source_url"] = job.get("url", job.get("source_url", ""))
                 scored.append(result)

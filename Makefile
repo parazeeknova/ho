@@ -10,10 +10,10 @@ serve:
 	./scripts/serve.sh
 
 run:
-	uv run python -m src.pipeline
+	uv run python -m pipeline.orchestrator
 
 match:
-	uv run python -m src.pipeline
+	uv run python -m pipeline.orchestrator
 
 fc-up:
 	@docker compose -f docker-compose.yaml up -d redis playwright-service nuq-postgres; \

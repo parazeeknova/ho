@@ -1,10 +1,10 @@
-"""Job searcher: GitHub internship indexes + web search via firecrawl."""
+"""Job searcher: GitHub internship indexes + web search via Firecrawl SDK."""
 
-import json
 import time
-import urllib.request
 
-FC_URL = "http://127.0.0.1:3002"
+from firecrawl import FirecrawlApp
+
+from llm.context import ContextManager
 
 GITHUB_INDEXES = [
     "https://raw.githubusercontent.com/SimplifyJobs/Summer2026-Internships/dev/README.md",
@@ -15,29 +15,13 @@ GITHUB_INDEXES = [
 ]
 
 
-def _post(url: str, payload: dict) -> dict:
-    data = json.dumps(payload).encode()
-    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        return json.loads(resp.read())
-
-
-def scrape(url: str) -> str:
-    result = _post(f"{FC_URL}/v1/scrape", {"url": url, "formats": ["markdown"]})
-    return result["data"]["markdown"]
-
-
-def search(query: str) -> list[dict]:
-    return _post(f"{FC_URL}/v1/search", {"query": query}).get("data", [])
-
-
-def scrape_github_indexes() -> list[dict[str, str]]:
-    """Scrape all GitHub internship indexes for raw job listings."""
+def scrape_github_indexes(app: FirecrawlApp) -> list[dict[str, str]]:
     jobs = []
     for url in GITHUB_INDEXES:
         print(f"  Scraping index: {url.split('/')[-3]}/{url.split('/')[-2]}")
         try:
-            md = scrape(url)
+            result = app.scrape_url(url, params={"formats": ["markdown"]})
+            md = result.get("markdown", result.get("data", {}).get("markdown", ""))
             jobs.append({"source": url, "markdown": md, "type": "github_index"})
             print(f"    {len(md)} chars")
         except Exception as e:
@@ -46,8 +30,7 @@ def scrape_github_indexes() -> list[dict[str, str]]:
     return jobs
 
 
-def search_web(position: str, ctx) -> list[dict[str, str]]:
-    """Generate queries from resume + position, search the web."""
+def search_web(app: FirecrawlApp, position: str, ctx: ContextManager) -> list[dict[str, str]]:
     query_prompt = (
         f"Generate 8 diverse natural-language search queries to find undergrad/"
         f"intern/entry-level remote jobs for: {position}. Use plain English "
@@ -61,13 +44,35 @@ def search_web(position: str, ctx) -> list[dict[str, str]]:
     results = []
     for q in queries[:8]:
         try:
-            for r in search(q)[:5]:
-                url = r.get("url", "")
-                if url and url.startswith("http"):
-                    results.append({"url": url, "title": r.get("title", ""), "type": "web_search"})
+            search_results = app.search(q)
+            data = search_results.get("data", search_results)
+            if isinstance(data, list):
+                for r in data[:5]:
+                    url = r.get("url", r.get("metadata", {}).get("url", ""))
+                    if url and url.startswith("http"):
+                        results.append(
+                            {"url": url, "title": r.get("title", ""), "type": "web_search"}
+                        )
             time.sleep(0.5)
         except Exception:
             pass
 
     print(f"  Web search: {len(results)} URLs from {len(queries)} queries")
     return results
+
+
+def scrape_urls(app: FirecrawlApp, urls: list[dict]) -> list[dict[str, str]]:
+    jobs = []
+    for item in urls:
+        url = item.get("url", "")
+        if not url:
+            continue
+        try:
+            result = app.scrape_url(url, params={"formats": ["markdown"]})
+            md = result.get("markdown", result.get("data", {}).get("markdown", ""))
+            if md and len(md) > 100:
+                jobs.append({"markdown": md, "url": url, "title": item.get("title", "")})
+            time.sleep(0.5)
+        except Exception:
+            pass
+    return jobs
