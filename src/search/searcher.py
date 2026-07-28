@@ -2,6 +2,7 @@
 
 import asyncio
 
+import httpx
 from firecrawl import FirecrawlApp
 
 from src.llm.context import ContextManager
@@ -90,6 +91,47 @@ async def _scrape_url(item: dict, app: FirecrawlApp, pipeline: JobPipeline) -> N
         pass
 
 
+_url_blacklist = (
+    "indeed.com", "glassdoor.com", "ziprecruiter.com", "linkedin.com",
+    "simplyhired.com", "remoteok.com", "remoterocketship.com",
+    "dailyremote.com", "glassdoor.",
+)
+
+
+async def _search_searxng(queries: list[str]) -> list[dict[str, str]]:
+    """Query self-hosted SearXNG metasearch engine."""
+    sem = asyncio.Semaphore(3)
+    hits: list[dict[str, str]] = []
+
+    async def _query_one(q: str) -> None:
+        async with sem:
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.get(
+                        "http://localhost:8080/search",
+                        params={"q": q, "format": "json"},
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                    for r in data.get("results", [])[:5]:
+                        url = r.get("url", "")
+                        if url and url.startswith("http") and not any(
+                            bad in url.lower() for bad in _url_blacklist
+                        ):
+                            hits.append(
+                                {
+                                    "url": url,
+                                    "title": r.get("title", "") or "",
+                                    "type": "searxng",
+                                }
+                            )
+            except Exception:
+                pass
+
+    await asyncio.gather(*(_query_one(q) for q in queries[:8]))
+    return hits
+
+
 async def _search_web(
     app: FirecrawlApp, positions: list[str], ctx: ContextManager
 ) -> list[dict[str, str]]:
@@ -107,12 +149,6 @@ async def _search_web(
         queries = [f"{p} intern remote" for p in positions[:2]]
 
     sem = asyncio.Semaphore(3)
-
-    _url_blacklist = (
-        "indeed.com", "glassdoor.com", "ziprecruiter.com", "linkedin.com",
-        "simplyhired.com", "remoteok.com", "remoterocketship.com",
-        "dailyremote.com", "glassdoor.",
-    )
 
     async def _fetch_query(q: str) -> list[dict[str, str]]:
         hits: list[dict[str, str]] = []
@@ -139,16 +175,23 @@ async def _search_web(
                 pass
         return hits
 
-    hit_lists = await asyncio.gather(
+    firecrawl_task = asyncio.gather(
         *(_fetch_query(q) for q in queries[:8]), return_exceptions=True
     )
+    searxng_task = _search_searxng(queries[:8])
+
+    hit_lists, searxng_hits = await asyncio.gather(firecrawl_task, searxng_task)
 
     results: list[dict[str, str]] = []
     for hl in hit_lists:
         if isinstance(hl, list):
             results.extend(hl)
+    results.extend(searxng_hits)
 
-    print(f"  Web search: {len(results)} URLs from {len(queries)} queries")
+    print(
+        f"  Search: {len(results)} URLs "
+        f"(Firecrawl + {len(searxng_hits)} SearXNG) from {len(queries)} queries"
+    )
     return results
 
 
@@ -175,6 +218,95 @@ async def scrape_all(
             return await coro
 
     await asyncio.gather(*(_limited_run(t) for t in tasks))
+
+
+async def fetch_direct_json_feeds(
+    positions: list[str], pipeline: JobPipeline
+) -> None:
+    """Hit free public JSON endpoints: Remotive + Hacker News Algolia."""
+    pos_lower = [p.lower() for p in positions]
+
+    async def _fetch_remotive() -> None:
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.get(
+                    "https://remotive.com/api/remote-jobs", params={"limit": 50}
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                for job in data.get("jobs", []):
+                    title = (job.get("title") or "").lower()
+                    category = (job.get("category") or "").lower()
+                    if any(p in title or p in category for p in pos_lower):
+                        desc = job.get("description", "")
+                        clean_md = (
+                            f"**{job.get('title', '')}** at {job.get('company_name', '')}\n\n"
+                            f"{desc[:5000]}"
+                        )
+                        await pipeline.push(
+                            QueuedJob(
+                                markdown=clean_md,
+                                url=job.get("url", ""),
+                                title=job.get("title", ""),
+                            )
+                        )
+        except Exception as e:
+            print(f"  [dim]Remotive feed error: {e}[/dim]")
+
+    async def _fetch_hn() -> None:
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.get(
+                    "http://hn.algolia.com/api/v1/search_by_date",
+                    params={"tags": "job", "query": "remote", "hitsPerPage": 30},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                for hit in data.get("hits", []):
+                    comment = hit.get("comment_text", "")
+                    if not comment or len(comment) < 100:
+                        continue
+                    comment_lower = comment.lower()
+                    if any(p in comment_lower for p in pos_lower):
+                        title = hit.get("title", "Startup Role")[:50]
+                        await pipeline.push(
+                            QueuedJob(
+                                markdown=comment[:5000],
+                                url=(
+                                    "https://news.ycombinator.com/item?id="
+                                    f"{hit.get('objectID', '')}"
+                                ),
+                                title=f"HN Who Is Hiring: {title}",
+                            )
+                        )
+        except Exception as e:
+            print(f"  [dim]HN Algolia feed error: {e}[/dim]")
+
+    await asyncio.gather(_fetch_remotive(), _fetch_hn())
+
+
+async def map_company_careers(
+    app: FirecrawlApp, target_domains: list[str], keyword: str = "remote"
+) -> list[dict[str, str]]:
+    """Use Firecrawl /map to discover job listing URLs on ATS platforms."""
+    loop = asyncio.get_running_loop()
+    discovered: list[dict[str, str]] = []
+
+    async def _map_one(domain: str) -> None:
+        try:
+            result = await loop.run_in_executor(
+                None, lambda: app.map_url(domain, search=keyword)
+            )
+            links = getattr(result, "links", []) or []
+            if isinstance(links, list):
+                for url in links:
+                    if isinstance(url, str) and url.startswith("http") and "/jobs/" in url.lower():
+                        discovered.append({"url": url, "title": url.split("/")[-1], "type": "map"})
+        except Exception as e:
+            print(f"  [dim]Map {domain}: {e}[/dim]")
+
+    await asyncio.gather(*(_map_one(d) for d in target_domains[:4]))
+    return discovered
 
 
 async def extract_index_jobs(jobs: list[QueuedJob], ctx: ContextManager) -> list[dict]:

@@ -16,7 +16,12 @@ from src.output.writer import write_md
 from src.pipeline.queue import JobPipeline, QueuedJob
 from src.rag.engine import build_rag_from_chunks
 from src.rag.loader import load_resume
-from src.search.searcher import TARGET_POSITIONS_SCHEMA, extract_index_jobs, scrape_all
+from src.search.searcher import (
+    TARGET_POSITIONS_SCHEMA,
+    extract_index_jobs,
+    fetch_direct_json_feeds,
+    scrape_all,
+)
 
 console = Console()
 
@@ -147,8 +152,40 @@ async def _scrape_index_links(
             except Exception as e:
                 print(
                     f"    [dim]Failed to scrape {url[:40]}...: {e}"
-                    f" -> Using table metadata fallback[/dim]"
+                    f" -> Trying /extract API[/dim]"
                 )
+            # ── /extract fallback for ATS pages ──
+            try:
+                extract_result = await loop.run_in_executor(
+                    None,
+                    lambda: app.extract(
+                        [url],
+                        {
+                            "prompt": (
+                                "Extract job title, company name, required technical "
+                                "skills, and full job description."
+                            ),
+                        },
+                    ),
+                )
+                if extract_result and getattr(extract_result, "data", None):
+                    md = str(extract_result.data)
+                    if len(md) > 100:
+                        scraped.append(
+                            {
+                                "markdown": md,
+                                "url": url,
+                                "title": j.get("role", ""),
+                                "snippet": str(j),
+                            }
+                        )
+                        return
+            except Exception:
+                pass
+            # ── metadata fallback ──
+            print(
+                f"    [dim]Using table metadata fallback for {url[:40]}...[/dim]"
+            )
             scraped.append(
                 {
                     "markdown": _md_fallback(j),
@@ -257,7 +294,10 @@ async def _run_pipeline() -> None:
 
         consumer_task = asyncio.create_task(_consumer(pipeline, rag, ctx))
 
-        await scrape_all(app, positions, ctx, pipeline, max_workers=MAX_SCRAPE_WORKERS)
+        await asyncio.gather(
+            scrape_all(app, positions, ctx, pipeline, max_workers=MAX_SCRAPE_WORKERS),
+            fetch_direct_json_feeds(positions, pipeline),
+        )
 
         console.print("  [yellow]Producers done. Signalling stop...[/yellow]")
         pipeline.signal_done()

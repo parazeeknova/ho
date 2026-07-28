@@ -92,3 +92,15 @@ services:
         max-size: "10m"
         max-file: "3"
         compress: "true"
+
+  searxng:
+    image: searxng/searxng:latest
+    ports:
+      - "8080:8080"
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8080
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "1"
