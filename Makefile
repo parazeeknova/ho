@@ -1,4 +1,4 @@
-.PHONY: check check-types serve run match fc-up fc-down fc-logs dev dev-down
+.PHONY: check check-types test serve run fc-up fc-down fc-logs dev dev-down
 
 check:
 	uv run ruff format . && uv run ruff check . --fix
@@ -6,13 +6,13 @@ check:
 check-types:
 	uv run mypy . --ignore-missing-imports --exclude 'refs/'
 
+test:
+	uv run python -m pytest . -v --ignore=refs
+
 serve:
 	./scripts/serve.sh
 
 run:
-	uv run python -m pipeline.orchestrator
-
-match:
 	uv run python -m pipeline.orchestrator
 
 fc-up:
