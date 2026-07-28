@@ -15,7 +15,7 @@ from src.output.writer import write_md
 from src.pipeline.queue import JobPipeline, QueuedJob
 from src.rag.engine import build_rag_from_chunks
 from src.rag.loader import load_resume
-from src.search.searcher import extract_index_jobs, scrape_all
+from src.search.searcher import TARGET_POSITIONS_SCHEMA, extract_index_jobs, scrape_all
 
 console = Console()
 
@@ -168,22 +168,24 @@ async def _run_pipeline() -> None:
 
     console.rule("[bold cyan]PHASE 2: Scrape + Concurrent Match[/bold cyan]")
 
-    position = (
-        (
-            await ctx.chat(
-                "Based on this resume, what is the best entry-level / intern / new-grad "
-                "job title to search for? Return just the title, nothing else.\n\n"
-                + full_text[:2000]
-            )
-        )
-        .strip()
-        .strip('"')
+    raw_roles = await ctx.json_chat(
+        "Based on this resume, identify the top 2-4 best-fitting entry-level / "
+        "intern / new-grad job role domains (e.g. Backend Engineer, Frontend "
+        "Engineer, Fullstack Developer, DevOps Engineer, ML Engineer, Data "
+        "Engineer). Return valid JSON matching the required schema.\n\n"
+        + full_text[:3000],
+        schema=TARGET_POSITIONS_SCHEMA,
     )
-    console.print(f"  [yellow]Target position:[/yellow] {position}")
+    positions: list[str] = (
+        raw_roles.get("roles", []) if isinstance(raw_roles, dict) else []
+    )
+    if not positions:
+        positions = ["Software Engineer", "Backend Developer"]
+    console.print(f"  [yellow]Target positions:[/yellow] {', '.join(positions)}")
 
     consumer_task = asyncio.create_task(_consumer(pipeline, rag, ctx))
 
-    await scrape_all(app, position, ctx, pipeline, max_workers=MAX_SCRAPE_WORKERS)
+    await scrape_all(app, positions, ctx, pipeline, max_workers=MAX_SCRAPE_WORKERS)
 
     console.print("  [yellow]Producers done. Signalling stop...[/yellow]")
     pipeline.signal_done()

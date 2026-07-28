@@ -28,6 +28,19 @@ SEARCH_QUERIES_SCHEMA = {
     "required": ["queries"],
 }
 
+TARGET_POSITIONS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "roles": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 2,
+            "maxItems": 4,
+        }
+    },
+    "required": ["roles"],
+}
+
 INDEX_EXTRACT_SCHEMA = {
     "type": "object",
     "properties": {
@@ -78,23 +91,29 @@ async def _scrape_url(item: dict, app: FirecrawlApp, pipeline: JobPipeline) -> N
 
 
 async def _search_web(
-    app: FirecrawlApp, position: str, ctx: ContextManager
+    app: FirecrawlApp, positions: list[str], ctx: ContextManager
 ) -> list[dict[str, str]]:
     loop = asyncio.get_running_loop()
 
+    domains = ", ".join(positions)
     query_prompt = (
-        f"Generate 8 diverse natural-language search queries to find undergrad/"
-        f"intern/entry-level remote jobs for: {position}. Target job boards that "
-        f"are easy to scrape: GitHub READMEs, Wellfound, Y Combinator jobs, "
-        f"company career pages (greenhouse.io, lever.co, ashbyhq.com, workable.com), "
-        f"Remotive, WeWorkRemotely, RemoteOK. Avoid indeed, glassdoor, ziprecruiter, "
-        f"upwork. Return valid JSON matching the required schema."
+        f"Generate 8 natural-language search queries to find entry-level/"
+        f"intern/new-grad remote jobs across these target domains: {domains}. "
+        f"Distribute the 8 queries evenly among the domains. Target easy-to-scrape "
+        f"job boards: Greenhouse, Lever, Ashby, Remotive, RemoteOK, Wellfound, "
+        f"GitHub READMEs. Avoid indeed, glassdoor, ziprecruiter, upwork. "
+        f"Return valid JSON matching the required schema."
     )
 
     raw = await ctx.json_chat(query_prompt, SEARCH_QUERIES_SCHEMA)
     queries: list[str] = raw.get("queries", []) if isinstance(raw, dict) else []
     if not queries:
-        queries = [f"{position} intern remote", f"entry level {position} remote"]
+        queries = [
+            f"{p} intern remote" for p in positions[:4]
+        ] + [
+            f"entry level {p} remote" for p in positions[:4]
+        ]
+        queries = queries[:8]
 
     results: list[dict[str, str]] = []
     for q in queries[:8]:
@@ -122,7 +141,7 @@ async def _search_web(
 
 async def scrape_all(
     app: FirecrawlApp,
-    position: str,
+    positions: list[str],
     ctx: ContextManager,
     pipeline: JobPipeline,
     max_workers: int = 6,
@@ -132,7 +151,7 @@ async def scrape_all(
     for url in GITHUB_INDEXES:
         tasks.append(_scrape_index(url, app, pipeline))
 
-    web_hits = await _search_web(app, position, ctx)
+    web_hits = await _search_web(app, positions, ctx)
     for hit in web_hits:
         tasks.append(_scrape_url(hit, app, pipeline))
 
