@@ -137,9 +137,7 @@ async def _scrape_index_links(
                 )
                 md = getattr(result, "markdown", "") or ""
                 md_lower = md.lower()
-                if md and len(md) > 100 and not any(
-                    dead in md_lower for dead in _dead_page_texts
-                ):
+                if md and len(md) > 100 and not any(dead in md_lower for dead in _dead_page_texts):
                     scraped.append(
                         {
                             "markdown": md,
@@ -150,10 +148,7 @@ async def _scrape_index_links(
                     )
                     return
             except Exception as e:
-                print(
-                    f"    [dim]Failed to scrape {url[:40]}...: {e}"
-                    f" -> Trying /extract API[/dim]"
-                )
+                print(f"    [dim]Failed to scrape {url[:40]}...: {e} -> Trying /extract API[/dim]")
             # ── /extract fallback for ATS pages ──
             try:
                 extract_result = await loop.run_in_executor(
@@ -183,9 +178,7 @@ async def _scrape_index_links(
             except Exception:
                 pass
             # ── metadata fallback ──
-            print(
-                f"    [dim]Using table metadata fallback for {url[:40]}...[/dim]"
-            )
+            print(f"    [dim]Using table metadata fallback for {url[:40]}...[/dim]")
             scraped.append(
                 {
                     "markdown": _md_fallback(j),
@@ -285,6 +278,7 @@ async def _run_pipeline() -> None:
     console.print(f"  [yellow]Target positions:[/yellow] {', '.join(positions)}")
 
     sweep = 0
+    global_verified: dict[str, dict] = {}
     while True:
         sweep += 1
         pipeline = JobPipeline()
@@ -330,14 +324,33 @@ async def _run_pipeline() -> None:
         scored.sort(key=lambda j: j["match_percent"], reverse=True)
         scored = scored[:TARGET]
 
-        verified = await verify_jobs(
-            app, scored[:TARGET], ctx, concurrency=VERIFY_CONCURRENCY
-        )
+        verified = await verify_jobs(app, scored[:TARGET], ctx, concurrency=VERIFY_CONCURRENCY)
 
         console.rule(f"[bold cyan]PHASE 5 (sweep {sweep}): Generate Output[/bold cyan]")
-        write_md(verified)
+        for j in verified:
+            dedup_key = (
+                j.get("apply_link")
+                or j.get("source_url")
+                or f"{j.get('role', '')}@{j.get('company', '')}"
+            )
+            if not dedup_key:
+                continue
+            existing = global_verified.get(dedup_key)
+            if existing is None or j.get("match_percent", 0) > existing.get("match_percent", 0):
+                global_verified[dedup_key] = j
+
+        sorted_global = sorted(
+            global_verified.values(),
+            key=lambda x: x.get("match_percent", 0),
+            reverse=True,
+        )
+        write_md(sorted_global[:40])
         await ctx.flush()
 
+        console.print(
+            f"  [cyan]Master Ledger: {len(global_verified)} unique verified"
+            f" positions saved to jobs.md[/cyan]"
+        )
         console.print(f"\n  [dim]Queue: {pipeline.pending} items remaining[/dim]")
         console.print(f"[bold green]Sweep {sweep} complete[/bold green]")
 

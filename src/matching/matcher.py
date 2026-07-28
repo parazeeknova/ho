@@ -52,9 +52,14 @@ async def _match_one(
 
         role_lower = str(result.get("role", "")).lower()
         _echo_kws = (
-            "matching engine", "job search", "analysis of",
-            "resume matcher", "scoring engine", "job matcher",
-            "match scorer", "ranking system",
+            "matching engine",
+            "job search",
+            "analysis of",
+            "resume matcher",
+            "scoring engine",
+            "job matcher",
+            "match scorer",
+            "ranking system",
         )
         if any(kw in role_lower for kw in _echo_kws):
             fallback_role = (job.get("title") or "").strip()

@@ -92,9 +92,15 @@ async def _scrape_url(item: dict, app: FirecrawlApp, pipeline: JobPipeline) -> N
 
 
 _url_blacklist = (
-    "indeed.com", "glassdoor.com", "ziprecruiter.com", "linkedin.com",
-    "simplyhired.com", "remoteok.com", "remoterocketship.com",
-    "dailyremote.com", "glassdoor.",
+    "indeed.com",
+    "glassdoor.com",
+    "ziprecruiter.com",
+    "linkedin.com",
+    "simplyhired.com",
+    "remoteok.com",
+    "remoterocketship.com",
+    "dailyremote.com",
+    "glassdoor.",
 )
 
 
@@ -115,8 +121,10 @@ async def _search_searxng(queries: list[str]) -> list[dict[str, str]]:
                     data = resp.json()
                     for r in data.get("results", [])[:5]:
                         url = r.get("url", "")
-                        if url and url.startswith("http") and not any(
-                            bad in url.lower() for bad in _url_blacklist
+                        if (
+                            url
+                            and url.startswith("http")
+                            and not any(bad in url.lower() for bad in _url_blacklist)
                         ):
                             hits.append(
                                 {
@@ -138,11 +146,13 @@ async def _search_web(
     loop = asyncio.get_running_loop()
 
     ats_boards = [
-        "site:greenhouse.io", "site:lever.co",
-        "site:ashbyhq.com", "site:jobs.workable.com",
+        "site:greenhouse.io",
+        "site:lever.co",
+        "site:ashbyhq.com",
+        "site:jobs.workable.com",
     ]
     queries: list[str] = []
-    for pos in positions[:2]:
+    for pos in positions[:4]:
         for board in ats_boards:
             queries.append(f'{board} "remote" "{pos}"')
     if not queries:
@@ -175,9 +185,7 @@ async def _search_web(
                 pass
         return hits
 
-    firecrawl_task = asyncio.gather(
-        *(_fetch_query(q) for q in queries[:8]), return_exceptions=True
-    )
+    firecrawl_task = asyncio.gather(*(_fetch_query(q) for q in queries[:8]), return_exceptions=True)
     searxng_task = _search_searxng(queries[:8])
 
     hit_lists, searxng_hits = await asyncio.gather(firecrawl_task, searxng_task)
@@ -220,9 +228,7 @@ async def scrape_all(
     await asyncio.gather(*(_limited_run(t) for t in tasks))
 
 
-async def fetch_direct_json_feeds(
-    positions: list[str], pipeline: JobPipeline
-) -> None:
+async def fetch_direct_json_feeds(positions: list[str], pipeline: JobPipeline) -> None:
     """Hit free public JSON endpoints: Remotive + Hacker News Algolia."""
     pos_lower = [p.lower() for p in positions]
 
@@ -294,9 +300,7 @@ async def map_company_careers(
 
     async def _map_one(domain: str) -> None:
         try:
-            result = await loop.run_in_executor(
-                None, lambda: app.map_url(domain, search=keyword)
-            )
+            result = await loop.run_in_executor(None, lambda: app.map_url(domain, search=keyword))
             links = getattr(result, "links", []) or []
             if isinstance(links, list):
                 for url in links:
