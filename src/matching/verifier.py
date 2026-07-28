@@ -19,13 +19,13 @@ def verify_job(
 ) -> bool:
     try:
         alt_results = app.search(f"{role} {company} job")
-        data = alt_results.get("data", alt_results)
+        data = getattr(alt_results, "web", []) or []
         if not isinstance(data, list) or not data:
             return True
 
         alt_url = None
         for r in data:
-            u = r.get("url", r.get("metadata", {}).get("url", ""))
+            u = getattr(r, "url", "")
             if u and u != original_url and u.startswith("http"):
                 alt_url = u
                 break
@@ -34,7 +34,7 @@ def verify_job(
             return True
 
         alt_result = app.scrape_url(alt_url, formats=["markdown"])
-        alt_content = alt_result.get("markdown", alt_result.get("data", {}).get("markdown", ""))
+        alt_content = getattr(alt_result, "markdown", "") or ""
         if len(alt_content) < 100:
             return True
 

@@ -21,7 +21,7 @@ def scrape_github_indexes(app: FirecrawlApp) -> list[dict[str, str]]:
         print(f"  Scraping index: {url.split('/')[-3]}/{url.split('/')[-2]}")
         try:
             result = app.scrape_url(url, formats=["markdown"])
-            md = result.get("markdown", result.get("data", {}).get("markdown", ""))
+            md = getattr(result, "markdown", "") or ""
             jobs.append({"source": url, "markdown": md, "type": "github_index"})
             print(f"    {len(md)} chars")
         except Exception as e:
@@ -33,9 +33,11 @@ def scrape_github_indexes(app: FirecrawlApp) -> list[dict[str, str]]:
 def search_web(app: FirecrawlApp, position: str, ctx: ContextManager) -> list[dict[str, str]]:
     query_prompt = (
         f"Generate 8 diverse natural-language search queries to find undergrad/"
-        f"intern/entry-level remote jobs for: {position}. Use plain English "
-        f"phrases. Target varied platforms and company types. "
-        f"Return ONLY a JSON array of 8 strings. No markdown."
+        f"intern/entry-level remote jobs for: {position}. Target job boards that "
+        f"are easy to scrape: GitHub READMEs, Wellfound, Y Combinator jobs, "
+        f"company career pages (greenhouse.io, lever.co, ashbyhq.com, workable.com), "
+        f"Remotive, WeWorkRemotely, RemoteOK. Avoid indeed, glassdoor, ziprecruiter, "
+        f"upwork. Return ONLY a JSON array of 8 strings. No markdown."
     )
     queries = ctx.json_chat(query_prompt)
     if not isinstance(queries, list):
@@ -45,13 +47,17 @@ def search_web(app: FirecrawlApp, position: str, ctx: ContextManager) -> list[di
     for q in queries[:8]:
         try:
             search_results = app.search(q)
-            data = search_results.get("data", search_results)
+            data = getattr(search_results, "web", []) or []
             if isinstance(data, list):
                 for r in data[:5]:
-                    url = r.get("url", r.get("metadata", {}).get("url", ""))
+                    url = getattr(r, "url", "")
                     if url and url.startswith("http"):
                         results.append(
-                            {"url": url, "title": r.get("title", ""), "type": "web_search"}
+                            {
+                                "url": url,
+                                "title": getattr(r, "title", "") or "",
+                                "type": "web_search",
+                            }
                         )
             time.sleep(0.5)
         except Exception:
@@ -69,7 +75,7 @@ def scrape_urls(app: FirecrawlApp, urls: list[dict]) -> list[dict[str, str]]:
             continue
         try:
             result = app.scrape_url(url, formats=["markdown"])
-            md = result.get("markdown", result.get("data", {}).get("markdown", ""))
+            md = getattr(result, "markdown", "") or ""
             if md and len(md) > 100:
                 jobs.append({"markdown": md, "url": url, "title": item.get("title", "")})
             time.sleep(0.5)

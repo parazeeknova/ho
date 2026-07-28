@@ -1,10 +1,13 @@
 """Pipeline: resume → search → MQ → RAG match → revalidate → verify → output."""
 
+import signal
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 
 from firecrawl import FirecrawlApp
+from rich.console import Console
 
 from src.llm.context import ContextManager
 from src.matching.matcher import batch_match
@@ -14,6 +17,8 @@ from src.pipeline.queue import JobPipeline, QueuedJob
 from src.rag.engine import build_rag_from_chunks
 from src.rag.loader import load_resume
 from src.search.searcher import GITHUB_INDEXES, search_web
+
+console = Console()
 
 TARGET = 15
 MAX_SCRAPE_WORKERS = 6
@@ -53,11 +58,11 @@ def filter_recent(jobs: list[dict], max_days: int = 7) -> list[dict]:
 def scrape_index_worker(url: str, app: FirecrawlApp, pipeline: JobPipeline) -> None:
     try:
         result = app.scrape_url(url, formats=["markdown"])
-        md = result.get("markdown", result.get("data", {}).get("markdown", ""))
+        md = getattr(result, "markdown", "") or ""
         if md:
             pipeline.push(QueuedJob(markdown=md, url=url, title=f"INDEX:{url.split('/')[-1]}"))
     except Exception as e:
-        print(f"  [err] index {url}: {e}")
+        console.print(f"  [red]✗[/red] index {url}: {e}")
 
 
 def scrape_url_worker(item: dict, app: FirecrawlApp, pipeline: JobPipeline) -> None:
@@ -66,11 +71,11 @@ def scrape_url_worker(item: dict, app: FirecrawlApp, pipeline: JobPipeline) -> N
         return
     try:
         result = app.scrape_url(url, formats=["markdown"])
-        md = result.get("markdown", result.get("data", {}).get("markdown", ""))
+        md = getattr(result, "markdown", "") or ""
         if md and len(md) > 100:
             pipeline.push(QueuedJob(markdown=md, url=url, title=item.get("title", "")))
-    except Exception as e:
-        print(f"  [err] scrape {url}: {e}")
+    except Exception:
+        pass  # anti-bot / paywall — skip silently, counted in summary
 
 
 def consumer_loop(pipeline: JobPipeline, rag, ctx: ContextManager) -> list[dict]:
@@ -89,7 +94,7 @@ def consumer_loop(pipeline: JobPipeline, rag, ctx: ContextManager) -> list[dict]
             if len(job.markdown) > 500:
                 extracted = extract_jobs_from_index(job.markdown, ctx)
                 index_jobs.extend(extracted)
-                print(f"  [consumer] {len(extracted)} from {job.title}")
+                console.print(f"  [cyan][consumer][/cyan] {len(extracted)} from {job.title}")
         else:
             web_buf.append(job)
 
@@ -101,7 +106,7 @@ def consumer_loop(pipeline: JobPipeline, rag, ctx: ContextManager) -> list[dict]
                 pipeline.task_done()
             web_buf.clear()
 
-        print(f"  [{pipeline.log_status()}]", end="\r")
+        console.print(f"  [{pipeline.log_status()}]")
 
     # Flush remaining
     if index_jobs:
@@ -124,26 +129,32 @@ def consumer_loop(pipeline: JobPipeline, rag, ctx: ContextManager) -> list[dict]
         for _ in web_buf:
             pipeline.task_done()
 
-    print()
     return matched
 
 
 def run() -> None:
     ctx = ContextManager()
+
+    def _cleanup(signum: int, frame: object) -> None:
+        console.print("\n[yellow]Interrupted — flushing LLM context...[/yellow]")
+        ctx.flush()
+        sys.exit(1)
+
+    signal.signal(signal.SIGINT, _cleanup)
+    signal.signal(signal.SIGTERM, _cleanup)
+
     ctx.flush()
     app = FirecrawlApp(api_key="sk-no-auth", api_url="http://127.0.0.1:3002")
     pipeline = JobPipeline()
 
-    print("=" * 60)
-    print("  PHASE 1: Load Resume + Build RAG Index")
-    print("=" * 60)
+    console.rule("[bold cyan]PHASE 1: Load Resume + Build RAG Index[/bold cyan]")
     full_text, chunks = load_resume()
     rag = build_rag_from_chunks(chunks)
-    print(f"  Indexed {len(rag.doc_texts)} chunks")
+    console.print(
+        f"  [green]✓[/green] Indexed {len(rag.doc_texts)} chunks across {len(chunks)} sections"
+    )
 
-    print("\n" + "=" * 60)
-    print("  PHASE 2: Producer/Consumer (scrape → MQ → LLM match)")
-    print("=" * 60)
+    console.rule("[bold cyan]PHASE 2: Producer/Consumer (scrape → MQ → LLM match)[/bold cyan]")
 
     matched_result: list[dict] = []
 
@@ -162,7 +173,7 @@ def run() -> None:
         .strip()
         .strip('"')
     )
-    print(f"  Target position: {position}")
+    console.print(f"  [yellow]Target position:[/yellow] {position}")
 
     with ThreadPoolExecutor(max_workers=MAX_SCRAPE_WORKERS) as executor:
         futures = []
@@ -171,17 +182,15 @@ def run() -> None:
         web_hits = search_web(app, position, ctx)
         for hit in web_hits:
             futures.append(executor.submit(scrape_url_worker, hit, app, pipeline))
-        print(f"  {len(futures)} tasks running, consumer draining...")
+        console.print(f"  {len(futures)} tasks running, consumer draining...")
         for f in as_completed(futures):
             f.result()
 
-    print("  Producers done. Signalling stop...")
+    console.print("  [yellow]Producers done. Signalling stop...[/yellow]")
     pipeline.signal_done()
     consumer.join(timeout=300)
 
-    print("\n" + "=" * 60)
-    print("  PHASE 3: RAG Revalidation")
-    print("=" * 60)
+    console.rule("[bold cyan]PHASE 3: RAG Revalidation[/bold cyan]")
     validated = []
     for j in matched_result:
         v = rag.revalidate(j, ctx)
@@ -191,13 +200,11 @@ def run() -> None:
             role = v.get("role", "?")
             company = v.get("company", "?")
             tag = "[reval]" if v.get("_revalidated") else "[kept]"
-            print(f"  {tag} {pct}% | {role} @ {company}")
+            console.print(f"  [green]{tag} {pct}% | {role} @ {company}[/green]")
     dropped = len(matched_result) - len(validated)
-    print(f"  Kept {len(validated)}, dropped {dropped}")
+    console.print(f"  [green]Kept {len(validated)}[/green], [red]dropped {dropped}[/red]")
 
-    print("\n" + "=" * 60)
-    print("  PHASE 4: Filter + Cross-Verify")
-    print("=" * 60)
+    console.rule("[bold cyan]PHASE 4: Filter + Cross-Verify[/bold cyan]")
     scored = filter_recent(validated, max_days=7)
     scored.sort(key=lambda j: j["match_percent"], reverse=True)
     scored = scored[:TARGET]
@@ -207,23 +214,19 @@ def run() -> None:
         role = j.get("role", "?")
         company = j.get("company", "?")
         url = j.get("source_url", "")
-        print(f"  Verifying: {role} @ {company}")
+        console.print(f"  [yellow]⟳[/yellow] Verifying: {role} @ {company}")
         if verify_job(app, role, company, url, ctx):
             verified.append(j)
-            print("    verified")
+            console.print("    [green]✓ verified[/green]")
         else:
-            print("    FAILED — dropped")
+            console.print("    [red]✗ FAILED — dropped[/red]")
 
-    print("\n" + "=" * 60)
-    print("  PHASE 5: Generate Output")
-    print("=" * 60)
+    console.rule("[bold cyan]PHASE 5: Generate Output[/bold cyan]")
     write_md(verified)
     ctx.flush()
 
-    print(f"\n  Redis queue: {pipeline.pending} items remaining")
-    print("\n" + "=" * 60)
-    print("  DONE")
-    print("=" * 60)
+    console.print(f"\n  [dim]Redis queue: {pipeline.pending} items remaining[/dim]")
+    console.print("\n[bold green]✓ Pipeline complete[/bold green]")
 
 
 if __name__ == "__main__":

@@ -38,7 +38,7 @@ fc-logs:
 	docker compose -f docker-compose.yaml logs -f
 
 dev:
-	./scripts/dev.sh
+	uv run python scripts/dev.py
 
 dev-down:
 	docker compose -f docker-compose.yaml down 2>/dev/null; \

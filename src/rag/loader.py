@@ -1,5 +1,6 @@
-"""Resume loader: download from URL, extract with markitdown/pymupdf, verify."""
+"""Resume loader: download, extract, verify, interactive review."""
 
+import subprocess
 import tempfile
 import urllib.request
 from pathlib import Path
@@ -117,7 +118,9 @@ def verify_extraction(text: str) -> dict[str, bool | str]:
 
 
 def load_resume() -> tuple[str, dict[str, str]]:
-    url = input("Resume URL (PDF/DOCX/HTML): ").strip()
+    import questionary
+
+    url = questionary.text("Resume URL (PDF/DOCX/HTML):").ask()
     if not url:
         raise ValueError("No URL provided")
 
@@ -125,12 +128,6 @@ def load_resume() -> tuple[str, dict[str, str]]:
 
     print("  Extracting...")
     text = extract_text(path)
-
-    # Show extracted text preview
-    preview = text[:2000].replace("\n", "\n    ")
-    print(f"\n  ── Extracted Text Preview (first 2000/{len(text)} chars) ──")
-    print(f"    {preview}")
-    print("  ─────────────────────────────────────────────\n")
 
     checks = verify_extraction(text)
     for key, val in checks.items():
@@ -141,6 +138,24 @@ def load_resume() -> tuple[str, dict[str, str]]:
 
     if not checks["passes"]:
         print("  WARNING: Some extraction checks failed, continuing anyway...")
+
+    while True:
+        action = questionary.select(
+            f"Resume loaded ({len(text)} chars). What next?",
+            choices=[
+                "Continue with pipeline",
+                "View full resume (scrollable)",
+                "Re-enter URL",
+            ],
+        ).ask()
+
+        if action == "Continue with pipeline":
+            break
+        elif action == "View full resume (scrollable)":
+            subprocess.run(["less", "-R"], input=text.encode(), check=False)
+        elif action == "Re-enter URL":
+            path.unlink(missing_ok=True)
+            return load_resume()
 
     chunks = chunk_resume(text)
     print(f"  Sections: {list(chunks.keys())}")
