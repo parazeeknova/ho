@@ -243,8 +243,15 @@ async def fetch_direct_json_feeds(positions: list[str], pipeline: JobPipeline) -
                     category = (job.get("category") or "").lower()
                     if any(p in title or p in category for p in pos_lower):
                         _senior_kws = (
-                            "senior", "sr.", "staff ", "lead ", "principal",
-                            "architect", "manager", "director", "head of",
+                            "senior",
+                            "sr.",
+                            "staff ",
+                            "lead ",
+                            "principal",
+                            "architect",
+                            "manager",
+                            "director",
+                            "head of",
                         )
                         if any(kw in title for kw in _senior_kws):
                             continue

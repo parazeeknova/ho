@@ -45,7 +45,7 @@ def filter_recent(jobs: list[dict], max_days: int = 7) -> list[dict]:
             dt = datetime.fromisoformat(str(date_str).replace("Z", "+00:00"))
             if (now - dt).days <= max_days:
                 filtered.append(j)
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             filtered.append(j)
     return filtered
 
@@ -376,9 +376,7 @@ async def _run_pipeline() -> None:
         if not continuous:
             break
 
-        console.print(
-            "\n[bold cyan]Sleeping for 10 minutes before next sweep...[/bold cyan]"
-        )
+        console.print("\n[bold cyan]Sleeping for 10 minutes before next sweep...[/bold cyan]")
         await asyncio.sleep(600)
 
     await ctx.aclose()

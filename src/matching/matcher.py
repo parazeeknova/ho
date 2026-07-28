@@ -60,9 +60,20 @@ async def _match_one(
 
         role_lower = str(result.get("role", "")).lower()
         _senior_kws = (
-            "senior", "sr.", "staff ", "lead ", "principal", "architect",
-            "manager", "director", "head of", "vp ", "vice president",
-            "5+ year", "7+ year", "10+ year",
+            "senior",
+            "sr.",
+            "staff ",
+            "lead ",
+            "principal",
+            "architect",
+            "manager",
+            "director",
+            "head of",
+            "vp ",
+            "vice president",
+            "5+ year",
+            "7+ year",
+            "10+ year",
         )
         if any(kw in role_lower for kw in _senior_kws):
             return None
