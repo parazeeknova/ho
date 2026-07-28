@@ -97,11 +97,12 @@ async def _search_web(
 
     domains = ", ".join(positions)
     query_prompt = (
-        f"Generate 8 natural-language search queries to find entry-level/"
-        f"intern/new-grad remote jobs across these target domains: {domains}. "
-        f"Distribute the 8 queries evenly among the domains. Target easy-to-scrape "
-        f"job boards: Greenhouse, Lever, Ashby, Remotive, RemoteOK, Wellfound, "
-        f"GitHub READMEs. Avoid indeed, glassdoor, ziprecruiter, upwork. "
+        f"Generate 8 boolean search queries to find entry-level/intern/new-grad "
+        f"remote jobs across: {domains}. "
+        f"You MUST include ATS site operators in every query "
+        f"(e.g. 'site:greenhouse.io OR site:lever.co OR site:ashbyhq.com "
+        f"remote intern {positions[0] if positions else ''}'). "
+        f"Do NOT use general queries. "
         f"Return valid JSON matching the required schema."
     )
 
@@ -115,6 +116,12 @@ async def _search_web(
 
     sem = asyncio.Semaphore(3)
 
+    _url_blacklist = (
+        "indeed.com", "glassdoor.com", "ziprecruiter.com", "linkedin.com",
+        "simplyhired.com", "remoteok.com", "remoterocketship.com",
+        "dailyremote.com", "glassdoor.",
+    )
+
     async def _fetch_query(q: str) -> list[dict[str, str]]:
         hits: list[dict[str, str]] = []
         async with sem:
@@ -124,7 +131,11 @@ async def _search_web(
                 if isinstance(data, list):
                     for r in data[:5]:
                         url = getattr(r, "url", "")
-                        if url and url.startswith("http"):
+                        if (
+                            url
+                            and url.startswith("http")
+                            and not any(bad in url.lower() for bad in _url_blacklist)
+                        ):
                             hits.append(
                                 {
                                     "url": url,

@@ -100,6 +100,41 @@ async def _revalidate_batch(
     return validated
 
 
+async def _scrape_index_links(
+    app: FirecrawlApp, jobs: list[dict], max_workers: int = 4
+) -> list[dict]:
+    """Scrape apply-link URLs from extracted index jobs to get real JD markdown."""
+    loop = asyncio.get_running_loop()
+    sem = asyncio.Semaphore(max_workers)
+    scraped: list[dict] = []
+
+    async def _scrape_one(j: dict) -> None:
+        url = j.get("apply_link", "")
+        if not url or not url.startswith("http"):
+            return
+        async with sem:
+            try:
+                result = await loop.run_in_executor(
+                    None, lambda: app.scrape_url(url, formats=["markdown"])
+                )
+                md = getattr(result, "markdown", "") or ""
+                if md and len(md) > 100:
+                    scraped.append(
+                        {
+                            "markdown": md,
+                            "url": url,
+                            "title": j.get("role", ""),
+                            "snippet": str(j),
+                        }
+                    )
+            except Exception:
+                pass
+
+    tasks = [asyncio.create_task(_scrape_one(j)) for j in jobs]
+    await asyncio.gather(*tasks)
+    return scraped
+
+
 async def _consumer(
     pipeline: JobPipeline,
     rag,
@@ -200,17 +235,16 @@ async def _run_pipeline() -> None:
         index_jobs = await extract_index_jobs(index_queue, ctx)
         console.print(f"  [cyan]Extracted {len(index_jobs)} jobs from indexes[/cyan]")
         if index_jobs:
-            idx_batch = [
-                {
-                    "markdown": "",
-                    "url": j.get("apply_link", ""),
-                    "title": j.get("role", ""),
-                    "snippet": str(j),
-                }
-                for j in index_jobs[:80]
-            ]
-            idx_scored = await batch_match(idx_batch, rag, ctx)
-            matched_result.extend(idx_scored)
+            console.print(
+                f"  [cyan]Scraping {len(index_jobs)} GitHub apply links for JD text...[/cyan]"
+            )
+            idx_batch = await _scrape_index_links(
+                app, index_jobs[:30], max_workers=MAX_SCRAPE_WORKERS
+            )
+            console.print(f"  [cyan]Scraped {len(idx_batch)} JDs from links[/cyan]")
+            if idx_batch:
+                idx_scored = await batch_match(idx_batch, rag, ctx)
+                matched_result.extend(idx_scored)
 
     console.rule("[bold cyan]PHASE 3: RAG Revalidation[/bold cyan]")
     validated = await _revalidate_batch(matched_result, rag, ctx)
