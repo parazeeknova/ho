@@ -142,13 +142,31 @@ class ContextManager:
         print(f"\n  {DIM}{ITALIC}[thinking]{RESET} {DIM}{preview}{RESET}")
         print(f"  {DIM}[response] ({output_len} chars){RESET}")
 
-    def maybe_flush(self) -> None:
+    async def maybe_flush(self) -> None:
         with self._lock:
             if self.cumulative_output_tokens < FLUSH_THRESHOLD:
                 return
-        self.flush()
+        await self.flush()
 
-    def flush(self) -> None:
+    async def flush(self) -> None:
+        with self._lock:
+            try:
+                resp = await self._client.get(f"{LLM_URL}/slots")
+                slots = resp.json()
+                for slot in slots:
+                    sid = slot.get("id")
+                    if sid is not None and slot.get("state") != 0:
+                        await self._client.get(
+                            f"{LLM_URL}/slots/{sid}", params={"action": "erase"}
+                        )
+                self.cumulative_output_tokens = 0
+                print("  [ctx flushed]")
+            except Exception:
+                self.cumulative_output_tokens = 0
+
+    def _flush_sync(self) -> None:
+        """Synchronous fallback for signal handlers — uses urllib to avoid
+        needing a running event loop."""
         with self._lock:
             try:
                 raw = urllib.request.urlopen(f"{LLM_URL}/slots", timeout=5).read()
@@ -156,7 +174,9 @@ class ContextManager:
                 for slot in slots:
                     sid = slot.get("id")
                     if sid is not None and slot.get("state") != 0:
-                        urllib.request.urlopen(f"{LLM_URL}/slots/{sid}?action=erase", timeout=5)
+                        urllib.request.urlopen(
+                            f"{LLM_URL}/slots/{sid}?action=erase", timeout=5
+                        )
                 self.cumulative_output_tokens = 0
                 print("  [ctx flushed]")
             except Exception:

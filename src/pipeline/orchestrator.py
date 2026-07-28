@@ -37,7 +37,7 @@ def filter_recent(jobs: list[dict], max_days: int = 7) -> list[dict]:
             dt = datetime.fromisoformat(str(date_str).replace("Z", "+00:00"))
             if (now - dt).days <= max_days:
                 filtered.append(j)
-        except ValueError, TypeError:
+        except (ValueError, TypeError):
             filtered.append(j)
     return filtered
 
@@ -149,13 +149,13 @@ async def _run_pipeline() -> None:
 
     def _cleanup(signum: int, frame: object) -> None:
         console.print("\n[yellow]Interrupted - flushing LLM context...[/yellow]")
-        ctx.flush()
+        ctx._flush_sync()
         sys.exit(1)
 
     signal.signal(signal.SIGINT, _cleanup)
     signal.signal(signal.SIGTERM, _cleanup)
 
-    ctx.flush()
+    await ctx.flush()
     app = FirecrawlApp(api_key="sk-no-auth", api_url="http://127.0.0.1:3002")
     pipeline = JobPipeline()
 
@@ -219,7 +219,7 @@ async def _run_pipeline() -> None:
 
     console.rule("[bold cyan]PHASE 5: Generate Output[/bold cyan]")
     write_md(verified)
-    ctx.flush()
+    await ctx.flush()
     await ctx.aclose()
 
     console.print(f"\n  [dim]Queue: {pipeline.pending} items remaining[/dim]")

@@ -17,7 +17,7 @@ class TestBatchMatch:
     @pytest.mark.asyncio
     async def test_filters_below_threshold(self, mocker) -> None:
         ctx = mocker.AsyncMock()
-        ctx.maybe_flush = mocker.MagicMock()
+        ctx.maybe_flush = mocker.AsyncMock()
         ctx.json_chat.return_value = {
             "role": "Dev",
             "company": "Co",
@@ -35,7 +35,7 @@ class TestBatchMatch:
     @pytest.mark.asyncio
     async def test_keeps_above_threshold(self, mocker) -> None:
         ctx = mocker.AsyncMock()
-        ctx.maybe_flush = mocker.MagicMock()
+        ctx.maybe_flush = mocker.AsyncMock()
         ctx.json_chat.return_value = {
             "role": "SDE",
             "company": "FAANG",
@@ -54,7 +54,7 @@ class TestBatchMatch:
     @pytest.mark.asyncio
     async def test_sorts_by_match_percent(self, mocker) -> None:
         ctx = mocker.AsyncMock()
-        ctx.maybe_flush = mocker.MagicMock()
+        ctx.maybe_flush = mocker.AsyncMock()
         responses = [
             {
                 "role": "A",
@@ -102,7 +102,7 @@ class TestBatchMatch:
     @pytest.mark.asyncio
     async def test_concurrent_matching(self, mocker) -> None:
         ctx = mocker.AsyncMock()
-        ctx.maybe_flush = mocker.MagicMock()
+        ctx.maybe_flush = mocker.AsyncMock()
         ctx.json_chat.return_value = {
             "role": "Dev",
             "company": "Co",
@@ -123,7 +123,7 @@ class TestBatchMatch:
     @pytest.mark.asyncio
     async def test_handles_match_exceptions(self, mocker) -> None:
         ctx = mocker.AsyncMock()
-        ctx.maybe_flush = mocker.MagicMock()
+        ctx.maybe_flush = mocker.AsyncMock()
         ctx.json_chat.side_effect = [
             RuntimeError("boom"),
             {

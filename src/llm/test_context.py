@@ -71,29 +71,56 @@ class TestContextManager:
         assert result == {"name": "test"}
         mock_chat.assert_awaited_once_with("prompt", schema=schema)
 
-    def test_maybe_flush_below_threshold(self, mocker) -> None:
+    @pytest.mark.asyncio
+    async def test_maybe_flush_below_threshold(self, mocker) -> None:
         ctx = ContextManager()
         mock_flush = mocker.patch.object(ctx, "flush")
-        ctx.maybe_flush()
+        await ctx.maybe_flush()
         assert mock_flush.call_count == 0
 
-    def test_flush_called_above_threshold(self, mocker) -> None:
+    @pytest.mark.asyncio
+    async def test_flush_called_above_threshold(self, mocker) -> None:
         ctx = ContextManager()
         ctx.cumulative_output_tokens = 10000
-        mock_flush = mocker.patch.object(ctx, "flush")
-        ctx.maybe_flush()
-        assert mock_flush.call_count == 1
+        mock_get = mocker.AsyncMock()
+        mock_get.return_value = mocker.MagicMock(json=lambda: [])
+        mocker.patch.object(ctx._client, "get", mock_get)
+        await ctx.maybe_flush()
+        assert ctx.cumulative_output_tokens == 0
 
-    def test_flush_resets_counter_even_on_error(self, mocker) -> None:
+    @pytest.mark.asyncio
+    async def test_flush_uses_httpx(self, mocker) -> None:
+        ctx = ContextManager()
+        ctx.cumulative_output_tokens = 7000
+        mock_get = mocker.AsyncMock()
+        mock_get.return_value = mocker.MagicMock(
+            json=lambda: [{"id": 0, "state": 1}]
+        )
+        mocker.patch.object(ctx._client, "get", mock_get)
+        await ctx.flush()
+        assert ctx.cumulative_output_tokens == 0
+        assert mock_get.call_count >= 1
+
+    @pytest.mark.asyncio
+    async def test_flush_resets_counter_even_on_error(self, mocker) -> None:
+        ctx = ContextManager()
+        ctx.cumulative_output_tokens = 7000
+        mock_get = mocker.AsyncMock(side_effect=OSError("down"))
+        mocker.patch.object(ctx._client, "get", mock_get)
+        await ctx.flush()
+        assert ctx.cumulative_output_tokens == 0
+
+    def test_flush_sync_resets_counter_on_error(self, mocker) -> None:
         ctx = ContextManager()
         ctx.cumulative_output_tokens = 7000
         mocker.patch("urllib.request.urlopen", side_effect=OSError("down"))
-        ctx.flush()
+        ctx._flush_sync()
         assert ctx.cumulative_output_tokens == 0
 
-    def test_lock_protects_flush(self, mocker) -> None:
+    def test_flush_sync_lock_protects(self, mocker) -> None:
         ctx = ContextManager()
         ctx.cumulative_output_tokens = 7000
-        mocker.patch("urllib.request.urlopen", return_value=mocker.MagicMock(read=lambda: b"[]"))
-        ctx.flush()
+        mock_read = mocker.MagicMock(return_value=b"[]")
+        mocker.patch("urllib.request.urlopen", return_value=mocker.MagicMock(read=mock_read))
+        ctx._flush_sync()
         assert ctx.cumulative_output_tokens == 0

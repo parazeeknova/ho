@@ -1,4 +1,4 @@
-.PHONY: check check-types test serve run match health fc-up fc-down fc-logs dev dev-down
+.PHONY: check check-types test serve run match health fc-up fc-down fc-logs dev dev-down start
 
 check:
 	uv run ruff format . && uv run ruff check . --fix
@@ -17,6 +17,15 @@ run: health
 
 match: health
 	uv run python -m src.pipeline.orchestrator
+
+start:
+	@echo "=== Starting dev environment ==="
+	@uv run python scripts/dev.py &
+	@sleep 1
+	@echo "=== Waiting for services ==="
+	@while ! ./scripts/health.sh 2>/dev/null; do sleep 2; done
+	@echo "=== All services healthy — launching pipeline ==="
+	@uv run python -m src.pipeline.orchestrator
 
 fc-up:
 	@docker compose -f docker-compose.yaml up -d redis playwright-service nuq-postgres; \
