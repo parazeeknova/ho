@@ -136,7 +136,7 @@ async def _search_searxng(queries: list[str]) -> list[dict[str, str]]:
             except Exception:
                 pass
 
-    await asyncio.gather(*(_query_one(q) for q in queries[:8]))
+    await asyncio.gather(*(_query_one(q) for q in queries))
     return hits
 
 
@@ -147,12 +147,11 @@ async def _search_web(
 
     queries: list[str] = []
     for pos in positions[:4]:
-        queries.append(f"{pos} intern remote visa sponsorship greenhouse.io lever.co")
-        queries.append(f"{pos} entry level remote visa sponsorship ashbyhq.com workable.com")
-        queries.append(f"{pos} intern india bangalore onsite greenhouse.io lever.co")
-        queries.append(f"{pos} entry level india bangalore onsite ashbyhq.com workable.com")
-    queries.append("software engineering intern remote 2026 visa sponsorship")
-    queries.append("entry level software engineer india bangalore 2026")
+        queries.append(f"{pos} intern remote")
+        queries.append(f"{pos} intern india bangalore")
+        queries.append(f"{pos} new grad visa sponsorship")
+    queries.append("software intern 2026 remote")
+    queries.append("software engineer entry level india")
     if not queries:
         queries = [f"{p} intern remote" for p in positions[:2]]
 
@@ -183,8 +182,8 @@ async def _search_web(
                 pass
         return hits
 
-    firecrawl_task = asyncio.gather(*(_fetch_query(q) for q in queries[:8]), return_exceptions=True)
-    searxng_task = _search_searxng(queries[:8])
+    firecrawl_task = asyncio.gather(*(_fetch_query(q) for q in queries), return_exceptions=True)
+    searxng_task = _search_searxng(queries)
 
     hit_lists, searxng_hits = await asyncio.gather(firecrawl_task, searxng_task)
 
