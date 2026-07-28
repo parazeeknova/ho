@@ -100,8 +100,8 @@ async def _search_web(
         "site:ashbyhq.com", "site:jobs.workable.com",
     ]
     queries: list[str] = []
-    for pos in positions[:3]:
-        for board in ats_boards[:2]:
+    for pos in positions[:2]:
+        for board in ats_boards:
             queries.append(f'{board} "remote" "{pos}"')
     if not queries:
         queries = [f"{p} intern remote" for p in positions[:2]]
@@ -186,7 +186,7 @@ async def extract_index_jobs(jobs: list[QueuedJob], ctx: ContextManager) -> list
             lines = [
                 ln
                 for ln in job.markdown.split("\n")
-                if "|" in ln and ("remote" in ln.lower() or "http" in ln.lower() or "---" in ln)
+                if "|" in ln and ("remote" in ln.lower() or "---" in ln)
             ]
             clean_md = "\n".join(lines[:100])
             if len(clean_md) < 50:
