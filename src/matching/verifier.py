@@ -12,6 +12,30 @@ Alternate: {alternate}
 Return valid JSON matching the required schema."""
 
 
+def _scrape_alternate(app: FirecrawlApp, role: str, company: str, original_url: str) -> str:
+    """Sync Firecrawl calls — runs inside a thread-pool executor."""
+    try:
+        alt_results = app.search(f"{role} {company} job")
+        data = getattr(alt_results, "web", []) or []
+        if not isinstance(data, list) or not data:
+            return ""
+
+        alt_url = None
+        for r in data:
+            u = getattr(r, "url", "")
+            if u and u != original_url and u.startswith("http"):
+                alt_url = u
+                break
+        if not alt_url:
+            return ""
+
+        alt_result = app.scrape_url(alt_url, formats=["markdown"])
+        alt_content = getattr(alt_result, "markdown", "") or ""
+        return alt_content if len(alt_content) >= 100 else ""
+    except Exception:
+        return ""
+
+
 async def _verify_one(
     app: FirecrawlApp,
     role: str,
@@ -22,47 +46,20 @@ async def _verify_one(
 ) -> bool:
     async with sem:
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, _verify_sync, app, role, company, original_url, ctx)
 
-
-def _verify_sync(
-    app: FirecrawlApp,
-    role: str,
-    company: str,
-    original_url: str,
-    ctx: ContextManager,
-) -> bool:
-    try:
-        alt_results = app.search(f"{role} {company} job")
-        data = getattr(alt_results, "web", []) or []
-        if not isinstance(data, list) or not data:
-            return True
-
-        alt_url = None
-        for r in data:
-            u = getattr(r, "url", "")
-            if u and u != original_url and u.startswith("http"):
-                alt_url = u
-                break
-
-        if not alt_url:
-            return True
-
-        alt_result = app.scrape_url(alt_url, formats=["markdown"])
-        alt_content = getattr(alt_result, "markdown", "") or ""
-        if len(alt_content) < 100:
+        alt_content = await loop.run_in_executor(
+            None, _scrape_alternate, app, role, company, original_url
+        )
+        if not alt_content:
             return True
 
         prompt = VERIFY_PROMPT.replace("{original}", f"{role} @ {company} [{original_url}]")
         prompt = prompt.replace("{alternate}", alt_content[:3000])
 
-        result = ctx.json_chat(prompt, schema=VERIFY_SCHEMA)
+        result = await ctx.json_chat(prompt, schema=VERIFY_SCHEMA)
         if isinstance(result, dict):
             confidence = result.get("confidence", 50)
             return confidence >= 30
-
-        return True
-    except Exception:
         return True
 
 

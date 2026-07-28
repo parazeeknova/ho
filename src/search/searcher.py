@@ -91,7 +91,7 @@ async def _search_web(
         f"upwork. Return valid JSON matching the required schema."
     )
 
-    raw = await loop.run_in_executor(None, ctx.json_chat, query_prompt, SEARCH_QUERIES_SCHEMA)
+    raw = await ctx.json_chat(query_prompt, SEARCH_QUERIES_SCHEMA)
     queries: list[str] = raw.get("queries", []) if isinstance(raw, dict) else []
     if not queries:
         queries = [f"{position} intern remote", f"entry level {position} remote"]
@@ -146,7 +146,6 @@ async def scrape_all(
 
 
 async def extract_index_jobs(jobs: list[QueuedJob], ctx: ContextManager) -> list[dict]:
-    loop = asyncio.get_running_loop()
     extracted: list[dict] = []
 
     async def _extract_one(job: QueuedJob) -> list[dict]:
@@ -155,10 +154,7 @@ async def extract_index_jobs(jobs: list[QueuedJob], ctx: ContextManager) -> list
             "Return valid JSON matching the required schema. "
             "Be exhaustive — extract every single row/listing."
         )
-        raw = await loop.run_in_executor(
-            None,
-            lambda: ctx.json_chat(prompt, INDEX_EXTRACT_SCHEMA, job.markdown, limit=20000),
-        )
+        raw = await ctx.json_chat(prompt, INDEX_EXTRACT_SCHEMA, job.markdown, limit=20000)
         if isinstance(raw, dict) and "listings" in raw:
             return raw["listings"]
         return []

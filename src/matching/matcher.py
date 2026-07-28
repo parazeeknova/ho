@@ -22,13 +22,12 @@ async def _match_one(
     sem: asyncio.Semaphore,
 ) -> dict | None:
     async with sem:
-        loop = asyncio.get_running_loop()
         ctx.maybe_flush()
 
         prompt = MATCH_PROMPT.replace("{relevant_chunks}", relevant[:3000])
         prompt = prompt.replace("{job_description}", jd_text[:5000])
 
-        result = await loop.run_in_executor(None, ctx.json_chat, prompt, MATCH_SCHEMA)
+        result = await ctx.json_chat(prompt, MATCH_SCHEMA)
 
         if not isinstance(result, dict) or "match_percent" not in result:
             return None
@@ -51,6 +50,7 @@ async def batch_match(
     if not jobs:
         return []
 
+    loop = asyncio.get_running_loop()
     sem = asyncio.Semaphore(concurrency)
     tasks = []
 
@@ -59,7 +59,7 @@ async def batch_match(
         if len(jd_text) < 100:
             continue
 
-        retrieved = rag.retrieve(jd_text, top_k=8)
+        retrieved = await loop.run_in_executor(None, rag.retrieve, jd_text, 8)
         relevant = "\n".join(
             f"[{chunk_id}] {text}" for chunk_id, text, score in retrieved if score > 0.25
         )

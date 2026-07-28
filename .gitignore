@@ -13,6 +13,7 @@ jobs.md
 .idea/
 .mypy_cache
 .ruff_cache
+repomix-output.xml
 
 # OS
 .DS_Store

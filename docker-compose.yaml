@@ -41,9 +41,9 @@ services:
       nofile:
         soft: 65535
         hard: 65535
-    cpus: 10.0
-    mem_limit: 12G
-    memswap_limit: 12G
+    cpus: 4.0
+    mem_limit: 4G
+    memswap_limit: 4G
     logging:
       driver: "json-file"
       options:

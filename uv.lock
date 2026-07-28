@@ -504,6 +504,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "fastembed" },
     { name = "firecrawl-py" },
+    { name = "httpx" },
     { name = "markitdown", extra = ["pdf"] },
     { name = "numpy" },
     { name = "pymupdf" },
@@ -525,6 +526,7 @@ dev = [
 requires-dist = [
     { name = "fastembed", specifier = ">=0.6.0" },
     { name = "firecrawl-py", specifier = ">=4.33.1" },
+    { name = "httpx", specifier = ">=0.28.0" },
     { name = "markitdown", extras = ["pdf"], specifier = ">=0.1.6" },
     { name = "numpy", specifier = ">=2.0.0" },
     { name = "pymupdf", specifier = ">=1.28.0" },

@@ -1,9 +1,16 @@
-"""Context manager: token tracking, auto-flush, retry, JSON schema enforcement."""
+"""Context manager: token tracking, auto-flush, retry, JSON schema enforcement.
+
+Thread-safe: a threading.Lock serialises token-counter updates and slot erasures
+so that concurrent asyncio workers and signal-handler flushes never race on the
+shared KV-cache state inside llama-server.
+"""
 
 import json
-import time
+import threading
 import urllib.request
 from typing import Any
+
+import httpx
 
 LLM_URL = "http://127.0.0.1:8899"
 MODEL = "Jackrong/Qwen3.5-4B-Claude-4.6-Opus-Reasoning-Distilled-v2-GGUF:Q5_K_M"
@@ -73,7 +80,7 @@ REVALIDATE_SCHEMA: dict[str, Any] = {
 }
 
 
-def _build_request(prompt: str, schema: dict[str, Any] | None = None) -> bytes:
+def _build_payload(prompt: str, schema: dict[str, Any] | None = None) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "model": MODEL,
         "messages": [{"role": "user", "content": prompt}],
@@ -84,39 +91,47 @@ def _build_request(prompt: str, schema: dict[str, Any] | None = None) -> bytes:
             "type": "json_object",
             "schema": schema,
         }
-    return json.dumps(payload).encode()
+    return payload
 
 
 class ContextManager:
     def __init__(self, verbose: bool = True) -> None:
         self.cumulative_output_tokens = 0
         self.verbose = verbose
+        self._lock = threading.Lock()
+        self._client = httpx.AsyncClient(
+            timeout=httpx.Timeout(300.0, connect=10.0),
+            limits=httpx.Limits(max_keepalive_connections=8, max_connections=16),
+        )
 
-    def chat(self, prompt: str, schema: dict[str, Any] | None = None) -> str:
+    async def aclose(self) -> None:
+        await self._client.aclose()
+
+    async def chat(self, prompt: str, schema: dict[str, Any] | None = None) -> str:
+        payload = _build_payload(prompt, schema)
         for attempt in range(1, MAX_RETRIES + 1):
             try:
-                data = _build_request(prompt, schema)
-                req = urllib.request.Request(
+                resp = await self._client.post(
                     f"{LLM_URL}/v1/chat/completions",
-                    data=data,
-                    headers={"Content-Type": "application/json"},
+                    json=payload,
                 )
-                with urllib.request.urlopen(req, timeout=300) as resp:
-                    result = json.loads(resp.read())
-                    msg = result["choices"][0]["message"]
-                    output = msg.get("content", "")
-                    reasoning = msg.get("reasoning_content", "")
+                resp.raise_for_status()
+                result = resp.json()
+                msg = result["choices"][0]["message"]
+                output: str = msg.get("content", "")
+                reasoning: str = msg.get("reasoning_content", "")
 
-                    if self.verbose and reasoning:
-                        self._show_thinking(reasoning, len(output))
+                if self.verbose and reasoning:
+                    self._show_thinking(reasoning, len(output))
 
-                    tokens = int((len(output) + len(reasoning)) * TOKEN_ESTIMATE_PER_CHAR)
+                tokens = int((len(output) + len(reasoning)) * TOKEN_ESTIMATE_PER_CHAR)
+                with self._lock:
                     self.cumulative_output_tokens += tokens
-                    return output
+                return output
             except Exception:
                 if attempt < MAX_RETRIES:
                     print(f"  [LLM retry {attempt}/{MAX_RETRIES}]")
-                    time.sleep(RETRY_DELAY)
+                    await _async_sleep(RETRY_DELAY)
         raise RuntimeError("LLM failed after all retries")
 
     def _show_thinking(self, reasoning: str, output_len: int) -> None:
@@ -128,22 +143,26 @@ class ContextManager:
         print(f"  {DIM}[response] ({output_len} chars){RESET}")
 
     def maybe_flush(self) -> None:
-        if self.cumulative_output_tokens >= FLUSH_THRESHOLD:
-            self.flush()
+        with self._lock:
+            if self.cumulative_output_tokens < FLUSH_THRESHOLD:
+                return
+        self.flush()
 
     def flush(self) -> None:
-        try:
-            slots = json.loads(urllib.request.urlopen(f"{LLM_URL}/slots", timeout=5).read())
-            for slot in slots:
-                sid = slot.get("id")
-                if sid is not None and slot.get("state") != 0:
-                    urllib.request.urlopen(f"{LLM_URL}/slots/{sid}?action=erase", timeout=5)
-            self.cumulative_output_tokens = 0
-            print("  [ctx flushed]")
-        except Exception:
-            self.cumulative_output_tokens = 0
+        with self._lock:
+            try:
+                raw = urllib.request.urlopen(f"{LLM_URL}/slots", timeout=5).read()
+                slots = json.loads(raw)
+                for slot in slots:
+                    sid = slot.get("id")
+                    if sid is not None and slot.get("state") != 0:
+                        urllib.request.urlopen(f"{LLM_URL}/slots/{sid}?action=erase", timeout=5)
+                self.cumulative_output_tokens = 0
+                print("  [ctx flushed]")
+            except Exception:
+                self.cumulative_output_tokens = 0
 
-    def json_chat(
+    async def json_chat(
         self,
         prompt: str,
         schema: dict[str, Any] | None = None,
@@ -153,7 +172,7 @@ class ContextManager:
         full = prompt
         if content:
             full = prompt + "\n\n" + content[:limit]
-        raw = self.chat(full, schema=schema)
+        raw = await self.chat(full, schema=schema)
         raw = _strip_markdown(raw)
         try:
             return json.loads(raw)
@@ -168,3 +187,9 @@ def _strip_markdown(raw: str) -> str:
         if raw.endswith("```"):
             raw = raw[:-3]
     return raw.strip()
+
+
+async def _async_sleep(seconds: float) -> None:
+    import asyncio
+
+    await asyncio.sleep(seconds)

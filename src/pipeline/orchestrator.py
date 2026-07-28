@@ -37,7 +37,7 @@ def filter_recent(jobs: list[dict], max_days: int = 7) -> list[dict]:
             dt = datetime.fromisoformat(str(date_str).replace("Z", "+00:00"))
             if (now - dt).days <= max_days:
                 filtered.append(j)
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             filtered.append(j)
     return filtered
 
@@ -57,7 +57,7 @@ async def _revalidate_batch(
                 f"{job.get('role', '')} {job.get('company', '')} "
                 f"{' '.join(job.get('matching_skills', []))}"
             )
-            chunks = rag.retrieve(query, top_k=5)
+            chunks = await loop.run_in_executor(None, rag.retrieve, query, 5)
             if not chunks or chunks[0][2] < 0.25:
                 return None
 
@@ -71,7 +71,7 @@ async def _revalidate_batch(
                 + "\n\nReturn valid JSON matching the required schema."
             )
 
-            result = await loop.run_in_executor(None, ctx.json_chat, prompt, REVALIDATE_SCHEMA)
+            result = await ctx.json_chat(prompt, REVALIDATE_SCHEMA)
             if isinstance(result, dict) and "match_percent" in result:
                 result["match_percent"] = int(result["match_percent"])
                 result["shortlist_probability"] = int(result.get("shortlist_probability", 0))
@@ -169,9 +169,12 @@ async def _run_pipeline() -> None:
     console.rule("[bold cyan]PHASE 2: Scrape + Concurrent Match[/bold cyan]")
 
     position = (
-        ctx.chat(
-            "Based on this resume, what is the best entry-level / intern / new-grad "
-            "job title to search for? Return just the title, nothing else.\n\n" + full_text[:2000]
+        (
+            await ctx.chat(
+                "Based on this resume, what is the best entry-level / intern / new-grad "
+                "job title to search for? Return just the title, nothing else.\n\n"
+                + full_text[:2000]
+            )
         )
         .strip()
         .strip('"')
@@ -217,6 +220,7 @@ async def _run_pipeline() -> None:
     console.rule("[bold cyan]PHASE 5: Generate Output[/bold cyan]")
     write_md(verified)
     ctx.flush()
+    await ctx.aclose()
 
     console.print(f"\n  [dim]Queue: {pipeline.pending} items remaining[/dim]")
     console.print("\n[bold green]Pipeline complete[/bold green]")

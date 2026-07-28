@@ -1,5 +1,7 @@
 """Tests for context manager: token tracking, flush, JSON schema enforcement."""
 
+import pytest
+
 from src.llm.context import ContextManager, _strip_markdown
 
 
@@ -28,47 +30,50 @@ class TestContextManager:
         ctx = ContextManager()
         assert ctx.cumulative_output_tokens == 0
 
-    def test_json_chat_dict(self, mocker) -> None:
+    @pytest.mark.asyncio
+    async def test_json_chat_dict(self, mocker) -> None:
         ctx = ContextManager()
         mock_chat = mocker.patch.object(ctx, "chat", return_value='{"a": 1}')
-        result = ctx.json_chat("prompt")
+        result = await ctx.json_chat("prompt")
         assert result == {"a": 1}
-        mock_chat.assert_called_once()
+        mock_chat.assert_awaited_once()
 
-    def test_json_chat_list(self, mocker) -> None:
+    @pytest.mark.asyncio
+    async def test_json_chat_list(self, mocker) -> None:
         ctx = ContextManager()
         mocker.patch.object(ctx, "chat", return_value="[1, 2, 3]")
-        result = ctx.json_chat("prompt")
+        result = await ctx.json_chat("prompt")
         assert result == [1, 2, 3]
 
-    def test_json_chat_invalid_json(self, mocker) -> None:
+    @pytest.mark.asyncio
+    async def test_json_chat_invalid_json(self, mocker) -> None:
         ctx = ContextManager()
         mocker.patch.object(ctx, "chat", return_value="not json")
-        result = ctx.json_chat("{")
+        result = await ctx.json_chat("{")
         assert result == {}
 
-    def test_json_chat_with_content(self, mocker) -> None:
+    @pytest.mark.asyncio
+    async def test_json_chat_with_content(self, mocker) -> None:
         ctx = ContextManager()
         mock_chat = mocker.patch.object(ctx, "chat", return_value='{"x": 1}')
-        result = ctx.json_chat("prompt", content="content", limit=100)
+        result = await ctx.json_chat("prompt", content="content", limit=100)
         assert result == {"x": 1}
         sent = mock_chat.call_args[0][0]
         assert "prompt" in sent
         assert "content" in sent
 
-    def test_json_chat_with_schema(self, mocker) -> None:
+    @pytest.mark.asyncio
+    async def test_json_chat_with_schema(self, mocker) -> None:
         ctx = ContextManager()
         mock_chat = mocker.patch.object(ctx, "chat", return_value='{"name": "test"}')
         schema = {"type": "object", "properties": {"name": {"type": "string"}}}
-        result = ctx.json_chat("prompt", schema=schema)
+        result = await ctx.json_chat("prompt", schema=schema)
         assert result == {"name": "test"}
-        mock_chat.assert_called_once_with("prompt", schema=schema)
+        mock_chat.assert_awaited_once_with("prompt", schema=schema)
 
     def test_maybe_flush_below_threshold(self, mocker) -> None:
         ctx = ContextManager()
-        mocker.patch.object(ctx, "chat", return_value="short")
         mock_flush = mocker.patch.object(ctx, "flush")
-        ctx.json_chat("prompt")
         ctx.maybe_flush()
         assert mock_flush.call_count == 0
 
@@ -83,5 +88,12 @@ class TestContextManager:
         ctx = ContextManager()
         ctx.cumulative_output_tokens = 7000
         mocker.patch("urllib.request.urlopen", side_effect=OSError("down"))
+        ctx.flush()
+        assert ctx.cumulative_output_tokens == 0
+
+    def test_lock_protects_flush(self, mocker) -> None:
+        ctx = ContextManager()
+        ctx.cumulative_output_tokens = 7000
+        mocker.patch("urllib.request.urlopen", return_value=mocker.MagicMock(read=lambda: b"[]"))
         ctx.flush()
         assert ctx.cumulative_output_tokens == 0
