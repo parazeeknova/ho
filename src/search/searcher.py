@@ -146,15 +146,15 @@ async def _search_web(
     loop = asyncio.get_running_loop()
 
     ats_boards = [
-        "site:greenhouse.io",
-        "site:lever.co",
-        "site:ashbyhq.com",
-        "site:jobs.workable.com",
+        "greenhouse.io",
+        "lever.co",
+        "ashbyhq.com",
+        "jobs.workable.com",
     ]
     queries: list[str] = []
     for pos in positions[:4]:
         for board in ats_boards:
-            queries.append(f'{board} "remote" "{pos}"')
+            queries.append(f'"{pos}" remote site:{board}')
     if not queries:
         queries = [f"{p} intern remote" for p in positions[:2]]
 
