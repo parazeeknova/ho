@@ -1,4 +1,4 @@
-.PHONY: check check-types serve run fc-up fc-down fc-logs dev dev-down
+.PHONY: check check-types serve run match fc-up fc-down fc-logs dev dev-down
 
 check:
 	uv run ruff format . && uv run ruff check . --fix
@@ -10,7 +10,10 @@ serve:
 	./scripts/serve.sh
 
 run:
-	uv run python main.py
+	uv run python -m src.pipeline
+
+match:
+	uv run python -m src.pipeline
 
 fc-up:
 	@docker compose -f docker-compose.yaml up -d redis playwright-service nuq-postgres; \
