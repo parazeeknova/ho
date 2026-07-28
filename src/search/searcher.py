@@ -55,7 +55,7 @@ INDEX_EXTRACT_SCHEMA = {
                     "apply_link": {"type": "string"},
                     "posted": {"type": ["string", "null"]},
                 },
-                "required": ["company", "role"],
+                "required": ["company", "role", "apply_link"],
             },
         }
     },
@@ -95,24 +95,16 @@ async def _search_web(
 ) -> list[dict[str, str]]:
     loop = asyncio.get_running_loop()
 
-    domains = ", ".join(positions)
-    query_prompt = (
-        f"Generate 8 boolean search queries to find entry-level/intern/new-grad "
-        f"remote jobs across: {domains}. "
-        f"You MUST include ATS site operators in every query "
-        f"(e.g. 'site:greenhouse.io OR site:lever.co OR site:ashbyhq.com "
-        f"remote intern {positions[0] if positions else ''}'). "
-        f"Do NOT use general queries. "
-        f"Return valid JSON matching the required schema."
-    )
-
-    raw = await ctx.json_chat(query_prompt, SEARCH_QUERIES_SCHEMA)
-    queries: list[str] = raw.get("queries", []) if isinstance(raw, dict) else []
+    ats_boards = [
+        "site:greenhouse.io", "site:lever.co",
+        "site:ashbyhq.com", "site:jobs.workable.com",
+    ]
+    queries: list[str] = []
+    for pos in positions[:3]:
+        for board in ats_boards[:2]:
+            queries.append(f'{board} "remote" "{pos}"')
     if not queries:
-        queries = [f"{p} intern remote" for p in positions[:4]] + [
-            f"entry level {p} remote" for p in positions[:4]
-        ]
-        queries = queries[:8]
+        queries = [f"{p} intern remote" for p in positions[:2]]
 
     sem = asyncio.Semaphore(3)
 
@@ -200,7 +192,10 @@ async def extract_index_jobs(jobs: list[QueuedJob], ctx: ContextManager) -> list
             if len(clean_md) < 50:
                 return []
             prompt = (
-                "Extract ALL job/internship listings from this markdown. "
+                "Extract ALL job/internship listings from this markdown table. "
+                "You MUST extract the raw http or https URL from any markdown "
+                "reference link (e.g. [Apply](https://url.com) -> https://url.com) "
+                "into apply_link. Do not leave apply_link empty. "
                 "Return valid JSON matching the required schema. "
                 "Be exhaustive — extract every single row/listing."
             )

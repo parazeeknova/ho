@@ -127,8 +127,8 @@ async def _scrape_index_links(
                             "snippet": str(j),
                         }
                     )
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"    [dim]Failed to scrape {url[:40]}...: {e}[/dim]")
 
     tasks = [asyncio.create_task(_scrape_one(j)) for j in jobs]
     await asyncio.gather(*tasks)
