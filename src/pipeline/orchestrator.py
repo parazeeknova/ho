@@ -128,6 +128,8 @@ async def _consumer(
             batch = [{"markdown": j.markdown, "url": j.url, "title": j.title} for j in web_buf]
             scored = await batch_match(batch, rag, ctx)
             matched.extend(scored)
+            matched.sort(key=lambda j: j.get("match_percent", 0), reverse=True)
+            write_md(matched[:30], output_path="jobs.md")
             for _ in web_buf:
                 await pipeline.task_done()
             web_buf.clear()
@@ -138,6 +140,8 @@ async def _consumer(
         batch = [{"markdown": j.markdown, "url": j.url, "title": j.title} for j in web_buf]
         scored = await batch_match(batch, rag, ctx)
         matched.extend(scored)
+        matched.sort(key=lambda j: j.get("match_percent", 0), reverse=True)
+        write_md(matched[:30], output_path="jobs.md")
         for _ in web_buf:
             await pipeline.task_done()
 
