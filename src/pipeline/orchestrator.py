@@ -377,9 +377,9 @@ async def _run_pipeline() -> None:
             break
 
         console.print(
-            "\n[bold cyan]Sleeping for 60 minutes before next overnight sweep...[/bold cyan]"
+            "\n[bold cyan]Sleeping for 10 minutes before next sweep...[/bold cyan]"
         )
-        await asyncio.sleep(3600)
+        await asyncio.sleep(600)
 
     await ctx.aclose()
 

@@ -147,10 +147,12 @@ async def _search_web(
 
     queries: list[str] = []
     for pos in positions[:4]:
-        queries.append(f"{pos} intern remote greenhouse.io lever.co")
-        queries.append(f"{pos} entry level remote ashbyhq.com workable.com")
-    queries.append("software engineering intern remote 2026")
-    queries.append("entry level software engineer remote 2026")
+        queries.append(f"{pos} intern remote visa sponsorship greenhouse.io lever.co")
+        queries.append(f"{pos} entry level remote visa sponsorship ashbyhq.com workable.com")
+        queries.append(f"{pos} intern india bangalore onsite greenhouse.io lever.co")
+        queries.append(f"{pos} entry level india bangalore onsite ashbyhq.com workable.com")
+    queries.append("software engineering intern remote 2026 visa sponsorship")
+    queries.append("entry level software engineer india bangalore 2026")
     if not queries:
         queries = [f"{p} intern remote" for p in positions[:2]]
 
