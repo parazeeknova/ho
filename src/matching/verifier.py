@@ -2,7 +2,7 @@
 
 from firecrawl import FirecrawlApp
 
-from llm.context import ContextManager
+from src.llm.context import ContextManager
 
 VERIFY_PROMPT = """Compare two scraped job listings. Are they the same job?
 Original: {original}

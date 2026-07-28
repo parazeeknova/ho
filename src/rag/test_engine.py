@@ -1,6 +1,6 @@
 """Tests for RAG engine: TF-IDF indexing, retrieval, revalidation."""
 
-from rag.engine import RAGEngine, build_rag_from_chunks
+from src.rag.engine import RAGEngine, build_rag_from_chunks
 
 
 class TestRAGEngine:

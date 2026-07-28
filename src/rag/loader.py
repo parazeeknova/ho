@@ -41,7 +41,7 @@ def extract_with_markitdown(path: Path) -> str:
 
 
 def verify_extraction(text: str) -> dict[str, bool | str]:
-    checks = {
+    checks: dict[str, bool | str] = {
         "has_email": "@" in text and "." in text.split("@")[-1],
         "has_phone": any(c.isdigit() for c in text) and len(text) > 200,
         "has_skills": any(

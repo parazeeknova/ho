@@ -4,7 +4,7 @@ import time
 
 from firecrawl import FirecrawlApp
 
-from llm.context import ContextManager
+from src.llm.context import ContextManager
 
 GITHUB_INDEXES = [
     "https://raw.githubusercontent.com/SimplifyJobs/Summer2026-Internships/dev/README.md",

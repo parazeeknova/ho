@@ -6,14 +6,14 @@ from datetime import UTC, datetime
 
 from firecrawl import FirecrawlApp
 
-from llm.context import ContextManager
-from matching.matcher import batch_match
-from matching.verifier import verify_job
-from output.writer import write_md
-from pipeline.queue import JobPipeline, QueuedJob
-from rag.engine import build_rag_from_chunks
-from rag.loader import load_resume
-from search.searcher import GITHUB_INDEXES, search_web
+from src.llm.context import ContextManager
+from src.matching.matcher import batch_match
+from src.matching.verifier import verify_job
+from src.output.writer import write_md
+from src.pipeline.queue import JobPipeline, QueuedJob
+from src.rag.engine import build_rag_from_chunks
+from src.rag.loader import load_resume
+from src.search.searcher import GITHUB_INDEXES, search_web
 
 TARGET = 15
 MAX_SCRAPE_WORKERS = 6

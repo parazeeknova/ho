@@ -2,7 +2,7 @@
 
 from unittest.mock import MagicMock, patch
 
-from pipeline.queue import JobPipeline, QueuedJob
+from src.pipeline.queue import JobPipeline, QueuedJob
 
 
 class TestQueuedJob:
@@ -28,7 +28,7 @@ class TestQueuedJob:
 
 
 class TestJobPipeline:
-    @patch("pipeline.queue.redis")
+    @patch("src.pipeline.queue.redis")
     def test_push_and_pop(self, mock_redis_module: MagicMock) -> None:
         mock_r = MagicMock()
         mock_redis_module.from_url.return_value = mock_r
@@ -44,7 +44,7 @@ class TestJobPipeline:
         assert popped is not None
         assert popped.markdown == "test"
 
-    @patch("pipeline.queue.redis")
+    @patch("src.pipeline.queue.redis")
     def test_pop_timeout_returns_none(self, mock_redis_module: MagicMock) -> None:
         mock_r = MagicMock()
         mock_redis_module.from_url.return_value = mock_r
@@ -54,7 +54,7 @@ class TestJobPipeline:
         result = pipeline.pop(timeout=1)
         assert result is None
 
-    @patch("pipeline.queue.redis")
+    @patch("src.pipeline.queue.redis")
     def test_signal_done(self, mock_redis_module: MagicMock) -> None:
         mock_r = MagicMock()
         mock_redis_module.from_url.return_value = mock_r
@@ -66,7 +66,7 @@ class TestJobPipeline:
         pipeline.signal_done()
         mock_r.set.assert_called_with("ho:stop", "1")
 
-    @patch("pipeline.queue.redis")
+    @patch("src.pipeline.queue.redis")
     def test_pending_count(self, mock_redis_module: MagicMock) -> None:
         mock_r = MagicMock()
         mock_redis_module.from_url.return_value = mock_r
@@ -75,7 +75,7 @@ class TestJobPipeline:
         pipeline = JobPipeline()
         assert pipeline.pending == 5
 
-    @patch("pipeline.queue.redis")
+    @patch("src.pipeline.queue.redis")
     def test_scraped_matched_counts(self, mock_redis_module: MagicMock) -> None:
         mock_r = MagicMock()
         mock_redis_module.from_url.return_value = mock_r
@@ -85,7 +85,7 @@ class TestJobPipeline:
         assert pipeline.scraped_count == 10
         assert pipeline.matched_count == 3
 
-    @patch("pipeline.queue.redis")
+    @patch("src.pipeline.queue.redis")
     def test_task_done(self, mock_redis_module: MagicMock) -> None:
         mock_r = MagicMock()
         mock_redis_module.from_url.return_value = mock_r
@@ -94,7 +94,7 @@ class TestJobPipeline:
         pipeline.task_done()
         mock_r.hincrby.assert_called_with("ho:stats", "matched", 1)
 
-    @patch("pipeline.queue.redis")
+    @patch("src.pipeline.queue.redis")
     def test_log_status(self, mock_redis_module: MagicMock) -> None:
         mock_r = MagicMock()
         mock_redis_module.from_url.return_value = mock_r

@@ -4,7 +4,7 @@ check:
 	uv run ruff format . && uv run ruff check . --fix
 
 check-types:
-	uv run mypy . --ignore-missing-imports --exclude 'refs/'
+	uv run mypy . --ignore-missing-imports --exclude 'refs/' --explicit-package-bases
 
 test:
 	uv run python -m pytest . -v --ignore=refs
@@ -13,7 +13,7 @@ serve:
 	./scripts/serve.sh
 
 run:
-	uv run python -m pipeline.orchestrator
+	uv run python -m src.pipeline.orchestrator
 
 fc-up:
 	@docker compose -f docker-compose.yaml up -d redis playwright-service nuq-postgres; \

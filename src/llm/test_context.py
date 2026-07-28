@@ -1,6 +1,6 @@
 """Tests for context manager: token tracking, flush, JSON parsing."""
 
-from llm.context import ContextManager
+from src.llm.context import ContextManager
 
 
 class TestContextManager:

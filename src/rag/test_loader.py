@@ -1,6 +1,6 @@
 """Tests for resume loader: PDF extraction, chunking."""
 
-from rag.loader import chunk_resume
+from src.rag.loader import chunk_resume
 
 
 class TestChunkResume:

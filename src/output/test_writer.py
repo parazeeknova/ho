@@ -4,7 +4,7 @@ import os
 import tempfile
 from datetime import UTC
 
-from output.writer import compute_days_ago, write_md
+from src.output.writer import compute_days_ago, write_md
 
 
 class TestComputeDaysAgo:

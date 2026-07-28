@@ -2,7 +2,7 @@
 
 from unittest.mock import MagicMock
 
-from matching.matcher import batch_match, match_job
+from src.matching.matcher import batch_match, match_job
 
 
 class TestMatchJob:
