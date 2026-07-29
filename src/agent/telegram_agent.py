@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import html
 import os
 import time
 from typing import Any
@@ -69,7 +70,6 @@ async def run_health_checks() -> str:
     results.append(("Firecrawl :3002", await _check_http("http://localhost:3002")))
     results.append(("SearXNG :8080", await _check_http("http://localhost:8080")))
     results.append(("pgvector :5433", await _check_port("localhost", 5433)))
-    results.append(("Qdrant :6333", await _check_port("localhost", 6333)))
 
     lines = ["<b>Health Check</b>", ""]
     all_ok = True
@@ -265,17 +265,22 @@ class TelegramAgent:
     # ---- job notifications (existing) -------------------------------------
 
     def format_job_card(self, job: dict[str, Any]) -> str:
-        role = str(job.get("role") or "Software Engineer").strip()
-        company = str(job.get("company") or "Company").strip()
+        role = html.escape(str(job.get("role") or "Software Engineer").strip())
+        company = html.escape(str(job.get("company") or "Company").strip())
         match_pct = job.get("match_percent", 0)
         shortlist_pct = job.get("shortlist_probability", 0)
-        salary = str(job.get("salary") or "Not specified").strip()
-        location = str(job.get("location") or "Remote").strip()
+        salary = html.escape(str(job.get("salary") or "Not specified").strip())
+        location = html.escape(str(job.get("location") or "Remote").strip())
         link = job.get("apply_link") or job.get("source_url") or job.get("url") or ""
 
-        comp_desc = str(
-            job.get("company_description") or job.get("jd_summary") or job.get("role_summary") or ""
-        ).strip()
+        comp_desc = html.escape(
+            str(
+                job.get("company_description")
+                or job.get("jd_summary")
+                or job.get("role_summary")
+                or ""
+            ).strip()
+        )
         if len(comp_desc) > 200:
             comp_desc = comp_desc[:197] + "..."
 
@@ -325,8 +330,8 @@ class TelegramAgent:
         if founders:
             if isinstance(founders[0], dict):
                 for f in founders:
-                    name = f.get("name", "?")
-                    title = f.get("title", "")
+                    name = html.escape(str(f.get("name", "?")))
+                    title = html.escape(str(f.get("title", "")))
                     title_str = f" ({title})" if title else ""
                     badges = []
                     if f.get("email"):
@@ -338,7 +343,7 @@ class TelegramAgent:
                     badge_str = f" — {' | '.join(badges)}" if badges else ""
                     lines.append(f"👤 {name}{title_str}{badge_str}")
             else:
-                lines.append(f"👤 Founders: {', '.join(str(f) for f in founders)}")
+                lines.append(f"👤 Founders: {', '.join(html.escape(str(f)) for f in founders)}")
                 socials = job.get("founder_socials", [])
                 if socials:
                     sl = []
@@ -352,7 +357,7 @@ class TelegramAgent:
         # OSINT signals
         if osint_signals:
             for sig in osint_signals:
-                lines.append(f"📡 {sig}")
+                lines.append(f"📡 {html.escape(str(sig))}")
 
         # 🚨 Active Founder Posts
         founder_posts = job.get("founder_posts", [])
@@ -361,8 +366,8 @@ class TelegramAgent:
             for fp in founder_posts[:2]:
                 if not isinstance(fp, dict):
                     continue
-                name = fp.get("founder_name", "Unknown")
-                intent = fp.get("intent", "")
+                name = html.escape(str(fp.get("founder_name", "Unknown")))
+                intent = html.escape(str(fp.get("intent", "")))
                 post_url = fp.get("post_url", "")
                 line = f"👤 <b>{name}</b>"
                 if intent:

@@ -41,7 +41,7 @@ async def _scrape_alternate(role: str, company: str, original_url: str) -> str:
                 json={"url": alt_url, "formats": ["markdown"]},
             )
             if scrape_resp.status_code == 200:
-                alt_content = scrape_resp.json().get("data", {}).get("markdown", "") or ""
+                alt_content = (scrape_resp.json().get("data") or {}).get("markdown", "") or ""
                 return alt_content if len(alt_content) >= 100 else ""
     except Exception:
         pass

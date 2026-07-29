@@ -248,7 +248,6 @@ def main() -> None:
     row(t, "playwright", status_for(container_running("firecrawl_playwright")), ":3000")
     row(t, "nuq-postgres", status_for(container_running("firecrawl_nuq-postgres")), ":5432")
     row(t, "searxng", status_for(check_http("http://localhost:8080")), ":8080")
-    row(t, "qdrant (vector db)", status_for(check_port("localhost", 6333)), ":6333")
 
     console.print()
     console.print(t)

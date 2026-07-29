@@ -153,7 +153,7 @@ async def _scrape_index_links(
                             payload["onlyMainContent"] = True
                         resp = await client.post(f"{firecrawl_url}/v1/scrape", json=payload)
                         if resp.status_code == 200:
-                            md = resp.json().get("data", {}).get("markdown", "") or ""
+                            md = (resp.json().get("data") or {}).get("markdown", "") or ""
                             md_lower = md.lower()
 
                             # Prepend known metadata so the LLM always has context

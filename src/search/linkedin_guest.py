@@ -91,12 +91,8 @@ async def scrape_linkedin_guest_jobs(
             if not url:
                 continue
 
-            title_el = card.find("h3", class_="base-search-card__title") or card.find_next(
-                "h3", class_="base-search-card__title"
-            )
-            company_el = card.find("h4", class_="base-search-card__subtitle") or card.find_next(
-                "h4", class_="base-search-card__subtitle"
-            )
+            title_el = card.find("h3", class_="base-search-card__title")
+            company_el = card.find("h4", class_="base-search-card__subtitle")
 
             title = title_el.get_text(strip=True) if title_el else ""
             company = company_el.get_text(strip=True) if company_el else ""

@@ -93,7 +93,7 @@ async def _scrape_index(url: str, app: FirecrawlApp, pipeline: JobPipeline) -> N
                 json={"url": url, "formats": ["markdown"]},
             )
             if resp.status_code == 200:
-                md = resp.json().get("data", {}).get("markdown", "") or ""
+                md = (resp.json().get("data") or {}).get("markdown", "") or ""
                 if md:
                     await pipeline.push(
                         QueuedJob(markdown=md, url=url, title=f"INDEX:{url.split('/')[-1]}")
@@ -113,7 +113,7 @@ async def scrape_url_to_pipeline(item: dict, app: FirecrawlApp, pipeline: JobPip
                 json={"url": url, "formats": ["markdown"]},
             )
             if resp.status_code == 200:
-                md = resp.json().get("data", {}).get("markdown", "") or ""
+                md = (resp.json().get("data") or {}).get("markdown", "") or ""
                 if md and len(md) > 100:
                     await pipeline.push(
                         QueuedJob(markdown=md, url=url, title=item.get("title", ""))
