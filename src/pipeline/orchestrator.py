@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import re
 import signal
 import sys
 import time
@@ -45,8 +46,22 @@ VERIFY_CONCURRENCY = 20
 def filter_last_24_hours(jobs: list[dict]) -> list[dict]:
     """Drop any job with a posted_date provably older than 24 hours.
 
-    Null / unparseable dates get the benefit of the doubt.
+    Null / unparseable dates get checked for relative-date phrases
+    (e.g. '3d ago', 'last week') before being admitted.
     """
+    _old_date_rx = re.compile(
+        r"(?:(?:(\d+)\s*(?:day|d)\b)|"
+        r"(?:(\d+)\s*(?:week|w)\b)|"
+        r"(?:(\d+)\s*(?:month|mo|m)\b)|"
+        r"(?:(?:last|previous)\s+(?:week|month|year)))",
+        re.IGNORECASE,
+    )
+    _recent_rx = re.compile(
+        r"\b(?:today|now|just|hour|mins?|minutes?|seconds?|recently)\b",
+        re.IGNORECASE,
+    )
+    _one_day_rx = re.compile(r"\b(?:1\s*(?:day|d)\s*ago)\b", re.IGNORECASE)
+
     filtered = []
     cutoff = datetime.now(UTC) - timedelta(hours=24)
     for j in jobs:
@@ -61,7 +76,13 @@ def filter_last_24_hours(jobs: list[dict]) -> list[dict]:
             if dt >= cutoff:
                 filtered.append(j)
         except ValueError, TypeError:
-            filtered.append(j)
+            d_lower = str(date_str).lower()
+            if (
+                _recent_rx.search(d_lower)
+                or _one_day_rx.search(d_lower)
+                or not _old_date_rx.search(d_lower)
+            ):
+                filtered.append(j)
     return filtered
 
 

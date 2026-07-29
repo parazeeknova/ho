@@ -27,16 +27,21 @@ def write_md(jobs: list[dict], output_path: str = "jobs.md") -> None:
 
     rows = []
     for i, j in enumerate(jobs, 1):
-        role = j.get("role", "?")
-        company = j.get("company", "?")
+        role = str(j.get("role", "?")).replace("|", "\\|").replace("\n", " ").replace("\r", "")
+        company = (
+            str(j.get("company", "?")).replace("|", "\\|").replace("\n", " ").replace("\r", "")
+        )
         match_pct = f"{j.get('match_percent', '?')}%"
         shortlist = f"{j.get('shortlist_probability', '?')}%"
-        salary = str(j.get("salary") or "-")
+        salary = (
+            str(j.get("salary") or "-").replace("|", "\\|").replace("\n", " ").replace("\r", "")
+        )
         posted = compute_days_ago(j.get("posted_date"))
 
-        location = j.get("location", "")
+        location = str(j.get("location", ""))
         if not location or location == "?":
             location = "Remote" if j.get("is_remote") else "Flexible"
+        location = location.replace("|", "\\|").replace("\n", " ").replace("\r", "")
 
         link = j.get("apply_link") or j.get("source_url") or j.get("url") or ""
         link_md = f"[Apply]({link})" if link and link.startswith("http") else "-"

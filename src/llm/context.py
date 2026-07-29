@@ -48,17 +48,19 @@ async def _acquire_llm_token() -> None:
         await asyncio.sleep(wait)
 
 
-def _mark_rate_limited() -> None:
+async def _mark_rate_limited() -> None:
     """Called when the LLM returns a 429 or rate-limit error.
-    Drains the token bucket so every concurrent caller pauses together."""
+    Drains the token bucket under the lock so every concurrent caller pauses together."""
     global _rate_limit_hit_at, _token_count
-    _rate_limit_hit_at = time.monotonic()
-    _token_count = 0.0
+    async with _token_lock:
+        _rate_limit_hit_at = time.monotonic()
+        _token_count = 0.0
 
 
 def _is_rate_limited(error: Exception) -> bool:
     msg = str(error).lower()
     return "429" in msg or "rate limit" in msg
+
 
 DIM = "\033[2m"
 ITALIC = "\033[3m"
@@ -113,7 +115,6 @@ VERIFY_SCHEMA: dict[str, Any] = {
 
 
 class ContextManager:
-
     def __init__(self, verbose: bool = True) -> None:
         self.cumulative_output_tokens = 0
         self.verbose = verbose
@@ -155,7 +156,7 @@ class ContextManager:
             except Exception as e:
                 last_error = e
                 if _is_rate_limited(e):
-                    _mark_rate_limited()
+                    await _mark_rate_limited()
                     # Rate-limit errors get longer, aggressive backoff
                     wait = max(5.0, backoff * 3)
                 else:

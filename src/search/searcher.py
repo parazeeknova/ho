@@ -243,17 +243,17 @@ async def scrape_all(
     tasks = []
 
     for url in GITHUB_INDEXES:
-        tasks.append(_scrape_index(url, app, pipeline))
+        tasks.append(lambda u=url: _scrape_index(u, app, pipeline))
 
     web_hits = await _search_web(app, positions, ctx)
     for hit in web_hits:
-        tasks.append(scrape_url_to_pipeline(hit, app, pipeline))
+        tasks.append(lambda h=hit: scrape_url_to_pipeline(h, app, pipeline))
 
     sem = asyncio.Semaphore(max_workers)
 
-    async def _limited_run(coro):
+    async def _limited_run(coro_factory):
         async with sem:
-            return await coro
+            return await coro_factory()
 
     await asyncio.gather(*(_limited_run(t) for t in tasks))
 

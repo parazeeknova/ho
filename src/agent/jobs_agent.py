@@ -45,12 +45,7 @@ class JobsAgent:
             role = str(job.get("role") or "Position")
             key = _normalize_key(company, role)
 
-            apply_link = (
-                job.get("apply_link")
-                or job.get("source_url")
-                or job.get("url")
-                or ""
-            )
+            apply_link = job.get("apply_link") or job.get("source_url") or job.get("url") or ""
             if not apply_link or not str(apply_link).startswith("http"):
                 apply_link = str(job.get("url", ""))
 
@@ -119,8 +114,15 @@ class JobsAgent:
         valid_jobs.sort(key=lambda x: int(x.get("match_percent", 0)), reverse=True)
 
         for i, j in enumerate(valid_jobs, start=1):
-            role = str(j.get("role") or "-").replace("|", "\\|")
-            company = str(j.get("company") or "-").replace("|", "\\|")
+            role = (
+                str(j.get("role") or "-").replace("|", "\\|").replace("\n", " ").replace("\r", "")
+            )
+            company = (
+                str(j.get("company") or "-")
+                .replace("|", "\\|")
+                .replace("\n", " ")
+                .replace("\r", "")
+            )
             comp_info = (
                 str(
                     j.get("company_description")
@@ -130,18 +132,27 @@ class JobsAgent:
                 )
                 .strip()
                 .replace("|", "\\|")
+                .replace("\n", " ")
+                .replace("\r", "")
             )
             if len(comp_info) > 60:
                 comp_info = comp_info[:57] + "..."
 
             match_str = f"{j.get('match_percent', 0)}%"
             shortlist_str = f"{j.get('shortlist_probability', 0)}%"
-            salary = str(j.get("salary") or "-").replace("|", "\\|")
+            salary = (
+                str(j.get("salary") or "-").replace("|", "\\|").replace("\n", " ").replace("\r", "")
+            )
 
             posted_raw = j.get("posted_date")
             posted = compute_days_ago(posted_raw) if posted_raw else "-"
 
-            location = str(j.get("location") or "Remote").replace("|", "\\|")
+            location = (
+                str(j.get("location") or "Remote")
+                .replace("|", "\\|")
+                .replace("\n", " ")
+                .replace("\r", "")
+            )
 
             link = j.get("apply_link") or j.get("source_url") or j.get("url") or ""
             if link and isinstance(link, str) and link.startswith("http"):
@@ -182,9 +193,7 @@ class JobsAgent:
             if news:
                 lines.append(f"**Recent News**: {news}")
             if socials:
-                social_links = [
-                    f"[{s}]({s})" if s.startswith("http") else s for s in socials
-                ]
+                social_links = [f"[{s}]({s})" if s.startswith("http") else s for s in socials]
                 lines.append(f"**Outreach Links**: {', '.join(social_links)}")
             if link and str(link).startswith("http"):
                 lines.append(f"**Apply Direct**: [{link}]({link})")
