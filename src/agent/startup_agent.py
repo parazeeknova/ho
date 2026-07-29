@@ -33,13 +33,16 @@ FOUNDER_POST_SCHEMA: dict[str, Any] = {
 }
 
 
-async def _searxng_search(query: str) -> list[str]:
+async def _searxng_search(query: str, time_range: str | None = None) -> list[str]:
     """Execute search query against local SearXNG."""
+    params: dict[str, str] = {"q": query, "format": "json"}
+    if time_range:
+        params["time_range"] = time_range
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(
                 "http://localhost:8080/search",
-                params={"q": query, "format": "json", "time_range": "day"},
+                params=params,
             )
             if resp.status_code == 200:
                 results = resp.json().get("results", [])
@@ -232,7 +235,7 @@ class StartupAgent:
             f"{role_part}"
         )
 
-        snippets = await _searxng_search(query)
+        snippets = await _searxng_search(query, time_range="day")
         if not snippets:
             return []
 

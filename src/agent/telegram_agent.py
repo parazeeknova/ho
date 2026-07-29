@@ -335,11 +335,11 @@ class TelegramAgent:
                     title_str = f" ({title})" if title else ""
                     badges = []
                     if f.get("email"):
-                        badges.append(f'<a href="mailto:{f["email"]}">Email</a>')
+                        badges.append(f'<a href="mailto:{html.escape(f["email"])}">Email</a>')
                     if f.get("linkedin_url"):
-                        badges.append(f'<a href="{f["linkedin_url"]}">LinkedIn</a>')
+                        badges.append(f'<a href="{html.escape(f["linkedin_url"])}">LinkedIn</a>')
                     if f.get("github_url"):
-                        badges.append(f'<a href="{f["github_url"]}">GitHub</a>')
+                        badges.append(f'<a href="{html.escape(f["github_url"])}">GitHub</a>')
                     badge_str = f" — {' | '.join(badges)}" if badges else ""
                     lines.append(f"👤 {name}{title_str}{badge_str}")
             else:
@@ -349,7 +349,9 @@ class TelegramAgent:
                     sl = []
                     for s in socials[:2]:
                         if isinstance(s, str) and s.startswith("http"):
-                            sl.append(f'<a href="{s}">{s.split("//")[-1]}</a>')
+                            sl.append(
+                                f'<a href="{html.escape(s)}">{html.escape(s.split("//")[-1])}</a>'
+                            )
                         else:
                             sl.append(str(s))
                     lines.append(f"   Links: {', '.join(sl)}")
@@ -374,12 +376,14 @@ class TelegramAgent:
                     line += f" — {intent}"
                 lines.append(line)
                 if post_url.startswith("http"):
-                    lines.append(f'└ <a href="{post_url}"><b>DM them on LinkedIn →</b></a>')
+                    lines.append(
+                        f'└ <a href="{html.escape(post_url)}"><b>DM them on LinkedIn →</b></a>'
+                    )
                 lines.append("")
 
         # Apply link
         if link and str(link).startswith("http"):
-            lines.extend(["", f'<a href="{link}"><b>Apply Direct →</b></a>'])
+            lines.extend(["", f'<a href="{html.escape(link)}"><b>Apply Direct →</b></a>'])
 
         return "\n".join(lines)
 

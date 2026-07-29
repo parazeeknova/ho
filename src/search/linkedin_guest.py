@@ -123,7 +123,29 @@ async def scrape_linkedin_guest_jobs(
             discovered.append(job)
 
             if pipeline is not None:
-                desc = f"**{title}** at {company}\nLinkedIn Guest API listing.\nApply: {url}"
+                # Try to fetch the full JD from the guest jobPosting API
+                desc_parts = [f"**{title}** at {company}", f"Apply: {url}"]
+                jd_match = re.search(r"(?:view/|currentJobId=|-)(\d{8,10})", url)
+                if jd_match:
+                    job_id = jd_match.group(1)
+                    try:
+                        jd_url = f"https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{job_id}"  # noqa: E501
+                        async with httpx.AsyncClient(
+                            timeout=10.0, follow_redirects=True
+                        ) as jd_client:
+                            jd_resp = await jd_client.get(jd_url, headers=hdrs)
+                            if jd_resp.status_code == 200:
+                                jd_soup = BeautifulSoup(jd_resp.text, "html.parser")
+                                jd_div = jd_soup.find("div", class_="show-more-less-html__markup")
+                                if jd_div:
+                                    jd_text = jd_div.get_text(separator="\n", strip=True)
+                                    if jd_text:
+                                        desc_parts.append(jd_text)
+                        await asyncio.sleep(1.0)
+                    except Exception:
+                        pass
+
+                desc = "\n".join(desc_parts)
                 await pipeline.push(QueuedJob(markdown=desc, url=url, title=title))
 
     for start in range(0, max_pages * 25, 25):

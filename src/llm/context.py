@@ -90,8 +90,8 @@ class ContextManager:
 
     async def chat(self, prompt: str, schema: dict[str, Any] | None = None) -> str:
         current_prompt = prompt
-        if len(current_prompt) > 24000:
-            current_prompt = current_prompt[:24000]
+        if len(current_prompt) > 120000:
+            current_prompt = current_prompt[:120000]
 
         if schema is not None:
             current_prompt += "\n\nYou MUST return valid JSON matching this schema:\n" + json.dumps(

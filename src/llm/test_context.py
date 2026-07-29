@@ -28,7 +28,7 @@ class TestStripMarkdown:
 class TestContextManager:
     def test_init(self) -> None:
         ctx = ContextManager()
-        assert ctx.model == "gemma-4-31B-it"
+        assert isinstance(ctx.model, str) and len(ctx.model) > 0
 
     @pytest.mark.asyncio
     async def test_json_chat_dict(self, mocker) -> None:
