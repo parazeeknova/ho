@@ -46,7 +46,7 @@ def filter_recent(jobs: list[dict], max_days: int = 7) -> list[dict]:
             dt = datetime.fromisoformat(str(date_str).replace("Z", "+00:00"))
             if (now - dt).days <= max_days:
                 filtered.append(j)
-        except ValueError, TypeError:
+        except (ValueError, TypeError):
             filtered.append(j)
     return filtered
 

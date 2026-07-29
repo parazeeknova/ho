@@ -6,11 +6,7 @@ Pipeline (sequential state machine):
   Node 2  –  Matcher Agent     (LLM: Qwen3.5-4B with structured output)
   Node 3  –  Critic Agent      (LLM + hard-constraint rules)
   Edge    –  Self-correction    (route back to Matcher if needed, max 2 retries)
-  Node 4  –  Memory Saver      (persist to pgvector + jobs.md)
-
-The pipeline is a single async function ``run_graph(...)`` that walks the
-nodes and returns the final ``JobMatch`` result (or ``None`` when the URL
-was already processed or the job fails all gates).
+  Node 4  –  Memory Saver      (persist to pgvector)
 """
 
 from __future__ import annotations
@@ -22,18 +18,11 @@ from typing import Any, TypedDict, cast
 import httpx
 
 from src.llm.config import build_embed_query
+from src.llm.context import ContextManager
 from src.llm.schemas import CriticReview, JobMatch, canonicalize_markdown
 from src.memory.pgvector_store import MemoryStore
 
-# ── LLM endpoints ──────────────────────────────────────────────────────────
-
-LLM_URL = "http://127.0.0.1:8899"
-LLM_MODEL = "Qwen/Qwen3.5-4B"
-MAX_RETRIES = 3
-RETRY_DELAY = 4
-
 EMBED_URL = "http://127.0.0.1:8900"
-
 MAX_CORRECTION_LOOPS = 2
 
 MATCHER_PROMPT = """\
@@ -90,41 +79,13 @@ class GraphState(TypedDict, total=False):
     markdown: str
     url: str
     title: str
+    skip: bool
     match: dict[str, Any] | None
     critique: dict[str, Any] | None
     retries: int
 
 
-async def _llm_chat(
-    client: httpx.AsyncClient,
-    prompt: str,
-    schema: dict[str, Any] | None = None,
-) -> str:
-    payload: dict[str, Any] = {
-        "model": LLM_MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "stream": False,
-    }
-    if schema is not None:
-        payload["response_format"] = {
-            "type": "json_object",
-            "schema": schema,
-        }
-
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            resp = await client.post(f"{LLM_URL}/v1/chat/completions", json=payload)
-            resp.raise_for_status()
-            result = resp.json()
-            return result["choices"][0]["message"].get("content", "")
-        except Exception:
-            if attempt < MAX_RETRIES:
-                await asyncio.sleep(RETRY_DELAY)
-    raise RuntimeError("LLM failed after all retries")
-
-
 async def _embed_query(client: httpx.AsyncClient, text: str) -> list[float]:
-    """Generate an embedding for a retrieval query using the embedding model."""
     prefixed = build_embed_query(text)
     resp = await client.post(
         f"{EMBED_URL}/v1/embeddings",
@@ -135,26 +96,6 @@ async def _embed_query(client: httpx.AsyncClient, text: str) -> list[float]:
     return data["data"][0]["embedding"]
 
 
-async def _embed_chunks(client: httpx.AsyncClient, texts: list[str]) -> list[list[float]]:
-    """Generate embeddings for resume chunks (no instruction prefix)."""
-    resp = await client.post(
-        f"{EMBED_URL}/v1/embeddings",
-        json={"model": "Qwen/Qwen3-Embedding-0.6B", "input": texts},
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    return [item["embedding"] for item in data["data"]]
-
-
-def _strip_markdown_code(raw: str) -> str:
-    raw = raw.strip()
-    if raw.startswith("```"):
-        raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
-        if raw.endswith("```"):
-            raw = raw[:-3]
-    return raw.strip()
-
-
 def _apply_hard_constraints(match: dict[str, Any]) -> CriticReview:
     """Deterministic pre-check before calling the LLM Critic."""
     role = str(match.get("role", "")).lower()
@@ -162,20 +103,9 @@ def _apply_hard_constraints(match: dict[str, Any]) -> CriticReview:
     text = role + " " + jd_summary
 
     senior_kws = (
-        "senior",
-        "sr.",
-        "staff ",
-        "lead ",
-        "principal",
-        "architect",
-        "manager",
-        "director",
-        "head of",
-        "vp ",
-        "vice president",
-        "5+ year",
-        "7+ year",
-        "10+ year",
+        "senior", "sr.", "staff ", "lead ", "principal",
+        "architect", "manager", "director", "head of",
+        "vp ", "vice president", "5+ year", "7+ year", "10+ year",
     )
     if any(kw in text for kw in senior_kws):
         return CriticReview(
@@ -202,13 +132,14 @@ async def node_context_builder(
 
     cleaned = canonicalize_markdown(md, url)
     if cleaned is None:
-        state["match"] = None
+        state["skip"] = True
         return state
 
     if await store.is_url_processed(url):
-        state["match"] = None
+        state["skip"] = True
         return state
 
+    state["skip"] = False
     state["markdown"] = cleaned
 
     try:
@@ -223,7 +154,7 @@ async def node_context_builder(
 
 async def node_matcher(
     state: GraphState,
-    client: httpx.AsyncClient,
+    ctx: ContextManager,
     critique_feedback: str = "",
 ) -> GraphState:
     """Node 2: Call the LLM Matcher Agent."""
@@ -249,36 +180,30 @@ async def node_matcher(
             "Please rescore carefully, addressing the issues raised."
         )
 
-    raw = await _llm_chat(client, prompt, JobMatch.model_json_schema())
-    raw = _strip_markdown_code(raw)
-    try:
-        match = json.loads(raw)
-    except json.JSONDecodeError:
-        state["match"] = None
-        return state
+    result = await ctx.json_chat(prompt, JobMatch.model_json_schema())
 
-    if not isinstance(match, dict) or "match_percent" not in match:
+    if not isinstance(result, dict) or "match_percent" not in result:
         state["match"] = None
         return state
 
     required = {"role", "company", "match_percent", "shortlist_probability"}
-    if not required.issubset(match.keys()):
+    if not required.issubset(result.keys()):
         state["match"] = None
         return state
 
     try:
-        JobMatch.model_validate(match)
+        JobMatch.model_validate(result)
     except Exception:
         state["match"] = None
         return state
 
-    state["match"] = match
+    state["match"] = result
     return state
 
 
 async def node_critic(
     state: GraphState,
-    client: httpx.AsyncClient,
+    ctx: ContextManager,
 ) -> GraphState:
     """Node 3: Verify match against hard constraints, escalate to LLM if needed."""
     match = state.get("match")
@@ -298,12 +223,11 @@ async def node_critic(
     prompt = CRITIC_PROMPT.replace("{result}", json.dumps(match, indent=2))
     prompt = prompt.replace("{job_description}", state["markdown"][:3000])
 
-    raw = await _llm_chat(client, prompt, CriticReview.model_json_schema())
-    raw = _strip_markdown_code(raw)
-    try:
-        critique = json.loads(raw)
-        state["critique"] = critique
-    except json.JSONDecodeError:
+    result = await ctx.json_chat(prompt, CriticReview.model_json_schema())
+
+    if isinstance(result, dict):
+        state["critique"] = result
+    else:
         state["critique"] = {
             "passed": False,
             "critique_reason": "Critic LLM returned unparseable output",
@@ -334,65 +258,46 @@ async def node_memory_saver(
 async def run_graph(
     state: GraphState,
     store: MemoryStore,
-    client: httpx.AsyncClient | None = None,
+    embed_client: httpx.AsyncClient,
+    ctx: ContextManager,
 ) -> dict[str, Any] | None:
-    """Execute the full multi-agent pipeline on a single JD and return the
-    final ``JobMatch`` dict, or ``None`` if rejected / already processed.
+    """Execute the full multi-agent pipeline on a single JD.
 
-    Parameters
-    ----------
-    state:
-        Must include at least ``markdown``, ``url``, and optionally ``title``.
-    store:
-        An initialised ``MemoryStore`` connected to the agent-memory db.
-    client:
-        A shared ``httpx.AsyncClient``.  One is created internally if not
-        supplied (useful for single-shot invocation).
+    Returns the final ``JobMatch`` dict, or ``None`` if rejected / already
+    processed.
     """
-    own_client = client is None
-    if own_client:
-        client = httpx.AsyncClient(
-            timeout=httpx.Timeout(300.0, connect=10.0),
-            limits=httpx.Limits(max_keepalive_connections=4, max_connections=8),
-        )
-    assert client is not None
+    state.setdefault("retries", 0)
 
-    try:
-        state.setdefault("retries", 0)
+    # Node 1: Context Builder
+    state = await node_context_builder(state, store, embed_client)
+    if state.get("skip", False):
+        return None
 
-        # Node 1: Context Builder
-        state = await node_context_builder(state, store, client)
-        if state.get("match") is None and state.get("_rag_chunks") == []:  # type: ignore[comparison-overlap]
+    # Node 2 + 3 with self-correction loop
+    loop_count = 0
+    critique_feedback = ""
+    while True:
+        state = await node_matcher(state, ctx, critique_feedback)
+        if state.get("match") is None:
             return None
 
-        # Node 2 + 3 with self-correction loop
-        loop_count = 0
-        critique_feedback = ""
-        while True:
-            state = await node_matcher(state, client, critique_feedback)
-            if state.get("match") is None:
-                return None
+        state = await node_critic(state, ctx)
+        critique = CriticReview.model_validate(state["critique"] or {})
 
-            state = await node_critic(state, client)
-            critique = CriticReview.model_validate(state["critique"] or {})
+        if critique.passed:
+            break
 
-            if critique.passed:
-                break
+        if not critique.requires_rescore or loop_count >= MAX_CORRECTION_LOOPS:
+            state["match"] = None
+            return None
 
-            if not critique.requires_rescore or loop_count >= MAX_CORRECTION_LOOPS:
-                state["match"] = None
-                return None
+        loop_count += 1
+        critique_feedback = critique.critique_reason
 
-            loop_count += 1
-            critique_feedback = critique.critique_reason
+    # Node 4: Memory Saver
+    state = await node_memory_saver(state, store)
 
-        # Node 4: Memory Saver
-        state = await node_memory_saver(state, store)
-
-        return state.get("match")
-    finally:
-        if own_client and client is not None:
-            await client.aclose()
+    return state.get("match")
 
 
 async def run_batch(
@@ -403,25 +308,29 @@ async def run_batch(
     """Run the graph pipeline concurrently over a batch of JDs.
 
     Each item must be a dict with keys ``markdown``, ``url``, and optionally
-    ``title``.  A single shared ``httpx.AsyncClient`` is used across the
-    entire batch for connection pooling.
+    ``title``.  A single shared ``httpx.AsyncClient`` and ``ContextManager``
+    are used across the entire batch.
     """
     sem = asyncio.Semaphore(concurrency)
     results: list[dict[str, Any]] = []
 
-    async def _one(jd: dict[str, str], client: httpx.AsyncClient) -> None:
+    ctx = ContextManager()
+
+    async def _one(jd: dict[str, str]) -> None:
         async with sem:
             result = await run_graph(
                 {
                     "markdown": jd["markdown"],
                     "url": jd["url"],
                     "title": jd.get("title", ""),
+                    "skip": False,
                     "match": None,
                     "critique": None,
                     "retries": 0,
                 },
                 store,
-                client,
+                embed_client,
+                ctx,
             )
             if result is not None:
                 results.append(result)
@@ -437,9 +346,11 @@ async def run_batch(
             max_keepalive_connections=concurrency,
             max_connections=concurrency * 2,
         ),
-    ) as client:
-        tasks = [asyncio.create_task(_one(jd, client)) for jd in jd_batch]
+    ) as embed_client:
+        tasks = [asyncio.create_task(_one(jd)) for jd in jd_batch]
         await asyncio.gather(*tasks, return_exceptions=True)
+
+    await ctx.aclose()
 
     results.sort(key=lambda j: j.get("match_percent", 0), reverse=True)
     return results

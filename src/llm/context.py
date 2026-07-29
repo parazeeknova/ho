@@ -70,17 +70,6 @@ VERIFY_SCHEMA: dict[str, Any] = {
     "required": ["same_job", "confidence"],
 }
 
-REVALIDATE_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "role": {"type": "string"},
-        "company": {"type": "string"},
-        "match_percent": {"type": "integer", "minimum": 0, "maximum": 100},
-        "shortlist_probability": {"type": "integer", "minimum": 0, "maximum": 100},
-    },
-    "required": ["role", "company", "match_percent", "shortlist_probability"],
-}
-
 
 def _build_payload(prompt: str, schema: dict[str, Any] | None = None) -> dict[str, Any]:
     payload: dict[str, Any] = {
@@ -90,8 +79,12 @@ def _build_payload(prompt: str, schema: dict[str, Any] | None = None) -> dict[st
     }
     if schema is not None:
         payload["response_format"] = {
-            "type": "json_object",
-            "schema": schema,
+            "type": "json_schema",
+            "json_schema": {
+                "name": "job_evaluation",
+                "strict": True,
+                "schema": schema,
+            },
         }
     return payload
 

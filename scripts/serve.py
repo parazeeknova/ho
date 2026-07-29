@@ -15,7 +15,7 @@ from pathlib import Path
 MODELS_DIR = Path(os.environ.get("MODELS_DIR", os.path.expanduser("~/Models")))
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
-LLM_FILE = "Qwen3.5-4B-Instruct-Q4_K_M.gguf"
+LLM_FILE = "Qwen3.5-4B-Q5_K_M.gguf"
 LLM_FALLBACK = "Qwen3.5-4B.Q5_K_M.gguf"
 EMBED_HF = "Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0"
 
@@ -50,7 +50,7 @@ def resolve_llm_model() -> str:
             return candidate
     # fallback: try -hf download (may need HF_TOKEN for gated repos)
     print(f"  No local GGUF found in {MODELS_DIR}, trying -hf download...")
-    return "Qwen/Qwen3.5-4B-Instruct-GGUF:Q4_K_M"
+    return "bartowski/Qwen_Qwen3.5-4B-GGUF:Q5_K_M"
 
 
 # ── Process 1: LLM (Qwen3.5-4B, chat completions) ─────────────────────
@@ -62,8 +62,6 @@ if is_hf:
     p_llm = subprocess.Popen(
         [
             "llama-server",
-            "--models-dir",
-            str(MODELS_DIR),
             "-hf",
             llm_model,
             "--port",
@@ -111,8 +109,6 @@ print("Starting Embedding server on :8900 (auto-downloads Q8_0 if needed)...")
 p_embed = subprocess.Popen(
     [
         "llama-server",
-        "--models-dir",
-        str(MODELS_DIR),
         "-hf",
         EMBED_HF,
         "--port",
