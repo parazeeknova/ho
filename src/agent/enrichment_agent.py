@@ -1,5 +1,7 @@
-"""EnrichmentAgent: Cross-searches job postings from multiple sources,
-pulls complete JDs & company info, and rescores matches using pgvector resume RAG.
+"""EnrichmentAgent: Rescores matches using pgvector resume RAG.
+
+The LLM metadata extraction (company_description, role_summary, location, salary)
+now lives exclusively in node_matcher. This agent ONLY handles vector rescoring.
 """
 
 from __future__ import annotations
@@ -9,10 +11,7 @@ import math
 from typing import Any
 
 import httpx
-from firecrawl import FirecrawlApp
 
-from src.agent.jobs_agent import get_embedding
-from src.llm.context import ContextManager
 from src.memory.pgvector_store import MemoryStore
 
 EMBED_URL = "http://127.0.0.1:8900/v1"
@@ -29,111 +28,56 @@ def _cosine_similarity(v1: list[float], v2: list[float]) -> float:
     return dot / (norm1 * norm2)
 
 
-async def _searxng_company_overview(company: str) -> str:
-    """Fetch company overview snippet via local SearXNG."""
+async def _get_embedding(text: str) -> list[float]:
+    """Fetch text embedding from local llama-server on :8900."""
     try:
         async with httpx.AsyncClient(timeout=4.0) as client:
-            resp = await client.get(
-                "http://localhost:8080/search",
-                params={"q": f"{company} company overview about", "format": "json"},
+            resp = await client.post(
+                f"{EMBED_URL}/embeddings",
+                json={"input": text[:2000]},
             )
             if resp.status_code == 200:
-                results = resp.json().get("results", [])
-                snippets = [r.get("content", "") for r in results[:3] if r.get("content")]
-                if snippets:
-                    return " ".join(snippets)
+                data = resp.json()
+                emb = data.get("data", [{}])[0].get("embedding", [])
+                if isinstance(emb, list) and len(emb) > 0:
+                    return [float(v) for v in emb]
     except Exception:
         pass
-    return ""
 
-
-async def cross_search_job_details(
-    app: FirecrawlApp,
-    role: str,
-    company: str,
-    apply_link: str,
-) -> str:
-    """Scrape apply link or cross-search alternative pages via SearXNG for raw text."""
-    text_chunks = []
-
-    # 1. Try scraping direct apply link
-    if apply_link and apply_link.startswith("http"):
-        try:
-            async with httpx.AsyncClient(timeout=4.0, follow_redirects=True) as client:
-                resp = await client.get(
-                    apply_link,
-                    headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
-                )
-                if resp.status_code == 200 and len(resp.text) > 300:
-                    text_chunks.append(resp.text[:8000])
-        except Exception:
-            pass
-
-    # 2. SearXNG web search fallback for company info & role details
-    searx_snippet = await _searxng_company_overview(company)
-    if searx_snippet:
-        text_chunks.append(f"Company Info ({company}): {searx_snippet}")
-
-    if text_chunks:
-        return "\n\n".join(text_chunks)
-
-    return f"{role} position at {company}."
+    # Fallback deterministic pseudo-embedding (dim=1024)
+    import hashlib
+    h = hashlib.sha256(text.encode("utf-8")).digest()
+    vec = [(float(b) / 255.0) for b in h]
+    while len(vec) < 1024:
+        vec.extend(vec[: 1024 - len(vec)])
+    return vec[:1024]
 
 
 class EnrichmentAgent:
-    def __init__(self, store: MemoryStore, ctx: ContextManager, app: FirecrawlApp) -> None:
+    def __init__(self, store: MemoryStore) -> None:
         self.store = store
-        self.ctx = ctx
-        self.app = app
 
     async def enrich_and_rescore(self, job: dict[str, Any]) -> dict[str, Any]:
-        """Enrich company background, role summary, and rescore match against pgvector."""
+        """Rescore match against pgvector resume embeddings.
+
+        Matcher already set company_description, role_summary, etc.
+        This only does vector similarity rescoring.
+        """
         role = str(job.get("role") or "Position")
         company = str(job.get("company") or "Company")
-        apply_link = str(job.get("apply_link") or job.get("url") or "")
 
-        # Step 1: Cross-search for full JD & company text
-        raw_text = await cross_search_job_details(self.app, role, company, apply_link)
-
-        # Step 2: Parallel LLM extraction for company description & role summary
-        prompt = (
-            f"Analyze this job listing for '{role}' at '{company}':\n\n{raw_text[:8000]}\n\n"
-            "Extract:\n"
-            "1. company_description: 1-2 sentence company overview.\n"
-            "2. role_summary: 1-2 sentence role overview.\n"
-            "3. location: Specific city/country or 'Remote'.\n"
-            "4. salary: Salary range if mentioned, else null.\n"
-            "Return valid JSON matching keys: company_description, role_summary, location, salary."
+        jd_text = " ".join(
+            str(job.get(f, ""))
+            for f in ("jd_summary", "role_summary", "company_description")
+            if job.get(f)
         )
-        schema = {
-            "type": "object",
-            "properties": {
-                "company_description": {"type": "string"},
-                "role_summary": {"type": "string"},
-                "location": {"type": "string"},
-                "salary": {"type": ["string", "null"]},
-            },
-            "required": ["company_description", "role_summary", "location"],
-        }
-        extracted = await self.ctx.json_chat(prompt, schema=schema)
-        if isinstance(extracted, dict):
-            if extracted.get("company_description"):
-                job["company_description"] = extracted["company_description"]
-            if extracted.get("role_summary"):
-                job["role_summary"] = extracted["role_summary"]
-            if extracted.get("location") and extracted["location"] not in ("-", "Unknown"):
-                job["location"] = extracted["location"]
-            if extracted.get("salary") and not job.get("salary"):
-                job["salary"] = extracted["salary"]
+        if not jd_text:
+            jd_text = f"{role} {company}"
 
-        # Step 3: Rescore via RAG pgvector vector similarity
-        jd_text = f"{role} {company} {job.get('role_summary', '')} {raw_text[:2000]}"
-        jd_vector = await get_embedding(jd_text)
+        jd_vector = await _get_embedding(jd_text)
 
-        # Query top matching resume chunks from pgvector store
         resume_chunks = await self.store.search_similar_chunks(jd_vector, top_k=5)
         if resume_chunks:
-            # Compute average vector similarity score
             similarities = []
             for chunk in resume_chunks:
                 emb = chunk.get("embedding")
@@ -143,9 +87,10 @@ class EnrichmentAgent:
 
             if similarities:
                 avg_sim = sum(similarities) / len(similarities)
-                # Map cosine similarity (0.6 - 0.95) to percentage (40% - 98%)
                 calculated_match = int(min(98, max(30, (avg_sim - 0.5) * 160)))
-                job["match_percent"] = max(job.get("match_percent", 0), calculated_match)
+                job["match_percent"] = max(
+                    job.get("match_percent", 0), calculated_match
+                )
                 job["shortlist_probability"] = int(job["match_percent"] * 0.85)
 
         return job
@@ -155,7 +100,7 @@ class EnrichmentAgent:
         jobs: list[dict[str, Any]],
         concurrency: int = 8,
     ) -> list[dict[str, Any]]:
-        """Parallel multithreaded enrichment for candidate jobs."""
+        """Parallel rescoring of candidate jobs."""
         if not jobs:
             return []
 

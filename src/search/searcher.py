@@ -2,6 +2,7 @@
 
 import asyncio
 import re
+import time
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
@@ -145,7 +146,7 @@ async def _search_searxng(queries: list[str]) -> list[dict[str, str]]:
                 async with httpx.AsyncClient(timeout=6.0) as client:
                     resp = await client.get(
                         "http://localhost:8080/search",
-                        params={"q": q, "format": "json"},
+                        params={"q": q, "format": "json", "time_range": "day"},
                     )
                     resp.raise_for_status()
                     data = resp.json()
@@ -303,6 +304,7 @@ async def fetch_direct_json_feeds(positions: list[str], pipeline: JobPipeline) -
 
     async def _fetch_hn() -> None:
         try:
+            cutoff_ts = int(time.time()) - 86400  # 24 hours ago
             async with httpx.AsyncClient(timeout=15.0) as client:
                 resp = await client.get(
                     "https://hn.algolia.com/api/v1/search_by_date",
@@ -310,6 +312,7 @@ async def fetch_direct_json_feeds(positions: list[str], pipeline: JobPipeline) -
                         "tags": "job",
                         "query": "remote intern entry junior",
                         "hitsPerPage": 30,
+                        "numericFilters": f"created_at_i>{cutoff_ts}",
                     },
                 )
                 resp.raise_for_status()

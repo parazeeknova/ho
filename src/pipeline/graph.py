@@ -3,7 +3,7 @@
 Pipeline (sequential state machine):
 
   Node 1  –  Context Builder   (deterministic: dedup + RAG retrieval)
-  Node 2  –  Matcher Agent     (LLM: Qwen3.5-4B with structured output)
+  Node 2  –  Matcher Agent     (LLM: gemma-4-31B-it with structured output)
   Node 3  –  Critic Agent      (LLM + hard-constraint rules)
   Edge    –  Self-correction    (route back to Matcher if needed, max 2 retries)
   Node 4  –  Memory Saver      (persist to pgvector)
@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import re
 from typing import Any, TypedDict, cast
 
 import httpx
@@ -67,6 +68,8 @@ verdict=NO_MATCH.
 remote roles worldwide, onsite roles in India, and roles with visa sponsorship.
 - If salary is specified below 70K INR/month (or equivalent), set match_percent=0 \
 and verdict=NO_MATCH.
+- If the job description explicitly states the posting is older than 24 hours \
+or more than 1 day old, set match_percent=0 and verdict=NO_MATCH.
 - If the job requires 5+ years of experience or is titled Senior/Staff/Lead/\
 Principal/Manager/Director/Architect, set match_percent=0 and verdict=NO_MATCH.
 - Be conservative. STRONG_MATCH only with genuine skill alignment.
@@ -90,6 +93,8 @@ Architect, VP, or "5+ years", "7+ years", "10+ years" of experience.
 3. The match_percent is unreasonably high given the skills gap or JD content.
 4. The JD text is clearly a landing page, directory, or error page rather than \
 a real job posting.
+5. The JD explicitly mentions it was posted more than 24 hours ago (or >1 day \
+ago, or a date older than yesterday).
 
 Return a JSON object with:
 - passed: bool (true if the match passes all hard constraints)
@@ -120,63 +125,64 @@ async def _embed_query(client: httpx.AsyncClient, text: str) -> list[float]:
 
 
 def _apply_hard_constraints(match: dict[str, Any]) -> CriticReview:
-    """Deterministic pre-check before calling the LLM Critic."""
+    """Deterministic pre-check before calling the LLM Critic.
+
+    Uses strict regex word boundaries (\\b) for title-level keywords
+    applied ONLY to the role field, so 'reports to the Engineering Manager'
+    in the JD body doesn't filter entry-level jobs.
+    """
     role = str(match.get("role", "")).lower()
     jd_summary = str(match.get("jd_summary", "")).lower()
-    text = role + " " + jd_summary
 
-    non_tech_kws = (
-        "content creator",
-        "host live",
-        "sales provider",
-        "sales executive",
-        "sales representative",
-        "property development",
-        "account executive",
-        "marketing",
-        "recruiter",
-        "customer service",
-        "customer support",
-        "telemarketing",
-        "social media",
-        "administrative assistant",
-        "store manager",
-        "cashier",
-        "driver",
-    )
-    if any(kw in text for kw in non_tech_kws):
-        return CriticReview(
-            passed=False,
-            critique_reason="Role is non-technical / irrelevant — hard-constraint violation.",
-            requires_rescore=False,
-        )
+    # Non-tech role patterns (check role + jd_summary)
+    _non_tech_pats = [
+        r"\bcontent\s+creator\b", r"\bhost\s+live\b",
+        r"\bsales\s+provider\b", r"\bsales\s+executive\b",
+        r"\bsales\s+representative\b", r"\bproperty\s+development\b",
+        r"\baccount\s+executive\b", r"\bmarketing\b",
+        r"\brecruiter\b", r"\bcustomer\s+service\b",
+        r"\bcustomer\s+support\b", r"\btelemarketing\b",
+        r"\bsocial\s+media\b", r"\badministrative\s+assistant\b",
+        r"\bstore\s+manager\b", r"\bcashier\b", r"\bdriver\b",
+    ]
+    combined = role + " " + jd_summary
+    for pat in _non_tech_pats:
+        if re.search(pat, combined):
+            return CriticReview(
+                passed=False,
+                critique_reason="Role is non-technical — hard-constraint violation.",
+                requires_rescore=False,
+            )
 
-    senior_kws = (
-        "senior",
-        "sr.",
-        "staff ",
-        "lead ",
-        "principal",
-        "architect",
-        "manager",
-        "director",
-        "head of",
-        "vp ",
-        "vice president",
-        "phd",
-        "ph.d",
-        "doctorate",
-        "postdoc",
-        "5+ year",
-        "7+ year",
-        "10+ year",
-    )
-    if any(kw in text for kw in senior_kws):
-        return CriticReview(
-            passed=False,
-            critique_reason="Role or JD contains senior/PhD keywords — hard-constraint violation.",
-            requires_rescore=False,
-        )
+    # Senior/title keywords — check ROLE TITLE ONLY so
+    # 'reports to the Engineering Manager' is not a false positive.
+    _title_pats = [
+        r"\bsenior\b", r"\bsr\.?\b", r"\bstaff\b",
+        r"\bmanager\b", r"\bdirector\b",
+        r"\bvp\b", r"\bvice\s+president\b",
+        r"\bhead\s+of\b", r"\barchitect\b", r"\bprincipal\b",
+    ]
+    for pat in _title_pats:
+        if re.search(pat, role):
+            return CriticReview(
+                passed=False,
+                critique_reason="Role title contains senior/leadership keyword — hard-constraint.",
+                requires_rescore=False,
+            )
+
+    # Experience-level keywords — check role + jd_summary
+    _exp_pats = [
+        r"\b5\+?\s*years?\b", r"\b7\+?\s*years?\b",
+        r"\b10\+?\s*years?\b", r"\b\d{2,}\s*\+\s*years?\b",
+        r"\bph\.?d\b", r"\bdoctorate\b", r"\bpostdoc\b",
+    ]
+    for pat in _exp_pats:
+        if re.search(pat, combined):
+            return CriticReview(
+                passed=False,
+                critique_reason="JD requires 5+ years or PhD — hard-constraint violation.",
+                requires_rescore=False,
+            )
 
     return CriticReview(passed=True, critique_reason="Pre-checks passed", requires_rescore=False)
 
@@ -228,6 +234,9 @@ async def node_matcher(
     chunks = cast(list[dict[str, Any]], state.get("_rag_chunks", []))
     jd_text = state["markdown"]
 
+    if len(jd_text) > 5000:
+        jd_text = jd_text[:3000] + "\n...\n" + jd_text[-2000:]
+
     relevant = (
         "\n".join(
             f"[{c['section']}] {c['content']}"
@@ -238,7 +247,7 @@ async def node_matcher(
     )
 
     prompt = MATCHER_PROMPT.replace("{relevant_chunks}", relevant[:3000])
-    prompt = prompt.replace("{job_description}", jd_text[:5000])
+    prompt = prompt.replace("{job_description}", jd_text)
 
     if critique_feedback:
         prompt += (

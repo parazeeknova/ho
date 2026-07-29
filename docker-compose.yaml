@@ -121,19 +121,3 @@ services:
       options:
         max-size: "5m"
         max-file: "1"
-
-  qdrant:
-    image: qdrant/qdrant:latest
-    ports:
-      - "6333:6333"
-      - "6334:6334"
-    volumes:
-      - qdrant_data:/qdrant/storage
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "5m"
-        max-file: "1"
-
-volumes:
-  qdrant_data:

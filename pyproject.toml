@@ -5,6 +5,7 @@ description = "Thy Job shall be mine"
 requires-python = ">=3.14"
 dependencies = [
     "asyncpg>=0.30.0",
+    "beautifulsoup4>=4.13.0",
     "firecrawl-py>=4.33.1",
     "generalcompute>=0.2.1",
     "httpx>=0.28.0",
@@ -58,6 +59,7 @@ dev = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+pythonpath = ["."]
 markers = [
     "asyncio: mark a test as an async test",
 ]

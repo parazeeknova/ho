@@ -47,6 +47,33 @@ CREATE TABLE IF NOT EXISTS telegram_notified_jobs (
     company         TEXT,
     notified_at     TIMESTAMP DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS jobs_ledger (
+    dedup_key     TEXT PRIMARY KEY,
+    role          TEXT,
+    company       TEXT,
+    match_percent INT DEFAULT 0,
+    shortlist_probability INT DEFAULT 0,
+    salary        TEXT,
+    posted_date   TEXT,
+    location      TEXT DEFAULT 'Remote',
+    apply_link    TEXT,
+    jd_summary    TEXT DEFAULT '',
+    company_description TEXT DEFAULT '',
+    role_summary  TEXT DEFAULT '',
+    verdict       TEXT DEFAULT 'NO_MATCH',
+    is_startup    BOOLEAN DEFAULT FALSE,
+    founders      JSONB DEFAULT '[]'::jsonb,
+    funding_stage TEXT DEFAULT '',
+    funding_info  JSONB DEFAULT '{{}}'::jsonb,
+    founder_socials JSONB DEFAULT '[]'::jsonb,
+    company_news  TEXT DEFAULT '',
+    osint_signals JSONB DEFAULT '[]'::jsonb,
+    source_url    TEXT DEFAULT '',
+    raw_json      JSONB DEFAULT '{{}}'::jsonb,
+    created_at    TIMESTAMP DEFAULT NOW(),
+    updated_at    TIMESTAMP DEFAULT NOW()
+);
 """
 
 
@@ -210,3 +237,165 @@ class MemoryStore:
                 role,
                 company,
             )
+
+    # ── jobs_ledger (replaces Qdrant — persistent job ledger) ──────────────
+
+    _JOB_COLUMNS = (
+        "dedup_key", "role", "company", "match_percent", "shortlist_probability",
+        "salary", "posted_date", "location", "apply_link", "jd_summary",
+        "company_description", "role_summary", "verdict", "is_startup",
+        "founders", "funding_stage", "funding_info", "founder_socials",
+        "company_news", "osint_signals", "source_url", "raw_json",
+    )
+
+    def _row_to_job(self, row: asyncpg.Record) -> dict[str, Any]:
+        job: dict[str, Any] = {}
+        jsonb_cols = ("founders", "funding_info", "founder_socials", "osint_signals")
+        for col in self._JOB_COLUMNS:
+            val = row.get(col)
+            if col in jsonb_cols and isinstance(val, str):
+                val = json.loads(val) if val else ({} if col == "funding_info" else [])
+            job[col] = val
+        if row.get("raw_json"):
+            raw = row["raw_json"]
+            if isinstance(raw, str):
+                raw = json.loads(raw)
+            if isinstance(raw, dict):
+                for k, v in raw.items():
+                    if k not in job or not job[k]:
+                        job[k] = v
+        return job
+
+    async def upsert_job_ledger(self, dedup_key: str, data: dict[str, Any]) -> int:
+        """Insert or merge a job into the ledger. Higher match_percent wins."""
+        existing = await self.get_job_by_key(dedup_key)
+        if existing:
+            data["match_percent"] = max(
+                existing.get("match_percent", 0), data.get("match_percent", 0)
+            )
+            data["shortlist_probability"] = max(
+                existing.get("shortlist_probability", 0),
+                data.get("shortlist_probability", 0),
+            )
+            for field in ("company_description", "role_summary", "salary",
+                          "posted_date", "apply_link", "jd_summary"):
+                if not existing.get(field) and data.get(field):
+                    existing[field] = data[field]
+            data = existing
+
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO jobs_ledger (dedup_key, role, company, match_percent,
+                    shortlist_probability, salary, posted_date, location,
+                    apply_link, jd_summary, company_description, role_summary,
+                    verdict, is_startup, founders, funding_stage,
+                    funding_info, founder_socials, company_news, osint_signals,
+                    source_url, raw_json)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,
+                        $15::jsonb,$16,$17::jsonb,$18::jsonb,$19,$20::jsonb,$21,$22::jsonb)
+                ON CONFLICT (dedup_key) DO UPDATE SET
+                    match_percent = GREATEST(jobs_ledger.match_percent, EXCLUDED.match_percent),
+                    shortlist_probability = GREATEST(
+                        jobs_ledger.shortlist_probability,
+                        EXCLUDED.shortlist_probability
+                    ),
+                    company_description = COALESCE(
+                        NULLIF(jobs_ledger.company_description, ''),
+                        EXCLUDED.company_description
+                    ),
+                    role_summary = COALESCE(
+                        NULLIF(jobs_ledger.role_summary, ''),
+                        EXCLUDED.role_summary
+                    ),
+                    salary = COALESCE(jobs_ledger.salary, EXCLUDED.salary),
+                    posted_date = COALESCE(jobs_ledger.posted_date, EXCLUDED.posted_date),
+                    apply_link = COALESCE(NULLIF(EXCLUDED.apply_link, ''), jobs_ledger.apply_link),
+                    jd_summary = COALESCE(NULLIF(jobs_ledger.jd_summary, ''), EXCLUDED.jd_summary),
+                    location = COALESCE(EXCLUDED.location, jobs_ledger.location),
+                    verdict = EXCLUDED.verdict,
+                    is_startup = EXCLUDED.is_startup,
+                    founders = EXCLUDED.founders,
+                    funding_stage = EXCLUDED.funding_stage,
+                    funding_info = EXCLUDED.funding_info,
+                    founder_socials = EXCLUDED.founder_socials,
+                    company_news = EXCLUDED.company_news,
+                    osint_signals = EXCLUDED.osint_signals,
+                    source_url = EXCLUDED.source_url,
+                    raw_json = EXCLUDED.raw_json,
+                    updated_at = NOW()
+                """,
+                dedup_key,
+                data.get("role", ""),
+                data.get("company", ""),
+                data.get("match_percent", 0),
+                data.get("shortlist_probability", 0),
+                data.get("salary"),
+                data.get("posted_date"),
+                data.get("location", "Remote"),
+                data.get("apply_link", ""),
+                data.get("jd_summary", ""),
+                data.get("company_description", ""),
+                data.get("role_summary", ""),
+                str(data.get("verdict", "NO_MATCH")),
+                bool(data.get("is_startup", False)),
+                json.dumps(data.get("founders", [])),
+                data.get("funding_stage", ""),
+                json.dumps(data.get("funding_info", {})),
+                json.dumps(data.get("founder_socials", [])),
+                data.get("company_news", ""),
+                json.dumps(data.get("osint_signals", [])),
+                data.get("source_url", data.get("url", "")),
+                json.dumps(data),
+            )
+        return 1
+
+    async def get_job_by_key(self, dedup_key: str) -> dict[str, Any] | None:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM jobs_ledger WHERE dedup_key = $1", dedup_key
+            )
+            return self._row_to_job(row) if row else None
+
+    async def get_all_jobs_ledger(self) -> list[dict[str, Any]]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM jobs_ledger ORDER BY match_percent DESC"
+            )
+        return [self._row_to_job(r) for r in rows]
+
+    async def get_job_ledger_count(self) -> int:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT COUNT(*) AS cnt FROM jobs_ledger")
+            return row["cnt"] if row else 0
+
+    async def purge_fake_job_keys(self, keys: list[str]) -> int:
+        removed = 0
+        async with self._pool.acquire() as conn:
+            for key in keys:
+                result = await conn.execute(
+                    "DELETE FROM jobs_ledger WHERE dedup_key = $1", key
+                )
+                if result != "DELETE 0":
+                    removed += 1
+        return removed
+
+    async def search_similar_jobs(
+        self, query_emb: list[float], top_k: int = 10
+    ) -> list[dict[str, Any]]:
+        """Semantic search over jobs_ledger using pgvector cosine distance.
+        Returns top_k similar jobs with their match data."""
+        vec = Vector(query_emb)
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT *, embedding <=> $1 AS distance
+                FROM jobs_ledger
+                WHERE embedding IS NOT NULL
+                ORDER BY distance ASC
+                LIMIT $2
+                """,
+                vec,
+                top_k,
+            )
+        return [self._row_to_job(r) for r in rows]

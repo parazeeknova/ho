@@ -170,10 +170,10 @@ def main() -> None:
                 ":5433",
             )
 
-            # ── Launch firecrawl & qdrant infra (first iteration only) ──
+            # ── Launch firecrawl infra (first iteration only) ──
             if not infra_started:
                 subprocess.Popen(
-                    f"{DOCKER_COMPOSE} up -d redis playwright-service nuq-postgres searxng qdrant",
+                    f"{DOCKER_COMPOSE} up -d redis playwright-service nuq-postgres searxng",
                     shell=True,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,

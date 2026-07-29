@@ -4,7 +4,7 @@ import asyncio
 import signal
 import sys
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import httpx
 from dotenv import load_dotenv
@@ -22,6 +22,7 @@ from src.pipeline.graph import EMBED_URL, drain_retry_queue, run_batch
 from src.pipeline.queue import JobPipeline, QueuedJob
 from src.rag.github_linkedin_loader import enrich_candidate_chunks
 from src.rag.loader import load_resume
+from src.search.linkedin_guest import scrape_linkedin_guest_jobs
 from src.search.searcher import (
     TARGET_POSITIONS_SCHEMA,
     extract_index_jobs,
@@ -40,9 +41,13 @@ MATCH_CONCURRENCY = 24
 VERIFY_CONCURRENCY = 20
 
 
-def filter_recent(jobs: list[dict], max_days: int = 7) -> list[dict]:
+def filter_last_24_hours(jobs: list[dict]) -> list[dict]:
+    """Drop any job with a posted_date provably older than 24 hours.
+
+    Null / unparseable dates get the benefit of the doubt.
+    """
     filtered = []
-    now = datetime.now(UTC)
+    cutoff = datetime.now(UTC) - timedelta(hours=24)
     for j in jobs:
         date_str = j.get("posted_date") or j.get("posted")
         if not date_str:
@@ -50,7 +55,7 @@ def filter_recent(jobs: list[dict], max_days: int = 7) -> list[dict]:
             continue
         try:
             dt = datetime.fromisoformat(str(date_str).replace("Z", "+00:00"))
-            if (now - dt).days <= max_days:
+            if dt >= cutoff:
                 filtered.append(j)
         except ValueError, TypeError:
             filtered.append(j)
@@ -99,9 +104,7 @@ async def _domain_producer(
         async with scrape_lock:
             scrape_done += 1
             if scrape_done % 20 == 0 or scrape_done == scrape_total:
-                console.print(
-                    f"  Scraping map URLs... {scrape_done}/{scrape_total}"
-                )
+                console.print(f"  Scraping map URLs... {scrape_done}/{scrape_total}")
 
     scrape_tasks = [_scrape_with_progress(mu) for mu in map_urls]
     await asyncio.gather(*scrape_tasks)
@@ -145,9 +148,7 @@ async def _scrape_index_links(
                         payload: dict = {"url": url, "formats": ["markdown"]}
                         if use_main_content:
                             payload["onlyMainContent"] = True
-                        resp = await client.post(
-                            f"{firecrawl_url}/v1/scrape", json=payload
-                        )
+                        resp = await client.post(f"{firecrawl_url}/v1/scrape", json=payload)
                         if resp.status_code == 200:
                             md = resp.json().get("data", {}).get("markdown", "") or ""
                             md_lower = md.lower()
@@ -194,7 +195,9 @@ async def _process_and_dispatch_batch(
     if not scored:
         return []
 
-    enricher = EnrichmentAgent(store, ctx, app)
+    scored = filter_last_24_hours(scored)
+
+    enricher = EnrichmentAgent(store)
     enriched = await enricher.batch_enrich_and_rescore(scored, concurrency=VERIFY_CONCURRENCY)
 
     startup_agent = StartupAgent(ctx)
@@ -202,11 +205,31 @@ async def _process_and_dispatch_batch(
         enriched, concurrency=VERIFY_CONCURRENCY
     )
 
-    await JobsAgent().add_or_merge_jobs(startup_enriched, ctx=ctx)
+    high_match = [j for j in startup_enriched if int(j.get("match_percent", 0)) >= 70]
+    if high_match:
+        for j in high_match:
+            company = str(j.get("company", ""))
+            if not company or company in ("N/A", "Unknown"):
+                continue
+            try:
+                posts = await startup_agent.mine_founder_posts(
+                    company, roles=[str(j.get("role", ""))]
+                )
+                if posts:
+                    j["founder_posts"] = posts
+                    console.print(
+                        f"  🚨 Founder hiring post for {company}: "
+                        f"{posts[0].get('founder_name', '?')} "
+                        f"({posts[0].get('post_url', '')[:60]}...)"
+                    )
+            except Exception:
+                pass
+
+    await JobsAgent(store=store).add_or_merge_jobs(startup_enriched)
     if ctx:
         await ctx.flush()
 
-    cleanup_agent = CleanupAgent()
+    cleanup_agent = CleanupAgent(store=store)
     clean_jobs = await cleanup_agent.clean_and_format_ledger()
 
     telegram_agent = TelegramAgent()
@@ -334,8 +357,9 @@ async def _run_pipeline() -> None:
     store = await MemoryStore.create()
     console.print("  [green]Connected to agent-memory-db[/green]")
 
-    jobs_agent = JobsAgent()
-    jobs_agent.purge_fake_entries()
+    removed = await store.purge_fake_job_keys(["techco:backendengineer"])
+    if removed:
+        console.print(f"  [dim]Purged {removed} stale test entries[/dim]")
 
     console.rule("[bold cyan]PHASE 1: Load Resume + Index in pgvector[/bold cyan]")
     loop = asyncio.get_running_loop()
@@ -527,6 +551,10 @@ async def _run_pipeline() -> None:
         await asyncio.gather(
             scrape_all(app, positions, ctx, pipeline, max_workers=MAX_SCRAPE_WORKERS),
             fetch_direct_json_feeds(positions, pipeline),
+            *(
+                scrape_linkedin_guest_jobs(pos, location="India", pipeline=pipeline)
+                for pos in positions[:3]
+            ),
         )
 
         await domain_task
@@ -563,7 +591,7 @@ async def _run_pipeline() -> None:
                     idx_scored = await run_batch(idx_batch, store, concurrency=MATCH_CONCURRENCY)
                     await _process_and_dispatch_batch(idx_scored, store, ctx, app)
 
-        cleanup_agent = CleanupAgent()
+        cleanup_agent = CleanupAgent(store=store)
         clean_jobs = await cleanup_agent.clean_and_format_ledger()
 
         console.print(
@@ -588,9 +616,7 @@ async def _run_pipeline() -> None:
         console.print(f"[bold green]Sweep {sweep} complete ({elapsed:.1f}s)[/bold green]")
         set_pipeline_state(matched_total=total_matched, phase="idle")
         if telegram_agent.is_configured:
-            await telegram_agent.send_sweep_summary(
-                sweep, len(clean_jobs), 0, elapsed
-            )
+            await telegram_agent.send_sweep_summary(sweep, len(clean_jobs), 0, elapsed)
 
     await telegram_agent.stop_polling()
     set_pipeline_state(running=False, phase="shutdown")

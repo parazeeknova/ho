@@ -45,9 +45,7 @@ def set_pipeline_state(**kwargs: Any) -> None:
 # ---------------------------------------------------------------------------
 async def _check_port(host: str, port: int, timeout: float = 2.0) -> bool:
     try:
-        _, writer = await asyncio.wait_for(
-            asyncio.open_connection(host, port), timeout=timeout
-        )
+        _, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=timeout)
         writer.close()
         return True
     except Exception:
@@ -168,9 +166,7 @@ class TelegramAgent:
             params["offset"] = self._update_id + 1
 
         async with httpx.AsyncClient(timeout=8.0) as client:
-            resp = await client.get(
-                TELEGRAM_UPDATES.format(token=self.bot_token), params=params
-            )
+            resp = await client.get(TELEGRAM_UPDATES.format(token=self.bot_token), params=params)
             if resp.status_code != 200:
                 return
             data = resp.json()
@@ -246,9 +242,7 @@ class TelegramAgent:
             return
         if dedup_key:
             self._seen_errors.add(dedup_key)
-        await self._send_raw(
-            f"🚨 <b>Pipeline Error</b>\n\n<code>{message[:800]}</code>"
-        )
+        await self._send_raw(f"🚨 <b>Pipeline Error</b>\n\n<code>{message[:800]}</code>")
         print("  📱 [TelegramAgent] Sent error alert")
 
     async def send_startup(self, sweep_count: int = 0) -> None:
@@ -280,17 +274,10 @@ class TelegramAgent:
         link = job.get("apply_link") or job.get("source_url") or job.get("url") or ""
 
         comp_desc = str(
-            job.get("company_description")
-            or job.get("jd_summary")
-            or job.get("role_summary")
-            or ""
+            job.get("company_description") or job.get("jd_summary") or job.get("role_summary") or ""
         ).strip()
         if len(comp_desc) > 200:
             comp_desc = comp_desc[:197] + "..."
-
-        founders = job.get("founders", [])
-        funding = job.get("funding_stage")
-        socials = job.get("founder_socials", [])
 
         lines = [
             f"<b>{role.upper()}</b> • <b>{company.upper()}</b>",
@@ -305,19 +292,87 @@ class TelegramAgent:
         if comp_desc:
             lines.extend(["", f"<blockquote>{comp_desc}</blockquote>"])
 
-        if founders:
-            lines.append(f"<b>Founders:</b> {', '.join(founders)}")
-        if funding:
-            lines.append(f"<b>Funding:</b> {funding}")
-        if socials:
-            social_links = [
-                f'<a href="{s}">{s.split("//")[-1]}</a>'
-                if s.startswith("http")
-                else s
-                for s in socials[:2]
-            ]
-            lines.append(f"<b>Outreach:</b> {', '.join(social_links)}")
+        # ── OSINT & Outreach ──────────────────────────────────────────
 
+        funding_info = job.get("funding_info") or {}
+        funding_stage = job.get("funding_stage", "")
+        founders = job.get("founders", [])
+        osint_signals = job.get("osint_signals", [])
+
+        has_osint = bool(funding_info or funding_stage or founders or osint_signals)
+        if has_osint:
+            lines.extend(["", "<b>🕵️ OSINT &amp; Outreach</b>", ""])
+
+        # Funding line
+        if isinstance(funding_info, dict) and any(funding_info.values()):
+            fi = funding_info
+            parts = []
+            if fi.get("round"):
+                parts.append(f"💰 <b>{fi['round']}</b>")
+            if fi.get("amount_raised"):
+                parts.append(f"({fi['amount_raised']})")
+            if fi.get("lead_investors"):
+                parts.append(f"led by {', '.join(fi['lead_investors'])}")
+            if fi.get("date_announced"):
+                parts.append(f"[{fi['date_announced']}]")
+            if parts:
+                lines.append(" ".join(parts))
+        elif funding_stage and funding_stage not in ("N/A", "-"):
+            lines.append(f"💰 Funding: {funding_stage}")
+
+        # Founder rows with clickable links
+        founders = job.get("founders", [])
+        if founders:
+            if isinstance(founders[0], dict):
+                for f in founders:
+                    name = f.get("name", "?")
+                    title = f.get("title", "")
+                    title_str = f" ({title})" if title else ""
+                    badges = []
+                    if f.get("email"):
+                        badges.append(f'<a href="mailto:{f["email"]}">Email</a>')
+                    if f.get("linkedin_url"):
+                        badges.append(f'<a href="{f["linkedin_url"]}">LinkedIn</a>')
+                    if f.get("github_url"):
+                        badges.append(f'<a href="{f["github_url"]}">GitHub</a>')
+                    badge_str = f" — {' | '.join(badges)}" if badges else ""
+                    lines.append(f"👤 {name}{title_str}{badge_str}")
+            else:
+                lines.append(f"👤 Founders: {', '.join(str(f) for f in founders)}")
+                socials = job.get("founder_socials", [])
+                if socials:
+                    sl = []
+                    for s in socials[:2]:
+                        if isinstance(s, str) and s.startswith("http"):
+                            sl.append(f'<a href="{s}">{s.split("//")[-1]}</a>')
+                        else:
+                            sl.append(str(s))
+                    lines.append(f"   Links: {', '.join(sl)}")
+
+        # OSINT signals
+        if osint_signals:
+            for sig in osint_signals:
+                lines.append(f"📡 {sig}")
+
+        # 🚨 Active Founder Posts
+        founder_posts = job.get("founder_posts", [])
+        if founder_posts and isinstance(founder_posts, list):
+            lines.extend(["", "<b>🚨 ACTIVE FOUNDER POST:</b>"])
+            for fp in founder_posts[:2]:
+                if not isinstance(fp, dict):
+                    continue
+                name = fp.get("founder_name", "Unknown")
+                intent = fp.get("intent", "")
+                post_url = fp.get("post_url", "")
+                line = f"👤 <b>{name}</b>"
+                if intent:
+                    line += f" — {intent}"
+                lines.append(line)
+                if post_url.startswith("http"):
+                    lines.append(f'└ <a href="{post_url}"><b>DM them on LinkedIn →</b></a>')
+                lines.append("")
+
+        # Apply link
         if link and str(link).startswith("http"):
             lines.extend(["", f'<a href="{link}"><b>Apply Direct →</b></a>'])
 
