@@ -651,9 +651,9 @@ async def _run_pipeline() -> None:
             if os.environ.get("OVERNIGHT_LOOP", "false").lower() != "true":
                 break
 
-            console.print("\n[dim]Sleeping 30 minutes before next sweep...[/dim]")
+            console.print("\n[dim]Sleeping 5 minutes before next sweep...[/dim]")
             gc.collect()
-            await asyncio.sleep(1800)
+            await asyncio.sleep(300)
 
         except Exception as e:
             if "consumer_task" in locals() and not consumer_task.done():
@@ -667,8 +667,8 @@ async def _run_pipeline() -> None:
                     dedup_key=f"sweep_crash_{sweep}",
                 )
             gc.collect()
-            console.print("  [yellow]Sleeping 15 minutes before next sweep...[/yellow]")
-            await asyncio.sleep(900)
+            console.print("  [yellow]Sleeping 5 minutes before next sweep...[/yellow]")
+            await asyncio.sleep(300)
 
     await telegram_agent.stop_polling()
     set_pipeline_state(running=False, phase="shutdown")

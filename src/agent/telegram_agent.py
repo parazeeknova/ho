@@ -117,21 +117,33 @@ class TelegramAgent:
     async def _send_raw(self, text: str, parse_mode: str = "HTML") -> bool:
         if not self.is_configured:
             return False
-        try:
-            async with httpx.AsyncClient(timeout=8.0) as client:
-                resp = await client.post(
-                    TELEGRAM_SEND.format(token=self.bot_token),
-                    json={
-                        "chat_id": self.chat_id,
-                        "text": text,
-                        "parse_mode": parse_mode,
-                        "disable_web_page_preview": True,
-                    },
-                )
-                return resp.status_code == 200
-        except Exception as e:
-            print(f"  [dim]Telegram send failed: {e}[/dim]")
-            return False
+        for attempt in range(3):
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.post(
+                        TELEGRAM_SEND.format(token=self.bot_token),
+                        json={
+                            "chat_id": self.chat_id,
+                            "text": text,
+                            "parse_mode": parse_mode,
+                            "disable_web_page_preview": True,
+                        },
+                    )
+                    if resp.status_code == 200:
+                        return True
+                    body = resp.text[:200]
+                    print(f"  [yellow]Telegram {resp.status_code}: {body}[/yellow]")
+                    if resp.status_code == 429:
+                        await asyncio.sleep(2 << attempt)
+                    elif resp.status_code >= 500:
+                        await asyncio.sleep(1 << attempt)
+                    else:
+                        return False
+            except Exception as e:
+                print(f"  [yellow]Telegram send failed (attempt {attempt + 1}): {e}[/yellow]")
+                if attempt < 2:
+                    await asyncio.sleep(1 << attempt)
+        return False
 
     # ---- command bot ------------------------------------------------------
 
