@@ -50,6 +50,17 @@ def check_port(host: str, port: int) -> bool:
     return False
 
 
+def model_exists() -> bool:
+    """Check if any GGUF file exists locally (in Models dir or HF cache)."""
+    models_dir = Path.home() / "Models"
+    if list(models_dir.glob("*.gguf")):
+        return True
+    hf_cache = Path.home() / ".cache" / "huggingface" / "hub"
+    if hf_cache.exists():
+        return bool(list(hf_cache.glob("models--*/snapshots/*/*.gguf")))
+    return False
+
+
 def container_running(name: str) -> bool:
     code, _ = run(
         f"podman ps --filter name='{name}' --filter status=running --format '{{{{.Names}}}}'"
@@ -114,6 +125,7 @@ def main() -> None:
     infra_started = False
     api_started = False
     api_ok = False
+    have_model = model_exists()
 
     deadman = 240  # max total startup seconds
 
@@ -136,13 +148,21 @@ def main() -> None:
             row(
                 t,
                 "llama-server (LLM)",
-                status_for(llama_ok, downloading=not llama_ok and elapsed < 120),
+                status_for(
+                    llama_ok,
+                    downloading=not llama_ok and not have_model and elapsed < 120,
+                    initializing=not llama_ok and have_model,
+                ),
                 ":8899",
             )
             row(
                 t,
                 "llama-server (Embed)",
-                status_for(embed_ok, downloading=not embed_ok and elapsed < 120),
+                status_for(
+                    embed_ok,
+                    downloading=not embed_ok and not have_model and elapsed < 120,
+                    initializing=not embed_ok and have_model,
+                ),
                 ":8900",
             )
 

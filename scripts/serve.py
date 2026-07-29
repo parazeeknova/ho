@@ -16,7 +16,7 @@ MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
 HF_CACHE = Path(os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface"))) / "hub"
 
-LLM_FILE = "Qwen3.5-4B-Q5_K_M.gguf"
+LLM_FILE = "Qwen_Qwen3.5-4B-Q5_K_M.gguf"
 LLM_FALLBACK = "Qwen3.5-4B.Q5_K_M.gguf"
 EMBED_HF = "Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0"
 
