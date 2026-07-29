@@ -19,6 +19,8 @@ MATCH_SCHEMA: dict[str, Any] = {
     "properties": {
         "role": {"type": "string"},
         "company": {"type": "string"},
+        "company_description": {"type": "string"},
+        "role_summary": {"type": "string"},
         "match_percent": {"type": "integer", "minimum": 0, "maximum": 100},
         "shortlist_probability": {"type": "integer", "minimum": 0, "maximum": 100},
         "matching_skills": {"type": "array", "items": {"type": "string"}},

@@ -39,8 +39,9 @@ Full job listing:
 {job_description}
 
 CRITICAL RULES:
-- Extract all metadata fields: role title, company name, location \
-(city/country or "Remote"), salary (if mentioned), posted_date, and apply_link.
+- Extract all metadata fields: role title, company name, \
+company_description (1-2 sentence company overview), role_summary (1-2 sentence role overview), \
+location (city/country or "Remote"), salary (if mentioned), posted_date, and apply_link.
 - If the text is a company homepage, job directory, error page, or lists \
 multiple different jobs instead of ONE SINGLE posting, set match_percent=0 and \
 verdict=NO_MATCH.

@@ -127,6 +127,8 @@ class JobsAgent:
             job_entry = {
                 "role": role,
                 "company": company,
+                "company_description": job.get("company_description", ""),
+                "role_summary": job.get("role_summary", ""),
                 "match_percent": int(job.get("match_percent", 0)),
                 "shortlist_probability": int(job.get("shortlist_probability", 0)),
                 "salary": job.get("salary"),
@@ -147,6 +149,10 @@ class JobsAgent:
                     existing.get("shortlist_probability", 0),
                     job_entry["shortlist_probability"],
                 )
+                if not existing.get("company_description") and job_entry.get("company_description"):
+                    existing["company_description"] = job_entry["company_description"]
+                if not existing.get("role_summary") and job_entry.get("role_summary"):
+                    existing["role_summary"] = job_entry["role_summary"]
                 if not existing.get("salary") and job_entry.get("salary"):
                     existing["salary"] = job_entry["salary"]
                 if not existing.get("posted_date") and job_entry.get("posted_date"):
@@ -259,6 +265,25 @@ class JobsAgent:
             lines.append(row_str)
 
         lines.extend(["", f"*{len(jobs)} positions matched*", ""])
+
+        # Detailed Position Cards
+        lines.extend(["---", "## Detailed Position Insights", ""])
+        for i, j in enumerate(jobs, start=1):
+            role = str(j.get("role") or "Position")
+            company = str(j.get("company") or "Company")
+            comp_desc = str(j.get("company_description") or j.get("jd_summary") or "").strip()
+            role_desc = str(j.get("role_summary") or j.get("jd_summary") or "").strip()
+            link = j.get("apply_link") or j.get("source_url") or j.get("url") or ""
+
+            lines.append(f"### {i}. {role} @ {company}")
+            if comp_desc:
+                lines.append(f"**Company Overview**: {comp_desc}")
+            if role_desc:
+                lines.append(f"**Role Focus**: {role_desc}")
+            if link and str(link).startswith("http"):
+                lines.append(f"**Apply Direct**: [{link}]({link})")
+            lines.append("")
+
         content = "\n".join(lines)
 
         tmp_file = f"{self.output_path}.tmp"
