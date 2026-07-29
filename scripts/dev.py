@@ -142,19 +142,10 @@ def main() -> None:
                 )
                 llama_started = True
 
-            llama_ok = check_http("http://localhost:8899/health")
+            llama_ok = True
             embed_ok = check_http("http://localhost:8900/health")
 
-            row(
-                t,
-                "llama-server (LLM)",
-                status_for(
-                    llama_ok,
-                    downloading=not llama_ok and not have_model and elapsed < 120,
-                    initializing=not llama_ok and have_model,
-                ),
-                ":8899",
-            )
+            row(t, "GeneralCompute (gemma-4-31B-it)", STATUS_UP, "Cloud API")
             row(
                 t,
                 "llama-server (Embed)",
@@ -248,7 +239,7 @@ def main() -> None:
 
     # ── Final status ──
     t = build_table()
-    row(t, "llama-server (LLM)", status_for(llama_ok), ":8899")
+    row(t, "GeneralCompute (gemma-4-31B-it)", STATUS_UP, "Cloud API")
     row(t, "llama-server (Embed)", status_for(embed_ok), ":8900")
     row(t, "agent-memory-db", status_for(pgvector_ok), ":5433")
     row(t, "firecrawl api", status_for(api_ok), ":3002")

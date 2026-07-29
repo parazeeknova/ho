@@ -6,6 +6,7 @@ Embeddings:   Qwen3-Embedding-0.6B (Q8_0) at :8900/v1  (32768 ctx)
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 
 EMBED_QUERY_INSTRUCTION = (
@@ -16,10 +17,13 @@ EMBED_QUERY_INSTRUCTION = (
 
 @dataclass
 class LLMConfig:
-    base_url: str = "http://127.0.0.1:8899/v1"
-    model: str = "unsloth/Qwen3-4B-Instruct-2507-GGUF:UD-Q5_K_XL"
-    context_length: int = 16384
-    flash_attention: bool = True
+    api_key: str = field(
+        default_factory=lambda: os.getenv(
+            "GENERALCOMPUTE_API_KEY", "gc_beRSKulIP-ae0ojXrZ5tqaANK2oxFO5e"
+        )
+    )
+    model: str = field(default_factory=lambda: os.getenv("GENERALCOMPUTE_MODEL", "gemma-4-31B-it"))
+    context_length: int = 32768
 
 
 @dataclass

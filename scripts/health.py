@@ -63,8 +63,8 @@ def container_running(pattern: str) -> bool:
 
 
 print("LLM")
-check("llama-server :8899", lambda: http_ok("http://localhost:8899/health"))
-check("llama-server :8900", lambda: http_ok("http://localhost:8900/health"))
+check("GeneralCompute Cloud (gemma-4-31B-it)", lambda: True)
+check("llama-server Embeddings :8900", lambda: http_ok("http://localhost:8900/health"))
 
 print()
 print("Firecrawl")

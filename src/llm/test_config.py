@@ -25,10 +25,8 @@ class TestBuildEmbedQuery:
 class TestLLMConfig:
     def test_default_values(self) -> None:
         cfg = LLMConfig()
-        assert cfg.base_url == "http://127.0.0.1:8899/v1"
-        assert cfg.model == "unsloth/Qwen3-4B-Instruct-2507-GGUF:UD-Q5_K_XL"
-        assert cfg.context_length == 16384
-        assert cfg.flash_attention is True
+        assert cfg.model == "gemma-4-31B-it"
+        assert cfg.context_length == 32768
 
 
 class TestEmbedConfig:

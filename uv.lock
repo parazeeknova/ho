@@ -450,6 +450,19 @@ wheels = [
 ]
 
 [[package]]
+name = "generalcompute"
+version = "0.2.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ad/91/05132d9f41a8154d014be4c85f2c08ad394feb298cfdacb5e51798cc43cc/generalcompute-0.2.1.tar.gz", hash = "sha256:a034b685345cc1e26d3f2531cc26578151baf1862ba009d1f06662437bb9344c", size = 9835, upload-time = "2026-01-30T00:37:23.233Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b5/ef/9a4948ecbf86c74c4516fe74aa4cdb8fe5c0708dd6a44ec5c4027edb3322/generalcompute-0.2.1-py3-none-any.whl", hash = "sha256:2394701388e0a0afd038bc306db9eb9a95b93f0fd2fff922a3703cfafa331ed4", size = 11070, upload-time = "2026-01-30T00:37:21.83Z" },
+]
+
+[[package]]
 name = "h11"
 version = "0.16.0"
 source = { registry = "https://pypi.org/simple" }
@@ -465,6 +478,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "asyncpg" },
     { name = "firecrawl-py" },
+    { name = "generalcompute" },
     { name = "httpx" },
     { name = "markitdown", extra = ["pdf"] },
     { name = "numpy" },
@@ -489,6 +503,7 @@ dev = [
 requires-dist = [
     { name = "asyncpg", specifier = ">=0.30.0" },
     { name = "firecrawl-py", specifier = ">=4.33.1" },
+    { name = "generalcompute", specifier = ">=0.2.1" },
     { name = "httpx", specifier = ">=0.28.0" },
     { name = "markitdown", extras = ["pdf"], specifier = ">=0.1.6" },
     { name = "numpy", specifier = ">=2.0.0" },
