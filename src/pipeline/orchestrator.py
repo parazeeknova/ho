@@ -16,6 +16,7 @@ from src.llm.context import ContextManager
 from src.memory.pgvector_store import MemoryStore
 from src.pipeline.graph import EMBED_URL, run_batch
 from src.pipeline.queue import JobPipeline, QueuedJob
+from src.rag.github_linkedin_loader import enrich_candidate_chunks
 from src.rag.loader import load_resume
 from src.search.searcher import (
     TARGET_POSITIONS_SCHEMA,
@@ -282,6 +283,7 @@ async def _run_pipeline() -> None:
             return load_resume()
 
         full_text, chunks = await loop.run_in_executor(None, _load)
+        chunks = enrich_candidate_chunks(chunks)
         await _index_resume_in_pgvector(chunks, store)
 
     positions: list[str]
