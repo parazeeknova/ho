@@ -66,6 +66,49 @@ async def _limited_scrape(
         await scrape_url_to_pipeline(item, app, pipeline)
 
 
+async def _domain_producer(
+    app: FirecrawlApp,
+    pipeline: JobPipeline,
+    store: MemoryStore,
+    combined_domains: list[str],
+    uncrawled_dynamic: list[str],
+) -> None:
+    """Map company career pages and push discovered job URLs into the pipeline."""
+    console.print(
+        f"  [bold lion]Aggressive Crawler: Mapping {len(combined_domains)} total domains "
+        f"({len(uncrawled_dynamic)} dynamically discovered)[/bold lion]"
+    )
+    map_urls = await map_company_careers(app, combined_domains)
+    console.print(f"  [cyan]Map discovery: {len(map_urls)} career-page URLs[/cyan]")
+
+    max_map = 300
+    if len(map_urls) > max_map:
+        console.print(f"  [dim]Capping at {max_map} URLs (from {len(map_urls)})[/dim]")
+        map_urls = map_urls[:max_map]
+
+    scrape_sem = asyncio.Semaphore(MAX_SCRAPE_WORKERS)
+    scrape_done = 0
+    scrape_total = len(map_urls)
+    scrape_lock = asyncio.Lock()
+
+    async def _scrape_with_progress(item: dict) -> None:
+        nonlocal scrape_done
+        async with scrape_sem:
+            await scrape_url_to_pipeline(item, app, pipeline)
+        async with scrape_lock:
+            scrape_done += 1
+            if scrape_done % 20 == 0 or scrape_done == scrape_total:
+                console.print(
+                    f"  Scraping map URLs... {scrape_done}/{scrape_total}"
+                )
+
+    scrape_tasks = [_scrape_with_progress(mu) for mu in map_urls]
+    await asyncio.gather(*scrape_tasks)
+
+    if uncrawled_dynamic:
+        await store.mark_domains_crawled(uncrawled_dynamic)
+
+
 async def _scrape_index_links(
     app: FirecrawlApp, jobs: list[dict], max_workers: int = 12
 ) -> list[dict]:
@@ -331,10 +374,6 @@ async def _run_pipeline() -> None:
 
         consumer_task = asyncio.create_task(_consumer(pipeline, store, app=app, ctx=ctx))
 
-        await asyncio.gather(
-            scrape_all(app, positions, ctx, pipeline, max_workers=MAX_SCRAPE_WORKERS),
-            fetch_direct_json_feeds(positions, pipeline),
-        )
         # 100+ Curated ATS Platforms, Big Tech Portals, AI Startups, and Indian Unicorns
         _map_domains = [
             # ATS Roots & Global VC Boards
@@ -449,26 +488,19 @@ async def _run_pipeline() -> None:
             "https://make-my-trip.com/careers",
         ]
 
-        # Pull dynamically discovered domains from PostgreSQL
         uncrawled_dynamic = await store.get_uncrawled_domains(limit=30)
         combined_domains = list(set(_map_domains + uncrawled_dynamic))
 
-        console.print(
-            f"  [bold lion]Aggressive Crawler: Mapping {len(combined_domains)} total domains "
-            f"({len(uncrawled_dynamic)} dynamically discovered)[/bold lion]"
+        domain_task = asyncio.create_task(
+            _domain_producer(app, pipeline, store, combined_domains, uncrawled_dynamic)
         )
 
-        map_urls = await map_company_careers(app, combined_domains)
-        scrape_sem = asyncio.Semaphore(MAX_SCRAPE_WORKERS)
-        scrape_tasks = [
-            _limited_scrape(mu, app, pipeline, scrape_sem) for mu in map_urls
-        ]
-        await asyncio.gather(*scrape_tasks)
+        await asyncio.gather(
+            scrape_all(app, positions, ctx, pipeline, max_workers=MAX_SCRAPE_WORKERS),
+            fetch_direct_json_feeds(positions, pipeline),
+        )
 
-        if uncrawled_dynamic:
-            await store.mark_domains_crawled(uncrawled_dynamic)
-
-        console.print(f"  [cyan]Map discovery: {len(map_urls)} career-page URLs[/cyan]")
+        await domain_task
 
         console.print("  [yellow]Producers done. Signalling stop...[/yellow]")
         pipeline.signal_done()

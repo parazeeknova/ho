@@ -343,6 +343,9 @@ async def map_company_careers(
     """Use Firecrawl /map to discover job listing URLs across ATS platforms and career portals."""
     discovered: list[dict[str, str]] = []
     sem = asyncio.Semaphore(24)  # Map up to 24 domains concurrently
+    done_lock = asyncio.Lock()
+    done_count = 0
+    total = len(target_domains)
 
     non_job_slugs = (
         "/about",
@@ -367,6 +370,7 @@ async def map_company_careers(
     )
 
     async def _map_one(domain: str) -> None:
+        nonlocal done_count
         async with sem:
             try:
                 async with httpx.AsyncClient(timeout=60.0) as client:
@@ -391,6 +395,10 @@ async def map_company_careers(
                                         )
             except Exception as e:
                 print(f"  [dim]Map {domain}: {e}[/dim]")
+            async with done_lock:
+                done_count += 1
+                if done_count % 5 == 0 or done_count == total:
+                    print(f"  Mapping domains... {done_count}/{total}")
 
     await asyncio.gather(*(_map_one(d) for d in target_domains))
     return discovered
