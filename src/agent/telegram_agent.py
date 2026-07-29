@@ -51,27 +51,31 @@ class TelegramAgent:
         socials = job.get("founder_socials", [])
 
         lines = [
-            f"🎯 <b>{role}</b> @ <b>{company}</b>",
-            "",
-            f"📊 <b>JD Match:</b> {match_pct}% | <b>Shortlist:</b> {shortlist_pct}%",
-            f"📍 <b>Location:</b> {location}",
+            f"<b>{role.upper()}</b> • <b>{company.upper()}</b>",
+            "<code>───────────────────────────</code>",
+            f"<b>JD Match:</b> {match_pct}%  |  <b>Shortlist:</b> {shortlist_pct}%",
+            f"<b>Location:</b> {location}",
         ]
 
         if salary and salary != "-":
-            lines.append(f"💰 <b>Salary:</b> {salary}")
+            lines.append(f"<b>Salary:</b> {salary}")
 
         if comp_desc:
-            lines.extend(["", f"🏢 <i>{comp_desc}</i>"])
+            lines.extend(["", f"<blockquote>{comp_desc}</blockquote>"])
 
         if founders:
-            lines.append(f"👤 <b>Founders:</b> {', '.join(founders)}")
+            lines.append(f"<b>Founders:</b> {', '.join(founders)}")
         if funding:
-            lines.append(f"🚀 <b>Funding:</b> {funding}")
+            lines.append(f"<b>Funding:</b> {funding}")
         if socials:
-            lines.append(f"🔗 <b>Outreach:</b> {', '.join(socials[:2])}")
+            social_links = [
+                f'<a href="{s}">{s.split("//")[-1]}</a>' if s.startswith("http") else s
+                for s in socials[:2]
+            ]
+            lines.append(f"<b>Outreach:</b> {', '.join(social_links)}")
 
         if link and str(link).startswith("http"):
-            lines.extend(["", f'👉 <a href="{link}"><b>Apply Now</b></a>'])
+            lines.extend(["", f'<a href="{link}"><b>Apply Direct →</b></a>'])
 
         return "\n".join(lines)
 
