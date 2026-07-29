@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Spawn two llama-server processes: LLM (:8899) and Embeddings (:8900).
 
-Uses existing GGUF files in MODELS_DIR. Falls back to -hf auto-download
-for the embedding model (not gated). The LLM model must be downloaded
-manually if the Qwen3.5-4B Instruct repo is gated on HuggingFace.
+Scans the HuggingFace cache for downloaded GGUF files and symlinks them into
+MODELS_DIR so ``--model`` can find them.
 """
 
 import os
@@ -14,6 +13,8 @@ from pathlib import Path
 
 MODELS_DIR = Path(os.environ.get("MODELS_DIR", os.path.expanduser("~/Models")))
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
+
+HF_CACHE = Path(os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface"))) / "hub"
 
 LLM_FILE = "Qwen3.5-4B-Q5_K_M.gguf"
 LLM_FALLBACK = "Qwen3.5-4B.Q5_K_M.gguf"
@@ -43,20 +44,43 @@ signal.signal(signal.SIGINT, _signal_handler)
 signal.signal(signal.SIGTERM, _signal_handler)
 
 
+def _symlink_hf_cache_models() -> None:
+    """Symlink every GGUF file found in the HF cache into MODELS_DIR."""
+    if not HF_CACHE.exists():
+        return
+
+    for gguf in HF_CACHE.glob("models--*/snapshots/*/*.gguf"):
+        name = gguf.name
+        dest = MODELS_DIR / name
+        if dest.exists():
+            continue
+        try:
+            dest.symlink_to(gguf)
+            print(f"  symlinked {name} -> {gguf}")
+        except OSError:
+            pass
+
+
 def resolve_llm_model() -> str:
     """Find an available Qwen3.5-4B GGUF file in MODELS_DIR."""
+    _symlink_hf_cache_models()
+
     for candidate in (LLM_FILE, LLM_FALLBACK):
         if (MODELS_DIR / candidate).exists():
             return candidate
-    # fallback: try -hf download (may need HF_TOKEN for gated repos)
-    print(f"  No local GGUF found in {MODELS_DIR}, trying -hf download...")
+
+    # Also check if any Qwen GGUF exists (from cache symlink)
+    for gguf in MODELS_DIR.glob("Qwen3*.gguf"):
+        return gguf.name
+
+    print("  No local GGUF found, trying -hf download...")
     return "bartowski/Qwen_Qwen3.5-4B-GGUF:Q5_K_M"
 
 
 # ── Process 1: LLM (Qwen3.5-4B, chat completions) ─────────────────────
 
 llm_model = resolve_llm_model()
-is_hf = llm_model.startswith("Qwen/")
+is_hf = llm_model.startswith("bartowski/") or llm_model.startswith("Qwen/")
 if is_hf:
     print("Starting LLM server on :8899 (auto-downloading from HuggingFace)...")
     p_llm = subprocess.Popen(
