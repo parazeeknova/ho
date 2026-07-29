@@ -63,6 +63,14 @@ VERIFY_SCHEMA: dict[str, Any] = {
 
 
 class ContextManager:
+    _global_sem: asyncio.Semaphore | None = None
+    _max_llm_concurrency = 8
+
+    @classmethod
+    def set_max_concurrency(cls, n: int) -> None:
+        cls._max_llm_concurrency = n
+        cls._global_sem = None
+
     def __init__(self, verbose: bool = True) -> None:
         self.cumulative_output_tokens = 0
         self.verbose = verbose
@@ -70,6 +78,8 @@ class ContextManager:
         cfg = LLMConfig()
         self.model = cfg.model
         self._client = GeneralCompute(api_key=cfg.api_key)
+        if ContextManager._global_sem is None:
+            ContextManager._global_sem = asyncio.Semaphore(ContextManager._max_llm_concurrency)
 
     async def aclose(self) -> None:
         pass
@@ -95,15 +105,25 @@ class ContextManager:
             msg = resp.choices[0].message
             return msg.content or ""
 
+        sem = ContextManager._global_sem
+        if sem is None:
+            ContextManager._global_sem = asyncio.Semaphore(ContextManager._max_llm_concurrency)
+            sem = ContextManager._global_sem
+
+        last_error: Exception | None = None
+        backoff = RETRY_DELAY
         for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                output = await asyncio.to_thread(_call_llm)
-                return output
-            except Exception as e:
-                if attempt < MAX_RETRIES:
-                    print(f"  [GeneralCompute LLM retry {attempt}/{MAX_RETRIES}] {e}")
-                    await asyncio.sleep(RETRY_DELAY)
-        raise RuntimeError("GeneralCompute LLM failed after all retries")
+            async with sem:
+                try:
+                    output = await asyncio.to_thread(_call_llm)
+                    return output
+                except Exception as e:
+                    last_error = e
+            if attempt < MAX_RETRIES:
+                print(f"  [LLM retry {attempt}/{MAX_RETRIES}] {last_error}")
+                await asyncio.sleep(backoff)
+                backoff *= 2
+        raise RuntimeError(f"LLM failed after {MAX_RETRIES} retries: {last_error}")
 
     async def maybe_flush(self) -> None:
         pass

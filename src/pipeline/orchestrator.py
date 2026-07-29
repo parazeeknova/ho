@@ -310,6 +310,7 @@ async def _index_resume_in_pgvector(
 
 async def _run_pipeline() -> None:
     ctx = ContextManager()
+    ContextManager.set_max_concurrency(4)  # stay under 100 RPM GeneralCompute limit
 
     def _cleanup(signum: int, frame: object) -> None:
         console.print("\n[yellow]Interrupted - flushing LLM context...[/yellow]")
@@ -325,6 +326,9 @@ async def _run_pipeline() -> None:
     console.rule("[bold cyan]PHASE 0: Initialise Agent Memory (pgvector)[/bold cyan]")
     store = await MemoryStore.create()
     console.print("  [green]Connected to agent-memory-db[/green]")
+
+    jobs_agent = JobsAgent()
+    jobs_agent.purge_fake_entries()
 
     console.rule("[bold cyan]PHASE 1: Load Resume + Index in pgvector[/bold cyan]")
     loop = asyncio.get_running_loop()

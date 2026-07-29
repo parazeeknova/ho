@@ -89,6 +89,25 @@ class JobsAgent:
         except Exception as e:
             print(f"  [Qdrant init note]: {e}")
 
+    def purge_fake_entries(self) -> int:
+        """Delete known fake/test entries from the Qdrant collection. Returns count removed."""
+        fake_keys = [
+            "techco:backendengineer",
+        ]
+        removed = 0
+        for key in fake_keys:
+            point_id = int(hashlib.md5(key.encode("utf-8")).hexdigest()[:12], 16)
+            try:
+                self.qdrant.delete(
+                    self.collection_name,
+                    points_selector=[point_id],
+                )
+                removed += 1
+                print(f"  [Qdrant] Purged fake entry: {key}")
+            except Exception:
+                pass
+        return removed
+
     async def add_or_merge_jobs(
         self,
         new_jobs: list[dict[str, Any]],
