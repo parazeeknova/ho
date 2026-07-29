@@ -83,4 +83,8 @@ print()
 print("Metasearch")
 check("searxng          :8080", lambda: http_ok("http://localhost:8080"))
 
+print()
+print("Qdrant Vector DB")
+check("qdrant           :6333", lambda: check_port("localhost", 6333))
+
 sys.exit(fails)

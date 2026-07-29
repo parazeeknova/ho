@@ -170,10 +170,10 @@ def main() -> None:
                 ":5433",
             )
 
-            # ── Launch firecrawl infra (first iteration only) ──
+            # ── Launch firecrawl & qdrant infra (first iteration only) ──
             if not infra_started:
                 subprocess.Popen(
-                    f"{DOCKER_COMPOSE} up -d redis playwright-service nuq-postgres searxng",
+                    f"{DOCKER_COMPOSE} up -d redis playwright-service nuq-postgres searxng qdrant",
                     shell=True,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
@@ -248,6 +248,7 @@ def main() -> None:
     row(t, "playwright", status_for(container_running("firecrawl_playwright")), ":3000")
     row(t, "nuq-postgres", status_for(container_running("firecrawl_nuq-postgres")), ":5432")
     row(t, "searxng", status_for(check_http("http://localhost:8080")), ":8080")
+    row(t, "qdrant (vector db)", status_for(check_port("localhost", 6333)), ":6333")
 
     console.print()
     console.print(t)
