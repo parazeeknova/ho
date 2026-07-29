@@ -22,7 +22,7 @@ overnight: health
 	OVERNIGHT_LOOP=true uv run python -m src.pipeline.orchestrator
 
 fc-up:
-	@docker compose -f docker-compose.yaml up -d redis playwright-service nuq-postgres searxng; \
+	@docker compose -f docker-compose.yaml up -d redis playwright-service nuq-postgres searxng neo4j; \
 	podman rm -f firecrawl_rabbitmq_1 2>/dev/null; \
 	podman run -d --name firecrawl_rabbitmq_1 \
 		--network firecrawl_default \

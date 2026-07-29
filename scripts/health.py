@@ -12,6 +12,10 @@ import sys
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
+
+# Ensure the project root is on sys.path for src imports
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from dotenv import load_dotenv
 
