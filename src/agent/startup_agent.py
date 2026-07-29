@@ -7,11 +7,15 @@ Extracts founder details (name, title, LinkedIn, GitHub, email), funding rounds
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any
 
 import httpx
+from rich.console import Console
 
 from src.llm.context import ContextManager
+
+console = Console()
 
 FOUNDER_POST_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -109,8 +113,151 @@ FOUNDER_SCHEMA = {
 class StartupAgent:
     """Agent that researches startup founders, funding, and outreach info."""
 
+    # Deterministic signals that suggest LLM analysis is worth the cost.
+    # These run BEFORE any LLM call.
+    _ENTERPRISE_DOMAINS = frozenset(
+        {
+            "google",
+            "microsoft",
+            "amazon",
+            "apple",
+            "meta",
+            "netflix",
+            "ibm",
+            "oracle",
+            "salesforce",
+            "adobe",
+            "cisco",
+            "intel",
+            "nvidia",
+            "amd",
+            "sap",
+            "servicenow",
+            "atlassian",
+            "uber",
+            "spotify",
+            "stripe",
+            "twitter",
+            "reddit",
+            "roblox",
+            "snap",
+            "lyft",
+            "instacart",
+            "doordash",
+            "palantir",
+            "cloudflare",
+        }
+    )
+    _FUNDING_KW_RE = (
+        r"\b(?:seed|pre-?seed|series\s+[a-c]|vc-?backed|"
+        r"y\s*combinator|techstars|accelerator|incubator|"
+        r"raised\s+\$?\d)"
+    )
+
     def __init__(self, ctx: ContextManager) -> None:
         self.ctx = ctx
+
+    @staticmethod
+    def _should_skip_llm(job: dict[str, Any]) -> str | None:
+        """Return a skip reason if LLM analysis is a waste, else None."""
+        company = str(job.get("company", "")).lower().strip()
+        if not company or company in ("n/a", "unknown"):
+            return "no company"
+        if company in StartupAgent._ENTERPRISE_DOMAINS:
+            return "enterprise"
+        return None
+
+    # noqa: E501
+    @staticmethod
+    def _priority_score(job: dict[str, Any]) -> int:
+        """Score 0-100 for how 'LLM-worthy' this company is.
+        Higher score = more likely the LLM will find valuable OSINT data.
+        Deterministic only — no LLM calls.
+        """
+        score = 0
+        company = str(job.get("company", "")).lower()
+        role = str(job.get("role", "")).lower()
+        desc = str(job.get("company_description", "")).lower()
+        jd = str(job.get("jd_summary", "")).lower()
+        verdict = str(job.get("verdict", "")).upper()
+        combined = f"{company} {role} {desc} {jd}"
+
+        # High resume match = high priority
+        match = int(job.get("match_percent", 0))
+        score += min(40, match // 2)  # 80% -> 40pts, 60% -> 30pts
+
+        # Strong/good match verdict
+        if verdict in ("STRONG_MATCH", "GOOD_MATCH"):
+            score += 20
+        elif verdict == "WEAK_MATCH":
+            score += 10
+
+        # Startup indicators in description/jd
+        for kw in (
+            "startup",
+            "early-stage",
+            "seed",
+            "series a",
+            "series b",
+            "y combinator",
+            "yc-backed",
+            "accelerator",
+            "pre-seed",
+            "stealth",
+            "founded",
+            "backed by",
+        ):
+            if kw in combined:
+                score += 5
+
+        # Funding keywords
+        if re.search(StartupAgent._FUNDING_KW_RE, combined):
+            score += 10
+
+        # Already marked as startup
+        if job.get("is_startup"):
+            score += 10
+
+        # Has founder data (was analyzed before, good signal)
+        founders = job.get("founders", [])
+        if founders and isinstance(founders, list):
+            if isinstance(founders[0], dict):
+                score += 15
+            else:
+                score += 8
+
+        # Has funding info (proven OSINT value)
+        if job.get("funding_stage") and job["funding_stage"] != "N/A":
+            score += 10
+
+        # Founder posts exist (proven hiring signal)
+        if job.get("founder_posts"):
+            score += 15
+
+        # Source signals
+        source = str(job.get("source", "")).lower()
+        if source in ("yc", "discovered", "searxng"):
+            score += 10
+        if source == "linkedin_guest":
+            score += 5
+
+        # ATS detected (company has active careers page)
+        link = str(job.get("apply_link", ""))
+        if any(
+            pat in link
+            for pat in (
+                "greenhouse",
+                "lever.co",
+                "ashbyhq",
+                "workable",
+                "myworkdayjobs",
+                "smartrecruiters",
+                "rippling",
+            )
+        ):
+            score += 8
+
+        return min(100, score)
 
     async def analyze_startup(self, job: dict[str, Any]) -> dict[str, Any]:
         """Research company founders, funding stage, socials, and recent news."""
@@ -282,17 +429,62 @@ class StartupAgent:
     async def batch_analyze_startups(
         self, jobs: list[dict[str, Any]], concurrency: int = 8
     ) -> list[dict[str, Any]]:
-        """Parallel analysis of startup intelligence for candidate jobs."""
+        """Priority-scheduled startup analysis.
+
+        Deterministic checks run first (zero LLM cost). Only companies
+        that score above the threshold get LLM analysis. The global
+        token bucket is conserved for high-signal opportunities.
+        """
         if not jobs:
             return []
 
-        sem = asyncio.Semaphore(concurrency)
+        # ── Phase 1: deterministic scoring (no LLM) ───────────────────────
+        scored: list[tuple[int, int, dict[str, Any]]] = []
+        pass_through: list[dict[str, Any]] = []
 
-        async def _worker(j: dict[str, Any]) -> dict[str, Any]:
+        for idx, j in enumerate(jobs):
+            skip = self._should_skip_llm(j)
+            if skip:
+                pass_through.append(j)
+                continue
+
+            score = self._priority_score(j)
+            if score < 30:
+                pass_through.append(j)
+                continue
+
+            scored.append((score, idx, j))
+
+        if not scored:
+            return jobs  # nothing worth analyzing
+
+        # Sort by priority — highest first
+        scored.sort(key=lambda x: x[0], reverse=True)
+
+        console.print(
+            f"  🔬 [StartupAgent] Priority queue: {len(scored)}/{len(jobs)} "
+            f"companies selected for OSINT analysis "
+            f"(top score: {scored[0][0]})"
+        )
+
+        # ── Phase 2: LLM analysis in priority order ───────────────────────
+        sem = asyncio.Semaphore(concurrency)
+        result_map: dict[int, dict[str, Any]] = {}
+
+        async def _worker(idx: int, j: dict[str, Any]) -> None:
             async with sem:
                 try:
-                    return await self.analyze_startup(j)
+                    result_map[idx] = await self.analyze_startup(j)
                 except Exception:
-                    return j
+                    result_map[idx] = j
 
-        return await asyncio.gather(*(_worker(j) for j in jobs))
+        tasks = [_worker(idx, j) for _, idx, j in scored]
+        await asyncio.gather(*tasks)
+
+        # Reconstruct original order
+        output = jobs[:]
+        for _, idx, _ in scored:
+            if idx in result_map:
+                output[idx] = result_map[idx]
+
+        return output

@@ -29,6 +29,7 @@ from src.rag.loader import load_resume
 from src.search.linkedin_guest import scrape_linkedin_guest_jobs
 from src.search.searcher import (
     TARGET_POSITIONS_SCHEMA,
+    extract_career_domain,
     extract_index_jobs,
     fetch_direct_json_feeds,
     harvest_and_save_domains,
@@ -36,6 +37,7 @@ from src.search.searcher import (
     scrape_all,
     scrape_url_to_pipeline,
 )
+from src.search.startup_discoverer import discover_startups
 
 console = Console()
 
@@ -263,6 +265,70 @@ async def _process_and_dispatch_batch(
         await telegram_agent.notify_verified_jobs(clean_jobs, store=store)
 
     return clean_jobs
+
+
+async def _enrich_discovered_startups(
+    startups: list[dict[str, str]],
+    store: MemoryStore,
+    ctx: ContextManager,
+    telegram_agent: TelegramAgent,
+) -> int:
+    """Enrich startup discoveries with founder/funding data, store in ledger,
+    and queue careers domains for next-sweep scraping. Returns count stored."""
+    if not startups:
+        return 0
+
+    startup_agent = StartupAgent(ctx)
+    stored = 0
+
+    for s in startups:
+        company_name = s.get("company", "").strip()
+        if not company_name or company_name in ("N/A", "Unknown"):
+            continue
+
+        job_entry = {
+            "role": "[Startup Discovery]",
+            "company": company_name,
+            "company_description": s.get("description", ""),
+            "apply_link": s.get("url", ""),
+            "url": s.get("url", ""),
+            "source": s.get("source", "discovered"),
+            "location": "Remote",
+            "match_percent": 50,
+            "verdict": "WEAK_MATCH",
+            "shortlist_probability": 40,
+        }
+
+        try:
+            enriched = await startup_agent.analyze_startup(job_entry)
+        except Exception:
+            enriched = job_entry
+
+        await JobsAgent(store=store).add_or_merge_jobs([enriched])
+
+        # Harvest career domains for next sweep
+        url = s.get("url", "")
+        if url and url.startswith("http"):
+            try:
+                domain = extract_career_domain(url)
+                if domain:
+                    await store.add_discovered_domain(domain, url)
+            except Exception:
+                pass
+
+        stored += 1
+
+    await ctx.flush()
+    cleanup_agent = CleanupAgent(store=store)
+    await cleanup_agent.clean_and_format_ledger()
+
+    if telegram_agent.is_configured and stored > 0:
+        sample = ", ".join(s["company"] for s in startups[:5] if s.get("company"))
+        await telegram_agent._send_raw(
+            f"🏢 <b>Startup Discovery</b>\n\nDiscovered {stored} startups: {sample}..."
+        )
+
+    return stored
 
 
 async def _consumer(
@@ -576,6 +642,8 @@ async def _run_pipeline() -> None:
                 _domain_producer(app, pipeline, store, combined_domains, uncrawled_dynamic)
             )
 
+            startup_discovery_task = asyncio.create_task(discover_startups(positions))
+
             await asyncio.gather(
                 scrape_all(app, positions, ctx, pipeline, max_workers=MAX_SCRAPE_WORKERS),
                 fetch_direct_json_feeds(positions, pipeline),
@@ -586,6 +654,12 @@ async def _run_pipeline() -> None:
             )
 
             await domain_task
+
+            discovered = await startup_discovery_task
+            if discovered:
+                console.print(f"  🏢 Enriching {len(discovered)} discovered startups...")
+                stored = await _enrich_discovered_startups(discovered, store, ctx, telegram_agent)
+                console.print(f"  🏢 Stored {stored} startup discoveries in ledger")
 
             console.print("  [yellow]Producers done. Signalling stop...[/yellow]")
             pipeline.signal_done()
