@@ -18,7 +18,7 @@ from src.agent.startup_agent import StartupAgent
 from src.agent.telegram_agent import TelegramAgent, set_pipeline_state
 from src.llm.context import ContextManager
 from src.memory.pgvector_store import MemoryStore
-from src.pipeline.graph import EMBED_URL, run_batch
+from src.pipeline.graph import EMBED_URL, drain_retry_queue, run_batch
 from src.pipeline.queue import JobPipeline, QueuedJob
 from src.rag.github_linkedin_loader import enrich_candidate_chunks
 from src.rag.loader import load_resume
@@ -370,6 +370,16 @@ async def _run_pipeline() -> None:
         sweep_start = time.monotonic()
         set_pipeline_state(sweep=sweep, phase=f"sweep {sweep}: scraping")
         pipeline = JobPipeline()
+
+        retry_jobs = drain_retry_queue()
+        if retry_jobs:
+            console.print(
+                f"  [yellow]Retrying {len(retry_jobs)} rate-limited jobs"
+                f" from previous sweep[/yellow]"
+            )
+            retry_scored = await run_batch(retry_jobs, store, concurrency=MATCH_CONCURRENCY)
+            if retry_scored:
+                await _process_and_dispatch_batch(retry_scored, store, ctx, app)
 
         console.rule(f"[bold cyan]PHASE 2 (sweep {sweep}): Scrape + Graph Match[/bold cyan]")
 

@@ -7,7 +7,7 @@ from generalcompute import GeneralCompute
 
 from src.llm.config import LLMConfig
 
-MAX_RETRIES = 3
+MAX_RETRIES = 5
 RETRY_DELAY = 2
 
 # Token bucket gating ALL LLM calls across every agent.
@@ -19,11 +19,23 @@ _token_lock = asyncio.Lock()
 _token_count = _TOKEN_MAX
 _token_last = time.monotonic()
 
+# Global rate-limit backpressure. When ANY caller gets a 429 / rate-limit
+# error, we set this timestamp and drain the bucket so every OTHER caller
+# waits the full penalty window before making another request.
+_rate_penalty_secs = 60.0
+_rate_limit_hit_at = 0.0
+
 
 async def _acquire_llm_token() -> None:
     """Wait until a rate-limit token is available (token bucket)."""
     global _token_count, _token_last
     while True:
+        # Honour the global penalty window if a 429 was just received.
+        remaining = _rate_penalty_secs - (time.monotonic() - _rate_limit_hit_at)
+        if remaining > 0:
+            await asyncio.sleep(remaining)
+            continue
+
         async with _token_lock:
             now = time.monotonic()
             elapsed = now - _token_last
@@ -34,6 +46,19 @@ async def _acquire_llm_token() -> None:
                 return
             wait = (1.0 - _token_count) / _TOKEN_RATE
         await asyncio.sleep(wait)
+
+
+def _mark_rate_limited() -> None:
+    """Called when the LLM returns a 429 or rate-limit error.
+    Drains the token bucket so every concurrent caller pauses together."""
+    global _rate_limit_hit_at, _token_count
+    _rate_limit_hit_at = time.monotonic()
+    _token_count = 0.0
+
+
+def _is_rate_limited(error: Exception) -> bool:
+    msg = str(error).lower()
+    return "429" in msg or "rate limit" in msg
 
 DIM = "\033[2m"
 ITALIC = "\033[3m"
@@ -129,9 +154,15 @@ class ContextManager:
                 return output
             except Exception as e:
                 last_error = e
+                if _is_rate_limited(e):
+                    _mark_rate_limited()
+                    # Rate-limit errors get longer, aggressive backoff
+                    wait = max(5.0, backoff * 3)
+                else:
+                    wait = backoff
             if attempt < MAX_RETRIES:
                 print(f"  [LLM retry {attempt}/{MAX_RETRIES}] {last_error}")
-                await asyncio.sleep(backoff)
+                await asyncio.sleep(wait)
                 backoff *= 2
         raise RuntimeError(f"LLM failed after {MAX_RETRIES} retries: {last_error}")
 

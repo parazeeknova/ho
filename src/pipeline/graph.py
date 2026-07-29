@@ -27,6 +27,24 @@ from src.search.searcher import harvest_and_save_domains
 EMBED_URL = "http://127.0.0.1:8900"
 MAX_CORRECTION_LOOPS = 2
 
+# Jobs whose LLM calls failed (rate-limited / provider error) are queued here.
+# The orchestrator drains and retries them in the next sweep.
+_graph_retry_queue: list[dict[str, str]] = []
+
+
+def drain_retry_queue() -> list[dict[str, str]]:
+    jobs = list(_graph_retry_queue)
+    _graph_retry_queue.clear()
+    return jobs
+
+
+def _queue_for_retry(state: GraphState) -> None:
+    _graph_retry_queue.append({
+        "markdown": state["markdown"],
+        "url": state["url"],
+        "title": state.get("title", ""),
+    })
+
 MATCHER_PROMPT = """\
 You are a job-resume matching engine. Compare this job description against the \
 RELEVANT RESUME SNIPPETS below (these are only the most relevant parts of the \
@@ -232,7 +250,8 @@ async def node_matcher(
     try:
         result = await ctx.json_chat(prompt, JobMatch.model_json_schema())
     except Exception as e:
-        print(f"  [skip] LLM call failed for {state.get('title', state.get('url', '?'))}: {e}")
+        print(f"  [retry-queue] LLM failed for {state.get('title', state.get('url', '?'))}: {e}")
+        _queue_for_retry(state)
         state["match"] = None
         return state
 
