@@ -19,6 +19,7 @@ from src.graph.entity import (
     EdgeType,
     GraphEdge,
     GraphNode,
+    MutationEvent,
     NodeType,
     confidence_decay,
     merge_confidence,
@@ -93,14 +94,30 @@ class GraphStore:
 
     # Nodes
 
-    async def upsert_node(self, node: GraphNode) -> GraphNode:
+    async def upsert_node(self, node: GraphNode) -> tuple[GraphNode, list[MutationEvent]]:
         existing = await self.get_node(node.id)
+        events: list[MutationEvent] = []
         if existing:
+            # Only fire event if data actually grew
+            old_len = len(existing.data)
             existing.data = {**existing.data, **node.data}
             existing.confidence = merge_confidence(existing.confidence, node.confidence)
             existing.updated_at = datetime.now(UTC)
             existing.active = True
             node = existing
+            if len(existing.data) > old_len:
+                events.append(
+                    MutationEvent(
+                        mutated_id=node.id, node_type=node.node_type, change="node_upsert"
+                    )
+                )
+        else:
+            events.append(
+                MutationEvent(mutated_id=node.id, node_type=node.node_type, change="node_upsert")
+            )
+            events.append(
+                MutationEvent(mutated_id=node.id, node_type=node.node_type, change="node_created")
+            )
         async with self._pool.acquire() as conn:
             await conn.execute(
                 """
@@ -121,7 +138,7 @@ class GraphStore:
                 node.updated_at,
                 node.active,
             )
-        return node
+        return node, events
 
     async def get_node(self, node_id: str) -> GraphNode | None:
         async with self._pool.acquire() as conn:
@@ -177,12 +194,34 @@ class GraphStore:
 
     # Edges
 
-    async def upsert_edge(self, edge: GraphEdge) -> GraphEdge:
+    async def upsert_edge(self, edge: GraphEdge) -> tuple[GraphEdge, list[MutationEvent]]:
         existing = await self.get_edge(edge.source_id, edge.edge_type, edge.target_id)
+        events: list[MutationEvent] = []
         if existing:
+            old_score = existing.confidence.score
             existing.confidence = merge_confidence(existing.confidence, edge.confidence)
             existing.metadata = {**existing.metadata, **edge.metadata}
             edge = existing
+            if edge.confidence.score > old_score + 0.05:
+                events.append(
+                    MutationEvent(
+                        mutated_id=edge.source_id,
+                        node_type=NodeType.COMPANY,
+                        change="edge_confidence_boost",
+                        edge_type=edge.edge_type,
+                        related_id=edge.target_id,
+                    )
+                )
+        else:
+            events.append(
+                MutationEvent(
+                    mutated_id=edge.source_id,
+                    node_type=NodeType.COMPANY,
+                    change="edge_added",
+                    edge_type=edge.edge_type,
+                    related_id=edge.target_id,
+                )
+            )
         async with self._pool.acquire() as conn:
             await conn.execute(
                 """
@@ -200,7 +239,7 @@ class GraphStore:
                 json.dumps(edge.metadata),
                 edge.created_at,
             )
-        return edge
+        return edge, events
 
     async def get_edge(
         self, source_id: str, edge_type: EdgeType, target_id: str
@@ -254,6 +293,53 @@ class GraphStore:
                 limit,
             )
         return [_row_to_edge(r) for r in rows if r]
+
+    async def get_node_adjacency(self, node_id: str) -> dict[str, Any]:
+        """Return adjacency index for a node: {edges_out: set[str], edges_in: set[str]}."""
+        async with self._pool.acquire() as conn:
+            rows_out = await conn.fetch(
+                "SELECT edge_type, target_id FROM graph_edges WHERE source_id = $1",
+                node_id,
+            )
+            rows_in = await conn.fetch(
+                "SELECT edge_type, source_id FROM graph_edges WHERE target_id = $1",
+                node_id,
+            )
+        return {
+            "edges_out": {f"{r['edge_type']}:{r['target_id']}" for r in rows_out},
+            "edges_in": {f"{r['edge_type']}:{r['source_id']}" for r in rows_in},
+        }
+
+    async def get_local_graph(self, node_id: str, radius: int = 1) -> dict[str, Any]:
+        """Return the K-radius neighborhood: nodes and edges within 'radius' hops."""
+        visited: set[str] = {node_id}
+        frontier = [node_id]
+        all_edges: list[GraphEdge] = []
+        for _ in range(radius):
+            next_frontier: list[str] = []
+            for nid in frontier:
+                for direction, _col in [("source_id", "target_id"), ("target_id", "source_id")]:
+                    async with self._pool.acquire() as conn:
+                        rows = await conn.fetch(
+                            f"SELECT * FROM graph_edges WHERE {direction} = $1", nid
+                        )
+                    for r in rows:
+                        edge = _row_to_edge(r)
+                        if edge:
+                            all_edges.append(edge)
+                            neighbor = (
+                                edge.source_id if direction == "target_id" else edge.target_id
+                            )
+                            if neighbor not in visited:
+                                visited.add(neighbor)
+                                next_frontier.append(neighbor)
+            frontier = next_frontier
+        nodes: list[GraphNode] = []
+        for nid in visited:
+            node = await self.get_node(nid)
+            if node:
+                nodes.append(node)
+        return {"nodes": nodes, "edges": all_edges}
 
 
 # Row-to-object helpers

@@ -30,6 +30,7 @@ from src.graph.entity import (
     company_node,
     compute_centrality,
     edge,
+    make_company_id,
     make_founder_id,
     make_work_id,
 )
@@ -452,7 +453,7 @@ async def _expand_company_graph(
         if node:
             node.data["founders"] = founders
             node.data["funding_stage"] = enriched.get("funding_stage", "")
-            await graph.upsert_node(node)
+            node, _ = await graph.upsert_node(node)
         results: list[FrontierEntry] = []
         for f in founders[:3]:
             if isinstance(f, dict) and f.get("name"):
@@ -461,8 +462,8 @@ async def _expand_company_graph(
                     node_type=NodeType.FOUNDER,
                     data={**f, "company": cn},
                 )
-                await graph.upsert_node(f_node)
-                await graph.upsert_edge(edge(entry.node_id, EdgeType.FOUNDED_BY, f_node.id))
+                f_node, _ = await graph.upsert_node(f_node)
+                _, _ = await graph.upsert_edge(edge(entry.node_id, EdgeType.FOUNDED_BY, f_node.id))
                 # Fire-and-forget: spawns handler task, returns immediately
                 await bus.fire(
                     bus.new_event(
@@ -502,8 +503,12 @@ async def _expand_company_graph(
         )
         node.confidence.score = entity.confidence
         node.confidence.source_count = 1
-        await graph.upsert_node(node)
+        node, node_events = await graph.upsert_node(node)
         nodes_created += 1
+
+        # Feed mutation events into graph expansion engine
+        for evt in node_events:
+            await engine.process_mutation(evt, graph)
 
         await bus.fire(
             bus.new_event(
@@ -520,45 +525,19 @@ async def _expand_company_graph(
         )
         events_fired += 1
 
-    # Centrality
-
-    all_nodes = await graph.get_nodes_by_type(NodeType.COMPANY, limit=200)
-    all_edges = await graph.get_all_edges(limit=500)
-    node_map = {n.id: n for n in all_nodes}
-    edge_dicts = [{"source": e.source_id, "target": e.target_id} for e in all_edges]
-    centrality = compute_centrality(list(node_map.keys()), edge_dicts)
-    for nid, rank in centrality.items():
-        node = node_map.get(nid)
-        if node and rank > 0.01:
-            node.data["pagerank"] = rank
-            await graph.upsert_node(node)
+    # Incremental centrality per neighborhood
+    for entity in entities[:30]:
+        nid = make_company_id(entity.name)
+        local = await graph.get_local_graph(nid, radius=1)
+        lm = {n.id: n for n in local["nodes"]}
+        le = [{"source": e.source_id, "target": e.target_id} for e in local["edges"]]
+        for nid2, rank in compute_centrality(list(lm.keys()), le).items():
+            n = lm.get(nid2)
+            if n and rank > 0.01:
+                n.data["pagerank"] = rank
+                _ = await graph.upsert_node(n)
 
     await asyncio.sleep(3)
-
-    # Graph-driven work generation
-    # New edges trigger discovery: FOUNDED_BY -> check for missing founder profiles
-    for e in all_edges:
-        target = await graph.get_node(e.target_id)
-        source = await graph.get_node(e.source_id)
-        if target and source and e.edge_type == EdgeType.FOUNDED_BY:
-            founder_name = target.data.get("name", "")
-            if founder_name:
-                existing = await graph.get_nodes_by_type(NodeType.FOUNDER, limit=1)
-                if not any(n.data.get("linkedin_url") for n in existing):
-                    await engine.enqueue(
-                        FrontierEntry(
-                            id=make_work_id("founder_social_osint", target.id),
-                            agent="founder_social_osint",
-                            node_id=target.id,
-                            node_type=NodeType.FOUNDER,
-                            priority=40,
-                            depth=2,
-                            payload={
-                                "founder_name": founder_name,
-                                "company": source.data.get("name", ""),
-                            },
-                        )
-                    )
 
     # Store
 
@@ -581,10 +560,7 @@ async def _expand_company_graph(
         )
 
     m = await engine.get_metrics()
-    console.print(
-        f"  Scheduler: {m.completed_work} done, {m.pending_work} pending"
-        f" | Centrality: {len(centrality)} nodes"
-    )
+    console.print(f"  Scheduler: {m.completed_work} done, {m.pending_work} pending")
     await engine.shutdown(drain=True)
     return nodes_created, events_fired
 

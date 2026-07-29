@@ -93,10 +93,25 @@ class GraphNode(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     active: bool = True
+    # Adjacency index: set of edge_type+target_id strings, lazily loaded
+    edges_out: set[str] = Field(default_factory=set, exclude=True)
+    edges_in: set[str] = Field(default_factory=set, exclude=True)
+
+    model_config = {"arbitrary_types_allowed": True}
 
     @property
     def name(self) -> str:
         return str(self.data.get("name") or self.data.get("company") or self.id[:12])
+
+    def has_edge(self, etype: EdgeType, target_id: str) -> bool:
+        key = f"{etype.value}:{target_id}"
+        return key in self.edges_out
+
+    def add_edge_out(self, etype: EdgeType, target_id: str) -> None:
+        self.edges_out.add(f"{etype.value}:{target_id}")
+
+    def add_edge_in(self, etype: EdgeType, source_id: str) -> None:
+        self.edges_in.add(f"{etype.value}:{source_id}")
 
 
 class GraphEdge(BaseModel):
@@ -337,12 +352,77 @@ class SchedulerMetrics:
     expired_work: int = 0
     total_enqueued: int = 0
     batches_executed: int = 0
+    batch_efficiency: float = 0.0
     connector_latency_ms: float = 0.0
+    p95_latency_s: float = 0.0
+    lease_renewals: int = 0
     events_fired: int = 0
     graph_nodes: int = 0
     graph_edges: int = 0
     uptime_s: float = 0.0
     cost_consumed: float = 0.0
+    expansion_events: int = 0
+
+
+@dataclass
+class MutationEvent:
+    mutated_id: str
+    node_type: NodeType
+    change: str  # "node_upsert", "edge_added", "edge_type"
+    edge_type: EdgeType | None = None
+    related_id: str | None = None
+    timestamp: float = field(default_factory=time.monotonic)
+
+    @property
+    def event_id(self) -> str:
+        parts = [self.mutated_id, self.change]
+        if self.edge_type:
+            parts.append(self.edge_type.value)
+        if self.related_id:
+            parts.append(self.related_id)
+        return _hash("mutation", *parts)
+
+
+# Graph expansion rules (triggered by mutations, not full scans)
+MUTATION_EXPANSION_RULES: list[dict[str, Any]] = [
+    {
+        "change": "node_upsert",
+        "node_type": NodeType.COMPANY,
+        "check_field": "founders",
+        "agent": "founder_miner",
+        "priority": 70,
+        "depth": 1,
+    },
+    {
+        "change": "node_upsert",
+        "node_type": NodeType.COMPANY,
+        "check_field": "funding_stage",
+        "agent": "funding_agent",
+        "priority": 50,
+        "depth": 2,
+    },
+    {
+        "change": "edge_added",
+        "edge_type": EdgeType.FOUNDED_BY,
+        "agent": "founder_social_osint",
+        "priority": 50,
+        "depth": 2,
+    },
+    {
+        "change": "edge_added",
+        "edge_type": EdgeType.USES_ATS,
+        "agent": "ats_crawler",
+        "priority": 55,
+        "depth": 2,
+    },
+    {
+        "change": "edge_added",
+        "edge_type": EdgeType.HAS_FUNDING,
+        "agent": "funding_agent",
+        "priority": 45,
+        "depth": 2,
+    },
+]
 
 
 # Graph analytics

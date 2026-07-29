@@ -12,7 +12,6 @@ Key properties:
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import time
 from collections import defaultdict
 from typing import Any
@@ -24,11 +23,12 @@ from src.graph.entity import (
     AGENT_BATCHABLE,
     AGENT_CONCURRENCY,
     HEARTBEAT_INTERVAL,
+    MUTATION_EXPANSION_RULES,
     AdaptiveSemaphore,
     BatchHandlerType,
-    EdgeType,
     FrontierEntry,
     HandlerType,
+    MutationEvent,
     NodeType,
     SchedulerMetrics,
     WorkState,
@@ -37,120 +37,62 @@ from src.graph.entity import (
 from src.graph.frontier import CrawlFrontier
 
 console = Console()
-NEW_RELATIONSHIP_RULES: dict[EdgeType, list[dict]] = {
-    EdgeType.FOUNDED_BY: [
-        {
-            "missing_edge": EdgeType.USES_ATS,
-            "agent": "career_site_detector",
-            "priority": 60,
-            "depth": 2,
-            "desc": "Company with founder but no ATS",
-        },
-    ],
-}
-ENTRY_POINTS: list[dict] = [
-    {
-        "check": lambda n: not n.data.get("founders"),
-        "agent": "founder_miner",
-        "priority": 70,
-        "depth": 1,
-        "desc": "Company missing founder data",
-    },
-    {
-        "check": lambda n: not n.data.get("funding_stage"),
-        "agent": "funding_agent",
-        "priority": 50,
-        "depth": 2,
-        "desc": "Company missing funding info",
-    },
-]
 
 
 class GraphExpansionEngine:
+    """On every mutation, check expansion rules and enqueue work.
+    Only the affected neighborhood is evaluated."""
+
     def __init__(self) -> None:
         self._seen_triggers: set[str] = set()
 
-    async def expand(
-        self,
-        nodes: list[dict[str, Any]],
-        edges: list[dict[str, Any]],
-        node_map: dict[str, Any],
-        enqueue: Any,
+    async def on_mutation(
+        self, event: MutationEvent, enqueue: Any, get_node: Any, _get_adjacency: Any = None
     ) -> int:
+        if event.event_id in self._seen_triggers:
+            return 0
+        self._seen_triggers.add(event.event_id)
         generated = 0
-        trig_set: set[str] = set()
 
-        for n in nodes:
-            nid = n.get("id", "")
-            if not nid:
+        for rule in MUTATION_EXPANSION_RULES:
+            if rule["change"] != event.change:
                 continue
-            ntype = n.get("node_type", "company")
-            data = n.get("data", {})
-
-            if ntype == "company":
-                for rule in ENTRY_POINTS:
-                    if (
-                        rule["check"].__call__(node_map.get(nid))
-                        if callable(rule["check"])
-                        else False
-                    ):
-                        wid = make_work_id(rule["agent"], nid, rule["depth"])
-                        if wid in self._seen_triggers:
-                            continue
-                        self._seen_triggers.add(wid)
-                        await enqueue(
-                            FrontierEntry(
-                                id=wid,
-                                agent=rule["agent"],
-                                node_id=nid,
-                                node_type=NodeType.COMPANY,
-                                priority=rule["priority"],
-                                depth=rule["depth"],
-                                payload={"company": data.get("name", ""), "node_id": nid},
-                            )
-                        )
-                        generated += 1
-
-            if not callable(rule.get("check", lambda x: False)):
+            if rule.get("node_type") and event.node_type != rule["node_type"]:
+                continue
+            if rule.get("edge_type") and event.edge_type != rule["edge_type"]:
                 continue
 
-        # Check edges for missing relationships
-        source_edges: dict[str, set[EdgeType]] = defaultdict(set)
-        for e in edges:
-            src = e.get("source", "")
-            etype = e.get("type", "")
-            if src and etype:
-                with contextlib.suppress(ValueError):
-                    source_edges[src].add(EdgeType(etype))
+            nid = event.mutated_id
+            node = await get_node(nid)
+            if node is None:
+                continue
 
-        for src, existing_types in source_edges.items():
-            for edge_type, rules in NEW_RELATIONSHIP_RULES.items():
-                if edge_type in existing_types:
-                    for rule in rules:
-                        missing = rule["missing_edge"]
-                        if missing not in existing_types:
-                            tid = f"expand:{src}:{missing.value}"
-                            if tid in trig_set:
-                                continue
-                            trig_set.add(tid)
-                            wid = make_work_id(rule["agent"], src, rule["depth"])
-                            if wid in self._seen_triggers:
-                                continue
-                            self._seen_triggers.add(wid)
-                            sn = node_map.get(src)
-                            name = sn.data.get("name", "") if sn and hasattr(sn, "data") else ""
-                            await enqueue(
-                                FrontierEntry(
-                                    id=wid,
-                                    agent=rule["agent"],
-                                    node_id=src,
-                                    node_type=NodeType.COMPANY,
-                                    priority=rule["priority"],
-                                    depth=rule["depth"],
-                                    payload={"company": name, "node_id": src},
-                                )
-                            )
-                            generated += 1
+            if "check_field" in rule:
+                field = rule["check_field"]
+                if node.data.get(field):
+                    continue
+
+            wid = make_work_id(rule["agent"], nid, rule["depth"])
+            if wid in self._seen_triggers:
+                continue
+            self._seen_triggers.add(wid)
+
+            payload: dict[str, Any] = {"company": node.data.get("name", ""), "node_id": nid}
+            if event.related_id and rule.get("edge_type"):
+                payload["related_id"] = event.related_id
+
+            await enqueue(
+                FrontierEntry(
+                    id=wid,
+                    agent=rule["agent"],
+                    node_id=nid,
+                    node_type=event.node_type,
+                    priority=rule["priority"],
+                    depth=rule["depth"],
+                    payload=payload,
+                )
+            )
+            generated += 1
 
         return generated
 
