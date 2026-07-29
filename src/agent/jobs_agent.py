@@ -240,7 +240,23 @@ class JobsAgent:
             "|---|------|---------|--------------|----------|------------|--------|--------|----------|-------|",
         ]
 
-        for i, j in enumerate(jobs, start=1):
+        valid_jobs = []
+        for j in jobs:
+            role = str(j.get("role") or "").strip()
+            company = str(j.get("company") or "").strip()
+            verdict = str(j.get("verdict") or "").upper()
+            match_pct = int(j.get("match_percent", 0))
+
+            if role in ("", "N/A", "Unknown", "-") or company in ("", "N/A", "Unknown", "-"):
+                continue
+            if verdict == "NO_MATCH" and match_pct < 30:
+                continue
+
+            valid_jobs.append(j)
+
+        valid_jobs.sort(key=lambda x: int(x.get("match_percent", 0)), reverse=True)
+
+        for i, j in enumerate(valid_jobs, start=1):
             role = str(j.get("role") or "-").replace("|", "\\|")
             company = str(j.get("company") or "-").replace("|", "\\|")
             comp_info = (
@@ -256,8 +272,8 @@ class JobsAgent:
             if len(comp_info) > 60:
                 comp_info = comp_info[:57] + "..."
 
-            match_pct = f"{j.get('match_percent', 0)}%"
-            shortlist_pct = f"{j.get('shortlist_probability', 0)}%"
+            match_str = f"{j.get('match_percent', 0)}%"
+            shortlist_str = f"{j.get('shortlist_probability', 0)}%"
             salary = str(j.get("salary") or "-").replace("|", "\\|")
 
             posted_raw = j.get("posted_date")
@@ -272,16 +288,16 @@ class JobsAgent:
                 link_md = "-"
 
             row_str = (
-                f"| {i} | {role} | {company} | {comp_info} | {match_pct} | "
-                f"{shortlist_pct} | {salary} | {posted} | {location} | {link_md} |"
+                f"| {i} | {role} | {company} | {comp_info} | {match_str} | "
+                f"{shortlist_str} | {salary} | {posted} | {location} | {link_md} |"
             )
             lines.append(row_str)
 
-        lines.extend(["", f"*{len(jobs)} positions matched*", ""])
+        lines.extend(["", f"*{len(valid_jobs)} positions matched*", ""])
 
         # Detailed Position Cards
         lines.extend(["---", "## Detailed Position Insights", ""])
-        for i, j in enumerate(jobs, start=1):
+        for i, j in enumerate(valid_jobs, start=1):
             role = str(j.get("role") or "Position")
             company = str(j.get("company") or "Company")
             comp_desc = str(j.get("company_description") or j.get("jd_summary") or "").strip()
