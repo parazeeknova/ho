@@ -17,7 +17,7 @@ EMBED_QUERY_INSTRUCTION = (
 @dataclass
 class LLMConfig:
     base_url: str = "http://127.0.0.1:8899/v1"
-    model: str = "bartowski/Qwen_Qwen3.5-4B-GGUF:Q5_K_M"
+    model: str = "unsloth/Qwen3-4B-Instruct-2507-GGUF:UD-Q5_K_XL"
     context_length: int = 8192
     flash_attention: bool = True
 

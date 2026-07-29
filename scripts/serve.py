@@ -16,7 +16,7 @@ from pathlib import Path
 MODELS_DIR = Path(os.environ.get("MODELS_DIR", os.path.expanduser("~/Models")))
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
-LLM_HF = "bartowski/Qwen_Qwen3.5-4B-GGUF:Q5_K_M"
+LLM_HF = "unsloth/Qwen3-4B-Instruct-2507-GGUF:UD-Q5_K_XL"
 EMBED_HF = "Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0"
 
 procs: list[subprocess.Popen] = []
