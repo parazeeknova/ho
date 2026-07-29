@@ -14,6 +14,7 @@ from src.agent.cleanup_agent import CleanupAgent
 from src.agent.enrichment_agent import EnrichmentAgent
 from src.agent.jobs_agent import JobsAgent
 from src.agent.startup_agent import StartupAgent
+from src.agent.telegram_agent import TelegramAgent
 from src.llm.context import ContextManager
 from src.memory.pgvector_store import MemoryStore
 from src.pipeline.graph import EMBED_URL, run_batch
@@ -523,6 +524,14 @@ async def _run_pipeline() -> None:
             f"  [green]✓ {len(clean_jobs)} clean, verified undergrad positions "
             "stored & formatted in jobs.md[/green]"
         )
+
+        console.print(
+            "  📱 [bold yellow][TelegramAgent][/bold yellow] "
+            "Dispatching real-time notifications for verified jobs..."
+        )
+        telegram_agent = TelegramAgent()
+        await telegram_agent.notify_verified_jobs(clean_jobs)
+
         console.print(f"[bold green]Sweep {sweep} complete[/bold green]")
 
         if not continuous:
