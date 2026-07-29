@@ -127,10 +127,42 @@ async def _scrape_index_links(
     return scraped
 
 
+async def _process_and_dispatch_batch(
+    scored: list[dict],
+    store: MemoryStore,
+    ctx: ContextManager,
+    app: FirecrawlApp,
+) -> list[dict]:
+    if not scored:
+        return []
+
+    enricher = EnrichmentAgent(store, ctx, app)
+    enriched = await enricher.batch_enrich_and_rescore(scored, concurrency=VERIFY_CONCURRENCY)
+
+    startup_agent = StartupAgent(ctx)
+    startup_enriched = await startup_agent.batch_analyze_startups(
+        enriched, concurrency=VERIFY_CONCURRENCY
+    )
+
+    await JobsAgent().add_or_merge_jobs(startup_enriched, ctx=ctx)
+    if ctx:
+        await ctx.flush()
+
+    cleanup_agent = CleanupAgent()
+    clean_jobs = await cleanup_agent.clean_and_format_ledger()
+
+    telegram_agent = TelegramAgent()
+    if telegram_agent.is_configured:
+        await telegram_agent.notify_verified_jobs(clean_jobs)
+
+    return clean_jobs
+
+
 async def _consumer(
     pipeline: JobPipeline,
     store: MemoryStore,
-    ctx: ContextManager | None = None,
+    app: FirecrawlApp,
+    ctx: ContextManager,
 ) -> tuple[list[dict], list[QueuedJob]]:
     matched: list[dict] = []
     index_queue: list[QueuedJob] = []
@@ -152,8 +184,8 @@ async def _consumer(
         if len(web_buf) >= 5:
             batch = [{"markdown": j.markdown, "url": j.url, "title": j.title} for j in web_buf]
             scored = await run_batch(batch, store, concurrency=MATCH_CONCURRENCY)
-            matched.extend(scored)
-            await JobsAgent().add_or_merge_jobs(scored, ctx=ctx)
+            processed = await _process_and_dispatch_batch(scored, store, ctx, app)
+            matched.extend(processed)
             for _ in web_buf:
                 await pipeline.task_done()
             web_buf.clear()
@@ -163,8 +195,8 @@ async def _consumer(
     if web_buf:
         batch = [{"markdown": j.markdown, "url": j.url, "title": j.title} for j in web_buf]
         scored = await run_batch(batch, store, concurrency=MATCH_CONCURRENCY)
-        matched.extend(scored)
-        await JobsAgent().add_or_merge_jobs(scored, ctx=ctx)
+        processed = await _process_and_dispatch_batch(scored, store, ctx, app)
+        matched.extend(processed)
         for _ in web_buf:
             await pipeline.task_done()
 
@@ -314,7 +346,7 @@ async def _run_pipeline() -> None:
 
         console.rule(f"[bold cyan]PHASE 2 (sweep {sweep}): Scrape + Graph Match[/bold cyan]")
 
-        consumer_task = asyncio.create_task(_consumer(pipeline, store, ctx=ctx))
+        consumer_task = asyncio.create_task(_consumer(pipeline, store, app=app, ctx=ctx))
 
         await asyncio.gather(
             scrape_all(app, positions, ctx, pipeline, max_workers=MAX_SCRAPE_WORKERS),
@@ -482,41 +514,8 @@ async def _run_pipeline() -> None:
                 console.print(f"  [cyan]Scraped {len(idx_batch)} JDs from links[/cyan]")
                 if idx_batch:
                     idx_scored = await run_batch(idx_batch, store, concurrency=MATCH_CONCURRENCY)
-                    matched_result.extend(idx_scored)
+                    await _process_and_dispatch_batch(idx_scored, store, ctx, app)
 
-        console.rule(f"[bold cyan]PHASE 3 (sweep {sweep}): Enrich + Startup Intel[/bold cyan]")
-        console.print(
-            "  🔍 [bold yellow][EnrichmentAgent][/bold yellow] "
-            "Cross-searching JDs & calculating pgvector resume RAG similarity..."
-        )
-        enricher = EnrichmentAgent(store, ctx, app)
-        enriched = await enricher.batch_enrich_and_rescore(
-            matched_result[:TARGET], concurrency=VERIFY_CONCURRENCY
-        )
-
-        console.print(
-            "  🚀 [bold yellow][StartupAgent][/bold yellow] "
-            "Researching founders, funding rounds, and outreach socials..."
-        )
-        startup_agent = StartupAgent(ctx)
-        startup_enriched = await startup_agent.batch_analyze_startups(
-            enriched, concurrency=VERIFY_CONCURRENCY
-        )
-
-        console.rule(
-            f"[bold cyan]PHASE 4 (sweep {sweep}): Atomic Ledger & Table Formatting[/bold cyan]"
-        )
-        console.print(
-            "  🤖 [bold yellow][JobsAgent][/bold yellow] "
-            "Merging state into Qdrant ledger (port 6333)..."
-        )
-        await JobsAgent().add_or_merge_jobs(startup_enriched, ctx=ctx)
-        await ctx.flush()
-
-        console.print(
-            "  🧹 [bold yellow][CleanupAgent][/bold yellow] "
-            "Sanitizing table & filtering non-undergrad roles..."
-        )
         cleanup_agent = CleanupAgent()
         clean_jobs = await cleanup_agent.clean_and_format_ledger()
 
