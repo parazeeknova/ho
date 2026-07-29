@@ -181,7 +181,7 @@ async def _consumer(
         else:
             web_buf.append(job)
 
-        if len(web_buf) >= 5:
+        if len(web_buf) >= 1:
             batch = [{"markdown": j.markdown, "url": j.url, "title": j.title} for j in web_buf]
             scored = await run_batch(batch, store, concurrency=MATCH_CONCURRENCY)
             processed = await _process_and_dispatch_batch(scored, store, ctx, app)
