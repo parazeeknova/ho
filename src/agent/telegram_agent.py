@@ -5,6 +5,7 @@ to Telegram once all agent verifications and enrichment steps complete.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 from typing import Any
 
@@ -103,7 +104,10 @@ class TelegramAgent:
             return False
 
     async def notify_verified_jobs(
-        self, jobs: list[dict[str, Any]], min_match_pct: int = 40
+        self,
+        jobs: list[dict[str, Any]],
+        min_match_pct: int = 40,
+        store: Any | None = None,
     ) -> int:
         """Iterate over verified jobs one by one and dispatch notifications."""
         if not self.is_configured:
@@ -131,9 +135,20 @@ class TelegramAgent:
             if dedup_key in self._notified_keys:
                 continue
 
+            if store is not None:
+                try:
+                    if await store.is_telegram_notified(dedup_key):
+                        self._notified_keys.add(dedup_key)
+                        continue
+                except Exception:
+                    pass
+
             success = await self.send_notification(j)
             if success:
                 self._notified_keys.add(dedup_key)
+                if store is not None:
+                    with contextlib.suppress(Exception):
+                        await store.mark_telegram_notified(dedup_key, role, company)
                 sent_count += 1
                 print(f"  📱 [TelegramAgent] Sent alert for {role} @ {company}")
                 await asyncio.sleep(1.2)  # Rate limiting between Telegram dispatches

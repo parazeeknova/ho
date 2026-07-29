@@ -154,7 +154,7 @@ async def _process_and_dispatch_batch(
 
     telegram_agent = TelegramAgent()
     if telegram_agent.is_configured:
-        await telegram_agent.notify_verified_jobs(clean_jobs)
+        await telegram_agent.notify_verified_jobs(clean_jobs, store=store)
 
     return clean_jobs
 
@@ -505,7 +505,7 @@ async def _run_pipeline() -> None:
                 "  📱 [bold yellow][TelegramAgent][/bold yellow] "
                 "Dispatching real-time notifications for verified jobs..."
             )
-            await telegram_agent.notify_verified_jobs(clean_jobs)
+            await telegram_agent.notify_verified_jobs(clean_jobs, store=store)
         else:
             console.print(
                 "  📱 [dim][TelegramAgent] Telegram alerts skipped "
