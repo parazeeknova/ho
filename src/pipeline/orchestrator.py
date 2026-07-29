@@ -134,38 +134,51 @@ async def _scrape_index_links(
         if any(h in url_lower for h in _image_hosts):
             return
 
+        role = j.get("role", "")
+        company = j.get("company", "")
+        location = j.get("location", "Remote")
+
         async with sem:
-            try:
-                async with httpx.AsyncClient(timeout=15.0) as client:
-                    resp = await client.post(
-                        f"{firecrawl_url}/v1/scrape",
-                        json={
-                            "url": url,
-                            "formats": ["markdown"],
-                            "onlyMainContent": True,
-                            "waitFor": 2000,
-                        },
-                    )
-                    if resp.status_code == 200:
-                        md = resp.json().get("data", {}).get("markdown", "") or ""
-                        md_lower = md.lower()
-                        if (
-                            md
-                            and len(md) > 200
-                            and not any(dead in md_lower for dead in _dead_page_texts)
-                        ):
-                            scraped.append(
-                                {
-                                    "markdown": md,
-                                    "url": url,
-                                    "title": j.get("role", ""),
-                                    "snippet": str(j),
-                                }
+            for use_main_content in (True, False):
+                try:
+                    async with httpx.AsyncClient(timeout=20.0) as client:
+                        payload: dict = {"url": url, "formats": ["markdown"]}
+                        if use_main_content:
+                            payload["onlyMainContent"] = True
+                        resp = await client.post(
+                            f"{firecrawl_url}/v1/scrape", json=payload
+                        )
+                        if resp.status_code == 200:
+                            md = resp.json().get("data", {}).get("markdown", "") or ""
+                            md_lower = md.lower()
+
+                            # Prepend known metadata so the LLM always has context
+                            md = (
+                                f"Role: {role}\n"
+                                f"Company: {company}\n"
+                                f"Location: {location}\n"
+                                f"Apply: {url}\n\n"
+                                f"{md}"
                             )
-                            return
-            except Exception:
-                pass
-    # No fallback — skip jobs we can't get real JD text for
+
+                            if (
+                                md
+                                and len(md) > 200
+                                and not any(dead in md_lower for dead in _dead_page_texts)
+                            ):
+                                scraped.append(
+                                    {
+                                        "markdown": md,
+                                        "url": url,
+                                        "title": role,
+                                        "snippet": role,
+                                    }
+                                )
+                                return
+                            # If main-content gave too little, fall through to full-page scrape
+                except Exception:
+                    pass
+            # Both attempts failed — skip
 
     tasks = [asyncio.create_task(_scrape_one(j)) for j in jobs]
     await asyncio.gather(*tasks)
