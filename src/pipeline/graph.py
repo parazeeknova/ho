@@ -216,6 +216,12 @@ async def node_matcher(
         state["match"] = None
         return state
 
+    raw_link = result.get("apply_link")
+    if not raw_link or not str(raw_link).startswith("http"):
+        result["apply_link"] = state["url"]
+    result["url"] = state["url"]
+    result["source_url"] = state["url"]
+
     state["match"] = result
     return state
 

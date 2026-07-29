@@ -406,7 +406,12 @@ async def extract_index_jobs(jobs: list[QueuedJob], ctx: ContextManager) -> list
                     and "listings" in raw
                     and isinstance(raw["listings"], list)
                 ):
-                    sub_listings.extend(raw["listings"])
+                    for item in raw["listings"]:
+                        if isinstance(item, dict):
+                            link = item.get("apply_link")
+                            if not link or not str(link).startswith("http"):
+                                item["apply_link"] = job.url
+                            sub_listings.append(item)
 
             return sub_listings
 
