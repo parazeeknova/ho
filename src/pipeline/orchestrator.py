@@ -20,6 +20,21 @@ from src.agent.enrichment_agent import EnrichmentAgent
 from src.agent.jobs_agent import JobsAgent
 from src.agent.startup_agent import StartupAgent
 from src.agent.telegram_agent import TelegramAgent, set_pipeline_state
+from src.connectors import discover_all
+from src.graph.engine import WorkScheduler
+from src.graph.entity import (
+    EdgeType,
+    FrontierEntry,
+    GraphNode,
+    NodeType,
+    company_node,
+    edge,
+    make_founder_id,
+    make_work_id,
+)
+from src.graph.event_bus import EventBus
+from src.graph.frontier import CrawlFrontier
+from src.graph.graph_store import GraphStore
 from src.llm.context import ContextManager
 from src.memory.pgvector_store import MemoryStore
 from src.pipeline.graph import EMBED_URL, drain_retry_queue, run_batch
@@ -331,6 +346,226 @@ async def _enrich_discovered_startups(
     return stored
 
 
+async def _expand_company_graph(
+    graph: GraphStore,
+    bus: EventBus,
+    store: MemoryStore,
+    ctx: ContextManager,
+    telegram_agent: TelegramAgent,
+) -> tuple[int, int]:
+    """Run one expansion round using the persistent WorkScheduler engine.
+
+    Connectors discover companies -> graph nodes created -> events fire ->
+    frontier entries enqueued -> workers process continuously.
+    Returns (nodes_created, events_fired).
+    """
+    startup_agent = StartupAgent(ctx)
+    frontier = CrawlFrontier(max_size=300)
+    engine = WorkScheduler(frontier, worker_count=3)
+
+    # ── Event handlers (publish-only: return FrontierEntries) ─────────────
+
+    async def _on_company_discovered(event):
+        data = event.payload
+        name = data.get("name", "")
+        entries = [
+            FrontierEntry(
+                id=make_work_id("founder_miner", event.node_id),
+                agent="founder_miner",
+                node_id=event.node_id,
+                node_type=NodeType.COMPANY,
+                priority=70,
+                depth=1,
+                payload={"company": name},
+            )
+        ]
+        url = data.get("url", "")
+        if url:
+            entries.append(
+                FrontierEntry(
+                    id=make_work_id("career_site_detector", event.node_id),
+                    agent="career_site_detector",
+                    node_id=event.node_id,
+                    node_type=NodeType.COMPANY,
+                    priority=60,
+                    depth=1,
+                    payload={"company": name, "url": url},
+                )
+            )
+        return entries
+
+    async def _on_founder_discovered(event):
+        data = event.payload
+        return [
+            FrontierEntry(
+                id=make_work_id("founder_social_osint", event.node_id),
+                agent="founder_social_osint",
+                node_id=event.node_id,
+                node_type=NodeType.FOUNDER,
+                priority=50,
+                depth=2,
+                payload={"founder_name": data.get("name", ""), "company": data.get("company", "")},
+            ),
+            FrontierEntry(
+                id=make_work_id("employee_discovery", event.node_id),
+                agent="employee_discovery",
+                node_id=event.node_id,
+                node_type=NodeType.FOUNDER,
+                priority=45,
+                depth=2,
+                payload={"company": data.get("company", "")},
+            ),
+        ]
+
+    async def _on_career_site_discovered(event):
+        data = event.payload
+        url = data.get("url", "")
+        if any(
+            ats in url.lower()
+            for ats in ["greenhouse", "lever.co", "ashbyhq", "workable", "myworkdayjobs"]
+        ):
+            return [
+                FrontierEntry(
+                    id=make_work_id("ats_crawler", event.node_id),
+                    agent="ats_crawler",
+                    node_id=event.node_id,
+                    node_type=NodeType.CAREER_SITE,
+                    priority=55,
+                    depth=2,
+                    payload={"company": data.get("company", ""), "ats_url": url},
+                )
+            ]
+        return []
+
+    bus.subscribe("company_discovered", _on_company_discovered)
+    bus.subscribe("founder_discovered", _on_founder_discovered)
+    bus.subscribe("career_site_discovered", _on_career_site_discovered)
+
+    # ── Agent implementations ──────────────────────────────────────────────
+
+    async def _founder_miner(entry: FrontierEntry) -> list[FrontierEntry]:
+        company_name = entry.payload.get("company", "")
+        if not company_name:
+            return []
+        job_entry = {
+            "role": "Startup Analysis",
+            "company": company_name,
+            "match_percent": 50,
+            "verdict": "WEAK_MATCH",
+        }
+        enriched = await startup_agent.analyze_startup(job_entry)
+        founders = enriched.get("founders", [])
+        node = await graph.get_node(entry.node_id)
+        if node:
+            node.data["founders"] = founders
+            node.data["funding_stage"] = enriched.get("funding_stage", "")
+            await graph.upsert_node(node)
+
+        new_entries: list[FrontierEntry] = []
+        for f in founders[:3]:
+            if isinstance(f, dict) and f.get("name"):
+                f_name = f["name"]
+                f_node = GraphNode(
+                    id=make_founder_id(f_name, company_name),
+                    node_type=NodeType.FOUNDER,
+                    data={**f, "company": company_name},
+                )
+                await graph.upsert_node(f_node)
+                await graph.upsert_edge(edge(entry.node_id, EdgeType.FOUNDED_BY, f_node.id))
+                entries = await bus.fire(
+                    bus.new_event(
+                        "founder_discovered",
+                        f_node.id,
+                        NodeType.FOUNDER,
+                        {"name": f_name, "company": company_name},
+                    )
+                )
+                new_entries.extend(entries)
+        return new_entries
+
+    async def _stub(entry: FrontierEntry) -> list[FrontierEntry]:
+        return []
+
+    engine.register_agent("founder_miner", _founder_miner)
+    engine.register_agent("career_site_detector", _stub)
+    engine.register_agent("founder_social_osint", _stub)
+    engine.register_agent("employee_discovery", _stub)
+    engine.register_agent("ats_crawler", _stub)
+
+    # ── Start persistent workers ──────────────────────────────────────────
+
+    engine.start(worker_count=3)
+
+    # ── Discover + fire events → entries pushed to frontier ────────────────
+
+    entities = await discover_all()
+    if not entities:
+        engine.shutdown(drain=False)
+        return 0, 0
+
+    console.print(f"  🏢 Connectors: {len(entities)} companies discovered")
+    nodes_created = 0
+    events_fired = 0
+
+    for entity in entities:
+        node = company_node(
+            entity.name,
+            description=entity.description,
+            source=entity.source,
+            url=entity.url or "",
+            confidence=entity.confidence,
+        )
+        node.confidence.score = entity.confidence
+        node.confidence.source_count = 1
+        await graph.upsert_node(node)
+        nodes_created += 1
+
+        event = bus.new_event(
+            "company_discovered",
+            node.id,
+            NodeType.COMPANY,
+            {
+                "name": entity.name,
+                "url": entity.url,
+                "source": entity.source,
+                "description": entity.description,
+            },
+        )
+        entries = await bus.fire(event)
+        events_fired += 1
+        if entries:
+            engine.enqueue_many(entries)
+
+    # Let workers process for a bit
+    await asyncio.sleep(3)
+
+    # Store discoveries in jobs ledger
+    jobs_agent = JobsAgent(store=store)
+    for entity in entities[:20]:
+        await jobs_agent.add_or_merge_jobs(
+            [
+                {
+                    "role": "[Graph Discovery]",
+                    "company": entity.name,
+                    "company_description": entity.description,
+                    "apply_link": entity.url or "",
+                    "source": entity.source,
+                    "location": "Remote",
+                    "match_percent": 40,
+                    "verdict": "WEAK_MATCH",
+                    "shortlist_probability": 30,
+                }
+            ]
+        )
+
+    # Drain remaining work and shut down
+    m = await engine.get_metrics()
+    console.print(f"  ⚙️  Scheduler: {m.completed_work} done, {m.pending_work} pending")
+    await engine.shutdown(drain=True)
+
+    return nodes_created, events_fired
+
+
 async def _consumer(
     pipeline: JobPipeline,
     store: MemoryStore,
@@ -452,6 +687,10 @@ async def _run_pipeline() -> None:
     removed = await store.purge_fake_job_keys(["techco:backendengineer"])
     if removed:
         console.print(f"  [dim]Purged {removed} stale test entries[/dim]")
+
+    graph = await GraphStore.create()
+    bus = EventBus()
+    console.print("  [green]Graph store initialised[/green]")
 
     console.rule("[bold cyan]PHASE 1: Load Resume + Index in pgvector[/bold cyan]")
     loop = asyncio.get_running_loop()
@@ -725,6 +964,14 @@ async def _run_pipeline() -> None:
             if os.environ.get("OVERNIGHT_LOOP", "false").lower() != "true":
                 break
 
+            set_pipeline_state(phase="graph expansion")
+            console.print("\n[bold cyan]PHASE 3: Company Graph Expansion[/bold cyan]")
+            try:
+                nodes, events = await _expand_company_graph(graph, bus, store, ctx, telegram_agent)
+                console.print(f"  🏢 Graph: {nodes} nodes, {events} events")
+            except Exception as ge:
+                console.print(f"  [yellow]Graph expansion skipped: {ge}[/yellow]")
+
             console.print("\n[dim]Sleeping 5 minutes before next sweep...[/dim]")
             gc.collect()
             await asyncio.sleep(300)
@@ -747,6 +994,7 @@ async def _run_pipeline() -> None:
     await telegram_agent.stop_polling()
     set_pipeline_state(running=False, phase="shutdown")
     await ctx.aclose()
+    await graph.close()
     await store.close()
 
 
