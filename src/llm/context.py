@@ -12,8 +12,10 @@ from typing import Any
 
 import httpx
 
+from src.llm.config import LLMConfig
+
 LLM_URL = "http://127.0.0.1:8899"
-MODEL = "Jackrong/Qwen3.5-4B-Claude-4.6-Opus-Reasoning-Distilled-v2-GGUF:Q5_K_M"
+MODEL = LLMConfig().model
 MAX_RETRIES = 3
 RETRY_DELAY = 4
 TOKEN_ESTIMATE_PER_CHAR = 0.4

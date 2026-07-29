@@ -216,7 +216,7 @@ async def _index_resume_in_pgvector(
                             "embedding": item["embedding"],
                         }
                     )
-            if len(text) > 20 and len(text) <= 500:
+            if len(text) > 20:
                 resp = await embed_client.post(
                     f"{EMBED_URL}/v1/embeddings",
                     json={"model": "Qwen/Qwen3-Embedding-0.6B", "input": [text[:500]]},

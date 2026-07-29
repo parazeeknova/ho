@@ -5,7 +5,6 @@ description = "Thy Job shall be mine"
 requires-python = ">=3.14"
 dependencies = [
     "asyncpg>=0.30.0",
-    "fastembed>=0.6.0",
     "firecrawl-py>=4.33.1",
     "httpx>=0.28.0",
     "markitdown[pdf]>=0.1.6",
