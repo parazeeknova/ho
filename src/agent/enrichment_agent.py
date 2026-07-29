@@ -7,25 +7,14 @@ now lives exclusively in node_matcher. This agent ONLY handles vector rescoring.
 from __future__ import annotations
 
 import asyncio
-import math
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
-from src.memory.pgvector_store import MemoryStore
+if TYPE_CHECKING:
+    from src.memory.pgvector_store import MemoryStore
 
 EMBED_URL = "http://127.0.0.1:8900/v1"
-
-
-def _cosine_similarity(v1: list[float], v2: list[float]) -> float:
-    if not v1 or not v2 or len(v1) != len(v2):
-        return 0.0
-    dot = sum(a * b for a, b in zip(v1, v2, strict=False))
-    norm1 = math.sqrt(sum(a * a for a in v1))
-    norm2 = math.sqrt(sum(b * b for b in v2))
-    if norm1 == 0 or norm2 == 0:
-        return 0.0
-    return dot / (norm1 * norm2)
 
 
 async def _get_embedding(text: str) -> list[float]:
@@ -46,6 +35,7 @@ async def _get_embedding(text: str) -> list[float]:
 
     # Fallback deterministic pseudo-embedding (dim=1024)
     import hashlib
+
     h = hashlib.sha256(text.encode("utf-8")).digest()
     vec = [(float(b) / 255.0) for b in h]
     while len(vec) < 1024:
@@ -78,19 +68,13 @@ class EnrichmentAgent:
 
         resume_chunks = await self.store.search_similar_chunks(jd_vector, top_k=5)
         if resume_chunks:
-            similarities = []
-            for chunk in resume_chunks:
-                emb = chunk.get("embedding")
-                if isinstance(emb, list):
-                    sim = _cosine_similarity(jd_vector, emb)
-                    similarities.append(sim)
+            similarities = [1.0 - ch.get("distance", 1.0) for ch in resume_chunks]
+            similarities = [s for s in similarities if s >= 0.0]
 
             if similarities:
                 avg_sim = sum(similarities) / len(similarities)
                 calculated_match = int(min(98, max(30, (avg_sim - 0.5) * 160)))
-                job["match_percent"] = max(
-                    job.get("match_percent", 0), calculated_match
-                )
+                job["match_percent"] = max(job.get("match_percent", 0), calculated_match)
                 job["shortlist_probability"] = int(job["match_percent"] * 0.85)
 
         return job

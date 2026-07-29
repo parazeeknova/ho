@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 import time
 from typing import Any
 
@@ -158,9 +159,15 @@ class ContextManager:
 
 
 def _strip_markdown(raw: str) -> str:
-    raw = raw.strip()
-    if raw.startswith("```"):
-        raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
-        if raw.endswith("```"):
-            raw = raw[:-3]
+    """Strip <think> blocks and extract JSON from code fences.
+
+    DeepSeek V3.2 sometimes emits reasoning blocks or conversational
+    filler before the actual JSON output.
+    """
+    raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL)
+
+    m = re.search(r"```(?:json)?\s*\n?(.*?)\n?\s*```", raw, re.DOTALL)
+    if m:
+        return m.group(1).strip()
+
     return raw.strip()
