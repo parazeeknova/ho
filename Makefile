@@ -1,4 +1,4 @@
-.PHONY: check check-types test serve run match health fc-up fc-down fc-logs dev dev-down start overnight
+.PHONY: check check-types test serve run match health fc-up fc-down fc-logs dev dev-down start overnight clean-volumes
 
 check:
 	uv run ruff format . && uv run ruff check . --fix
@@ -51,3 +51,10 @@ dev-down:
 
 health:
 	uv run python scripts/health.py
+
+clean-volumes:
+	docker compose -f docker-compose.yaml down -v 2>/dev/null; \
+	podman rm -f firecrawl_rabbitmq_1 2>/dev/null; \
+	rm -rf storage/ 2>/dev/null; \
+	echo "All container volumes and local storage cleared."
+
