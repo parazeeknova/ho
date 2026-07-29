@@ -99,15 +99,31 @@ class ContextManager:
         await self._client.aclose()
 
     async def chat(self, prompt: str, schema: dict[str, Any] | None = None) -> str:
-        if len(prompt) > 5000:
+        current_prompt = prompt
+        if len(current_prompt) > 12000:
+            current_prompt = current_prompt[:12000]
+
+        if len(current_prompt) > 4000:
             await self.maybe_flush()
-        payload = _build_payload(prompt, schema)
+
         for attempt in range(1, MAX_RETRIES + 1):
+            payload = _build_payload(current_prompt, schema)
             try:
                 resp = await self._client.post(
                     f"{LLM_URL}/v1/chat/completions",
                     json=payload,
                 )
+                if resp.status_code == 400 and len(current_prompt) > 2000:
+                    print(
+                        f"  [LLM 400 Context Overflow attempt {attempt}] "
+                        f"Truncating prompt from {len(current_prompt)} to "
+                        f"{len(current_prompt) // 2} chars..."
+                    )
+                    current_prompt = current_prompt[: len(current_prompt) // 2]
+                    await self.flush()
+                    await _async_sleep(1.0)
+                    continue
+
                 resp.raise_for_status()
                 result = resp.json()
                 msg = result["choices"][0]["message"]
@@ -182,7 +198,7 @@ class ContextManager:
         prompt: str,
         schema: dict[str, Any] | None = None,
         content: str = "",
-        limit: int = 28000,
+        limit: int = 8000,
     ) -> dict[str, Any] | list[Any]:
         full = prompt
         if content:

@@ -110,7 +110,25 @@ def verify_extraction(text: str) -> dict[str, bool | str]:
         ),
         "has_experience": any(kw in text.lower() for kw in ["experience", "intern", "work"]),
         "has_education": any(
-            kw in text.lower() for kw in ["university", "college", "bachelor", "degree", "school"]
+            kw in text.lower()
+            for kw in [
+                "university",
+                "college",
+                "bachelor",
+                "degree",
+                "school",
+                "b.tech",
+                "b.e.",
+                "b.s.",
+                "m.s.",
+                "m.tech",
+                "institute",
+                "iit",
+                "nit",
+                "academic",
+                "education",
+                "graduat",
+            ]
         ),
         "length_ok": len(text) > 300,
     }
@@ -119,10 +137,25 @@ def verify_extraction(text: str) -> dict[str, bool | str]:
     return checks
 
 
-def load_resume() -> tuple[str, dict[str, str]]:
+def load_resume(default_url: str | None = None) -> tuple[str, dict[str, str]]:
+    import os
+    import sys
+
     import questionary
 
-    url = questionary.text("Resume URL (PDF/DOCX/HTML):").ask()
+    url = default_url or os.environ.get("RESUME_URL")
+    is_non_interactive = (
+        bool(url)
+        or os.environ.get("NON_INTERACTIVE", "false").lower() == "true"
+        or not sys.stdin.isatty()
+    )
+
+    if not url:
+        if is_non_interactive:
+            url = "https://f.przknv.cc/raw/ayEBJQ.pdf"
+        else:
+            url = questionary.text("Resume URL (PDF/DOCX/HTML):").ask()
+
     if not url:
         raise ValueError("No URL provided")
 
@@ -141,23 +174,24 @@ def load_resume() -> tuple[str, dict[str, str]]:
     if not checks["passes"]:
         print("  WARNING: Some extraction checks failed, continuing anyway...")
 
-    while True:
-        action = questionary.select(
-            f"Resume loaded ({len(text)} chars). What next?",
-            choices=[
-                "Continue with pipeline",
-                "View full resume (scrollable)",
-                "Re-enter URL",
-            ],
-        ).ask()
+    if not is_non_interactive:
+        while True:
+            action = questionary.select(
+                f"Resume loaded ({len(text)} chars). What next?",
+                choices=[
+                    "Continue with pipeline",
+                    "View full resume (scrollable)",
+                    "Re-enter URL",
+                ],
+            ).ask()
 
-        if action == "Continue with pipeline":
-            break
-        elif action == "View full resume (scrollable)":
-            subprocess.run(["less", "-R"], input=text.encode(), check=False)
-        elif action == "Re-enter URL":
-            path.unlink(missing_ok=True)
-            return load_resume()
+            if action == "Continue with pipeline":
+                break
+            elif action == "View full resume (scrollable)":
+                subprocess.run(["less", "-R"], input=text.encode(), check=False)
+            elif action == "Re-enter URL":
+                path.unlink(missing_ok=True)
+                return load_resume()
 
     chunks = chunk_resume(text)
     print(f"  Sections: {list(chunks.keys())}")

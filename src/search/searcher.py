@@ -352,23 +352,35 @@ async def extract_index_jobs(jobs: list[QueuedJob], ctx: ContextManager) -> list
             lines = [
                 ln
                 for ln in job.markdown.split("\n")
-                if "|" in ln and ("remote" in ln.lower() or "---" in ln)
+                if "|" in ln and ("remote" in ln.lower() or "---" in ln or "http" in ln.lower())
             ]
-            clean_md = "\n".join(lines[:100])
-            if len(clean_md) < 50:
+            if not lines:
                 return []
-            prompt = (
-                "Extract ALL job/internship listings from this markdown table. "
-                "You MUST extract the raw http or https URL from any markdown "
-                "reference link (e.g. [Apply](https://url.com) -> https://url.com) "
-                "into apply_link. Do not leave apply_link empty. "
-                "Return valid JSON matching the required schema. "
-                "Be exhaustive — extract every single row/listing."
-            )
-            raw = await ctx.json_chat(prompt, INDEX_EXTRACT_SCHEMA, clean_md, limit=12000)
-            if isinstance(raw, dict) and "listings" in raw:
-                return raw["listings"]
-            return []
+
+            sub_listings: list[dict] = []
+            chunk_size = 40
+            for i in range(0, min(len(lines), 160), chunk_size):
+                chunk_lines = lines[i : i + chunk_size]
+                clean_md = "\n".join(chunk_lines)
+                if len(clean_md) < 50:
+                    continue
+                prompt = (
+                    "Extract ALL job/internship listings from this markdown table. "
+                    "You MUST extract the raw http or https URL from any markdown "
+                    "reference link (e.g. [Apply](https://url.com) -> https://url.com) "
+                    "into apply_link. Do not leave apply_link empty. "
+                    "Return valid JSON matching the required schema. "
+                    "Be exhaustive — extract every single row/listing."
+                )
+                raw = await ctx.json_chat(prompt, INDEX_EXTRACT_SCHEMA, clean_md, limit=6000)
+                if (
+                    isinstance(raw, dict)
+                    and "listings" in raw
+                    and isinstance(raw["listings"], list)
+                ):
+                    sub_listings.extend(raw["listings"])
+
+            return sub_listings
 
     tasks = [asyncio.create_task(_extract_one(j)) for j in jobs]
     results = await asyncio.gather(*tasks)

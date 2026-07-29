@@ -53,7 +53,7 @@ p_llm = subprocess.Popen(
         "--port",
         "8899",
         "--ctx-size",
-        "8192",
+        "16384",
         "--flash-attn",
         "on",
         "--parallel",

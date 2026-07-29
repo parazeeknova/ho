@@ -18,7 +18,7 @@ EMBED_QUERY_INSTRUCTION = (
 class LLMConfig:
     base_url: str = "http://127.0.0.1:8899/v1"
     model: str = "unsloth/Qwen3-4B-Instruct-2507-GGUF:UD-Q5_K_XL"
-    context_length: int = 8192
+    context_length: int = 16384
     flash_attention: bool = True
 
 

@@ -266,22 +266,35 @@ async def _run_pipeline() -> None:
     full_text = ""
     reuse_resume = False
 
+    is_non_interactive = (
+        bool(os.environ.get("RESUME_URL"))
+        or os.environ.get("NON_INTERACTIVE", "false").lower() == "true"
+        or not sys.stdin.isatty()
+    )
+
     if existing_count > 0:
-        import questionary
+        if is_non_interactive:
+            if os.environ.get("RESUME_URL"):
+                reuse_resume = False
+            else:
+                reuse_resume = True
+                console.print(f"  [green]Reusing {existing_count} existing resume chunks[/green]")
+        else:
+            import questionary
 
-        def _ask_reuse() -> str | None:
-            return questionary.select(
-                f"Found {existing_count} existing resume chunks in pgvector. What now?",
-                choices=[
-                    "Reuse existing resume (skip re-indexing)",
-                    "Load new resume URL (re-index from scratch)",
-                ],
-            ).ask()
+            def _ask_reuse() -> str | None:
+                return questionary.select(
+                    f"Found {existing_count} existing resume chunks in pgvector. What now?",
+                    choices=[
+                        "Reuse existing resume (skip re-indexing)",
+                        "Load new resume URL (re-index from scratch)",
+                    ],
+                ).ask()
 
-        choice = await loop.run_in_executor(None, _ask_reuse)
-        if choice and choice.startswith("Reuse"):
-            reuse_resume = True
-            console.print(f"  [green]Reusing {existing_count} existing resume chunks[/green]")
+            choice = await loop.run_in_executor(None, _ask_reuse)
+            if choice and choice.startswith("Reuse"):
+                reuse_resume = True
+                console.print(f"  [green]Reusing {existing_count} existing resume chunks[/green]")
 
     if not reuse_resume:
 
