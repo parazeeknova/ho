@@ -95,7 +95,7 @@ class MemoryStore:
     async def close(self) -> None:
         await self._pool.close()
 
-    # ── processed_jobs (deduplication ledger) ────────────────────────────
+    # Processed_jobs
 
     async def is_url_processed(self, url: str) -> bool:
         async with self._pool.acquire() as conn:
@@ -124,7 +124,7 @@ class MemoryStore:
                 json.dumps(data),
             )
 
-    # ── resume_embeddings (semantic RAG memory) ──────────────────────────
+    # Resume_embeddings
 
     async def index_resume_chunks(self, chunks: list[dict[str, Any]]) -> None:
         """Insert resume chunks with their pre-computed embeddings.
@@ -175,7 +175,7 @@ class MemoryStore:
         async with self._pool.acquire() as conn:
             await conn.execute("TRUNCATE resume_embeddings")
 
-    # ── discovered_domains (dynamic domain discovery) ─────────────────────
+    # Discovered_domains
 
     async def add_discovered_domain(self, domain: str, source_url: str = "") -> bool:
         """Insert a new domain. Returns True if newly added, False if already exists."""
@@ -213,7 +213,7 @@ class MemoryStore:
                 domains,
             )
 
-    # ── telegram_notified_jobs (persistent Telegram notification tracking) ──
+    # Telegram_notified_jobs
 
     async def is_telegram_notified(self, dedup_key: str) -> bool:
         """Return True if job key was already notified via Telegram."""
@@ -238,7 +238,7 @@ class MemoryStore:
                 company,
             )
 
-    # ── jobs_ledger (replaces Qdrant — persistent job ledger) ──────────────
+    # Jobs_ledger
 
     _JOB_COLUMNS = (
         "dedup_key",

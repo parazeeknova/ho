@@ -91,7 +91,7 @@ class BaseConnector(ABC):
         return self._last_call
 
 
-# ── Concrete connectors ────────────────────────────────────────────────────────
+# Concrete connectors
 
 
 class YCConnector(BaseConnector):
@@ -347,7 +347,7 @@ class FounderSocialConnector(BaseConnector):
         return entity
 
 
-# ── Connector registry ────────────────────────────────────────────────────────
+# Connector registry
 
 
 def all_connectors() -> list[BaseConnector]:

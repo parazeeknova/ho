@@ -438,7 +438,7 @@ class StartupAgent:
         if not jobs:
             return []
 
-        # ── Phase 1: deterministic scoring (no LLM) ───────────────────────
+        # Phase 1: deterministic
         scored: list[tuple[int, int, dict[str, Any]]] = []
         pass_through: list[dict[str, Any]] = []
 
@@ -467,7 +467,7 @@ class StartupAgent:
             f"(top score: {scored[0][0]})"
         )
 
-        # ── Phase 2: LLM analysis in priority order ───────────────────────
+        # Phase 2: LLM
         sem = asyncio.Semaphore(concurrency)
         result_map: dict[int, dict[str, Any]] = {}
 

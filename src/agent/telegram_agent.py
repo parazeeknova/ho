@@ -25,9 +25,9 @@ TELEGRAM_BASE = "https://api.telegram.org/bot{token}"
 TELEGRAM_SEND = f"{TELEGRAM_BASE}/sendMessage"
 TELEGRAM_UPDATES = f"{TELEGRAM_BASE}/getUpdates"
 
-# ---------------------------------------------------------------------------
+
 # Shared pipeline state (written by orchestrator, read by /status handler)
-# ---------------------------------------------------------------------------
+
 _pipeline_state: dict[str, Any] = {
     "running": False,
     "sweep": 0,
@@ -44,9 +44,9 @@ def set_pipeline_state(**kwargs: Any) -> None:
     _pipeline_state.update(kwargs)
 
 
-# ---------------------------------------------------------------------------
 # Async health checks (non-blocking, runs in-process)
-# ---------------------------------------------------------------------------
+
+
 async def _check_port(host: str, port: int, timeout: float = 2.0) -> bool:
     try:
         _, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=timeout)
@@ -91,9 +91,7 @@ async def run_health_checks() -> str:
     return "\n".join(lines)
 
 
-# ---------------------------------------------------------------------------
 # TelegramAgent
-# ---------------------------------------------------------------------------
 
 
 class TelegramAgent:
@@ -366,7 +364,7 @@ class TelegramAgent:
         if comp_desc:
             lines.extend(["", f"<blockquote>{comp_desc}</blockquote>"])
 
-        # ── OSINT & Outreach ──────────────────────────────────────────
+        # Osint & Outreach
 
         funding_info = job.get("funding_info") or {}
         funding_stage = job.get("funding_stage", "")

@@ -485,7 +485,7 @@ async def _expand_company_graph(
 
     engine.start(worker_count=3)
 
-    # ── Discovery phase ──────────────────────────────────────────────────
+    # Discovery phase
 
     entities = await discover_all()
     if not entities:
@@ -520,7 +520,7 @@ async def _expand_company_graph(
         )
         events_fired += 1
 
-    # ── Centrality ───────────────────────────────────────────────────────
+    # Centrality
 
     all_nodes = await graph.get_nodes_by_type(NodeType.COMPANY, limit=200)
     all_edges = await graph.get_all_edges(limit=500)
@@ -535,7 +535,7 @@ async def _expand_company_graph(
 
     await asyncio.sleep(3)
 
-    # ── Graph-driven work generation ─────────────────────────────────────
+    # Graph-driven work generation
     # New edges trigger discovery: FOUNDED_BY -> check for missing founder profiles
     for e in all_edges:
         target = await graph.get_node(e.target_id)
@@ -560,7 +560,7 @@ async def _expand_company_graph(
                         )
                     )
 
-    # ── Store ────────────────────────────────────────────────────────────
+    # Store
 
     jobs_agent = JobsAgent(store=store)
     for entity in entities[:20]:

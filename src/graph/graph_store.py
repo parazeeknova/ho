@@ -91,7 +91,7 @@ class GraphStore:
     async def close(self) -> None:
         await self._pool.close()
 
-    # ── Nodes ────────────────────────────────────────────────────────────────
+    # Nodes
 
     async def upsert_node(self, node: GraphNode) -> GraphNode:
         existing = await self.get_node(node.id)
@@ -175,7 +175,7 @@ class GraphStore:
                 node_id,
             )
 
-    # ── Edges ────────────────────────────────────────────────────────────────
+    # Edges
 
     async def upsert_edge(self, edge: GraphEdge) -> GraphEdge:
         existing = await self.get_edge(edge.source_id, edge.edge_type, edge.target_id)
@@ -256,7 +256,7 @@ class GraphStore:
         return [_row_to_edge(r) for r in rows if r]
 
 
-# ── Row-to-object helpers ──────────────────────────────────────────────────────
+# Row-to-object helpers
 
 
 def _parse_confidence(raw: Any) -> Confidence:

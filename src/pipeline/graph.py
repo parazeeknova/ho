@@ -209,7 +209,7 @@ def _apply_hard_constraints(match: dict[str, Any]) -> CriticReview:
     return CriticReview(passed=True, critique_reason="Pre-checks passed", requires_rescore=False)
 
 
-# ── Node implementations ───────────────────────────────────────────────────
+# Node implementations
 
 
 async def node_context_builder(
@@ -366,7 +366,7 @@ async def node_memory_saver(
     return state
 
 
-# ── Graph runner ────────────────────────────────────────────────────────────
+# Graph runner
 
 
 async def run_graph(

@@ -6,8 +6,10 @@ long-running tasks. Utility scoring for information gain/cost tradeoffs.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -51,7 +53,7 @@ class WorkState(StrEnum):
     EXPIRED = "expired"
 
 
-# ── Confidence ────────────────────────────────────────────────────────────────
+# Confidence
 
 
 class Confidence(BaseModel):
@@ -80,7 +82,7 @@ def confidence_decay(c: Confidence, max_age_days: int = 30) -> Confidence:
     return c
 
 
-# ── Graph ─────────────────────────────────────────────────────────────────────
+# Graph
 
 
 class GraphNode(BaseModel):
@@ -106,7 +108,7 @@ class GraphEdge(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
-# ── IDs ────────────────────────────────────────────────────────────────────────
+# Ids
 
 
 def _hash(*parts: str) -> str:
@@ -129,7 +131,7 @@ def make_founder_id(name: str, company_name: str) -> str:
     return _hash(f"founder:{name.lower().strip()}:{company_name.lower().strip()}")
 
 
-# ── Cost ───────────────────────────────────────────────────────────────────────
+# Cost
 
 
 @dataclass
@@ -186,7 +188,7 @@ LEASE_TTL = 120.0
 HEARTBEAT_INTERVAL = 30.0
 
 
-# ── FrontierEntry ─────────────────────────────────────────────────────────────
+# Frontierentry
 
 
 @dataclass
@@ -260,7 +262,39 @@ class FrontierEntry:
         self.priority = min(100, score)
 
 
-# ── Batch ──────────────────────────────────────────────────────────────────────
+# Adaptive Semaphore
+
+
+class AdaptiveSemaphore:
+    def __init__(self, limit: int) -> None:
+        self._sem = asyncio.Semaphore(limit)
+        self._limit = limit
+        self._lock = asyncio.Lock()
+
+    @property
+    def limit(self) -> int:
+        return self._limit
+
+    async def set_limit(self, new_limit: int) -> None:
+        async with self._lock:
+            delta = new_limit - self._limit
+            self._limit = new_limit
+            if delta > 0:
+                for _ in range(delta):
+                    self._sem.release()
+            elif delta < 0:
+                for _ in range(-delta):
+                    await self._sem.acquire()
+
+    async def __aenter__(self) -> AdaptiveSemaphore:
+        await self._sem.acquire()
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        self._sem.release()
+
+
+# Batch
 
 
 @dataclass
@@ -275,7 +309,11 @@ class WorkBatch:
             self.batch_id = _hash("batch", self.agent, str(time.monotonic()))
 
 
-# ── Events ─────────────────────────────────────────────────────────────────────
+HandlerType = Callable[[FrontierEntry], Awaitable[list[FrontierEntry]]]
+BatchHandlerType = Callable[[WorkBatch], Awaitable[list[FrontierEntry]]]
+
+
+# Events
 
 
 class GraphEvent(BaseModel):
@@ -286,7 +324,7 @@ class GraphEvent(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
-# ── Metrics ────────────────────────────────────────────────────────────────────
+# Metrics
 
 
 @dataclass
@@ -307,7 +345,7 @@ class SchedulerMetrics:
     cost_consumed: float = 0.0
 
 
-# ── Graph analytics ────────────────────────────────────────────────────────────
+# Graph analytics
 
 
 def compute_centrality(
@@ -331,7 +369,7 @@ def compute_centrality(
     return ranks
 
 
-# ── Builders ───────────────────────────────────────────────────────────────────
+# Builders
 
 
 def company_node(name: str, **extra: Any) -> GraphNode:

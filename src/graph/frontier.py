@@ -42,7 +42,7 @@ class CrawlFrontier:
         self._not_empty = asyncio.Event()
         self._dependency_index: dict[str, set[str]] = {}  # dep_id -> set of blocked entry_ids
 
-    # ── Enqueue ────────────────────────────────────────────────────────────────
+    # Enqueue
 
     async def push(self, entry: FrontierEntry) -> bool:
         async with self._lock:
@@ -75,7 +75,7 @@ class CrawlFrontier:
             await self._trim()
         return added
 
-    # ── Lease ──────────────────────────────────────────────────────────────────
+    # Lease
 
     async def lease(self, worker_id: int) -> FrontierEntry | None:
         while True:
@@ -141,7 +141,7 @@ class CrawlFrontier:
                 return True
         return False
 
-    # ── Complete / Fail ────────────────────────────────────────────────────────
+    # Complete / Fail
 
     async def complete(self, entry_id: str) -> list[FrontierEntry]:
         """Mark done. Returns newly-unblocked dependent entries."""
@@ -174,7 +174,7 @@ class CrawlFrontier:
                 self._index.pop(entry_id, None)
                 self._total_failed += 1
 
-    # ── Dependencies ───────────────────────────────────────────────────────────
+    # Dependencies
 
     def _deps_satisfied(self, entry: FrontierEntry) -> bool:
         return all(
@@ -193,7 +193,7 @@ class CrawlFrontier:
                 unblocked.append(entry)
         return unblocked
 
-    # ── Internal ───────────────────────────────────────────────────────────────
+    # Internal
 
     def _expire_stale_leases(self) -> int:
         now = time.monotonic()
@@ -215,7 +215,7 @@ class CrawlFrontier:
             _, _, entry = heappop(self._heap)
             self._index.pop(entry.id, None)
 
-    # ── Queries ────────────────────────────────────────────────────────────────
+    # Queries
 
     @property
     def pending(self) -> int:
@@ -241,7 +241,7 @@ class CrawlFrontier:
     def not_empty_event(self) -> asyncio.Event:
         return self._not_empty
 
-    # ── Persistence ────────────────────────────────────────────────────────────
+    # Persistence
 
     async def _persist_one(self, entry: FrontierEntry) -> None:
         if not self._pool:

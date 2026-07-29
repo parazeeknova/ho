@@ -43,7 +43,7 @@ class CriticReview(BaseModel):
     requires_rescore: bool = False
 
 
-# ── Input canonicalization ──────────────────────────────────────────────────
+# Input canonicalization
 
 _DIRECTORY_LANDING_DOMAINS = (
     "internshala.com",

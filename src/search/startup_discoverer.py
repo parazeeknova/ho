@@ -27,7 +27,7 @@ _USER_AGENTS = [
 _SEARCH_UA = _USER_AGENTS
 
 
-# ── Sources ───────────────────────────────────────────────────────────────────
+# Sources
 
 YC_COMPANIES_API = "https://api.ycombinator.com/v0/companies"
 VC_PORTFOLIOS = {
@@ -144,7 +144,7 @@ async def discover_founder_hiring_posts() -> list[dict[str, str]]:
     )
 
 
-# ── Main orchestrator call ────────────────────────────────────────────────────
+# Main orchestrator call
 
 
 async def discover_startups(positions: list[str]) -> list[dict[str, str]]:

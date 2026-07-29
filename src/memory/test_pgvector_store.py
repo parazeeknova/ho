@@ -71,7 +71,7 @@ class TestMarkDomainsCrawled:
         # No exception = success
 
 
-# ── helpers ────────────────────────────────────────────────────────────
+# Helpers
 
 
 async def _mock_store(
