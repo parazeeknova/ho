@@ -86,7 +86,7 @@ class MemoryStore:
     @classmethod
     async def create(cls) -> MemoryStore:
         """Initialise pool, register vector type, create tables."""
-        pool = await asyncpg.create_pool(DSN, min_size=1, max_size=4)
+        pool = await asyncpg.create_pool(DSN, min_size=2, max_size=25)
         async with pool.acquire() as conn:
             await register_vector(conn)
             await conn.execute(CREATE_TABLES_SQL)
@@ -241,11 +241,28 @@ class MemoryStore:
     # ── jobs_ledger (replaces Qdrant — persistent job ledger) ──────────────
 
     _JOB_COLUMNS = (
-        "dedup_key", "role", "company", "match_percent", "shortlist_probability",
-        "salary", "posted_date", "location", "apply_link", "jd_summary",
-        "company_description", "role_summary", "verdict", "is_startup",
-        "founders", "funding_stage", "funding_info", "founder_socials",
-        "company_news", "osint_signals", "source_url", "raw_json",
+        "dedup_key",
+        "role",
+        "company",
+        "match_percent",
+        "shortlist_probability",
+        "salary",
+        "posted_date",
+        "location",
+        "apply_link",
+        "jd_summary",
+        "company_description",
+        "role_summary",
+        "verdict",
+        "is_startup",
+        "founders",
+        "funding_stage",
+        "funding_info",
+        "founder_socials",
+        "company_news",
+        "osint_signals",
+        "source_url",
+        "raw_json",
     )
 
     def _row_to_job(self, row: asyncpg.Record) -> dict[str, Any]:
@@ -277,8 +294,14 @@ class MemoryStore:
                 existing.get("shortlist_probability", 0),
                 data.get("shortlist_probability", 0),
             )
-            for field in ("company_description", "role_summary", "salary",
-                          "posted_date", "apply_link", "jd_summary"):
+            for field in (
+                "company_description",
+                "role_summary",
+                "salary",
+                "posted_date",
+                "apply_link",
+                "jd_summary",
+            ):
                 if not existing.get(field) and data.get(field):
                     existing[field] = data[field]
             data = existing
@@ -352,16 +375,12 @@ class MemoryStore:
 
     async def get_job_by_key(self, dedup_key: str) -> dict[str, Any] | None:
         async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT * FROM jobs_ledger WHERE dedup_key = $1", dedup_key
-            )
+            row = await conn.fetchrow("SELECT * FROM jobs_ledger WHERE dedup_key = $1", dedup_key)
             return self._row_to_job(row) if row else None
 
     async def get_all_jobs_ledger(self) -> list[dict[str, Any]]:
         async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT * FROM jobs_ledger ORDER BY match_percent DESC"
-            )
+            rows = await conn.fetch("SELECT * FROM jobs_ledger ORDER BY match_percent DESC")
         return [self._row_to_job(r) for r in rows]
 
     async def get_job_ledger_count(self) -> int:
@@ -373,9 +392,7 @@ class MemoryStore:
         removed = 0
         async with self._pool.acquire() as conn:
             for key in keys:
-                result = await conn.execute(
-                    "DELETE FROM jobs_ledger WHERE dedup_key = $1", key
-                )
+                result = await conn.execute("DELETE FROM jobs_ledger WHERE dedup_key = $1", key)
                 if result != "DELETE 0":
                     removed += 1
         return removed

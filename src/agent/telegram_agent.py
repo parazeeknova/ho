@@ -101,8 +101,8 @@ class TelegramAgent:
         bot_token: str | None = None,
         chat_id: str | None = None,
     ) -> None:
-        self.bot_token = bot_token or os.getenv("TELEGRAM_BOT_TOKEN", "")
-        self.chat_id = chat_id or os.getenv("TELEGRAM_CHAT_ID", "")
+        self.bot_token = bot_token if bot_token is not None else os.getenv("TELEGRAM_BOT_TOKEN", "")
+        self.chat_id = chat_id if chat_id is not None else os.getenv("TELEGRAM_CHAT_ID", "")
         self._notified_keys: set[str] = set()
         self._update_id: int = 0
         self._poll_task: asyncio.Task[None] | None = None

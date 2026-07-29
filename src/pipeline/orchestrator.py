@@ -1,6 +1,7 @@
 """Pipeline: resume → search → async MQ → graph pipeline → verify → output."""
 
 import asyncio
+import os
 import signal
 import sys
 import time
@@ -55,6 +56,8 @@ def filter_last_24_hours(jobs: list[dict]) -> list[dict]:
             continue
         try:
             dt = datetime.fromisoformat(str(date_str).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=UTC)
             if dt >= cutoff:
                 filtered.append(j)
         except ValueError, TypeError:
@@ -617,6 +620,12 @@ async def _run_pipeline() -> None:
         set_pipeline_state(matched_total=total_matched, phase="idle")
         if telegram_agent.is_configured:
             await telegram_agent.send_sweep_summary(sweep, len(clean_jobs), 0, elapsed)
+
+        if os.environ.get("OVERNIGHT_LOOP", "false").lower() != "true":
+            break
+
+        console.print("\n[dim]Sleeping 30 minutes before next sweep...[/dim]")
+        await asyncio.sleep(1800)
 
     await telegram_agent.stop_polling()
     set_pipeline_state(running=False, phase="shutdown")

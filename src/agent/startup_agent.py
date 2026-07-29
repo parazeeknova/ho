@@ -39,7 +39,7 @@ async def _searxng_search(query: str) -> list[str]:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(
                 "http://localhost:8080/search",
-                params={"q": query, "format": "json"},
+                params={"q": query, "format": "json", "time_range": "day"},
             )
             if resp.status_code == 200:
                 results = resp.json().get("results", [])

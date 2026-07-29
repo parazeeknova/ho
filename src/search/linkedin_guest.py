@@ -8,6 +8,7 @@ not JSON, so we parse it with BeautifulSoup.
 from __future__ import annotations
 
 import asyncio
+import random
 import re
 from urllib.parse import urlparse
 
@@ -116,7 +117,10 @@ async def scrape_linkedin_guest_jobs(
                 desc = f"**{title}** at {company}\nLinkedIn Guest API listing.\nApply: {url}"
                 await pipeline.push(QueuedJob(markdown=desc, url=url, title=title))
 
-    tasks = [_fetch_page(start) for start in range(0, max_pages * 25, 25)]
-    await asyncio.gather(*tasks)
+    for start in range(0, max_pages * 25, 25):
+        await _fetch_page(start)
+        if start < (max_pages - 1) * 25:
+            delay = random.uniform(1.5, 3.5)
+            await asyncio.sleep(delay)
 
     return discovered
