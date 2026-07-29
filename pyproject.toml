@@ -10,6 +10,7 @@ dependencies = [
     "generalcompute>=0.2.1",
     "httpx>=0.28.0",
     "markitdown[pdf]>=0.1.6",
+    "neo4j>=5.28.0",
     "numpy>=2.0.0",
     "pgvector>=0.4.0",
     "pydantic>=2.0.0",
@@ -46,6 +47,9 @@ line-ending = "auto"
 
 [tool.ruff.lint.isort]
 known-first-party = ["ho"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/graph/graph_store.py" = ["E501"]
 
 [dependency-groups]
 dev = [

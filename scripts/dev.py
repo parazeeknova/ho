@@ -173,7 +173,7 @@ def main() -> None:
             # ── Launch firecrawl infra (first iteration only) ──
             if not infra_started:
                 subprocess.Popen(
-                    f"{DOCKER_COMPOSE} up -d redis playwright-service nuq-postgres searxng",
+                    f"{DOCKER_COMPOSE} up -d redis playwright-service nuq-postgres searxng neo4j",
                     shell=True,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
@@ -183,6 +183,7 @@ def main() -> None:
             row(t, "redis", status_for(container_running("firecrawl_redis")), ":6379")
             row(t, "nuq-postgres", status_for(container_running("firecrawl_nuq-postgres")), ":5432")
             row(t, "searxng", status_for(check_http("http://localhost:8080")), ":8080")
+            row(t, "neo4j", status_for(check_port("localhost", 7687)), ":7687")
 
             # ── rabbitmq ──
             if elapsed == 3:
@@ -249,6 +250,7 @@ def main() -> None:
     row(t, "nuq-postgres", status_for(container_running("firecrawl_nuq-postgres")), ":5432")
     row(t, "searxng", status_for(check_http("http://localhost:8080")), ":8080")
 
+    row(t, "neo4j", status_for(check_port("localhost", 7687)), ":7687")
     console.print()
     console.print(t)
     console.print("\n[dim]Press Ctrl+C to stop all services.[/dim]")

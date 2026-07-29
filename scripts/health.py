@@ -83,4 +83,9 @@ print()
 print("Metasearch")
 check("searxng          :8080", lambda: http_ok("http://localhost:8080"))
 
+print()
+print("Graph DB (Neo4j)")
+check("neo4j (bolt)     :7687", lambda: check_port("localhost", 7687))
+check("neo4j (browser)  :7474", lambda: http_ok("http://localhost:7474"))
+
 sys.exit(fails)

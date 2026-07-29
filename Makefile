@@ -1,4 +1,4 @@
-.PHONY: check check-types test serve run match health fc-up fc-down fc-logs dev dev-down start overnight clean-volumes start-daemon stop-daemon
+.PHONY: check check-types test serve run match health fc-up fc-down fc-logs dev dev-down start overnight clean-volumes start-daemon stop-daemon graph graph-stop graph-shell graph-reset
 
 check:
 	uv run ruff format . && uv run ruff check . --fix
@@ -66,4 +66,18 @@ start-daemon:
 stop-daemon:
 	@pkill -f "python -m src.pipeline.orchestrator" || true
 	@echo "Daemon stopped."
+
+graph:
+	docker compose -f docker-compose.yaml up -d neo4j
+
+graph-stop:
+	docker compose -f docker-compose.yaml stop neo4j
+
+graph-shell:
+	docker compose -f docker-compose.yaml exec neo4j cypher-shell -u neo4j -p password
+
+graph-reset:
+	docker compose -f docker-compose.yaml down -v neo4j 2>/dev/null; \
+	docker compose -f docker-compose.yaml up -d neo4j; \
+	echo "Neo4j reset."
 
