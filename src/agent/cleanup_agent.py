@@ -23,6 +23,22 @@ NON_UNDERGRAD_KEYWORDS = [
     "architect",
     "director",
     "vice president",
+    "content creator",
+    "host live",
+    "sales provider",
+    "sales executive",
+    "property development",
+    "account executive",
+    "marketing",
+    "recruiter",
+    "customer service",
+    "customer support",
+    "telemarketing",
+    "social media",
+    "administrative assistant",
+    "store manager",
+    "cashier",
+    "driver",
 ]
 
 

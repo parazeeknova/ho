@@ -107,6 +107,32 @@ def _apply_hard_constraints(match: dict[str, Any]) -> CriticReview:
     jd_summary = str(match.get("jd_summary", "")).lower()
     text = role + " " + jd_summary
 
+    non_tech_kws = (
+        "content creator",
+        "host live",
+        "sales provider",
+        "sales executive",
+        "sales representative",
+        "property development",
+        "account executive",
+        "marketing",
+        "recruiter",
+        "customer service",
+        "customer support",
+        "telemarketing",
+        "social media",
+        "administrative assistant",
+        "store manager",
+        "cashier",
+        "driver",
+    )
+    if any(kw in text for kw in non_tech_kws):
+        return CriticReview(
+            passed=False,
+            critique_reason="Role is non-technical / irrelevant — hard-constraint violation.",
+            requires_rescore=False,
+        )
+
     senior_kws = (
         "senior",
         "sr.",
