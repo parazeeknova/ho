@@ -243,7 +243,16 @@ class JobsAgent:
         for i, j in enumerate(jobs, start=1):
             role = str(j.get("role") or "-").replace("|", "\\|")
             company = str(j.get("company") or "-").replace("|", "\\|")
-            comp_info = str(j.get("company_description") or "-").replace("|", "\\|")
+            comp_info = (
+                str(
+                    j.get("company_description")
+                    or j.get("jd_summary")
+                    or j.get("role_summary")
+                    or "-"
+                )
+                .strip()
+                .replace("|", "\\|")
+            )
             if len(comp_info) > 60:
                 comp_info = comp_info[:57] + "..."
 

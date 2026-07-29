@@ -29,39 +29,53 @@ def _cosine_similarity(v1: list[float], v2: list[float]) -> float:
     return dot / (norm1 * norm2)
 
 
+async def _searxng_company_overview(company: str) -> str:
+    """Fetch company overview snippet via local SearXNG."""
+    try:
+        async with httpx.AsyncClient(timeout=4.0) as client:
+            resp = await client.get(
+                "http://localhost:8080/search",
+                params={"q": f"{company} company overview about", "format": "json"},
+            )
+            if resp.status_code == 200:
+                results = resp.json().get("results", [])
+                snippets = [r.get("content", "") for r in results[:3] if r.get("content")]
+                if snippets:
+                    return " ".join(snippets)
+    except Exception:
+        pass
+    return ""
+
+
 async def cross_search_job_details(
     app: FirecrawlApp,
     role: str,
     company: str,
     apply_link: str,
 ) -> str:
-    """Scrape apply link or cross-search alternative pages for raw text."""
-    # 1. Try scraping the direct apply link first
+    """Scrape apply link or cross-search alternative pages via SearXNG for raw text."""
+    text_chunks = []
+
+    # 1. Try scraping direct apply link
     if apply_link and apply_link.startswith("http"):
         try:
-            async with httpx.AsyncClient(timeout=6.0, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=4.0, follow_redirects=True) as client:
                 resp = await client.get(
                     apply_link,
                     headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
                 )
                 if resp.status_code == 200 and len(resp.text) > 300:
-                    return resp.text[:12000]
+                    text_chunks.append(resp.text[:8000])
         except Exception:
             pass
 
-    # 2. Try Firecrawl scrape
-    if apply_link and apply_link.startswith("http"):
-        try:
-            res = await asyncio.to_thread(
-                app.scrape_url,
-                apply_link,
-                params={"formats": ["markdown"]},
-            )
-            md = res.get("markdown", "") if isinstance(res, dict) else ""
-            if md and len(md) > 200:
-                return md[:12000]
-        except Exception:
-            pass
+    # 2. SearXNG web search fallback for company info & role details
+    searx_snippet = await _searxng_company_overview(company)
+    if searx_snippet:
+        text_chunks.append(f"Company Info ({company}): {searx_snippet}")
+
+    if text_chunks:
+        return "\n\n".join(text_chunks)
 
     return f"{role} position at {company}."
 
