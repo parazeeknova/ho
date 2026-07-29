@@ -55,7 +55,7 @@ p_embed = subprocess.Popen(
         "--flash-attn",
         "on",
         "--parallel",
-        "4",
+        "8",
         "--sleep-idle-seconds",
         "300",
     ],

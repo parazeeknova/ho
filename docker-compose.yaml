@@ -55,9 +55,10 @@ services:
     image: ghcr.io/firecrawl/playwright-service:latest
     environment:
       PORT: 3000
-      CONCURRENT_WORKERS: 2
-    cpus: 2.0
-    mem_limit: 2G
+      CONCURRENT_WORKERS: 6
+    cpus: 4.0
+    mem_limit: 4G
+    memswap_limit: 4G
     memswap_limit: 2G
     tmpfs:
       - /tmp/.cache:noexec,nosuid,size=1g
