@@ -53,12 +53,12 @@ def filter_recent(jobs: list[dict], max_days: int = 7) -> list[dict]:
 
 
 async def _scrape_index_links(
-    app: FirecrawlApp, jobs: list[dict], max_workers: int = 4
+    app: FirecrawlApp, jobs: list[dict], max_workers: int = 12
 ) -> list[dict]:
     """Scrape apply-link URLs from extracted index jobs to get real JD markdown."""
-    loop = asyncio.get_running_loop()
     sem = asyncio.Semaphore(max_workers)
     scraped: list[dict] = []
+    firecrawl_url = "http://127.0.0.1:3002"
 
     _dead_page_texts = (
         "sorry, we couldn't find anything here",
@@ -81,53 +81,34 @@ async def _scrape_index_links(
         url_lower = url.lower()
         if any(h in url_lower for h in _image_hosts):
             return
+
         async with sem:
             try:
-                result = await loop.run_in_executor(
-                    None, lambda: app.scrape_url(url, formats=["markdown"])
-                )
-                md = getattr(result, "markdown", "") or ""
-                md_lower = md.lower()
-                if md and len(md) > 100 and not any(dead in md_lower for dead in _dead_page_texts):
-                    scraped.append(
-                        {
-                            "markdown": md,
-                            "url": url,
-                            "title": j.get("role", ""),
-                            "snippet": str(j),
-                        }
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    resp = await client.post(
+                        f"{firecrawl_url}/v1/scrape",
+                        json={"url": url, "formats": ["markdown"]},
                     )
-                    return
-            except Exception as e:
-                print(f"    [dim]Failed to scrape {url[:40]}...: {e} -> Trying /extract API[/dim]")
-            try:
-                extract_result = await loop.run_in_executor(
-                    None,
-                    lambda: app.extract(
-                        [url],
-                        {
-                            "prompt": (
-                                "Extract job title, company name, required technical "
-                                "skills, and full job description."
-                            ),
-                        },
-                    ),
-                )
-                if extract_result and getattr(extract_result, "data", None):
-                    md = str(extract_result.data)
-                    if len(md) > 100:
-                        scraped.append(
-                            {
-                                "markdown": md,
-                                "url": url,
-                                "title": j.get("role", ""),
-                                "snippet": str(j),
-                            }
-                        )
-                        return
+                    if resp.status_code == 200:
+                        md = resp.json().get("data", {}).get("markdown", "") or ""
+                        md_lower = md.lower()
+                        if (
+                            md
+                            and len(md) > 100
+                            and not any(dead in md_lower for dead in _dead_page_texts)
+                        ):
+                            scraped.append(
+                                {
+                                    "markdown": md,
+                                    "url": url,
+                                    "title": j.get("role", ""),
+                                    "snippet": str(j),
+                                }
+                            )
+                            return
             except Exception:
                 pass
-            print(f"    [dim]Using table metadata fallback for {url[:40]}...[/dim]")
+
             scraped.append(
                 {
                     "markdown": _md_fallback(j),

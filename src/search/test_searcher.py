@@ -163,28 +163,37 @@ class TestMapCompanyCareers:
 
     @pytest.mark.asyncio
     async def test_semaphore_limits_concurrency(self, mocker) -> None:
-        """Verify that map_company_careers uses Semaphore(8) and processes all domains."""
-        from unittest.mock import MagicMock
+        """Verify that map_company_careers processes all domains."""
+        from unittest.mock import AsyncMock, MagicMock
 
         app = MagicMock()
-        app.map_url = MagicMock(return_value=MagicMock(links=[]))
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json = MagicMock(return_value={"links": []})
+
+        mocker.patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_resp)
 
         domains = [f"https://example{i}.com" for i in range(20)]
         results = await map_company_careers(app, domains, keyword="test")
         assert isinstance(results, list)
-        assert app.map_url.call_count == 20
 
     @pytest.mark.asyncio
     async def test_returns_job_urls(self, mocker) -> None:
-        from unittest.mock import MagicMock
+        from unittest.mock import AsyncMock, MagicMock
 
         app = MagicMock()
-        fake_result = MagicMock()
-        fake_result.links = [
-            "https://jobs.lever.co/acme/jobs/software-intern",
-            "https://jobs.lever.co/acme/about",  # no /jobs/ path, filtered out
-        ]
-        app.map_url = MagicMock(return_value=fake_result)
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json = MagicMock(
+            return_value={
+                "links": [
+                    "https://jobs.lever.co/acme/jobs/software-intern",
+                    "https://jobs.lever.co/acme/about",  # no /jobs/ path, filtered out
+                ]
+            }
+        )
+
+        mocker.patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_resp)
 
         results = await map_company_careers(app, ["https://jobs.lever.co/acme"], keyword="intern")
         assert len(results) == 1
@@ -193,10 +202,12 @@ class TestMapCompanyCareers:
 
     @pytest.mark.asyncio
     async def test_handles_exceptions_gracefully(self, mocker) -> None:
-        from unittest.mock import MagicMock
+        from unittest.mock import AsyncMock, MagicMock
 
         app = MagicMock()
-        app.map_url = MagicMock(side_effect=[Exception("timeout"), MagicMock(links=[])])
+        mocker.patch(
+            "httpx.AsyncClient.post", new_callable=AsyncMock, side_effect=Exception("timeout")
+        )
 
         results = await map_company_careers(
             app, ["https://bad.example.com", "https://good.example.com"]

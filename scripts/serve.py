@@ -57,7 +57,7 @@ p_llm = subprocess.Popen(
         "--flash-attn",
         "on",
         "--parallel",
-        "2",
+        "4",
         "--sleep-idle-seconds",
         "300",
     ],

@@ -1,10 +1,11 @@
-"""Job verifier: cross-check listings via alternate source with JSON schema enforcement."""
-
 import asyncio
 
+import httpx
 from firecrawl import FirecrawlApp
 
 from src.llm.context import VERIFY_SCHEMA, ContextManager
+
+FIRECRAWL_URL = "http://127.0.0.1:3002"
 
 VERIFY_PROMPT = """Compare two scraped job listings. Are they the same job?
 Original: {original}
@@ -12,28 +13,39 @@ Alternate: {alternate}
 Return valid JSON matching the required schema."""
 
 
-def _scrape_alternate(app: FirecrawlApp, role: str, company: str, original_url: str) -> str:
-    """Sync Firecrawl calls — runs inside a thread-pool executor."""
+async def _scrape_alternate(role: str, company: str, original_url: str) -> str:
+    """Async Firecrawl call to verify job existence across alternate sources."""
     try:
-        alt_results = app.search(f"{role} {company} job")
-        data = getattr(alt_results, "web", []) or []
-        if not isinstance(data, list) or not data:
-            return ""
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.post(
+                f"{FIRECRAWL_URL}/v1/search",
+                json={"query": f"{role} {company} job"},
+            )
+            if resp.status_code != 200:
+                return ""
+            data = resp.json().get("data", []) or []
+            if not isinstance(data, list) or not data:
+                return ""
 
-        alt_url = None
-        for r in data:
-            u = getattr(r, "url", "")
-            if u and u != original_url and u.startswith("http"):
-                alt_url = u
-                break
-        if not alt_url:
-            return ""
+            alt_url = None
+            for r in data:
+                u = r.get("url", "")
+                if u and u != original_url and u.startswith("http"):
+                    alt_url = u
+                    break
+            if not alt_url:
+                return ""
 
-        alt_result = app.scrape_url(alt_url, formats=["markdown"])
-        alt_content = getattr(alt_result, "markdown", "") or ""
-        return alt_content if len(alt_content) >= 100 else ""
+            scrape_resp = await client.post(
+                f"{FIRECRAWL_URL}/v1/scrape",
+                json={"url": alt_url, "formats": ["markdown"]},
+            )
+            if scrape_resp.status_code == 200:
+                alt_content = scrape_resp.json().get("data", {}).get("markdown", "") or ""
+                return alt_content if len(alt_content) >= 100 else ""
     except Exception:
-        return ""
+        pass
+    return ""
 
 
 async def _verify_one(
@@ -45,11 +57,7 @@ async def _verify_one(
     sem: asyncio.Semaphore,
 ) -> bool:
     async with sem:
-        loop = asyncio.get_running_loop()
-
-        alt_content = await loop.run_in_executor(
-            None, _scrape_alternate, app, role, company, original_url
-        )
+        alt_content = await _scrape_alternate(role, company, original_url)
         if not alt_content:
             return True
 

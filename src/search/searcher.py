@@ -70,29 +70,53 @@ INDEX_EXTRACT_SCHEMA = {
 }
 
 
+FIRECRAWL_URL = "http://127.0.0.1:3002"
+
+
 async def _scrape_index(url: str, app: FirecrawlApp, pipeline: JobPipeline) -> None:
-    loop = asyncio.get_running_loop()
     try:
-        result = await loop.run_in_executor(None, lambda: app.scrape_url(url, formats=["markdown"]))
-        md = getattr(result, "markdown", "") or ""
-        if md:
-            await pipeline.push(
-                QueuedJob(markdown=md, url=url, title=f"INDEX:{url.split('/')[-1]}")
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            resp = await client.get(url)
+            if resp.status_code == 200 and resp.text:
+                await pipeline.push(
+                    QueuedJob(markdown=resp.text, url=url, title=f"INDEX:{url.split('/')[-1]}")
+                )
+                return
+    except Exception:
+        pass
+    # Fallback to Firecrawl if raw fetch fails
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{FIRECRAWL_URL}/v1/scrape",
+                json={"url": url, "formats": ["markdown"]},
             )
+            if resp.status_code == 200:
+                md = resp.json().get("data", {}).get("markdown", "") or ""
+                if md:
+                    await pipeline.push(
+                        QueuedJob(markdown=md, url=url, title=f"INDEX:{url.split('/')[-1]}")
+                    )
     except Exception as e:
         print(f"  [red]index fail {url}: {e}[/red]")
 
 
 async def scrape_url_to_pipeline(item: dict, app: FirecrawlApp, pipeline: JobPipeline) -> None:
-    loop = asyncio.get_running_loop()
     url = item.get("url", "")
     if not url:
         return
     try:
-        result = await loop.run_in_executor(None, lambda: app.scrape_url(url, formats=["markdown"]))
-        md = getattr(result, "markdown", "") or ""
-        if md and len(md) > 100:
-            await pipeline.push(QueuedJob(markdown=md, url=url, title=item.get("title", "")))
+        async with httpx.AsyncClient(timeout=6.0) as client:
+            resp = await client.post(
+                f"{FIRECRAWL_URL}/v1/scrape",
+                json={"url": url, "formats": ["markdown"]},
+            )
+            if resp.status_code == 200:
+                md = resp.json().get("data", {}).get("markdown", "") or ""
+                if md and len(md) > 100:
+                    await pipeline.push(
+                        QueuedJob(markdown=md, url=url, title=item.get("title", ""))
+                    )
     except Exception:
         pass
 
@@ -112,13 +136,13 @@ _url_blacklist = (
 
 async def _search_searxng(queries: list[str]) -> list[dict[str, str]]:
     """Query self-hosted SearXNG metasearch engine."""
-    sem = asyncio.Semaphore(3)
+    sem = asyncio.Semaphore(5)
     hits: list[dict[str, str]] = []
 
     async def _query_one(q: str) -> None:
         async with sem:
             try:
-                async with httpx.AsyncClient(timeout=10.0) as client:
+                async with httpx.AsyncClient(timeout=6.0) as client:
                     resp = await client.get(
                         "http://localhost:8080/search",
                         params={"q": q, "format": "json"},
@@ -149,8 +173,6 @@ async def _search_searxng(queries: list[str]) -> list[dict[str, str]]:
 async def _search_web(
     app: FirecrawlApp, positions: list[str], ctx: ContextManager
 ) -> list[dict[str, str]]:
-    loop = asyncio.get_running_loop()
-
     queries: list[str] = []
     for pos in positions[:4]:
         queries.append(f"{pos} intern remote")
@@ -161,29 +183,33 @@ async def _search_web(
     if not queries:
         queries = [f"{p} intern remote" for p in positions[:2]]
 
-    sem = asyncio.Semaphore(3)
+    sem = asyncio.Semaphore(5)
 
     async def _fetch_query(q: str) -> list[dict[str, str]]:
         hits: list[dict[str, str]] = []
         async with sem:
             try:
-                search_results = await loop.run_in_executor(None, app.search, q)
-                data = getattr(search_results, "web", []) or []
-                if isinstance(data, list):
-                    for r in data[:5]:
-                        url = getattr(r, "url", "")
-                        if (
-                            url
-                            and url.startswith("http")
-                            and not any(bad in url.lower() for bad in _url_blacklist)
-                        ):
-                            hits.append(
-                                {
-                                    "url": url,
-                                    "title": getattr(r, "title", "") or "",
-                                    "type": "web_search",
-                                }
-                            )
+                async with httpx.AsyncClient(timeout=6.0) as client:
+                    resp = await client.post(
+                        f"{FIRECRAWL_URL}/v1/search",
+                        json={"query": q},
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json().get("data", []) or []
+                        for r in data[:5]:
+                            url = r.get("url", "")
+                            if (
+                                url
+                                and url.startswith("http")
+                                and not any(bad in url.lower() for bad in _url_blacklist)
+                            ):
+                                hits.append(
+                                    {
+                                        "url": url,
+                                        "title": r.get("title", "") or "",
+                                        "type": "web_search",
+                                    }
+                                )
             except Exception:
                 pass
         return hits
@@ -211,7 +237,7 @@ async def scrape_all(
     positions: list[str],
     ctx: ContextManager,
     pipeline: JobPipeline,
-    max_workers: int = 6,
+    max_workers: int = 12,
 ) -> None:
     tasks = []
 
@@ -315,27 +341,29 @@ async def map_company_careers(
     app: FirecrawlApp, target_domains: list[str], keyword: str = "remote"
 ) -> list[dict[str, str]]:
     """Use Firecrawl /map to discover job listing URLs across ATS platforms and career portals."""
-    loop = asyncio.get_running_loop()
     discovered: list[dict[str, str]] = []
-    sem = asyncio.Semaphore(8)  # Map up to 8 domains concurrently
+    sem = asyncio.Semaphore(16)  # Map up to 16 domains concurrently
 
     async def _map_one(domain: str) -> None:
         async with sem:
             try:
-                result = await loop.run_in_executor(
-                    None, lambda: app.map_url(domain, search=keyword)
-                )
-                links = getattr(result, "links", []) or []
-                if isinstance(links, list):
-                    for url in links:
-                        if (
-                            isinstance(url, str)
-                            and url.startswith("http")
-                            and "/jobs/" in url.lower()
-                        ):
-                            discovered.append(
-                                {"url": url, "title": url.split("/")[-1], "type": "map"}
-                            )
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    resp = await client.post(
+                        f"{FIRECRAWL_URL}/v1/map",
+                        json={"url": domain, "search": keyword},
+                    )
+                    if resp.status_code == 200:
+                        links = resp.json().get("links", []) or []
+                        if isinstance(links, list):
+                            for url in links:
+                                if (
+                                    isinstance(url, str)
+                                    and url.startswith("http")
+                                    and "/jobs/" in url.lower()
+                                ):
+                                    discovered.append(
+                                        {"url": url, "title": url.split("/")[-1], "type": "map"}
+                                    )
             except Exception as e:
                 print(f"  [dim]Map {domain}: {e}[/dim]")
 
