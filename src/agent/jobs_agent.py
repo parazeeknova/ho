@@ -100,12 +100,12 @@ class JobsAgent:
             try:
                 self.qdrant.delete(
                     self.collection_name,
-                    points_selector=[point_id],
+                    points_selector=models.PointIdsList(points=[point_id]),
                 )
                 removed += 1
                 print(f"  [Qdrant] Purged fake entry: {key}")
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"  [Qdrant] Purge failed for {key}: {e}")
         return removed
 
     async def add_or_merge_jobs(
