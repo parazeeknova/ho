@@ -79,11 +79,8 @@ def _build_payload(prompt: str, schema: dict[str, Any] | None = None) -> dict[st
     }
     if schema is not None:
         payload["response_format"] = {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "job_evaluation",
-                "schema": schema,
-            },
+            "type": "json_object",
+            "schema": schema,
         }
     return payload
 
