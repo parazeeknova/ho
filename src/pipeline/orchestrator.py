@@ -260,25 +260,51 @@ async def _run_pipeline() -> None:
     console.rule("[bold cyan]PHASE 1: Load Resume + Index in pgvector[/bold cyan]")
     loop = asyncio.get_running_loop()
 
-    def _load():
-        return load_resume()
+    existing_count = await store.chunk_count()
+    chunks: dict[str, str] = {}
+    full_text = ""
+    reuse_resume = False
 
-    full_text, chunks = await loop.run_in_executor(None, _load)
+    if existing_count > 0:
+        import questionary
 
-    await _index_resume_in_pgvector(chunks, store)
+        choice = questionary.select(
+            f"Found {existing_count} existing resume chunks in pgvector. What now?",
+            choices=[
+                "Reuse existing resume (skip re-indexing)",
+                "Load new resume URL (re-index from scratch)",
+            ],
+        ).ask()
+        if choice and choice.startswith("Reuse"):
+            reuse_resume = True
+            console.print(
+                f"  [green]Reusing {existing_count} existing resume chunks[/green]"
+            )
 
-    raw_roles = await ctx.json_chat(
-        "Based on this resume, identify the top 2-4 best-fitting entry-level / "
-        "intern / new-grad / early-career (NOT senior/staff/lead/principal) "
-        "job role domains (e.g. Backend Engineer, Frontend Engineer, Fullstack "
-        "Developer, DevOps Engineer, ML Engineer, Data Engineer). "
-        "Return valid JSON matching the required schema.\n\n" + full_text[:3000],
-        schema=TARGET_POSITIONS_SCHEMA,
-    )
-    positions: list[str] = raw_roles.get("roles", []) if isinstance(raw_roles, dict) else []
-    if not positions:
+    if not reuse_resume:
+        def _load():
+            return load_resume()
+
+        full_text, chunks = await loop.run_in_executor(None, _load)
+        await _index_resume_in_pgvector(chunks, store)
+
+    positions: list[str]
+    if reuse_resume and not full_text:
         positions = ["Software Engineer", "Backend Developer"]
-    console.print(f"  [yellow]Target positions:[/yellow] {', '.join(positions)}")
+        console.print(f"  [yellow]Target positions (cached):[/yellow] {', '.join(positions)}")
+    else:
+        raw_roles = await ctx.json_chat(
+            "Based on this resume, identify the top 2-4 best-fitting entry-level / "
+            "intern / new-grad / early-career (NOT senior/staff/lead/principal) "
+            "job role domains (e.g. Backend Engineer, Frontend Engineer, Fullstack "
+            "Developer, DevOps Engineer, ML Engineer, Data Engineer). "
+            "Return valid JSON matching the required schema.\n\n" + full_text[:3000],
+            schema=TARGET_POSITIONS_SCHEMA,
+        )
+        positions = raw_roles.get("roles", []) if isinstance(raw_roles, dict) else []
+        if not positions:
+            positions = ["Software Engineer", "Backend Developer"]
+        console.print(f"  [yellow]Target positions:[/yellow] {', '.join(positions)}")
 
     sweep = 0
     while True:

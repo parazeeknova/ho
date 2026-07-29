@@ -82,7 +82,6 @@ def _build_payload(prompt: str, schema: dict[str, Any] | None = None) -> dict[st
             "type": "json_schema",
             "json_schema": {
                 "name": "job_evaluation",
-                "strict": True,
                 "schema": schema,
             },
         }
