@@ -342,7 +342,7 @@ async def map_company_careers(
 ) -> list[dict[str, str]]:
     """Use Firecrawl /map to discover job listing URLs across ATS platforms and career portals."""
     discovered: list[dict[str, str]] = []
-    sem = asyncio.Semaphore(32)  # Map up to 32 domains concurrently
+    sem = asyncio.Semaphore(16)  # Map up to 16 domains concurrently
 
     async def _map_one(domain: str) -> None:
         async with sem:
@@ -373,7 +373,7 @@ async def map_company_careers(
 
 async def extract_index_jobs(jobs: list[QueuedJob], ctx: ContextManager) -> list[dict]:
     extracted: list[dict] = []
-    sem = asyncio.Semaphore(8)
+    sem = asyncio.Semaphore(4)
 
     async def _extract_one(job: QueuedJob) -> list[dict]:
         async with sem:

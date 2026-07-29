@@ -30,9 +30,9 @@ from src.search.searcher import (
 console = Console()
 
 TARGET = 15
-MAX_SCRAPE_WORKERS = 24
-MATCH_CONCURRENCY = 32
-VERIFY_CONCURRENCY = 32
+MAX_SCRAPE_WORKERS = 10
+MATCH_CONCURRENCY = 16
+VERIFY_CONCURRENCY = 12
 
 
 def filter_recent(jobs: list[dict], max_days: int = 7) -> list[dict]:
