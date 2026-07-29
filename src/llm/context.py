@@ -94,7 +94,7 @@ class ContextManager:
         self.verbose = verbose
         self._lock = threading.Lock()
         self._client = httpx.AsyncClient(
-            timeout=httpx.Timeout(300.0, connect=10.0),
+            timeout=httpx.Timeout(600.0, connect=10.0),
             limits=httpx.Limits(max_keepalive_connections=8, max_connections=16),
         )
 
@@ -102,6 +102,8 @@ class ContextManager:
         await self._client.aclose()
 
     async def chat(self, prompt: str, schema: dict[str, Any] | None = None) -> str:
+        if len(prompt) > 5000:
+            await self.maybe_flush()
         payload = _build_payload(prompt, schema)
         for attempt in range(1, MAX_RETRIES + 1):
             try:
@@ -122,9 +124,9 @@ class ContextManager:
                 with self._lock:
                     self.cumulative_output_tokens += tokens
                 return output
-            except Exception:
+            except Exception as e:
                 if attempt < MAX_RETRIES:
-                    print(f"  [LLM retry {attempt}/{MAX_RETRIES}]")
+                    print(f"  [LLM retry {attempt}/{MAX_RETRIES}] {e}")
                     await _async_sleep(RETRY_DELAY)
         raise RuntimeError("LLM failed after all retries")
 

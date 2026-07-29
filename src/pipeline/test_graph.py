@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 from src.pipeline.graph import (
     CRITIC_PROMPT,
     MATCHER_PROMPT,
@@ -82,8 +84,10 @@ class TestGraphState:
             "critique": {"passed": True},
             "retries": 0,
         }
-        assert state["match"]["role"] == "Dev"
-        assert state["critique"]["passed"] is True
+        match = cast(dict[str, Any], state["match"])
+        critique = cast(dict[str, Any], state["critique"])
+        assert match["role"] == "Dev"
+        assert critique["passed"] is True
 
 
 class TestPrompts:

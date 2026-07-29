@@ -12,8 +12,8 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class JobMatch(BaseModel):
-    role: str
-    company: str
+    role: str = Field(max_length=120)
+    company: str = Field(max_length=120)
     match_percent: int = Field(ge=0, le=100)
     shortlist_probability: int = Field(ge=0, le=100)
     matching_skills: list[str] = Field(default_factory=list)
