@@ -58,8 +58,9 @@ async def get_embedding(text: str) -> list[float]:
 
 
 class JobsAgent:
-    def __init__(self, output_path: str = "jobs.md") -> None:
+    def __init__(self, output_path: str = "jobs.md", collection_name: str = "") -> None:
         self.output_path = output_path
+        self.collection_name = collection_name or QDRANT_COLLECTION
         self.qdrant = self._init_qdrant()
         self._ensure_collection()
 
@@ -80,9 +81,9 @@ class JobsAgent:
     def _ensure_collection(self) -> None:
         try:
             collections = [c.name for c in self.qdrant.get_collections().collections]
-            if QDRANT_COLLECTION not in collections:
+            if self.collection_name not in collections:
                 self.qdrant.create_collection(
-                    collection_name=QDRANT_COLLECTION,
+                    collection_name=self.collection_name,
                     vectors_config=models.VectorParams(size=1024, distance=models.Distance.COSINE),
                 )
         except Exception as e:
@@ -181,7 +182,7 @@ class JobsAgent:
         if points_to_upsert:
             try:
                 self.qdrant.upsert(
-                    collection_name=QDRANT_COLLECTION,
+                    collection_name=self.collection_name,
                     points=points_to_upsert,
                 )
             except Exception as e:
@@ -201,7 +202,7 @@ class JobsAgent:
         """Retrieve all stored job records from Qdrant."""
         try:
             records, _ = self.qdrant.scroll(
-                collection_name=QDRANT_COLLECTION,
+                collection_name=self.collection_name,
                 limit=500,
                 with_payload=True,
                 with_vectors=False,

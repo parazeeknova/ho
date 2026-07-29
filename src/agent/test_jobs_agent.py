@@ -1,5 +1,6 @@
 """Tests for JobsAgent: persistent Qdrant vector indexing and atomic jobs.md updates."""
 
+import contextlib
 import os
 import tempfile
 
@@ -25,11 +26,13 @@ async def test_get_embedding() -> None:
 
 @pytest.mark.asyncio
 async def test_jobs_agent_add_and_merge() -> None:
+    test_collection = "jobs_ledger_test"
+
     with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
         path = f.name
 
     try:
-        agent = JobsAgent(output_path=path)
+        agent = JobsAgent(output_path=path, collection_name=test_collection)
 
         jobs1 = [
             {
@@ -72,3 +75,5 @@ async def test_jobs_agent_add_and_merge() -> None:
     finally:
         if os.path.exists(path):
             os.unlink(path)
+        with contextlib.suppress(Exception):
+            agent.qdrant.delete_collection(collection_name=test_collection)

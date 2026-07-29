@@ -369,7 +369,7 @@ async def map_company_careers(
     async def _map_one(domain: str) -> None:
         async with sem:
             try:
-                async with httpx.AsyncClient(timeout=5.0) as client:
+                async with httpx.AsyncClient(timeout=60.0) as client:
                     payload: dict[str, str] = {"url": domain}
                     if keyword:
                         payload["search"] = keyword

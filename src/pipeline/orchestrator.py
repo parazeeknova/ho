@@ -1,7 +1,6 @@
 """Pipeline: resume → search → async MQ → graph pipeline → verify → output."""
 
 import asyncio
-import os
 import signal
 import sys
 from datetime import UTC, datetime
@@ -55,6 +54,16 @@ def filter_recent(jobs: list[dict], max_days: int = 7) -> list[dict]:
         except ValueError, TypeError:
             filtered.append(j)
     return filtered
+
+
+async def _limited_scrape(
+    item: dict,
+    app: FirecrawlApp,
+    pipeline: JobPipeline,
+    sem: asyncio.Semaphore,
+) -> None:
+    async with sem:
+        await scrape_url_to_pipeline(item, app, pipeline)
 
 
 async def _scrape_index_links(
@@ -258,7 +267,6 @@ async def _index_resume_in_pgvector(
 
 async def _run_pipeline() -> None:
     ctx = ContextManager()
-    continuous = os.getenv("OVERNIGHT_LOOP", "false").lower() == "true"
 
     def _cleanup(signum: int, frame: object) -> None:
         console.print("\n[yellow]Interrupted - flushing LLM context...[/yellow]")
@@ -451,8 +459,11 @@ async def _run_pipeline() -> None:
         )
 
         map_urls = await map_company_careers(app, combined_domains)
-        for mu in map_urls:
-            await scrape_url_to_pipeline(mu, app, pipeline)
+        scrape_sem = asyncio.Semaphore(MAX_SCRAPE_WORKERS)
+        scrape_tasks = [
+            _limited_scrape(mu, app, pipeline, scrape_sem) for mu in map_urls
+        ]
+        await asyncio.gather(*scrape_tasks)
 
         if uncrawled_dynamic:
             await store.mark_domains_crawled(uncrawled_dynamic)
@@ -484,7 +495,7 @@ async def _run_pipeline() -> None:
                     f"  [cyan]Scraping {len(index_jobs)} GitHub apply links for JD text...[/cyan]"
                 )
                 idx_batch = await _scrape_index_links(
-                    app, index_jobs[:30], max_workers=MAX_SCRAPE_WORKERS
+                    app, index_jobs, max_workers=MAX_SCRAPE_WORKERS
                 )
                 console.print(f"  [cyan]Scraped {len(idx_batch)} JDs from links[/cyan]")
                 if idx_batch:
@@ -513,12 +524,6 @@ async def _run_pipeline() -> None:
             )
 
         console.print(f"[bold green]Sweep {sweep} complete[/bold green]")
-
-        if not continuous:
-            break
-
-        console.print("\n[bold cyan]Sleeping for 10 minutes before next sweep...[/bold cyan]")
-        await asyncio.sleep(600)
 
     await ctx.aclose()
     await store.close()
