@@ -3,6 +3,7 @@
 import asyncio
 import signal
 import sys
+import time
 from datetime import UTC, datetime
 
 import httpx
@@ -14,7 +15,7 @@ from src.agent.cleanup_agent import CleanupAgent
 from src.agent.enrichment_agent import EnrichmentAgent
 from src.agent.jobs_agent import JobsAgent
 from src.agent.startup_agent import StartupAgent
-from src.agent.telegram_agent import TelegramAgent
+from src.agent.telegram_agent import TelegramAgent, set_pipeline_state
 from src.llm.context import ContextManager
 from src.memory.pgvector_store import MemoryStore
 from src.pipeline.graph import EMBED_URL, run_batch
@@ -296,6 +297,7 @@ async def _index_resume_in_pgvector(
 
 async def _run_pipeline() -> None:
     ctx = ContextManager()
+    telegram_agent = TelegramAgent()
 
     def _cleanup(signum: int, frame: object) -> None:
         console.print("\n[yellow]Interrupted - flushing LLM context...[/yellow]")
@@ -307,6 +309,8 @@ async def _run_pipeline() -> None:
 
     await ctx.flush()
     app = FirecrawlApp(api_key="sk-no-auth", api_url="http://127.0.0.1:3002")
+
+    await telegram_agent.start_polling()
 
     console.rule("[bold cyan]PHASE 0: Initialise Agent Memory (pgvector)[/bold cyan]")
     store = await MemoryStore.create()
@@ -354,9 +358,17 @@ async def _run_pipeline() -> None:
             positions = ["Software Engineer", "Backend Developer"]
         console.print(f"  [yellow]Target positions:[/yellow] {', '.join(positions)}")
 
+    set_pipeline_state(running=True, started_at=time.time(), phase="starting", sweep=0)
+    if telegram_agent.is_configured:
+        existing = await store.chunk_count()
+        await telegram_agent.send_startup(existing)
+
     sweep = 0
+    total_matched = 0
     while True:
         sweep += 1
+        sweep_start = time.monotonic()
+        set_pipeline_state(sweep=sweep, phase=f"sweep {sweep}: scraping")
         pipeline = JobPipeline()
 
         console.rule(f"[bold cyan]PHASE 2 (sweep {sweep}): Scrape + Graph Match[/bold cyan]")
@@ -531,7 +543,6 @@ async def _run_pipeline() -> None:
             "stored & formatted in jobs.md[/green]"
         )
 
-        telegram_agent = TelegramAgent()
         if telegram_agent.is_configured:
             console.print(
                 "  📱 [bold yellow][TelegramAgent][/bold yellow] "
@@ -544,8 +555,17 @@ async def _run_pipeline() -> None:
                 "(TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID unconfigured)[/dim]"
             )
 
-        console.print(f"[bold green]Sweep {sweep} complete[/bold green]")
+        total_matched += len(clean_jobs)
+        elapsed = time.monotonic() - sweep_start
+        console.print(f"[bold green]Sweep {sweep} complete ({elapsed:.1f}s)[/bold green]")
+        set_pipeline_state(matched_total=total_matched, phase="idle")
+        if telegram_agent.is_configured:
+            await telegram_agent.send_sweep_summary(
+                sweep, len(clean_jobs), 0, elapsed
+            )
 
+    await telegram_agent.stop_polling()
+    set_pipeline_state(running=False, phase="shutdown")
     await ctx.aclose()
     await store.close()
 
