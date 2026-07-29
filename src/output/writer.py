@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 
 def compute_days_ago(date_str: str | None) -> str:
     if not date_str:
-        return "?"
+        return "-"
     try:
         dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
         delta = datetime.now(UTC) - dt
@@ -16,7 +16,7 @@ def compute_days_ago(date_str: str | None) -> str:
             return "1d ago"
         return f"{days}d ago"
     except ValueError, TypeError:
-        return "?"
+        return str(date_str).strip() or "-"
 
 
 def write_md(jobs: list[dict], output_path: str = "jobs.md") -> None:
@@ -33,9 +33,13 @@ def write_md(jobs: list[dict], output_path: str = "jobs.md") -> None:
         shortlist = f"{j.get('shortlist_probability', '?')}%"
         salary = str(j.get("salary") or "-")
         posted = compute_days_ago(j.get("posted_date"))
-        location = j.get("location", "?")
-        link = j.get("apply_link") or j.get("source_url", "")
-        link_md = f"[Apply]({link})" if link else "-"
+
+        location = j.get("location", "")
+        if not location or location == "?":
+            location = "Remote" if j.get("is_remote") else "Flexible"
+
+        link = j.get("apply_link") or j.get("source_url") or j.get("url") or ""
+        link_md = f"[Apply]({link})" if link and link.startswith("http") else "-"
 
         row = (
             f"| {i} | {role} | {company} | {match_pct} | {shortlist} | "

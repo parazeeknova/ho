@@ -20,6 +20,8 @@ class JobMatch(BaseModel):
     missing_skills: list[str] = Field(default_factory=list)
     jd_summary: str = ""
     salary: str | None = None
+    posted_date: str | None = None
+    apply_link: str | None = None
     location: str = ""
     is_remote: bool = False
     verdict: str = Field(default="NO_MATCH")

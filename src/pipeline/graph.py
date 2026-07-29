@@ -39,6 +39,8 @@ Full job listing:
 {job_description}
 
 CRITICAL RULES:
+- Extract all metadata fields: role title, company name, location \
+(city/country or "Remote"), salary (if mentioned), posted_date, and apply_link.
 - If the text is a company homepage, job directory, error page, or lists \
 multiple different jobs instead of ONE SINGLE posting, set match_percent=0 and \
 verdict=NO_MATCH.
@@ -264,6 +266,10 @@ async def node_memory_saver(
         return state
 
     match["url"] = state["url"]
+    match.setdefault("source_url", state["url"])
+    if not match.get("apply_link"):
+        match["apply_link"] = state["url"]
+
     await store.save_job_result(match)
 
     return state

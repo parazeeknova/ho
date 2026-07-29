@@ -9,10 +9,10 @@ from src.output.writer import compute_days_ago, write_md
 
 class TestComputeDaysAgo:
     def test_none(self) -> None:
-        assert compute_days_ago(None) == "?"
+        assert compute_days_ago(None) == "-"
 
     def test_empty_string(self) -> None:
-        assert compute_days_ago("") == "?"
+        assert compute_days_ago("") == "-"
 
     def test_today(self) -> None:
         from datetime import datetime
@@ -33,7 +33,7 @@ class TestComputeDaysAgo:
         assert "7d ago" in compute_days_ago(week_ago)
 
     def test_invalid_date(self) -> None:
-        assert compute_days_ago("not-a-date") == "?"
+        assert compute_days_ago("not-a-date") == "not-a-date"
 
 
 class TestWriteMd:
