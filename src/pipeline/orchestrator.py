@@ -656,6 +656,8 @@ async def _run_pipeline() -> None:
             await asyncio.sleep(1800)
 
         except Exception as e:
+            if "consumer_task" in locals() and not consumer_task.done():
+                consumer_task.cancel()
             tb = traceback.format_exc()
             console.print(f"\n[red]Sweep {sweep} crashed:[/red]\n{tb}")
             set_pipeline_state(last_error=str(e), phase="crashed")

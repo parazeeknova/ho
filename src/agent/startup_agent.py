@@ -33,26 +33,30 @@ FOUNDER_POST_SCHEMA: dict[str, Any] = {
 }
 
 
+_searxng_sem = asyncio.Semaphore(5)
+
+
 async def _searxng_search(query: str, time_range: str | None = None) -> list[str]:
     """Execute search query against local SearXNG."""
     params: dict[str, str] = {"q": query, "format": "json"}
     if time_range:
         params["time_range"] = time_range
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(
-                "http://localhost:8080/search",
-                params=params,
-            )
-            if resp.status_code == 200:
-                results = resp.json().get("results", [])
-                return [
-                    f"{r.get('title', '')}: {r.get('content', '')} ({r.get('url', '')})"
-                    for r in results[:5]
-                    if r.get("content") or r.get("title")
-                ]
-    except Exception as e:
-        print(f"  [dim]SearXNG query '{query[:60]}': {e}[/dim]")
+    async with _searxng_sem:
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(
+                    "http://localhost:8080/search",
+                    params=params,
+                )
+                if resp.status_code == 200:
+                    results = resp.json().get("results", [])
+                    return [
+                        f"{r.get('title', '')}: {r.get('content', '')} ({r.get('url', '')})"
+                        for r in results[:5]
+                        if r.get("content") or r.get("title")
+                    ]
+        except Exception as e:
+            print(f"  [dim]SearXNG query '{query[:60]}': {e}[/dim]")
     return []
 
 

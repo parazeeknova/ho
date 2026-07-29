@@ -73,7 +73,7 @@ class EnrichmentAgent:
 
             if similarities:
                 avg_sim = sum(similarities) / len(similarities)
-                calculated_match = int(min(98, max(30, (avg_sim - 0.5) * 160)))
+                calculated_match = int(min(98, max(30, (avg_sim - 0.4) * 200)))
                 job["match_percent"] = max(job.get("match_percent", 0), calculated_match)
                 job["shortlist_probability"] = int(job["match_percent"] * 0.85)
 
