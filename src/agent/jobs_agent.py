@@ -129,6 +129,11 @@ class JobsAgent:
                 "company": company,
                 "company_description": job.get("company_description", ""),
                 "role_summary": job.get("role_summary", ""),
+                "is_startup": job.get("is_startup", False),
+                "founders": job.get("founders", []),
+                "funding_stage": job.get("funding_stage", ""),
+                "founder_socials": job.get("founder_socials", []),
+                "company_news": job.get("company_news", ""),
                 "match_percent": int(job.get("match_percent", 0)),
                 "shortlist_probability": int(job.get("shortlist_probability", 0)),
                 "salary": job.get("salary"),
@@ -304,11 +309,25 @@ class JobsAgent:
             role_desc = str(j.get("role_summary") or j.get("jd_summary") or "").strip()
             link = j.get("apply_link") or j.get("source_url") or j.get("url") or ""
 
+            founders = j.get("founders", [])
+            funding = j.get("funding_stage")
+            socials = j.get("founder_socials", [])
+            news = j.get("company_news")
+
             lines.append(f"### {i}. {role} @ {company}")
             if comp_desc:
                 lines.append(f"**Company Overview**: {comp_desc}")
             if role_desc:
                 lines.append(f"**Role Focus**: {role_desc}")
+            if founders:
+                lines.append(f"**Founders / Leadership**: {', '.join(founders)}")
+            if funding:
+                lines.append(f"**Funding Stage**: {funding}")
+            if news:
+                lines.append(f"**Recent News**: {news}")
+            if socials:
+                social_links = [f"[{s}]({s})" if s.startswith("http") else s for s in socials]
+                lines.append(f"**Outreach Links**: {', '.join(social_links)}")
             if link and str(link).startswith("http"):
                 lines.append(f"**Apply Direct**: [{link}]({link})")
             lines.append("")
