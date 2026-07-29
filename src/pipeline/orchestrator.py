@@ -10,9 +10,9 @@ import httpx
 from firecrawl import FirecrawlApp
 from rich.console import Console
 
+from src.agent.enrichment_agent import EnrichmentAgent
 from src.agent.jobs_agent import JobsAgent
 from src.llm.context import ContextManager
-from src.matching.verifier import verify_jobs
 from src.memory.pgvector_store import MemoryStore
 from src.pipeline.graph import EMBED_URL, run_batch
 from src.pipeline.queue import JobPipeline, QueuedJob
@@ -479,15 +479,16 @@ async def _run_pipeline() -> None:
                     idx_scored = await run_batch(idx_batch, store, concurrency=MATCH_CONCURRENCY)
                     matched_result.extend(idx_scored)
 
-        console.rule(f"[bold cyan]PHASE 3 (sweep {sweep}): Filter + Cross-Verify[/bold cyan]")
-        scored = filter_recent(matched_result, max_days=7)
-        scored.sort(key=lambda j: j["match_percent"], reverse=True)
-        scored = scored[:TARGET]
-
-        verified = await verify_jobs(app, scored[:TARGET], ctx, concurrency=VERIFY_CONCURRENCY)
+        console.rule(
+            f"[bold cyan]PHASE 3 (sweep {sweep}): Cross-Search, Enrich + RAG Rescore[/bold cyan]"
+        )
+        enricher = EnrichmentAgent(store, ctx, app)
+        enriched = await enricher.batch_enrich_and_rescore(
+            matched_result[:TARGET], concurrency=VERIFY_CONCURRENCY
+        )
 
         console.rule(f"[bold cyan]PHASE 4 (sweep {sweep}): Generate Output[/bold cyan]")
-        all_jobs = await JobsAgent().add_or_merge_jobs(verified, ctx=ctx)
+        all_jobs = await JobsAgent().add_or_merge_jobs(enriched, ctx=ctx)
         await ctx.flush()
 
         console.print(

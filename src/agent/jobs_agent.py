@@ -236,13 +236,17 @@ class JobsAgent:
             "",
             f"Generated: {now_str}",
             "",
-            "| # | Role | Company | JD Match | Shortlist% | Salary | Posted | Location | Apply |",
-            "|---|------|---------|----------|------------|--------|--------|----------|-------|",
+            "| # | Role | Company | Company Info | JD Match | Shortlist% | Salary | Posted | Location | Apply |",  # noqa: E501
+            "|---|------|---------|--------------|----------|------------|--------|--------|----------|-------|",
         ]
 
         for i, j in enumerate(jobs, start=1):
             role = str(j.get("role") or "-").replace("|", "\\|")
             company = str(j.get("company") or "-").replace("|", "\\|")
+            comp_info = str(j.get("company_description") or "-").replace("|", "\\|")
+            if len(comp_info) > 60:
+                comp_info = comp_info[:57] + "..."
+
             match_pct = f"{j.get('match_percent', 0)}%"
             shortlist_pct = f"{j.get('shortlist_probability', 0)}%"
             salary = str(j.get("salary") or "-").replace("|", "\\|")
@@ -259,7 +263,7 @@ class JobsAgent:
                 link_md = "-"
 
             row_str = (
-                f"| {i} | {role} | {company} | {match_pct} | "
+                f"| {i} | {role} | {company} | {comp_info} | {match_pct} | "
                 f"{shortlist_pct} | {salary} | {posted} | {location} | {link_md} |"
             )
             lines.append(row_str)
