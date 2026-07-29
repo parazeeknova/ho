@@ -139,7 +139,12 @@ async def _scrape_index_links(
                 async with httpx.AsyncClient(timeout=15.0) as client:
                     resp = await client.post(
                         f"{firecrawl_url}/v1/scrape",
-                        json={"url": url, "formats": ["markdown"]},
+                        json={
+                            "url": url,
+                            "formats": ["markdown"],
+                            "onlyMainContent": True,
+                            "waitFor": 2000,
+                        },
                     )
                     if resp.status_code == 200:
                         md = resp.json().get("data", {}).get("markdown", "") or ""
