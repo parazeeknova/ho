@@ -10,7 +10,7 @@ test:
 	uv run python -m pytest . -v --ignore=refs
 
 serve:
-	./scripts/serve.sh
+	uv run python scripts/serve.py
 
 run: health
 	uv run python -m src.pipeline.orchestrator
@@ -50,4 +50,4 @@ dev-down:
 	true
 
 health:
-	./scripts/health.sh
+	uv run python scripts/health.py

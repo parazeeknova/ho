@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rich dev launcher: start llama-server + firecrawl with live status."""
+"""Rich dev launcher: start llama-server + firecrawl + agent-memory with live status."""
 
 import subprocess
 import time
@@ -65,18 +65,32 @@ def main() -> None:
         time.sleep(1)
         live.update("[green]✓ Clean[/green]")
 
-    # ── llama-server ──
-    console.print("\n[bold]Starting llama-server...[/bold]")
+    # ── llama-server (LLM + Embeddings via serve.sh) ──
+    console.print("\n[bold]Starting llama-server (LLM :8899 + Embed :8900)...[/bold]")
     subprocess.Popen(
-        [f"{PROJECT}/scripts/serve.sh"],
+        [f"{PROJECT}/scripts/serve.py"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    for _ in range(8):
-        if check_http("http://localhost:8899/health"):
+    for _ in range(12):
+        if check_http("http://localhost:8899/health") and check_http(
+            "http://localhost:8900/health"
+        ):
             break
         time.sleep(1)
     llama_ok = check_http("http://localhost:8899/health")
+    embed_ok = check_http("http://localhost:8900/health")
+
+    # ── Agent Memory (pgvector) ──
+    console.print("[bold]Starting agent-memory-db (pgvector :5433)...[/bold]")
+    run(f"{DOCKER_COMPOSE} up -d agent-memory-db", silent=False)
+    pgvector_ok = False
+    for _ in range(10):
+        code, _ = run("pg_isready -h localhost -p 5433 -U postgres -d agent_memory -q")
+        if code == 0:
+            pgvector_ok = True
+            break
+        time.sleep(1)
 
     # ── Firecrawl infra ──
     console.print("[bold]Starting firecrawl infrastructure...[/bold]")
@@ -114,7 +128,9 @@ def main() -> None:
         status = "[green]RUNNING[/green]" if ok else "[red]DOWN[/red]"
         table.add_row(name, status, port)
 
-    row("llama-server", llama_ok, ":8899")
+    row("llama-server (LLM)", llama_ok, ":8899")
+    row("llama-server (Embed)", embed_ok, ":8900")
+    row("agent-memory-db", pgvector_ok, ":5433")
     row("firecrawl api", api_ok, ":3002")
     row("redis", container_running("firecrawl_redis"), ":6379")
     row("rabbitmq", container_running("firecrawl_rabbitmq"), ":5672")
