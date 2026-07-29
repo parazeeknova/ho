@@ -525,12 +525,18 @@ async def _run_pipeline() -> None:
             "stored & formatted in jobs.md[/green]"
         )
 
-        console.print(
-            "  📱 [bold yellow][TelegramAgent][/bold yellow] "
-            "Dispatching real-time notifications for verified jobs..."
-        )
         telegram_agent = TelegramAgent()
-        await telegram_agent.notify_verified_jobs(clean_jobs)
+        if telegram_agent.is_configured:
+            console.print(
+                "  📱 [bold yellow][TelegramAgent][/bold yellow] "
+                "Dispatching real-time notifications for verified jobs..."
+            )
+            await telegram_agent.notify_verified_jobs(clean_jobs)
+        else:
+            console.print(
+                "  📱 [dim][TelegramAgent] Telegram alerts skipped "
+                "(TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID unconfigured)[/dim]"
+            )
 
         console.print(f"[bold green]Sweep {sweep} complete[/bold green]")
 
