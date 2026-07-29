@@ -10,6 +10,7 @@ import httpx
 from firecrawl import FirecrawlApp
 from rich.console import Console
 
+from src.agent.cleanup_agent import CleanupAgent
 from src.agent.enrichment_agent import EnrichmentAgent
 from src.agent.jobs_agent import JobsAgent
 from src.agent.startup_agent import StartupAgent
@@ -483,22 +484,44 @@ async def _run_pipeline() -> None:
                     matched_result.extend(idx_scored)
 
         console.rule(f"[bold cyan]PHASE 3 (sweep {sweep}): Enrich + Startup Intel[/bold cyan]")
+        console.print(
+            "  🔍 [bold yellow][EnrichmentAgent][/bold yellow] "
+            "Cross-searching JDs & calculating pgvector resume RAG similarity..."
+        )
         enricher = EnrichmentAgent(store, ctx, app)
         enriched = await enricher.batch_enrich_and_rescore(
             matched_result[:TARGET], concurrency=VERIFY_CONCURRENCY
         )
 
+        console.print(
+            "  🚀 [bold yellow][StartupAgent][/bold yellow] "
+            "Researching founders, funding rounds, and outreach socials..."
+        )
         startup_agent = StartupAgent(ctx)
         startup_enriched = await startup_agent.batch_analyze_startups(
             enriched, concurrency=VERIFY_CONCURRENCY
         )
 
-        console.rule(f"[bold cyan]PHASE 4 (sweep {sweep}): Generate Output[/bold cyan]")
-        all_jobs = await JobsAgent().add_or_merge_jobs(startup_enriched, ctx=ctx)
+        console.rule(
+            f"[bold cyan]PHASE 4 (sweep {sweep}): Atomic Ledger & Table Formatting[/bold cyan]"
+        )
+        console.print(
+            "  🤖 [bold yellow][JobsAgent][/bold yellow] "
+            "Merging state into Qdrant ledger (port 6333)..."
+        )
+        await JobsAgent().add_or_merge_jobs(startup_enriched, ctx=ctx)
         await ctx.flush()
 
         console.print(
-            f"  [cyan]{len(all_jobs)} verified positions stored & saved to jobs.md[/cyan]"
+            "  🧹 [bold yellow][CleanupAgent][/bold yellow] "
+            "Sanitizing table & filtering non-undergrad roles..."
+        )
+        cleanup_agent = CleanupAgent()
+        clean_jobs = await cleanup_agent.clean_and_format_ledger()
+
+        console.print(
+            f"  [green]✓ {len(clean_jobs)} clean, verified undergrad positions "
+            "stored & formatted in jobs.md[/green]"
         )
         console.print(f"[bold green]Sweep {sweep} complete[/bold green]")
 

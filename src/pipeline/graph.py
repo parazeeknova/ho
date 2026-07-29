@@ -119,6 +119,10 @@ def _apply_hard_constraints(match: dict[str, Any]) -> CriticReview:
         "head of",
         "vp ",
         "vice president",
+        "phd",
+        "ph.d",
+        "doctorate",
+        "postdoc",
         "5+ year",
         "7+ year",
         "10+ year",
@@ -126,8 +130,7 @@ def _apply_hard_constraints(match: dict[str, Any]) -> CriticReview:
     if any(kw in text for kw in senior_kws):
         return CriticReview(
             passed=False,
-            critique_reason="Role or JD contains senior/leadership keywords — "
-            "hard-constraint violation.",
+            critique_reason="Role or JD contains senior/PhD keywords — hard-constraint violation.",
             requires_rescore=False,
         )
 
