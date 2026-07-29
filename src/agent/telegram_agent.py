@@ -113,6 +113,18 @@ class TelegramAgent:
         self._poll_task: asyncio.Task[None] | None = None
         self._seen_errors: set[str] = set()  # dedupe repeated errors
 
+    @property
+    def _chat_ids(self) -> list[str]:
+        raw = (self.chat_id or "").strip()
+        if not raw:
+            return []
+        return [cid.strip() for cid in raw.split(",") if cid.strip()]
+
+    @property
+    def _primary_chat_id(self) -> str:
+        ids = self._chat_ids
+        return ids[0] if ids else ""
+
     # ---- helpers ----------------------------------------------------------
 
     @property
@@ -122,13 +134,24 @@ class TelegramAgent:
     async def _send_raw(self, text: str, parse_mode: str = "HTML") -> bool:
         if not self.is_configured:
             return False
+        recipients = self._chat_ids
+        if not recipients:
+            return False
+
+        all_ok = True
+        for cid in recipients:
+            ok = await self._send_to_chat(cid, text, parse_mode)
+            all_ok = all_ok and ok
+        return all_ok
+
+    async def _send_to_chat(self, cid: str, text: str, parse_mode: str) -> bool:
         for attempt in range(3):
             try:
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     resp = await client.post(
                         TELEGRAM_SEND.format(token=self.bot_token),
                         json={
-                            "chat_id": self.chat_id,
+                            "chat_id": cid,
                             "text": text,
                             "parse_mode": parse_mode,
                             "disable_web_page_preview": True,
@@ -137,14 +160,13 @@ class TelegramAgent:
                     if resp.status_code == 200:
                         return True
                     body = resp.text[:200]
-                    print(f"  [yellow]Telegram {resp.status_code}: {body}[/yellow]")
+                    print(f"  [yellow]Telegram {resp.status_code} -> chat {cid}: {body}[/yellow]")
                     if resp.status_code == 400 and parse_mode == "HTML":
                         fixed = await self._llm_fix_html(text, body)
                         if fixed and fixed != text:
                             print("  [dim]Telegram: retrying with LLM-fixed HTML[/dim]")
                             text = fixed
                             continue
-                        # Fallback: strip HTML and send as plain text
                         print("  [dim]Telegram: falling back to plain text[/dim]")
                         parse_mode = ""
                         continue
@@ -225,7 +247,7 @@ class TelegramAgent:
             msg = upd.get("message", {})
             chat = msg.get("chat", {})
             sender_id = str(chat.get("id", ""))
-            if sender_id != str(self.chat_id):
+            if sender_id != str(self._primary_chat_id):
                 continue
             text = (msg.get("text") or "").strip()
             if not text.startswith("/"):
