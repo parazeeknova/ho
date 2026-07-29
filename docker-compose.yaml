@@ -99,6 +99,15 @@ services:
       - "8080:8080"
     environment:
       - SEARXNG_BASE_URL=http://localhost:8080
+      - SEARXNG_SECRET=${SEARXNG_SECRET:-changeme}
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    volumes:
+      - ./searxng-settings.yml:/etc/searxng/settings.yml:ro
     logging:
       driver: "json-file"
       options:

@@ -1,0 +1,13 @@
+use_default_settings: true
+
+server:
+  secret_key: "changeme"
+  image_proxy: true
+
+search:
+  formats:
+    - html
+    - json
+
+botdetection:
+  enabled: false
