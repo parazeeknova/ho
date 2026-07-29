@@ -33,6 +33,13 @@ CREATE TABLE IF NOT EXISTS resume_embeddings (
     content    TEXT NOT NULL,
     embedding  vector({VECTOR_DIM})
 );
+
+CREATE TABLE IF NOT EXISTS discovered_domains (
+    domain          TEXT PRIMARY KEY,
+    source_url      TEXT,
+    crawled         BOOLEAN DEFAULT FALSE,
+    discovered_at   TIMESTAMP DEFAULT NOW()
+);
 """
 
 
@@ -133,3 +140,41 @@ class MemoryStore:
     async def clear_embeddings(self) -> None:
         async with self._pool.acquire() as conn:
             await conn.execute("TRUNCATE resume_embeddings")
+
+    # ── discovered_domains (dynamic domain discovery) ─────────────────────
+
+    async def add_discovered_domain(self, domain: str, source_url: str = "") -> bool:
+        """Insert a new domain. Returns True if newly added, False if already exists."""
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                """
+                INSERT INTO discovered_domains (domain, source_url)
+                VALUES ($1, $2)
+                ON CONFLICT (domain) DO NOTHING
+                """,
+                domain,
+                source_url,
+            )
+            return result != "INSERT 0 0"
+
+    async def get_uncrawled_domains(self, limit: int = 50) -> list[str]:
+        """Return domains that have not been crawled yet."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT domain FROM discovered_domains "
+                "WHERE crawled = FALSE "
+                "ORDER BY discovered_at DESC "
+                "LIMIT $1",
+                limit,
+            )
+        return [r["domain"] for r in rows]
+
+    async def mark_domains_crawled(self, domains: list[str]) -> None:
+        """Mark the given domains as crawled."""
+        if not domains:
+            return
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE discovered_domains SET crawled = TRUE WHERE domain = ANY($1)",
+                domains,
+            )

@@ -12,6 +12,7 @@ Pipeline (sequential state machine):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from typing import Any, TypedDict, cast
 
@@ -21,6 +22,7 @@ from src.llm.config import build_embed_query
 from src.llm.context import ContextManager
 from src.llm.schemas import CriticReview, JobMatch, canonicalize_markdown
 from src.memory.pgvector_store import MemoryStore
+from src.search.searcher import harvest_and_save_domains
 
 EMBED_URL = "http://127.0.0.1:8900"
 MAX_CORRECTION_LOOPS = 2
@@ -152,6 +154,10 @@ async def node_context_builder(
 
     state["skip"] = False
     state["markdown"] = cleaned
+
+    # Harvest any ATS/career root domain from this JD's URL
+    with contextlib.suppress(Exception):
+        await harvest_and_save_domains([url], store)
 
     try:
         query_emb = await _embed_query(client, cleaned[:8000])

@@ -21,6 +21,7 @@ from src.search.searcher import (
     TARGET_POSITIONS_SCHEMA,
     extract_index_jobs,
     fetch_direct_json_feeds,
+    harvest_and_save_domains,
     map_company_careers,
     scrape_all,
     scrape_url_to_pipeline,
@@ -321,15 +322,136 @@ async def _run_pipeline() -> None:
             scrape_all(app, positions, ctx, pipeline, max_workers=MAX_SCRAPE_WORKERS),
             fetch_direct_json_feeds(positions, pipeline),
         )
+        # 100+ Curated ATS Platforms, Big Tech Portals, AI Startups, and Indian Unicorns
         _map_domains = [
-            "https://www.ycombinator.com/jobs",
-            "https://jobs.lever.co",
+            # ATS Roots & Global VC Boards
             "https://boards.greenhouse.io",
+            "https://jobs.lever.co",
             "https://jobs.ashbyhq.com",
+            "https://apply.workable.com",
+            "https://jobs.smartrecruiters.com",
+            "https://app.rippling.com/careers",
+            "https://www.ycombinator.com/jobs",
+            "https://wellfound.com/jobs",
+            "https://jobs.sequoiacap.com",
+            "https://jobs.a16z.com",
+            # AI & Frontier Tech Labs
+            "https://openai.com/careers",
+            "https://jobs.ashbyhq.com/anthropic",
+            "https://jobs.lever.co/cohere",
+            "https://jobs.ashbyhq.com/mistral",
+            "https://jobs.ashbyhq.com/scaleai",
+            "https://apply.workable.com/huggingface",
+            "https://jobs.ashbyhq.com/perplexity",
+            "https://jobs.ashbyhq.com/character",
+            "https://jobs.ashbyhq.com/anyscale",
+            "https://jobs.lever.co/pinecone",
+            "https://jobs.ashbyhq.com/weaviate",
+            "https://jobs.ashbyhq.com/qdrant",
+            "https://jobs.ashbyhq.com/wandb",
+            "https://jobs.ashbyhq.com/replicate",
+            "https://jobs.ashbyhq.com/together",
+            # FAANG, Big Tech & Enterprise Cloud
+            "https://careers.google.com",
+            "https://careers.microsoft.com",
+            "https://amazon.jobs/en",
+            "https://jobs.apple.com",
+            "https://metacareers.com",
+            "https://jobs.netflix.com",
+            "https://nvidia.wd5.myworkdayjobs.com/NVIDIAExternalCareerSite",
+            "https://salesforce.wd12.myworkdayjobs.com/External_Career_Site",
+            "https://adobe.wd5.myworkdayjobs.com/external_experienced",
+            "https://redhat.wd5.myworkdayjobs.com/en-US/jobs",
+            "https://autodesk.wd1.myworkdayjobs.com/FAANG_Autodesk",
+            "https://paypal.wd1.myworkdayjobs.com/paypal-careers",
+            "https://crowdstrike.wd5.myworkdayjobs.com/crowdstrike",
+            "https://paloaltonetworks.wd1.myworkdayjobs.com/paloaltonetworks",
+            "https://jobs.ebayinc.com",
+            "https://careers.oracle.com",
+            "https://ibm.com/careers",
+            "https://jobs.sap.com",
+            "https://careers.servicenow.com",
+            "https://atlassian.com/company/careers",
+            "https://snowflake.com/careers",
+            "https://databricks.com/company/careers",
+            "https://mongodb.com/careers",
+            "https://twilio.com/company/jobs",
+            "https://elastic.co/about/careers",
+            "https://palantir.com/careers",
+            "https://cloudflare.com/careers",
+            "https://okta.com/company/careers",
+            "https://intuit.com/careers",
+            "https://uber.com/us/en/careers",
+            # Developer Tools, Fintech & Consumer Platforms
+            "https://stripe.com/jobs",
+            "https://block.xyz/careers",
+            "https://coinbase.com/careers",
+            "https://doordash.careers",
+            "https://lyft.com/careers",
+            "https://instacart.careers",
+            "https://pinterest.careers",
+            "https://snap.careers",
+            "https://redditinc.com/careers",
+            "https://roblox.careers",
+            "https://lifeatspotify.com",
+            "https://careers.duolingo.com",
+            "https://careers.zoom.us",
+            "https://slack.com/careers",
+            "https://github.careers",
+            "https://about.gitlab.com/jobs",
+            "https://docker.com/careers",
+            "https://hashicorp.com/careers",
+            "https://confluent.io/careers",
+            "https://zscaler.com/company/careers",
+            "https://cisco.jobs",
+            "https://qualcomm.com/company/careers",
+            "https://jobs.intel.com",
+            "https://jobs.amd.com",
+            "https://arm.com/company/careers",
+            # Top Indian Unicorns & Product Companies
+            "https://careers.flipkart.com",
+            "https://swiggy.com/careers",
+            "https://zomato.com/careers",
+            "https://jobs.lever.co/razorpay",
+            "https://cred.club/careers",
+            "https://meesho.com/careers",
+            "https://phonepe.com/careers",
+            "https://paytm.com/careers",
+            "https://zepto.co.in/careers",
+            "https://careers.olacabs.com",
+            "https://inmobi.com/company/careers",
+            "https://freshworks.com/company/careers",
+            "https://zoho.com/careers",
+            "https://jobs.lever.co/postman",
+            "https://jobs.lever.co/browserstack",
+            "https://jobs.lever.co/hasura",
+            "https://unacademy.com/careers",
+            "https://groww.in/careers",
+            "https://careers.zerodha.com",
+            "https://urbancompany.com/careers",
+            "https://dream11.com/careers",
+            "https://cars24.com/careers",
+            "https://delhivery.com/careers",
+            "https://nykaa.com/careers",
+            "https://make-my-trip.com/careers",
         ]
-        map_urls = await map_company_careers(app, _map_domains, keyword="software intern")
+
+        # Pull dynamically discovered domains from PostgreSQL
+        uncrawled_dynamic = await store.get_uncrawled_domains(limit=30)
+        combined_domains = list(set(_map_domains + uncrawled_dynamic))
+
+        console.print(
+            f"  [bold lion]Aggressive Crawler: Mapping {len(combined_domains)} total domains "
+            f"({len(uncrawled_dynamic)} dynamically discovered)[/bold lion]"
+        )
+
+        map_urls = await map_company_careers(app, combined_domains, keyword="software intern")
         for mu in map_urls:
             await scrape_url_to_pipeline(mu, app, pipeline)
+
+        if uncrawled_dynamic:
+            await store.mark_domains_crawled(uncrawled_dynamic)
+
         console.print(f"  [cyan]Map discovery: {len(map_urls)} career-page URLs[/cyan]")
 
         console.print("  [yellow]Producers done. Signalling stop...[/yellow]")
@@ -343,6 +465,15 @@ async def _run_pipeline() -> None:
             )
             index_jobs = await extract_index_jobs(index_queue, ctx)
             console.print(f"  [cyan]Extracted {len(index_jobs)} jobs from indexes[/cyan]")
+
+            # Harvest fresh ATS/career domains from apply links
+            apply_links = [j.get("apply_link", "") for j in index_jobs if j.get("apply_link")]
+            if apply_links:
+                new_domains = await harvest_and_save_domains(apply_links, store)
+                console.print(
+                    f"  [dim]Harvested {new_domains} new career domains from apply links[/dim]"
+                )
+
             if index_jobs:
                 console.print(
                     f"  [cyan]Scraping {len(index_jobs)} GitHub apply links for JD text...[/cyan]"

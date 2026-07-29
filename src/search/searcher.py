@@ -1,12 +1,18 @@
 """Job searcher: GitHub internship indexes + web search via Firecrawl SDK."""
 
 import asyncio
+import re
+from typing import TYPE_CHECKING
+from urllib.parse import urlparse
 
 import httpx
 from firecrawl import FirecrawlApp
 
 from src.llm.context import ContextManager
 from src.pipeline.queue import JobPipeline, QueuedJob
+
+if TYPE_CHECKING:
+    from src.memory.pgvector_store import MemoryStore
 
 GITHUB_INDEXES = [
     "https://raw.githubusercontent.com/SimplifyJobs/Summer2026-Internships/dev/README.md",
@@ -308,22 +314,32 @@ async def fetch_direct_json_feeds(positions: list[str], pipeline: JobPipeline) -
 async def map_company_careers(
     app: FirecrawlApp, target_domains: list[str], keyword: str = "remote"
 ) -> list[dict[str, str]]:
-    """Use Firecrawl /map to discover job listing URLs on ATS platforms."""
+    """Use Firecrawl /map to discover job listing URLs across ATS platforms and career portals."""
     loop = asyncio.get_running_loop()
     discovered: list[dict[str, str]] = []
+    sem = asyncio.Semaphore(8)  # Map up to 8 domains concurrently
 
     async def _map_one(domain: str) -> None:
-        try:
-            result = await loop.run_in_executor(None, lambda: app.map_url(domain, search=keyword))
-            links = getattr(result, "links", []) or []
-            if isinstance(links, list):
-                for url in links:
-                    if isinstance(url, str) and url.startswith("http") and "/jobs/" in url.lower():
-                        discovered.append({"url": url, "title": url.split("/")[-1], "type": "map"})
-        except Exception as e:
-            print(f"  [dim]Map {domain}: {e}[/dim]")
+        async with sem:
+            try:
+                result = await loop.run_in_executor(
+                    None, lambda: app.map_url(domain, search=keyword)
+                )
+                links = getattr(result, "links", []) or []
+                if isinstance(links, list):
+                    for url in links:
+                        if (
+                            isinstance(url, str)
+                            and url.startswith("http")
+                            and "/jobs/" in url.lower()
+                        ):
+                            discovered.append(
+                                {"url": url, "title": url.split("/")[-1], "type": "map"}
+                            )
+            except Exception as e:
+                print(f"  [dim]Map {domain}: {e}[/dim]")
 
-    await asyncio.gather(*(_map_one(d) for d in target_domains[:4]))
+    await asyncio.gather(*(_map_one(d) for d in target_domains))
     return discovered
 
 
@@ -360,3 +376,52 @@ async def extract_index_jobs(jobs: list[QueuedJob], ctx: ContextManager) -> list
         extracted.extend(r)
 
     return extracted
+
+
+_ATS_PATTERN = re.compile(
+    r"https?://(?:[a-zA-Z0-9-]+\.)*(?:"
+    r"greenhouse\.io/[a-zA-Z0-9_-]+"
+    r"|lever\.co/[a-zA-Z0-9_-]+"
+    r"|ashbyhq\.com/[a-zA-Z0-9_-]+"
+    r"|workable\.com/[a-zA-Z0-9_-]+"
+    r"|smartrecruiters\.com/[a-zA-Z0-9_-]+"
+    r"|myworkdayjobs\.com/[a-zA-Z0-9_-]+"
+    r"|rippling\.com/careers/[a-zA-Z0-9_-]+"
+    r"|jobs\.[a-zA-Z0-9-]+\.[a-zA-Z]{2,}"
+    r"|careers\.[a-zA-Z0-9-]+\.[a-zA-Z]{2,}"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def extract_career_domain(url: str) -> str | None:
+    """Aggressively extracts ATS root or company career portal URL from any job link."""
+    if not url or not url.lower().startswith("http"):
+        return None
+    match = _ATS_PATTERN.search(url)
+    if match:
+        return match.group(0).rstrip("/")
+
+    try:
+        parsed = urlparse(url)
+        path_parts = [p for p in parsed.path.split("/") if p]
+        if any(part.lower() in ("jobs", "careers", "about/careers") for part in path_parts):
+            return f"{parsed.scheme}://{parsed.netloc}/{path_parts[0]}"
+    except Exception:
+        pass
+    return None
+
+
+async def harvest_and_save_domains(urls: list[str], store: MemoryStore) -> int:
+    """Extract candidate ATS root domains from job URLs and persist to PostgreSQL.
+
+    Returns the count of newly discovered (not previously seen) domains.
+    """
+    new_count = 0
+    for url in urls:
+        domain = extract_career_domain(url)
+        if domain:
+            added = await store.add_discovered_domain(domain, url)
+            if added:
+                new_count += 1
+    return new_count
