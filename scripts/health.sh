@@ -41,4 +41,9 @@ echo ""
 echo "Metasearch"
 check_http "searxng          :8080"  "http://localhost:8080"
 
+echo ""
+echo "Agent Memory (pgvector)"
+check_container "agent-memory-db" "firecrawl_agent-memory-db"
+check "pgvector :5433" "pg_isready -h localhost -p 5433 -U postgres -d agent_memory"
+
 exit $FAILS

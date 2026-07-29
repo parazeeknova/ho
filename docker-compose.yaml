@@ -104,3 +104,19 @@ services:
       options:
         max-size: "5m"
         max-file: "1"
+
+  agent-memory-db:
+    image: pgvector/pgvector:pg16
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: agent_memory
+    volumes:
+      - ./scripts/init-pgvector.sql:/docker-entrypoint-initdb.d/init.sql
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "1"
