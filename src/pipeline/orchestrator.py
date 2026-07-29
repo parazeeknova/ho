@@ -5,7 +5,6 @@ import gc
 import os
 import re
 import signal
-import sys
 import time
 import traceback
 from datetime import UTC, datetime, timedelta
@@ -20,6 +19,7 @@ from src.agent.enrichment_agent import EnrichmentAgent
 from src.agent.jobs_agent import JobsAgent
 from src.agent.startup_agent import StartupAgent
 from src.agent.telegram_agent import TelegramAgent, set_pipeline_state
+from src.configuration import get_config
 from src.connectors import discover_all
 from src.graph.engine import WorkScheduler
 from src.graph.entity import (
@@ -37,16 +37,17 @@ from src.graph.entity import (
 from src.graph.event_bus import EventBus
 from src.graph.frontier import CrawlFrontier
 from src.graph.graph_store import GraphStore
+from src.http_client import close_all as _close_http_clients
 from src.llm.context import ContextManager
+from src.logging import get_logger
 from src.memory.pgvector_store import MemoryStore
-from src.pipeline.graph import EMBED_URL, drain_retry_queue, run_batch
+from src.pipeline.graph import drain_retry_queue, run_batch
 from src.pipeline.queue import JobPipeline, QueuedJob
 from src.rag.github_linkedin_loader import enrich_candidate_chunks
 from src.rag.loader import load_resume
 from src.search.linkedin_guest import scrape_linkedin_guest_jobs
 from src.search.searcher import (
     TARGET_POSITIONS_SCHEMA,
-    extract_career_domain,
     extract_index_jobs,
     fetch_direct_json_feeds,
     harvest_and_save_domains,
@@ -54,14 +55,9 @@ from src.search.searcher import (
     scrape_all,
     scrape_url_to_pipeline,
 )
-from src.search.startup_discoverer import discover_startups
 
 console = Console()
-
-TARGET = 15
-MAX_SCRAPE_WORKERS = 18
-MATCH_CONCURRENCY = 24
-VERIFY_CONCURRENCY = 20
+logger = get_logger("orchestrator")
 
 
 def filter_last_24_hours(jobs: list[dict]) -> list[dict]:
@@ -125,19 +121,19 @@ async def _domain_producer(
     uncrawled_dynamic: list[str],
 ) -> None:
     """Map company career pages and push discovered job URLs into the pipeline."""
+    cfg = get_config().pipeline
     console.print(
         f"  [bold lion]Aggressive Crawler: Mapping {len(combined_domains)} total domains "
         f"({len(uncrawled_dynamic)} dynamically discovered)[/bold lion]"
     )
     map_urls = await map_company_careers(app, combined_domains)
-    console.print(f"  [cyan]Map discovery: {len(map_urls)} career-page URLs[/cyan]")
+    logger.info(f"Map discovery: {len(map_urls)} career-page URLs")
 
     max_map = 300
     if len(map_urls) > max_map:
-        console.print(f"  [dim]Capping at {max_map} URLs (from {len(map_urls)})[/dim]")
         map_urls = map_urls[:max_map]
 
-    scrape_sem = asyncio.Semaphore(MAX_SCRAPE_WORKERS)
+    scrape_sem = asyncio.Semaphore(cfg.max_scrape_workers)
     scrape_done = 0
     scrape_total = len(map_urls)
     scrape_lock = asyncio.Lock()
@@ -149,7 +145,7 @@ async def _domain_producer(
         async with scrape_lock:
             scrape_done += 1
             if scrape_done % 20 == 0 or scrape_done == scrape_total:
-                console.print(f"  Scraping map URLs... {scrape_done}/{scrape_total}")
+                logger.debug(f"Scraping map URLs... {scrape_done}/{scrape_total}")
 
     scrape_tasks = [_scrape_with_progress(mu) for mu in map_urls]
     await asyncio.gather(*scrape_tasks)
@@ -164,7 +160,7 @@ async def _scrape_index_links(
     """Scrape apply-link URLs from extracted index jobs to get real JD markdown."""
     sem = asyncio.Semaphore(max_workers)
     scraped: list[dict] = []
-    firecrawl_url = "http://127.0.0.1:3002"
+    cfg = get_config().firecrawl
 
     _dead_page_texts = (
         "sorry, we couldn't find anything here",
@@ -193,12 +189,11 @@ async def _scrape_index_links(
                         payload: dict = {"url": url, "formats": ["markdown"]}
                         if use_main_content:
                             payload["onlyMainContent"] = True
-                        resp = await client.post(f"{firecrawl_url}/v1/scrape", json=payload)
+                        resp = await client.post(f"{cfg.url}/v1/scrape", json=payload)
                         if resp.status_code == 200:
                             md = (resp.json().get("data") or {}).get("markdown", "") or ""
                             md_lower = md.lower()
 
-                            # Prepend known metadata so the LLM always has context
                             md = (
                                 f"Role: {role}\n"
                                 f"Company: {company}\n"
@@ -221,10 +216,8 @@ async def _scrape_index_links(
                                     }
                                 )
                                 return
-                            # If main-content gave too little, fall through to full-page scrape
                 except Exception:
                     pass
-            # Both attempts failed — skip
 
     tasks = [asyncio.create_task(_scrape_one(j)) for j in jobs]
     await asyncio.gather(*tasks)
@@ -240,14 +233,16 @@ async def _process_and_dispatch_batch(
     if not scored:
         return []
 
+    cfg = get_config().pipeline
+
     scored = filter_last_24_hours(scored)
 
     enricher = EnrichmentAgent(store)
-    enriched = await enricher.batch_enrich_and_rescore(scored, concurrency=VERIFY_CONCURRENCY)
+    enriched = await enricher.batch_enrich_and_rescore(scored, concurrency=cfg.verify_concurrency)
 
     startup_agent = StartupAgent(ctx)
     startup_enriched = await startup_agent.batch_analyze_startups(
-        enriched, concurrency=VERIFY_CONCURRENCY
+        enriched, concurrency=cfg.verify_concurrency
     )
 
     high_match = [j for j in startup_enriched if int(j.get("match_percent", 0)) >= 70]
@@ -262,10 +257,10 @@ async def _process_and_dispatch_batch(
                 )
                 if posts:
                     j["founder_posts"] = posts
-                    console.print(
-                        f"  🚨 Founder hiring post for {company}: "
-                        f"{posts[0].get('founder_name', '?')} "
-                        f"({posts[0].get('post_url', '')[:60]}...)"
+                    logger.info(
+                        "Founder hiring post discovered",
+                        entity=company,
+                        extra={"founder": posts[0].get("founder_name", "?")},
                     )
             except Exception:
                 pass
@@ -284,70 +279,6 @@ async def _process_and_dispatch_batch(
     return clean_jobs
 
 
-async def _enrich_discovered_startups(
-    startups: list[dict[str, str]],
-    store: MemoryStore,
-    ctx: ContextManager,
-    telegram_agent: TelegramAgent,
-) -> int:
-    """Enrich startup discoveries with founder/funding data, store in ledger,
-    and queue careers domains for next-sweep scraping. Returns count stored."""
-    if not startups:
-        return 0
-
-    startup_agent = StartupAgent(ctx)
-    stored = 0
-
-    for s in startups:
-        company_name = s.get("company", "").strip()
-        if not company_name or company_name in ("N/A", "Unknown"):
-            continue
-
-        job_entry = {
-            "role": "[Startup Discovery]",
-            "company": company_name,
-            "company_description": s.get("description", ""),
-            "apply_link": s.get("url", ""),
-            "url": s.get("url", ""),
-            "source": s.get("source", "discovered"),
-            "location": "Remote",
-            "match_percent": 50,
-            "verdict": "WEAK_MATCH",
-            "shortlist_probability": 40,
-        }
-
-        try:
-            enriched = await startup_agent.analyze_startup(job_entry)
-        except Exception:
-            enriched = job_entry
-
-        await JobsAgent(store=store).add_or_merge_jobs([enriched])
-
-        # Harvest career domains for next sweep
-        url = s.get("url", "")
-        if url and url.startswith("http"):
-            try:
-                domain = extract_career_domain(url)
-                if domain:
-                    await store.add_discovered_domain(domain, url)
-            except Exception:
-                pass
-
-        stored += 1
-
-    await ctx.flush()
-    cleanup_agent = CleanupAgent(store=store)
-    await cleanup_agent.clean_and_format_ledger()
-
-    if telegram_agent.is_configured and stored > 0:
-        sample = ", ".join(s["company"] for s in startups[:5] if s.get("company"))
-        await telegram_agent._send_raw(
-            f"🏢 <b>Startup Discovery</b>\n\nDiscovered {stored} startups: {sample}..."
-        )
-
-    return stored
-
-
 async def _expand_company_graph(
     graph: GraphStore,
     bus: EventBus,
@@ -356,11 +287,11 @@ async def _expand_company_graph(
     telegram_agent: TelegramAgent,
 ) -> tuple[int, int]:
     """Graph expansion round with fire-and-forget event bus, centrality."""
+    cfg = get_config().scheduler
     startup_agent = StartupAgent(ctx)
-    frontier = CrawlFrontier(max_size=300)
+    frontier = CrawlFrontier(max_size=cfg.max_queue_size)
     engine = WorkScheduler(frontier, worker_count=3)
 
-    # Wire event bus -> frontier: handler results auto-enqueue
     bus.set_enqueue_callback(engine.enqueue_many)
 
     async def _on_company_discovered(event):
@@ -464,7 +395,6 @@ async def _expand_company_graph(
                 )
                 f_node, _ = await graph.upsert_node(f_node)
                 _, _ = await graph.upsert_edge(edge(entry.node_id, EdgeType.FOUNDED_BY, f_node.id))
-                # Fire-and-forget: spawns handler task, returns immediately
                 await bus.fire(
                     bus.new_event(
                         "founder_discovered",
@@ -486,14 +416,12 @@ async def _expand_company_graph(
 
     engine.start(worker_count=3)
 
-    # Discovery phase
-
     entities = await discover_all()
     if not entities:
         await engine.shutdown(drain=False)
         return 0, 0
 
-    console.print(f"  🏢 Connectors: {len(entities)} companies discovered")
+    logger.info(f"Connectors: {len(entities)} companies discovered")
     nodes_created = 0
     events_fired = 0
 
@@ -506,7 +434,6 @@ async def _expand_company_graph(
         node, node_events = await graph.upsert_node(node)
         nodes_created += 1
 
-        # Feed mutation events into graph expansion engine
         for evt in node_events:
             await engine.process_mutation(evt, graph)
 
@@ -525,7 +452,6 @@ async def _expand_company_graph(
         )
         events_fired += 1
 
-    # Incremental centrality per neighborhood
     for entity in entities[:30]:
         nid = make_company_id(entity.name)
         local = await graph.get_local_graph(nid, radius=1)
@@ -536,10 +462,6 @@ async def _expand_company_graph(
             if n and rank > 0.01:
                 n.data["pagerank"] = rank
                 _ = await graph.upsert_node(n)
-
-    await asyncio.sleep(3)
-
-    # Store
 
     jobs_agent = JobsAgent(store=store)
     for entity in entities[:20]:
@@ -560,7 +482,7 @@ async def _expand_company_graph(
         )
 
     m = await engine.get_metrics()
-    console.print(f"  Scheduler: {m.completed_work} done, {m.pending_work} pending")
+    logger.info(f"Scheduler: {m.completed_work} done, {m.pending_work} pending")
     await engine.shutdown(drain=True)
     return nodes_created, events_fired
 
@@ -571,12 +493,16 @@ async def _consumer(
     app: FirecrawlApp,
     ctx: ContextManager,
 ) -> tuple[list[dict], list[QueuedJob]]:
+    cfg = get_config().pipeline
     matched: list[dict] = []
     index_queue: list[QueuedJob] = []
     web_buf: list[QueuedJob] = []
 
     while True:
-        job = await pipeline.pop(timeout=2)
+        try:
+            job = await pipeline.pop(timeout=2)
+        except asyncio.CancelledError:
+            break
         if job is None:
             if pipeline.is_done:
                 break
@@ -590,18 +516,16 @@ async def _consumer(
 
         if len(web_buf) >= 6:
             batch = [{"markdown": j.markdown, "url": j.url, "title": j.title} for j in web_buf]
-            scored = await run_batch(batch, store, concurrency=MATCH_CONCURRENCY)
+            scored = await run_batch(batch, store, concurrency=cfg.match_concurrency)
             processed = await _process_and_dispatch_batch(scored, store, ctx, app)
             matched.extend(processed)
             for _ in web_buf:
                 await pipeline.task_done()
             web_buf.clear()
 
-        console.print(f"  [{pipeline.log_status()}]")
-
     if web_buf:
         batch = [{"markdown": j.markdown, "url": j.url, "title": j.title} for j in web_buf]
-        scored = await run_batch(batch, store, concurrency=MATCH_CONCURRENCY)
+        scored = await run_batch(batch, store, concurrency=cfg.match_concurrency)
         processed = await _process_and_dispatch_batch(scored, store, ctx, app)
         matched.extend(processed)
         for _ in web_buf:
@@ -615,6 +539,7 @@ async def _index_resume_in_pgvector(
     store: MemoryStore,
 ) -> None:
     """Fetch embeddings from the embedding server and index resume chunks in pgvector."""
+    cfg = get_config().embed
     embed_client = httpx.AsyncClient(
         timeout=httpx.Timeout(120.0, connect=10.0),
         limits=httpx.Limits(max_keepalive_connections=2, max_connections=4),
@@ -627,8 +552,8 @@ async def _index_resume_in_pgvector(
             for i in range(0, len(lines), 8):
                 batch = lines[i : i + 8]
                 resp = await embed_client.post(
-                    f"{EMBED_URL}/v1/embeddings",
-                    json={"model": "Qwen/Qwen3-Embedding-0.6B", "input": batch},
+                    f"{cfg.url}/embeddings",
+                    json={"model": cfg.model, "input": batch},
                 )
                 resp.raise_for_status()
                 data = resp.json()
@@ -642,8 +567,8 @@ async def _index_resume_in_pgvector(
                     )
             if len(text) > 20:
                 resp = await embed_client.post(
-                    f"{EMBED_URL}/v1/embeddings",
-                    json={"model": "Qwen/Qwen3-Embedding-0.6B", "input": [text[:500]]},
+                    f"{cfg.url}/embeddings",
+                    json={"model": cfg.model, "input": [text[:500]]},
                 )
                 resp.raise_for_status()
                 data = resp.json()
@@ -657,39 +582,43 @@ async def _index_resume_in_pgvector(
         if records:
             await store.clear_embeddings()
             await store.index_resume_chunks(records)
-        console.print(f"  [green]Indexed {len(records)} resume chunks in pgvector[/green]")
+        logger.info(f"Indexed {len(records)} resume chunks in pgvector")
     finally:
         await embed_client.aclose()
 
 
 async def _run_pipeline() -> None:
+    cfg = get_config()
+
     ctx = ContextManager()
     telegram_agent = TelegramAgent(ctx=ctx)
 
+    shutdown_requested = asyncio.Event()
+
     def _cleanup(signum: int, frame: object) -> None:
-        console.print("\n[yellow]Interrupted - flushing LLM context...[/yellow]")
+        logger.info("Interrupted - flushing LLM context...", extra={"signal": signum})
         ctx._flush_sync()
-        sys.exit(1)
+        shutdown_requested.set()
 
     signal.signal(signal.SIGINT, _cleanup)
     signal.signal(signal.SIGTERM, _cleanup)
 
     await ctx.flush()
-    app = FirecrawlApp(api_key="sk-no-auth", api_url="http://127.0.0.1:3002")
+    app = FirecrawlApp(api_key="sk-no-auth", api_url=cfg.firecrawl.url)
 
     await telegram_agent.start_polling()
 
     console.rule("[bold cyan]PHASE 0: Initialise Agent Memory (pgvector)[/bold cyan]")
     store = await MemoryStore.create()
-    console.print("  [green]Connected to agent-memory-db[/green]")
+    logger.info("Connected to agent-memory-db")
 
     removed = await store.purge_fake_job_keys(["techco:backendengineer"])
     if removed:
-        console.print(f"  [dim]Purged {removed} stale test entries[/dim]")
+        logger.info(f"Purged {removed} stale test entries")
 
     graph = await GraphStore.create()
     bus = EventBus()
-    console.print("  [green]Graph store initialised[/green]")
+    logger.info("Graph store initialised")
 
     console.rule("[bold cyan]PHASE 1: Load Resume + Index in pgvector[/bold cyan]")
     loop = asyncio.get_running_loop()
@@ -701,7 +630,7 @@ async def _run_pipeline() -> None:
 
     if existing_count > 0:
         reuse_resume = True
-        console.print(f"  [green]Reusing {existing_count} existing resume chunks[/green]")
+        logger.info(f"Reusing {existing_count} existing resume chunks")
 
     if not reuse_resume:
 
@@ -715,7 +644,6 @@ async def _run_pipeline() -> None:
     positions: list[str]
     if reuse_resume and not full_text:
         positions = ["Software Engineer", "Backend Developer"]
-        console.print(f"  [yellow]Target positions (cached):[/yellow] {', '.join(positions)}")
     else:
         raw_roles = await ctx.json_chat(
             "Based on this resume, identify the top 2-4 best-fitting entry-level / "
@@ -728,7 +656,7 @@ async def _run_pipeline() -> None:
         positions = raw_roles.get("roles", []) if isinstance(raw_roles, dict) else []
         if not positions:
             positions = ["Software Engineer", "Backend Developer"]
-        console.print(f"  [yellow]Target positions:[/yellow] {', '.join(positions)}")
+    logger.info(f"Target positions: {', '.join(positions)}")
 
     set_pipeline_state(running=True, started_at=time.time(), phase="starting", sweep=0)
     if telegram_agent.is_configured:
@@ -738,6 +666,10 @@ async def _run_pipeline() -> None:
     sweep = 0
     total_matched = 0
     while True:
+        if shutdown_requested.is_set():
+            logger.info("Shutdown requested, breaking sweep loop")
+            break
+
         sweep += 1
         sweep_start = time.monotonic()
 
@@ -747,11 +679,10 @@ async def _run_pipeline() -> None:
 
             retry_jobs = drain_retry_queue()
             if retry_jobs:
-                console.print(
-                    f"  [yellow]Retrying {len(retry_jobs)} rate-limited jobs"
-                    f" from previous sweep[/yellow]"
+                logger.info(f"Retrying {len(retry_jobs)} rate-limited jobs from previous sweep")
+                retry_scored = await run_batch(
+                    retry_jobs, store, concurrency=cfg.pipeline.match_concurrency
                 )
-                retry_scored = await run_batch(retry_jobs, store, concurrency=MATCH_CONCURRENCY)
                 if retry_scored:
                     await _process_and_dispatch_batch(retry_scored, store, ctx, app)
 
@@ -759,9 +690,7 @@ async def _run_pipeline() -> None:
 
             consumer_task = asyncio.create_task(_consumer(pipeline, store, app=app, ctx=ctx))
 
-            # 100+ Curated ATS Platforms, Big Tech Portals, AI Startups, and Indian Unicorns
             _map_domains = [
-                # ATS Roots & Global VC Boards
                 "https://boards.greenhouse.io",
                 "https://jobs.lever.co",
                 "https://jobs.ashbyhq.com",
@@ -772,7 +701,6 @@ async def _run_pipeline() -> None:
                 "https://wellfound.com/jobs",
                 "https://jobs.sequoiacap.com",
                 "https://jobs.a16z.com",
-                # AI & Frontier Tech Labs
                 "https://openai.com/careers",
                 "https://jobs.ashbyhq.com/anthropic",
                 "https://jobs.lever.co/cohere",
@@ -788,7 +716,6 @@ async def _run_pipeline() -> None:
                 "https://jobs.ashbyhq.com/wandb",
                 "https://jobs.ashbyhq.com/replicate",
                 "https://jobs.ashbyhq.com/together",
-                # FAANG, Big Tech & Enterprise Cloud
                 "https://careers.google.com",
                 "https://careers.microsoft.com",
                 "https://amazon.jobs/en",
@@ -819,7 +746,6 @@ async def _run_pipeline() -> None:
                 "https://okta.com/company/careers",
                 "https://intuit.com/careers",
                 "https://uber.com/us/en/careers",
-                # Developer Tools, Fintech & Consumer Platforms
                 "https://stripe.com/jobs",
                 "https://block.xyz/careers",
                 "https://coinbase.com/careers",
@@ -845,7 +771,6 @@ async def _run_pipeline() -> None:
                 "https://jobs.intel.com",
                 "https://jobs.amd.com",
                 "https://arm.com/company/careers",
-                # Top Indian Unicorns & Product Companies
                 "https://careers.flipkart.com",
                 "https://swiggy.com/careers",
                 "https://zomato.com/careers",
@@ -880,10 +805,14 @@ async def _run_pipeline() -> None:
                 _domain_producer(app, pipeline, store, combined_domains, uncrawled_dynamic)
             )
 
-            startup_discovery_task = asyncio.create_task(discover_startups(positions))
-
             await asyncio.gather(
-                scrape_all(app, positions, ctx, pipeline, max_workers=MAX_SCRAPE_WORKERS),
+                scrape_all(
+                    app,
+                    positions,
+                    ctx,
+                    pipeline,
+                    max_workers=cfg.pipeline.max_scrape_workers,
+                ),
                 fetch_direct_json_feeds(positions, pipeline),
                 *(
                     scrape_linkedin_guest_jobs(pos, location="India", pipeline=pipeline)
@@ -893,69 +822,46 @@ async def _run_pipeline() -> None:
 
             await domain_task
 
-            discovered = await startup_discovery_task
-            if discovered:
-                console.print(f"  🏢 Enriching {len(discovered)} discovered startups...")
-                stored = await _enrich_discovered_startups(discovered, store, ctx, telegram_agent)
-                console.print(f"  🏢 Stored {stored} startup discoveries in ledger")
-
-            console.print("  [yellow]Producers done. Signalling stop...[/yellow]")
             pipeline.signal_done()
 
             matched_result, index_queue = await consumer_task
 
             if index_queue:
                 console.rule(
-                    f"[bold cyan]PHASE 2b (sweep {sweep}): Extract Index Jobs + Graph Match[/bold cyan]"  # noqa: E501
+                    f"[bold cyan]PHASE 2b (sweep {sweep}): "
+                    "Extract Index Jobs + Graph Match[/bold cyan]"
                 )
                 index_jobs = await extract_index_jobs(index_queue, ctx)
-                console.print(f"  [cyan]Extracted {len(index_jobs)} jobs from indexes[/cyan]")
+                logger.info(f"Extracted {len(index_jobs)} jobs from indexes")
 
-                # Harvest fresh ATS/career domains from apply links
                 apply_links = [j.get("apply_link", "") for j in index_jobs if j.get("apply_link")]
                 if apply_links:
                     new_domains = await harvest_and_save_domains(apply_links, store)
-                    console.print(
-                        f"  [dim]Harvested {new_domains} new career domains from apply links[/dim]"
-                    )
+                    logger.info(f"Harvested {new_domains} new career domains from apply links")
 
                 if index_jobs:
-                    console.print(
-                        f"  [cyan]Scraping {len(index_jobs)} GitHub apply links for JD text...[/cyan]"  # noqa: E501
-                    )
+                    logger.info(f"Scraping {len(index_jobs)} GitHub apply links for JD text...")
                     idx_batch = await _scrape_index_links(
-                        app, index_jobs, max_workers=MAX_SCRAPE_WORKERS
+                        app, index_jobs, max_workers=cfg.pipeline.max_scrape_workers
                     )
-                    console.print(f"  [cyan]Scraped {len(idx_batch)} JDs from links[/cyan]")
+                    logger.info(f"Scraped {len(idx_batch)} JDs from links")
                     if idx_batch:
                         idx_scored = await run_batch(
-                            idx_batch, store, concurrency=MATCH_CONCURRENCY
+                            idx_batch, store, concurrency=cfg.pipeline.match_concurrency
                         )
                         await _process_and_dispatch_batch(idx_scored, store, ctx, app)
 
             cleanup_agent = CleanupAgent(store=store)
             clean_jobs = await cleanup_agent.clean_and_format_ledger()
 
-            console.print(
-                f"  [green]✓ {len(clean_jobs)} clean, verified undergrad positions "
-                "stored & formatted in jobs.md[/green]"
-            )
+            logger.info(f"{len(clean_jobs)} clean, verified undergrad positions stored & formatted")
 
             if telegram_agent.is_configured:
-                console.print(
-                    "  📱 [bold yellow][TelegramAgent][/bold yellow] "
-                    "Dispatching real-time notifications for verified jobs..."
-                )
                 await telegram_agent.notify_verified_jobs(clean_jobs, store=store)
-            else:
-                console.print(
-                    "  📱 [dim][TelegramAgent] Telegram alerts skipped "
-                    "(TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID unconfigured)[/dim]"
-                )
 
             total_matched += len(clean_jobs)
             elapsed = time.monotonic() - sweep_start
-            console.print(f"[bold green]Sweep {sweep} complete ({elapsed:.1f}s)[/bold green]")
+            logger.info(f"Sweep {sweep} complete ({elapsed:.1f}s, {len(clean_jobs)} matches)")
             set_pipeline_state(matched_total=total_matched, phase="idle")
             if telegram_agent.is_configured:
                 await telegram_agent.send_sweep_summary(sweep, len(clean_jobs), 0, elapsed)
@@ -967,19 +873,23 @@ async def _run_pipeline() -> None:
             console.print("\n[bold cyan]PHASE 3: Company Graph Expansion[/bold cyan]")
             try:
                 nodes, events = await _expand_company_graph(graph, bus, store, ctx, telegram_agent)
-                console.print(f"  🏢 Graph: {nodes} nodes, {events} events")
+                logger.info(f"Graph: {nodes} nodes, {events} events")
             except Exception as ge:
-                console.print(f"  [yellow]Graph expansion skipped: {ge}[/yellow]")
+                logger.exception("Graph expansion skipped", exc=ge)
 
-            console.print("\n[dim]Sleeping 5 minutes before next sweep...[/dim]")
             gc.collect()
-            await asyncio.sleep(300)
+            await asyncio.sleep(cfg.pipeline.sweep_interval)
 
+        except asyncio.CancelledError:
+            logger.info("Pipeline cancelled")
+            if "consumer_task" in locals() and not consumer_task.done():
+                consumer_task.cancel()
+            break
         except Exception as e:
             if "consumer_task" in locals() and not consumer_task.done():
                 consumer_task.cancel()
             tb = traceback.format_exc()
-            console.print(f"\n[red]Sweep {sweep} crashed:[/red]\n{tb}")
+            logger.exception(f"Sweep {sweep} crashed", exc=e)
             set_pipeline_state(last_error=str(e), phase="crashed")
             if telegram_agent.is_configured:
                 await telegram_agent.send_error(
@@ -987,18 +897,26 @@ async def _run_pipeline() -> None:
                     dedup_key=f"sweep_crash_{sweep}",
                 )
             gc.collect()
-            console.print("  [yellow]Sleeping 5 minutes before next sweep...[/yellow]")
-            await asyncio.sleep(300)
+            await asyncio.sleep(cfg.pipeline.sweep_interval)
 
     await telegram_agent.stop_polling()
     set_pipeline_state(running=False, phase="shutdown")
+    await bus.shutdown(timeout=5.0)
     await ctx.aclose()
+    await _close_http_clients()
     await graph.close()
     await store.close()
+    logger.info("Pipeline shutdown complete")
 
 
 def run() -> None:
     load_dotenv()
+    # Validate config on startup
+    cfg = get_config()
+    problems = cfg.validate()
+    if problems:
+        for p in problems:
+            logger.warning(f"Config problem: {p}")
     asyncio.run(_run_pipeline())
 
 

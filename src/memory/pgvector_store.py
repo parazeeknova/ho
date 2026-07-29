@@ -1,6 +1,6 @@
 """Standalone pgvector memory engine for agent deduplication and semantic RAG.
 
-Connects exclusively to the ``agent-memory-db`` service (port 5433).
+Connects exclusively to the ``agent-memory-db`` service.
 No dependency on Firebase or any other persistence layer.
 """
 
@@ -13,7 +13,11 @@ import asyncpg
 from pgvector import Vector
 from pgvector.asyncpg import register_vector
 
-DSN = "postgresql://postgres:postgres@localhost:5433/agent_memory"
+from src.configuration import PostgresConfig, get_config
+from src.logging import get_logger
+
+logger = get_logger("memory_store")
+
 VECTOR_DIM = 1024
 
 CREATE_TABLES_SQL = f"""
@@ -74,6 +78,24 @@ CREATE TABLE IF NOT EXISTS jobs_ledger (
     created_at    TIMESTAMP DEFAULT NOW(),
     updated_at    TIMESTAMP DEFAULT NOW()
 );
+
+ALTER TABLE IF EXISTS frontier_state
+ADD COLUMN IF NOT EXISTS state TEXT DEFAULT 'pending';
+ALTER TABLE IF EXISTS frontier_state
+ADD COLUMN IF NOT EXISTS lease_expires DOUBLE PRECISION DEFAULT 0;
+CREATE TABLE IF NOT EXISTS frontier_state (
+    work_id        TEXT PRIMARY KEY, agent TEXT NOT NULL,
+    node_id        TEXT NOT NULL, node_type TEXT DEFAULT 'company',
+    priority       INT DEFAULT 50, depth INT DEFAULT 0,
+    state          TEXT DEFAULT 'pending', retries INT DEFAULT 0,
+    lease_expires  DOUBLE PRECISION DEFAULT 0,
+    payload        JSONB DEFAULT '{{}}'::jsonb,
+    created_at     TIMESTAMP DEFAULT NOW(),
+    updated_at     DOUBLE PRECISION DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS frontier_completed (
+    work_id        TEXT PRIMARY KEY, completed_at TIMESTAMP DEFAULT NOW()
+);
 """
 
 
@@ -84,16 +106,19 @@ class MemoryStore:
         self._pool = pool
 
     @classmethod
-    async def create(cls) -> MemoryStore:
+    async def create(cls, config: PostgresConfig | None = None) -> MemoryStore:
         """Initialise pool, register vector type, create tables."""
-        pool = await asyncpg.create_pool(DSN, min_size=2, max_size=25)
+        cfg = config or get_config().postgres
+        pool = await asyncpg.create_pool(cfg.dsn, min_size=cfg.min_pool, max_size=cfg.max_pool)
         async with pool.acquire() as conn:
             await register_vector(conn)
             await conn.execute(CREATE_TABLES_SQL)
+        logger.info("MemoryStore initialized", dsn=cfg.dsn.split("@")[-1])
         return cls(pool)
 
     async def close(self) -> None:
         await self._pool.close()
+        logger.info("MemoryStore closed")
 
     # Processed_jobs
 
@@ -416,3 +441,11 @@ class MemoryStore:
                 top_k,
             )
         return [self._row_to_job(r) for r in rows]
+
+    async def job_ledger_count(self) -> int:
+        return await self.get_job_ledger_count()
+
+    async def discovered_domain_count(self) -> int:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT COUNT(*) AS cnt FROM discovered_domains")
+            return row["cnt"] if row else 0

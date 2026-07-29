@@ -10,9 +10,12 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from src.agent.jobs_agent import JobsAgent, _normalize_key
+from src.logging import get_logger
 
 if TYPE_CHECKING:
     from src.memory.pgvector_store import MemoryStore
+
+logger = get_logger("cleanup_agent")
 
 NON_UNDERGRAD_KEYWORDS = [
     "phd",
@@ -89,7 +92,6 @@ class CleanupAgent:
         if _role_has_senior_kw(role):
             return False
 
-        # Broader non-tech check against role + company_description
         jd_summary = str(job.get("jd_summary") or "").lower()
         comp_desc = str(job.get("company_description") or "").lower()
         combined = f"{role} {company} {jd_summary} {comp_desc}"
@@ -121,7 +123,5 @@ class CleanupAgent:
 
         clean_jobs.sort(key=lambda x: int(x.get("match_percent", 0)), reverse=True)
         self.jobs_agent._atomic_write_md(clean_jobs)
-        print(
-            f"  🧹 [CleanupAgent] Sanitized & formatted jobs.md ({len(clean_jobs)} clean positions)"
-        )
+        logger.info(f"Sanitized & formatted jobs.md ({len(clean_jobs)} clean positions)")
         return clean_jobs

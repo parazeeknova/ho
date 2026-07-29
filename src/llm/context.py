@@ -6,61 +6,63 @@ from typing import Any
 
 from generalcompute import GeneralCompute
 
-from src.llm.config import LLMConfig
+from src.configuration import LLMConfig, get_config
+from src.logging import get_logger
+from src.retry import _is_transient
 
-MAX_RETRIES = 5
-RETRY_DELAY = 2
+logger = get_logger("llm")
+
 
 # Token bucket gating ALL LLM calls across every agent.
-# Rate = tokens replenished per second. 1.4/s = 84/min (safe under 100 RPM).
-# Max = burst capacity if the bucket has been idle.
-_TOKEN_RATE = 1.4
-_TOKEN_MAX = 30
-_token_lock = asyncio.Lock()
-_token_count = _TOKEN_MAX
-_token_last = time.monotonic()
+def _llm_state():
+    cfg = get_config().llm
+    return {
+        "rate": cfg.token_rate,
+        "max": cfg.token_max,
+        "count": cfg.token_max,
+        "last": time.monotonic(),
+    }
 
-# Global rate-limit backpressure. When ANY caller gets a 429 / rate-limit
-# error, we set this timestamp and drain the bucket so every OTHER caller
-# waits the full penalty window before making another request.
-_rate_penalty_secs = 60.0
+
+_token_lock = asyncio.Lock()
+_token_state = _llm_state()
 _rate_limit_hit_at = 0.0
+
+
+def _rate_penalty_secs() -> float:
+    return get_config().llm.rate_penalty_secs
 
 
 async def _acquire_llm_token() -> None:
     """Wait until a rate-limit token is available (token bucket)."""
-    global _token_count, _token_last
+    global _rate_limit_hit_at
     while True:
-        # Honour the global penalty window if a 429 was just received.
-        remaining = _rate_penalty_secs - (time.monotonic() - _rate_limit_hit_at)
+        remaining = _rate_penalty_secs() - (time.monotonic() - _rate_limit_hit_at)
         if remaining > 0:
             await asyncio.sleep(remaining)
             continue
 
         async with _token_lock:
+            cfg = get_config().llm
             now = time.monotonic()
-            elapsed = now - _token_last
-            _token_last = now
-            _token_count = min(_TOKEN_MAX, _token_count + elapsed * _TOKEN_RATE)
-            if _token_count >= 1.0:
-                _token_count -= 1.0
+            elapsed = now - _token_state["last"]
+            _token_state["last"] = now
+            _token_state["count"] = min(
+                cfg.token_max, _token_state["count"] + elapsed * cfg.token_rate
+            )
+            if _token_state["count"] >= 1.0:
+                _token_state["count"] -= 1.0
                 return
-            wait = (1.0 - _token_count) / _TOKEN_RATE
+            wait = (1.0 - _token_state["count"]) / cfg.token_rate
         await asyncio.sleep(wait)
 
 
 async def _mark_rate_limited() -> None:
-    """Called when the LLM returns a 429 or rate-limit error.
-    Drains the token bucket under the lock so every concurrent caller pauses together."""
-    global _rate_limit_hit_at, _token_count
+    """Called when the LLM returns a 429 or rate-limit error."""
+    global _rate_limit_hit_at
     async with _token_lock:
         _rate_limit_hit_at = time.monotonic()
-        _token_count = 0.0
-
-
-def _is_rate_limited(error: Exception) -> bool:
-    msg = str(error).lower()
-    return "429" in msg or "rate limit" in msg
+        _token_state["count"] = 0.0
 
 
 DIM = "\033[2m"
@@ -78,12 +80,18 @@ VERIFY_SCHEMA: dict[str, Any] = {
 
 
 class ContextManager:
-    def __init__(self, verbose: bool = True) -> None:
+    def __init__(self, verbose: bool = True, config: LLMConfig | None = None) -> None:
         self.cumulative_output_tokens = 0
         self.verbose = verbose
-        cfg = LLMConfig()
+        cfg = config or get_config().llm
         self.model = cfg.model
-        self._client = GeneralCompute(api_key=cfg.api_key)
+        self._max_retries = cfg.max_retries
+        self._retry_delay = cfg.retry_delay
+        self._max_tokens = cfg.max_tokens
+        try:
+            self._client = GeneralCompute(api_key=cfg.api_key)
+        except ValueError:
+            self._client = None
 
     async def aclose(self) -> None:
         pass
@@ -102,7 +110,7 @@ class ContextManager:
             kwargs: dict[str, Any] = {
                 "model": self.model,
                 "messages": [{"role": "user", "content": current_prompt}],
-                "max_tokens": 4096,
+                "max_tokens": self._max_tokens,
             }
             if schema is not None:
                 kwargs["response_format"] = {"type": "json_object"}
@@ -110,26 +118,35 @@ class ContextManager:
             msg = resp.choices[0].message
             return msg.content or ""
 
+        if self._client is None:
+            raise RuntimeError("LLM client not initialized: missing API key")
+
         last_error: Exception | None = None
-        backoff = RETRY_DELAY
-        for attempt in range(1, MAX_RETRIES + 1):
+        backoff = self._retry_delay
+        for attempt in range(1, self._max_retries + 1):
             await _acquire_llm_token()
             try:
                 output = await asyncio.to_thread(_call_llm)
                 return output
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
                 last_error = e
-                if _is_rate_limited(e):
+                if _is_transient(e):
                     await _mark_rate_limited()
-                    # Rate-limit errors get longer, aggressive backoff
                     wait = max(5.0, backoff * 3)
                 else:
                     wait = backoff
-            if attempt < MAX_RETRIES:
-                print(f"  [LLM retry {attempt}/{MAX_RETRIES}] {last_error}")
+                logger.warning(
+                    f"LLM retry {attempt}/{self._max_retries}",
+                    retry_count=attempt,
+                    exception=str(e),
+                )
+            if attempt < self._max_retries:
                 await asyncio.sleep(wait)
                 backoff *= 2
-        raise RuntimeError(f"LLM failed after {MAX_RETRIES} retries: {last_error}")
+        logger.error(f"LLM failed after {self._max_retries} retries", exception=str(last_error))
+        raise RuntimeError(f"LLM failed after {self._max_retries} retries: {last_error}")
 
     async def maybe_flush(self) -> None:
         pass

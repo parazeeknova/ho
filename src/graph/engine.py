@@ -12,6 +12,7 @@ Key properties:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from collections import defaultdict
 from typing import Any
@@ -19,10 +20,10 @@ from typing import Any
 from rich.console import Console
 from rich.table import Table
 
+from src.configuration import SchedulerConfig, get_config
 from src.graph.entity import (
     AGENT_BATCHABLE,
     AGENT_CONCURRENCY,
-    HEARTBEAT_INTERVAL,
     MUTATION_EXPANSION_RULES,
     AdaptiveSemaphore,
     BatchHandlerType,
@@ -35,8 +36,10 @@ from src.graph.entity import (
     make_work_id,
 )
 from src.graph.frontier import CrawlFrontier
+from src.logging import get_logger
 
 console = Console()
+logger = get_logger("scheduler")
 
 
 class GraphExpansionEngine:
@@ -98,9 +101,15 @@ class GraphExpansionEngine:
 
 
 class WorkScheduler:
-    def __init__(self, frontier: CrawlFrontier, worker_count: int = 4) -> None:
+    def __init__(
+        self,
+        frontier: CrawlFrontier,
+        worker_count: int | None = None,
+        config: SchedulerConfig | None = None,
+    ) -> None:
+        cfg = config or get_config().scheduler
         self.frontier = frontier
-        self._base_workers = worker_count
+        self._base_workers = worker_count if worker_count is not None else cfg.worker_count
         self._agents: dict[str, HandlerType] = {}
         self._batch_agents: dict[str, BatchHandlerType] = {}
         self._workers: list[asyncio.Task[None]] = []
@@ -109,20 +118,23 @@ class WorkScheduler:
         self._drain_mode = asyncio.Event()
         self._expansion = GraphExpansionEngine()
 
-        # AdaptiveSemaphores — mutable limits, no object recreation
         self._agent_sems: dict[str, AdaptiveSemaphore] = {
             name: AdaptiveSemaphore(limit) for name, limit in AGENT_CONCURRENCY.items()
         }
 
         self._active_leases: dict[str, asyncio.Task[None]] = {}
         self._consecutive_failures = 0
+        self._consecutive_empty = 0
         self._start_time = 0.0
         self._metrics = SchedulerMetrics()
         self._metrics_lock = asyncio.Lock()
 
-        # Latency tracking
         self._latency_samples: dict[str, list[float]] = defaultdict(list)
         self._agent_fail_reasons: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+
+        self._consecutive_failure_threshold = cfg.consecutive_failure_threshold
+        self._consecutive_empty_threshold = cfg.consecutive_empty_threshold
+        self._batch_max = cfg.batch_max
 
     def register_agent(self, name: str, handler: HandlerType) -> None:
         self._agents[name] = handler
@@ -153,17 +165,22 @@ class WorkScheduler:
         self._shutdown.clear()
         self._drain_mode.clear()
         self._start_time = time.monotonic()
-        for i in range(worker_count or self._base_workers):
+        wc = worker_count or self._base_workers
+        for i in range(wc):
             self._workers.append(asyncio.create_task(self._worker_loop(i)))
-        console.print(f"  ⚙️  [Scheduler] {worker_count or self._base_workers} workers")
+        logger.info(f"Scheduler started {wc} workers")
+        console.print(f"  ⚙️  [Scheduler] {wc} workers")
 
     async def shutdown(self, drain: bool = True) -> None:
         if not self._running:
             return
+        logger.info("Scheduler shutting down")
         console.print("  ⚙️  [Scheduler] Shutting down...")
         self._running = False
         if drain:
             self._drain_mode.set()
+            while self.frontier.pending > 0 or len(self._active_leases) > 0:
+                await asyncio.sleep(1.0)
         self._shutdown.set()
         for task in self._active_leases.values():
             task.cancel()
@@ -173,6 +190,7 @@ class WorkScheduler:
         await asyncio.gather(*self._workers, return_exceptions=True)
         self._workers.clear()
         await self.frontier.persist_all()
+        logger.info("Scheduler shutdown complete")
         console.print("  ⚙️  [Scheduler] Shutdown complete")
 
     # Worker
@@ -187,6 +205,8 @@ class WorkScheduler:
                 self._consecutive_empty += 1
                 await self._maybe_scale_down()
                 continue
+            except asyncio.CancelledError:
+                return
 
             if entry is None:
                 if self._drain_mode.is_set():
@@ -217,7 +237,9 @@ class WorkScheduler:
 
                 try:
                     if is_batch and entry.agent in AGENT_BATCHABLE:
-                        batch = await self.frontier.lease_batch(entry.agent, worker_id, max_batch=3)
+                        batch = await self.frontier.lease_batch(
+                            entry.agent, worker_id, max_batch=self._batch_max
+                        )
                         if batch and len(batch.entries) > 1:
                             async with self._metrics_lock:
                                 self._metrics.batches_executed += 1
@@ -245,15 +267,37 @@ class WorkScheduler:
                     if unblocked:
                         await self.frontier.push_many(unblocked)
 
+                    logger.info(
+                        f"Worker {worker_id} completed {entry.agent}",
+                        worker=str(worker_id),
+                        entity=entry.node_id,
+                        latency=elapsed,
+                    )
+
+                except asyncio.CancelledError:
+                    logger.warning(f"Worker {worker_id} cancelled mid-task", worker=str(worker_id))
+                    await self.frontier.fail(entry.id, retry=entry.retries < entry.max_retries)
+                    raise
                 except Exception as e:
                     self._consecutive_failures += 1
                     reason = type(e).__name__
                     self._agent_fail_reasons[entry.agent][reason] += 1
                     async with self._metrics_lock:
                         self._metrics.retried_work += 1
+                    logger.exception(
+                        f"Worker {worker_id} failed {entry.agent}",
+                        exc=e,
+                        worker=str(worker_id),
+                        entity=entry.node_id,
+                    )
                     await self.frontier.fail(entry.id, retry=entry.retries < entry.max_retries)
                 finally:
-                    hb_task.cancel()
+                    try:
+                        hb_task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await hb_task
+                    except Exception:
+                        pass
                     self._active_leases.pop(entry.id, None)
                     async with self._metrics_lock:
                         self._metrics.active_workers -= 1
@@ -261,8 +305,9 @@ class WorkScheduler:
             await self._adapt_concurrency()
 
     async def _heartbeat_loop(self, entry_id: str) -> None:
+        cfg = get_config().scheduler
         while self._running:
-            await asyncio.sleep(HEARTBEAT_INTERVAL)
+            await asyncio.sleep(cfg.heartbeat_interval)
             if not await self.frontier.renew_lease(entry_id):
                 return
 
@@ -270,21 +315,23 @@ class WorkScheduler:
 
     async def _adapt_concurrency(self) -> None:
         pending = self.frontier.pending
-        if self._consecutive_failures >= 5:
+        if self._consecutive_failures >= self._consecutive_failure_threshold:
             for sem in self._agent_sems.values():
                 await sem.set_limit(max(1, sem.limit // 2))
             self._consecutive_failures = 0
+            logger.warning("Adaptive concurrency: halved limits due to consecutive failures")
         elif pending > 50:
             for sem in self._agent_sems.values():
                 new_limit = min(sem.limit + 2, sem.limit * 2)
                 await sem.set_limit(new_limit)
 
     async def _maybe_scale_down(self) -> None:
-        if self._consecutive_empty <= 20:
+        if self._consecutive_empty <= self._consecutive_empty_threshold:
             return
         for sem in self._agent_sems.values():
             await sem.set_limit(max(1, sem.limit // 2))
         self._consecutive_empty = 0
+        logger.debug("Adaptive concurrency: scaled down")
 
     # Enqueue
 
@@ -338,3 +385,11 @@ class WorkScheduler:
     @property
     def is_running(self) -> bool:
         return self._running
+
+    async def process_mutation(self, event: MutationEvent, graph_store) -> int:
+        """Process a mutation event through the expansion engine."""
+        return await self._expansion.on_mutation(
+            event,
+            self.enqueue,
+            graph_store.get_node,
+        )

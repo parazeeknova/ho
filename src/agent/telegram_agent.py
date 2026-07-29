@@ -18,15 +18,17 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from src.logging import get_logger
+
 if TYPE_CHECKING:
     from src.llm.context import ContextManager
+
+logger = get_logger("telegram_agent")
 
 TELEGRAM_BASE = "https://api.telegram.org/bot{token}"
 TELEGRAM_SEND = f"{TELEGRAM_BASE}/sendMessage"
 TELEGRAM_UPDATES = f"{TELEGRAM_BASE}/getUpdates"
 
-
-# Shared pipeline state (written by orchestrator, read by /status handler)
 
 _pipeline_state: dict[str, Any] = {
     "running": False,
@@ -42,9 +44,6 @@ _pipeline_state: dict[str, Any] = {
 
 def set_pipeline_state(**kwargs: Any) -> None:
     _pipeline_state.update(kwargs)
-
-
-# Async health checks (non-blocking, runs in-process)
 
 
 async def _check_port(host: str, port: int, timeout: float = 2.0) -> bool:
@@ -91,9 +90,6 @@ async def run_health_checks() -> str:
     return "\n".join(lines)
 
 
-# TelegramAgent
-
-
 class TelegramAgent:
     """Agent responsible for Telegram alerts, command handling, and error notifications."""
 
@@ -109,7 +105,7 @@ class TelegramAgent:
         self._notified_keys: set[str] = set()
         self._update_id: int = 0
         self._poll_task: asyncio.Task[None] | None = None
-        self._seen_errors: set[str] = set()  # dedupe repeated errors
+        self._seen_errors: set[str] = set()
 
     @property
     def _chat_ids(self) -> list[str]:
@@ -122,8 +118,6 @@ class TelegramAgent:
     def _primary_chat_id(self) -> str:
         ids = self._chat_ids
         return ids[0] if ids else ""
-
-    # ---- helpers ----------------------------------------------------------
 
     @property
     def is_configured(self) -> bool:
@@ -158,14 +152,14 @@ class TelegramAgent:
                     if resp.status_code == 200:
                         return True
                     body = resp.text[:200]
-                    print(f"  [yellow]Telegram {resp.status_code} -> chat {cid}: {body}[/yellow]")
+                    logger.warning(
+                        f"Telegram send {resp.status_code}", source="telegram", extra={"body": body}
+                    )
                     if resp.status_code == 400 and parse_mode == "HTML":
                         fixed = await self._llm_fix_html(text, body)
                         if fixed and fixed != text:
-                            print("  [dim]Telegram: retrying with LLM-fixed HTML[/dim]")
                             text = fixed
                             continue
-                        print("  [dim]Telegram: falling back to plain text[/dim]")
                         parse_mode = ""
                         continue
                     if resp.status_code == 429:
@@ -175,7 +169,11 @@ class TelegramAgent:
                     else:
                         return False
             except Exception as e:
-                print(f"  [yellow]Telegram send failed (attempt {attempt + 1}): {e}[/yellow]")
+                logger.warning(
+                    f"Telegram send attempt {attempt + 1} failed",
+                    source="telegram",
+                    exception=str(e),
+                )
                 if attempt < 2:
                     await asyncio.sleep(1 << attempt)
         return False
@@ -197,10 +195,8 @@ class TelegramAgent:
             if fixed and "<b>" in fixed:
                 return fixed.strip()
         except Exception as e:
-            print(f"  [dim]LLM HTML fix failed: {e}[/dim]")
+            logger.debug("LLM HTML fix failed", source="telegram", exception=str(e))
         return None
-
-    # ---- command bot ------------------------------------------------------
 
     async def start_polling(self) -> None:
         """Start background command polling. Safe to call when not configured."""
@@ -208,7 +204,7 @@ class TelegramAgent:
             return
         if self._poll_task is None:
             self._poll_task = asyncio.create_task(self._poll_loop())
-            print("  📱 [TelegramAgent] Command bot polling started")
+            logger.info("TelegramAgent command bot polling started")
 
     async def stop_polling(self) -> None:
         if self._poll_task:
@@ -223,8 +219,10 @@ class TelegramAgent:
         while True:
             try:
                 await self._process_updates()
+            except asyncio.CancelledError:
+                return
             except Exception as e:
-                print(f"  [dim]Telegram poll error: {e}[/dim]")
+                logger.debug("Telegram poll error", source="telegram", exception=str(e))
             await asyncio.sleep(5)
 
     async def _process_updates(self) -> None:
@@ -301,8 +299,6 @@ class TelegramAgent:
         ]
         await self._send_raw("\n".join(lines))
 
-    # ---- error notifications ----------------------------------------------
-
     async def send_error(self, message: str, dedup_key: str = "") -> None:
         """Send an error alert. Deduplicates repeated errors by key."""
         if dedup_key and dedup_key in self._seen_errors:
@@ -310,7 +306,7 @@ class TelegramAgent:
         if dedup_key:
             self._seen_errors.add(dedup_key)
         await self._send_raw(f"🚨 <b>Pipeline Error</b>\n\n<code>{message[:800]}</code>")
-        print("  📱 [TelegramAgent] Sent error alert")
+        logger.info("TelegramAgent sent error alert")
 
     async def send_startup(self, sweep_count: int = 0) -> None:
         await self._send_raw(
@@ -328,8 +324,6 @@ class TelegramAgent:
             f"Matched: {matched}\n"
             f"Duration: {duration:.1f}s"
         )
-
-    # ---- job notifications (existing) -------------------------------------
 
     def format_job_card(self, job: dict[str, Any]) -> str:
         role = html.escape(str(job.get("role") or "Software Engineer").strip())
@@ -364,8 +358,6 @@ class TelegramAgent:
         if comp_desc:
             lines.extend(["", f"<blockquote>{comp_desc}</blockquote>"])
 
-        # Osint & Outreach
-
         funding_info = job.get("funding_info") or {}
         funding_stage = job.get("funding_stage", "")
         founders = job.get("founders", [])
@@ -375,7 +367,6 @@ class TelegramAgent:
         if has_osint:
             lines.extend(["", "<b>🕵️ OSINT &amp; Outreach</b>", ""])
 
-        # Funding line
         if isinstance(funding_info, dict) and any(funding_info.values()):
             fi = funding_info
             parts = []
@@ -392,7 +383,6 @@ class TelegramAgent:
         elif funding_stage and funding_stage not in ("N/A", "-"):
             lines.append(f"💰 Funding: {funding_stage}")
 
-        # Founder rows with clickable links
         founders = job.get("founders", [])
         if founders:
             if isinstance(founders[0], dict):
@@ -423,12 +413,10 @@ class TelegramAgent:
                             sl.append(str(s))
                     lines.append(f"   Links: {', '.join(sl)}")
 
-        # OSINT signals
         if osint_signals:
             for sig in osint_signals:
                 lines.append(f"📡 {html.escape(str(sig))}")
 
-        # 🚨 Active Founder Posts
         founder_posts = job.get("founder_posts", [])
         if founder_posts and isinstance(founder_posts, list):
             lines.extend(["", "<b>🚨 ACTIVE FOUNDER POST:</b>"])
@@ -448,7 +436,6 @@ class TelegramAgent:
                     )
                 lines.append("")
 
-        # Apply link
         if link and str(link).startswith("http"):
             lines.extend(["", f'<a href="{html.escape(link)}"><b>Apply Direct →</b></a>'])
 
@@ -504,7 +491,7 @@ class TelegramAgent:
                     with contextlib.suppress(Exception):
                         await store.mark_telegram_notified(dedup_key, role, company)
                 sent_count += 1
-                print(f"  📱 [TelegramAgent] Sent alert for {role} @ {company}")
+                logger.info(f"Telegram alert sent for {role} @ {company}")
                 await asyncio.sleep(1.2)
 
         return sent_count

@@ -2,16 +2,15 @@
 and Cypher-powered traversal/expansion queries.
 
 Same public API as the old pgvector GraphStore so callers work unchanged.
-Requires: NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD env vars.
 """  # noqa: E501
 
 from __future__ import annotations
 
 import json
-import os
 from datetime import UTC, datetime
 from typing import Any
 
+from src.configuration import Neo4jConfig, get_config
 from src.graph.entity import (
     Confidence,
     EdgeType,
@@ -22,31 +21,39 @@ from src.graph.entity import (
     confidence_decay,
     merge_confidence,
 )
+from src.logging import get_logger
+
+logger = get_logger("graph_store")
 
 
 class GraphStore:
-    def __init__(self) -> None:
-        self._uri = os.environ.get("NEO4J_URI", "bolt://localhost:7687")
-        self._user = os.environ.get("NEO4J_USERNAME", "neo4j")
-        self._pwd = os.environ.get("NEO4J_PASSWORD", "password")
+    def __init__(self, config: Neo4jConfig | None = None) -> None:
+        cfg = config or get_config().neo4j
+        self._uri = cfg.uri
+        self._user = cfg.username
+        self._pwd = cfg.password
+        self._max_conn_lifetime = cfg.max_connection_lifetime
         self._driver: Any = None
 
     @classmethod
-    async def create(cls) -> GraphStore:
-        store = cls()
+    async def create(cls, config: Neo4jConfig | None = None) -> GraphStore:
+        cfg = config or get_config().neo4j
+        store = cls(cfg)
         from neo4j import AsyncGraphDatabase
 
         store._driver = AsyncGraphDatabase.driver(
             store._uri,
             auth=(store._user, store._pwd),
-            max_connection_lifetime=3600,
+            max_connection_lifetime=store._max_conn_lifetime,
         )
         await store._ensure_indexes()
+        logger.info("Neo4j graph store initialized")
         return store
 
     async def close(self) -> None:
         if self._driver:
             await self._driver.close()
+            logger.info("Neo4j graph store closed")
 
     async def _run(self, query: str, params: dict | None = None) -> list[dict[str, Any]]:
         async with self._driver.session() as session:
@@ -341,6 +348,16 @@ class GraphStore:
                     )
                 )
         return {"nodes": nodes, "edges": edges}
+
+    # Diagnostics
+
+    async def node_count(self) -> int:
+        rows = await self._run("MATCH (n:GraphNode) RETURN count(n) AS c")
+        return rows[0]["c"] if rows else 0
+
+    async def relationship_count(self) -> int:
+        rows = await self._run("MATCH ()-[r:RELATES]->() RETURN count(r) AS c")
+        return rows[0]["c"] if rows else 0
 
 
 # Helpers

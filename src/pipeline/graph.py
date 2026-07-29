@@ -19,17 +19,18 @@ from typing import Any, TypedDict, cast
 
 import httpx
 
+from src.configuration import get_config
 from src.llm.config import build_embed_query
 from src.llm.context import ContextManager
 from src.llm.schemas import CriticReview, JobMatch, canonicalize_markdown
+from src.logging import get_logger
 from src.memory.pgvector_store import MemoryStore
 from src.search.searcher import harvest_and_save_domains
 
-EMBED_URL = "http://127.0.0.1:8900"
+logger = get_logger("pipeline_graph")
+
 MAX_CORRECTION_LOOPS = 2
 
-# Jobs whose LLM calls failed (rate-limited / provider error) are queued here.
-# The orchestrator drains and retries them in the next sweep.
 _graph_retry_queue: list[dict[str, str]] = []
 
 
@@ -117,10 +118,11 @@ class GraphState(TypedDict, total=False):
 
 
 async def _embed_query(client: httpx.AsyncClient, text: str) -> list[float]:
+    cfg = get_config().embed
     prefixed = build_embed_query(text)
     resp = await client.post(
-        f"{EMBED_URL}/v1/embeddings",
-        json={"model": "Qwen/Qwen3-Embedding-0.6B", "input": prefixed},
+        f"{cfg.url}/embeddings",
+        json={"model": cfg.model, "input": prefixed},
     )
     resp.raise_for_status()
     data = resp.json()
@@ -137,7 +139,6 @@ def _apply_hard_constraints(match: dict[str, Any]) -> CriticReview:
     role = str(match.get("role", "")).lower()
     jd_summary = str(match.get("jd_summary", "")).lower()
 
-    # Non-tech role patterns (check role + jd_summary)
     _non_tech_pats = [
         r"\bcontent\s+creator\b",
         r"\bhost\s+live\b",
@@ -166,8 +167,6 @@ def _apply_hard_constraints(match: dict[str, Any]) -> CriticReview:
                 requires_rescore=False,
             )
 
-    # Senior/title keywords — check ROLE TITLE ONLY so
-    # 'reports to the Engineering Manager' is not a false positive.
     _title_pats = [
         r"\bsenior\b",
         r"\bsr\.?\b",
@@ -188,7 +187,6 @@ def _apply_hard_constraints(match: dict[str, Any]) -> CriticReview:
                 requires_rescore=False,
             )
 
-    # Experience-level keywords — check role + jd_summary
     _exp_pats = [
         r"\b5\+?\s*years?\b",
         r"\b7\+?\s*years?\b",
@@ -233,7 +231,6 @@ async def node_context_builder(
     state["skip"] = False
     state["markdown"] = cleaned
 
-    # Harvest any ATS/career root domain from this JD's URL
     with contextlib.suppress(Exception):
         await harvest_and_save_domains([url], store)
 
@@ -281,7 +278,11 @@ async def node_matcher(
     try:
         result = await ctx.json_chat(prompt, JobMatch.model_json_schema())
     except Exception as e:
-        print(f"  [retry-queue] LLM failed for {state.get('title', state.get('url', '?'))}: {e}")
+        logger.exception(
+            "LLM failed for job",
+            exc=e,
+            source=state.get("title", state.get("url", "?")),
+        )
         _queue_for_retry(state)
         state["match"] = None
         return state
@@ -382,12 +383,10 @@ async def run_graph(
     """
     state.setdefault("retries", 0)
 
-    # Node 1: Context Builder
     state = await node_context_builder(state, store, embed_client)
     if state.get("skip", False):
         return None
 
-    # Node 2 + 3 with self-correction loop
     loop_count = 0
     critique_feedback = ""
     while True:
@@ -408,7 +407,6 @@ async def run_graph(
         loop_count += 1
         critique_feedback = critique.critique_reason
 
-    # Node 4: Memory Saver
     state = await node_memory_saver(state, store)
 
     return state.get("match")
@@ -429,6 +427,7 @@ async def run_batch(
     results: list[dict[str, Any]] = []
 
     ctx = ContextManager()
+    cfg = get_config()
 
     async def _one(jd: dict[str, str]) -> None:
         async with sem:
@@ -452,10 +451,18 @@ async def run_batch(
                 verdict = result.get("verdict", "?")
                 role = result.get("role", "?")
                 company = result.get("company", "?")
-                print(f"    {pct}% | {verdict} | {role} @ {company}")
+                logger.info(
+                    "Job matched",
+                    extra={
+                        "match_percent": pct,
+                        "verdict": verdict,
+                        "role": role,
+                        "company": company,
+                    },
+                )
 
     async with httpx.AsyncClient(
-        timeout=httpx.Timeout(300.0, connect=10.0),
+        timeout=httpx.Timeout(cfg.embed.timeout, connect=10.0),
         limits=httpx.Limits(
             max_keepalive_connections=concurrency,
             max_connections=concurrency * 2,

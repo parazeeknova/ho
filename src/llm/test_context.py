@@ -5,6 +5,15 @@ import pytest
 from src.llm.context import ContextManager, _strip_markdown
 
 
+@pytest.fixture(autouse=True)
+def _disable_llm(monkeypatch):
+    """Prevent real GeneralCompute client creation in tests."""
+    monkeypatch.setattr(
+        "src.llm.context.GeneralCompute",
+        lambda *a, **kw: None,
+    )
+
+
 class TestStripMarkdown:
     def test_no_wrapping(self) -> None:
         assert _strip_markdown('{"key": "value"}') == '{"key": "value"}'

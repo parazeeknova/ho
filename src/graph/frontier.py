@@ -16,21 +16,28 @@ from heapq import heappop, heappush
 
 import asyncpg
 
+from src.configuration import SchedulerConfig, get_config
 from src.graph.entity import (
-    LEASE_TTL,
     FrontierEntry,
     NodeType,
     WorkBatch,
     WorkState,
 )
+from src.logging import get_logger
 
-MAX_QUEUE_SIZE = 500
+logger = get_logger("frontier")
 
 
 class CrawlFrontier:
-    def __init__(self, pool: asyncpg.Pool | None = None, max_size: int = MAX_QUEUE_SIZE) -> None:
+    def __init__(
+        self,
+        pool: asyncpg.Pool | None = None,
+        max_size: int | None = None,
+        config: SchedulerConfig | None = None,
+    ) -> None:
+        cfg = config or get_config().scheduler
         self._pool = pool
-        self._max_size = max_size
+        self._max_size = max_size if max_size is not None else cfg.max_queue_size
         self._heap: list[tuple[int, int, FrontierEntry]] = []
         self._index: dict[str, FrontierEntry] = {}
         self._seq = 0
@@ -118,7 +125,7 @@ class CrawlFrontier:
 
                 entry.state = WorkState.LEASED
                 entry.lease_holder = worker_id
-                entry.lease_expires = time.monotonic() + LEASE_TTL
+                entry.lease_expires = time.monotonic() + entry._lease_ttl
                 result = entry
 
                 for e in retry:
@@ -170,9 +177,17 @@ class CrawlFrontier:
                 self._seq += 1
                 heappush(self._heap, (-entry.priority, self._seq, entry))
                 self._not_empty.set()
+                logger.info(
+                    "Frontier entry retried", entity=entry.node_id, retry_count=entry.retries
+                )
             else:
                 self._index.pop(entry_id, None)
                 self._total_failed += 1
+                logger.warning(
+                    "Frontier entry permanently failed",
+                    entity=entry.node_id,
+                    retry_count=entry.retries,
+                )
 
     # Dependencies
 
@@ -207,6 +222,7 @@ class CrawlFrontier:
                 heappush(self._heap, (-entry.priority, self._seq, entry))
                 self._not_empty.set()
                 count += 1
+                logger.debug("Lease expired", entity=entry.node_id)
         self._total_expired += count
         return count
 
@@ -214,6 +230,7 @@ class CrawlFrontier:
         while len(self._heap) > self._max_size:
             _, _, entry = heappop(self._heap)
             self._index.pop(entry.id, None)
+            logger.debug("Frontier trimmed entry", entity=entry.node_id)
 
     # Queries
 
@@ -246,37 +263,43 @@ class CrawlFrontier:
     async def _persist_one(self, entry: FrontierEntry) -> None:
         if not self._pool:
             return
-        async with self._pool.acquire() as conn:
-            await conn.execute(
-                """INSERT INTO frontier_state (work_id, agent, node_id, priority,
-                    depth, state, retries, lease_expires, payload, updated_at)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10)
-                ON CONFLICT (work_id) DO UPDATE SET
-                    priority = EXCLUDED.priority, state = EXCLUDED.state,
-                    retries = EXCLUDED.retries, lease_expires = EXCLUDED.lease_expires,
-                    payload = frontier_state.payload || EXCLUDED.payload,
-                    updated_at = EXCLUDED.updated_at""",
-                entry.id,
-                entry.agent,
-                entry.node_id,
-                entry.priority,
-                entry.depth,
-                entry.state.value,
-                entry.retries,
-                entry.lease_expires,
-                json.dumps(entry.payload),
-                entry.updated_at,
-            )
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """INSERT INTO frontier_state (work_id, agent, node_id, priority,
+                        depth, state, retries, lease_expires, payload, updated_at)
+                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10)
+                    ON CONFLICT (work_id) DO UPDATE SET
+                        priority = EXCLUDED.priority, state = EXCLUDED.state,
+                        retries = EXCLUDED.retries, lease_expires = EXCLUDED.lease_expires,
+                        payload = frontier_state.payload || EXCLUDED.payload,
+                        updated_at = EXCLUDED.updated_at""",
+                    entry.id,
+                    entry.agent,
+                    entry.node_id,
+                    entry.priority,
+                    entry.depth,
+                    entry.state.value,
+                    entry.retries,
+                    entry.lease_expires,
+                    json.dumps(entry.payload),
+                    entry.updated_at,
+                )
+        except Exception as e:
+            logger.warning("Frontier persist failed", entity=entry.node_id, exception=str(e))
 
     async def _persist_completed(self, entry_id: str) -> None:
         if not self._pool:
             return
-        async with self._pool.acquire() as conn:
-            await conn.execute("DELETE FROM frontier_state WHERE work_id = $1", entry_id)
-            await conn.execute(
-                "INSERT INTO frontier_completed (work_id) VALUES ($1) ON CONFLICT DO NOTHING",
-                entry_id,
-            )
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute("DELETE FROM frontier_state WHERE work_id = $1", entry_id)
+                await conn.execute(
+                    "INSERT INTO frontier_completed (work_id) VALUES ($1) ON CONFLICT DO NOTHING",
+                    entry_id,
+                )
+        except Exception as e:
+            logger.warning("Frontier persist completed failed", entity=entry_id, exception=str(e))
 
     async def persist_all(self) -> int:
         if not self._pool:
@@ -330,25 +353,3 @@ class CrawlFrontier:
         if count:
             self._not_empty.set()
         return count
-
-
-def create_frontier_sql() -> str:
-    return """
-    ALTER TABLE IF EXISTS frontier_state
-    ADD COLUMN IF NOT EXISTS state TEXT DEFAULT 'pending';
-    ALTER TABLE IF EXISTS frontier_state
-    ADD COLUMN IF NOT EXISTS lease_expires DOUBLE PRECISION DEFAULT 0;
-    CREATE TABLE IF NOT EXISTS frontier_state (
-        work_id        TEXT PRIMARY KEY, agent TEXT NOT NULL,
-        node_id        TEXT NOT NULL, node_type TEXT DEFAULT 'company',
-        priority       INT DEFAULT 50, depth INT DEFAULT 0,
-        state          TEXT DEFAULT 'pending', retries INT DEFAULT 0,
-        lease_expires  DOUBLE PRECISION DEFAULT 0,
-        payload        JSONB DEFAULT '{}'::jsonb,
-        created_at     TIMESTAMP DEFAULT NOW(),
-        updated_at     DOUBLE PRECISION DEFAULT 0
-    );
-    CREATE TABLE IF NOT EXISTS frontier_completed (
-        work_id        TEXT PRIMARY KEY, completed_at TIMESTAMP DEFAULT NOW()
-    );
-    """

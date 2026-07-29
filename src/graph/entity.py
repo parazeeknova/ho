@@ -17,6 +17,16 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from src.configuration import get_config
+
+
+def _default_lease_ttl() -> float:
+    return get_config().scheduler.lease_ttl
+
+
+def _default_heartbeat_interval() -> float:
+    return get_config().scheduler.heartbeat_interval
+
 
 class NodeType(StrEnum):
     COMPANY = "company"
@@ -93,7 +103,6 @@ class GraphNode(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     active: bool = True
-    # Adjacency index: set of edge_type+target_id strings, lazily loaded
     edges_out: set[str] = Field(default_factory=set, exclude=True)
     edges_in: set[str] = Field(default_factory=set, exclude=True)
 
@@ -199,9 +208,6 @@ AGENT_BATCHABLE: set[str] = {
     "graph_maintenance",
 }
 
-LEASE_TTL = 120.0
-HEARTBEAT_INTERVAL = 30.0
-
 
 # Frontierentry
 
@@ -227,6 +233,7 @@ class FrontierEntry:
     payload: dict[str, Any] = field(default_factory=dict)
     created_at: float = field(default_factory=time.monotonic)
     updated_at: float = field(default_factory=time.monotonic)
+    _lease_ttl: float = field(default_factory=_default_lease_ttl)
 
     def __post_init__(self):
         if self.agent in AGENT_COSTS:
@@ -243,7 +250,7 @@ class FrontierEntry:
         return time.monotonic() > self.lease_expires
 
     def renew_lease(self) -> None:
-        self.lease_expires = time.monotonic() + LEASE_TTL
+        self.lease_expires = time.monotonic() + self._lease_ttl
 
     @property
     def expected_utility(self) -> float:

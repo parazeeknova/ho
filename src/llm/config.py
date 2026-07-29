@@ -1,13 +1,12 @@
-"""Local llama.cpp model routing and configuration.
-
-Primary LLM:  Qwen3.5-4B (Q4_K_M)  at :8899/v1  (8192 ctx, Flash Attention)
-Embeddings:   Qwen3-Embedding-0.6B (Q8_0) at :8900/v1  (32768 ctx)
-"""
+"""Local llama.cpp model routing and configuration (backward compat re-exports)."""
 
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+
+# Re-export from centralized config
+from src.configuration import LLMConfig
 
 EMBED_QUERY_INSTRUCTION = (
     "Instruct: Given a job description query, retrieve relevant candidate resume "
@@ -16,27 +15,33 @@ EMBED_QUERY_INSTRUCTION = (
 
 
 @dataclass
-class LLMConfig:
-    api_key: str = field(
-        default_factory=lambda: os.getenv(
-            "GENERALCOMPUTE_API_KEY", "gc_beRSKulIP-ae0ojXrZ5tqaANK2oxFO5e"
-        )
-    )
-    model: str = field(default_factory=lambda: os.getenv("GENERALCOMPUTE_MODEL", "gemma-4-31B-it"))
-    context_length: int = 32768
-
-
-@dataclass
 class EmbedConfig:
-    base_url: str = "http://127.0.0.1:8900/v1"
-    model: str = "Qwen/Qwen3-Embedding-0.6B"
+    """Backward-compat wrapper matching the old api."""
+
+    base_url: str = field(
+        default_factory=lambda: os.getenv("EMBED_URL", "http://127.0.0.1:8900/v1")
+    )
+    model: str = field(
+        default_factory=lambda: os.getenv("EMBED_MODEL", "Qwen/Qwen3-Embedding-0.6B")
+    )
     context_length: int = 32768
 
 
-@dataclass
 class Config:
-    llm: LLMConfig = field(default_factory=LLMConfig)
-    embed: EmbedConfig = field(default_factory=EmbedConfig)
+    """Backward-compat wrapper."""
+
+    def __init__(self) -> None:
+        from src.configuration import get_config as _get
+
+        cfg = _get()
+        self.llm = LLMConfig(
+            api_key=cfg.llm.api_key,
+            model=cfg.llm.model,
+        )
+        self.embed = EmbedConfig(
+            base_url=cfg.embed.url,
+            model=cfg.embed.model,
+        )
 
 
 def build_embed_query(text: str) -> str:

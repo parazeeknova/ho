@@ -13,9 +13,12 @@ from typing import Any
 import httpx
 from rich.console import Console
 
+from src.configuration import get_config
 from src.llm.context import ContextManager
+from src.logging import get_logger
 
 console = Console()
+logger = get_logger("startup_agent")
 
 FOUNDER_POST_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -37,7 +40,7 @@ FOUNDER_POST_SCHEMA: dict[str, Any] = {
 }
 
 
-_searxng_sem = asyncio.Semaphore(5)
+_searxng_sem = asyncio.Semaphore(get_config().searxng.semaphore)
 
 
 async def _searxng_search(query: str, time_range: str | None = None) -> list[str]:
@@ -45,11 +48,12 @@ async def _searxng_search(query: str, time_range: str | None = None) -> list[str
     params: dict[str, str] = {"q": query, "format": "json"}
     if time_range:
         params["time_range"] = time_range
+    cfg = get_config().searxng
     async with _searxng_sem:
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
+            async with httpx.AsyncClient(timeout=cfg.timeout) as client:
                 resp = await client.get(
-                    "http://localhost:8080/search",
+                    cfg.url,
                     params=params,
                 )
                 if resp.status_code == 200:
@@ -60,7 +64,12 @@ async def _searxng_search(query: str, time_range: str | None = None) -> list[str
                         if r.get("content") or r.get("title")
                     ]
         except Exception as e:
-            print(f"  [dim]SearXNG query '{query[:60]}': {e}[/dim]")
+            logger.debug(
+                "SearXNG query failed",
+                source="searxng",
+                exception=str(e),
+                extra={"query": query[:60]},
+            )
     return []
 
 
@@ -113,8 +122,6 @@ FOUNDER_SCHEMA = {
 class StartupAgent:
     """Agent that researches startup founders, funding, and outreach info."""
 
-    # Deterministic signals that suggest LLM analysis is worth the cost.
-    # These run BEFORE any LLM call.
     _ENTERPRISE_DOMAINS = frozenset(
         {
             "google",
@@ -170,10 +177,7 @@ class StartupAgent:
     # noqa: E501
     @staticmethod
     def _priority_score(job: dict[str, Any]) -> int:
-        """Score 0-100 for how 'LLM-worthy' this company is.
-        Higher score = more likely the LLM will find valuable OSINT data.
-        Deterministic only — no LLM calls.
-        """
+        """Score 0-100 for how 'LLM-worthy' this company is."""
         score = 0
         company = str(job.get("company", "")).lower()
         role = str(job.get("role", "")).lower()
@@ -182,17 +186,14 @@ class StartupAgent:
         verdict = str(job.get("verdict", "")).upper()
         combined = f"{company} {role} {desc} {jd}"
 
-        # High resume match = high priority
         match = int(job.get("match_percent", 0))
-        score += min(40, match // 2)  # 80% -> 40pts, 60% -> 30pts
+        score += min(40, match // 2)
 
-        # Strong/good match verdict
         if verdict in ("STRONG_MATCH", "GOOD_MATCH"):
             score += 20
         elif verdict == "WEAK_MATCH":
             score += 10
 
-        # Startup indicators in description/jd
         for kw in (
             "startup",
             "early-stage",
@@ -210,15 +211,12 @@ class StartupAgent:
             if kw in combined:
                 score += 5
 
-        # Funding keywords
         if re.search(StartupAgent._FUNDING_KW_RE, combined):
             score += 10
 
-        # Already marked as startup
         if job.get("is_startup"):
             score += 10
 
-        # Has founder data (was analyzed before, good signal)
         founders = job.get("founders", [])
         if founders and isinstance(founders, list):
             if isinstance(founders[0], dict):
@@ -226,22 +224,18 @@ class StartupAgent:
             else:
                 score += 8
 
-        # Has funding info (proven OSINT value)
         if job.get("funding_stage") and job["funding_stage"] != "N/A":
             score += 10
 
-        # Founder posts exist (proven hiring signal)
         if job.get("founder_posts"):
             score += 15
 
-        # Source signals
         source = str(job.get("source", "")).lower()
         if source in ("yc", "discovered", "searxng"):
             score += 10
         if source == "linkedin_guest":
             score += 5
 
-        # ATS detected (company has active careers page)
         link = str(job.get("apply_link", ""))
         if any(
             pat in link
@@ -311,7 +305,6 @@ class StartupAgent:
         if not isinstance(extracted, dict):
             return job
 
-        # --- Top-level fields ---
         job["is_startup"] = bool(extracted.get("is_startup", False))
 
         if extracted.get("funding_stage"):
@@ -319,19 +312,15 @@ class StartupAgent:
         if extracted.get("company_news"):
             job["company_news"] = str(extracted["company_news"])
 
-        # --- Founders: support both old (list[str]) and new (list[dict]) ---
         raw_founders = extracted.get("founders", [])
         if raw_founders and isinstance(raw_founders[0], dict):
-            # New nested schema — store full objects
             job["founders"] = raw_founders
-            # Legacy string list for backward compat
             job["founder_socials"] = [
                 f.get("linkedin_url")
                 for f in raw_founders
                 if isinstance(f, dict) and f.get("linkedin_url")
             ]
         elif raw_founders and isinstance(raw_founders[0], str):
-            # Legacy flat list
             job["founders"] = [{"name": n} for n in raw_founders]
             if extracted.get("founder_socials"):
                 job["founder_socials"] = extracted["founder_socials"]
@@ -339,11 +328,9 @@ class StartupAgent:
             if extracted.get("founder_socials"):
                 job["founder_socials"] = extracted["founder_socials"]
 
-        # --- Funding info (new nested object) ---
         fi = extracted.get("funding_info")
         if isinstance(fi, dict) and any(fi.values()):
             job["funding_info"] = fi
-            # Legacy string fallback from nested
             if not job.get("funding_stage") and fi.get("round"):
                 parts = [fi["round"]]
                 if fi.get("amount_raised"):
@@ -352,12 +339,10 @@ class StartupAgent:
                     parts.append("led by " + ", ".join(fi["lead_investors"]))
                 job["funding_stage"] = " ".join(parts)
 
-        # --- OSINT signals ---
         signals = extracted.get("osint_signals")
         if isinstance(signals, list):
             job["osint_signals"] = [str(s) for s in signals[:2]]
 
-        # --- Startup scoring boost ---
         if job["is_startup"]:
             job["match_percent"] = min(99, job.get("match_percent", 0) + 10)
             job["shortlist_probability"] = min(95, job.get("shortlist_probability", 0) + 10)
@@ -404,7 +389,7 @@ class StartupAgent:
         try:
             result = await self.ctx.json_chat(prompt, schema=FOUNDER_POST_SCHEMA)
         except Exception as e:
-            print(f"  [dim]Founder posts LLM failed for {company}: {e}[/dim]")
+            logger.warning("Founder posts LLM failed", entity=company, exception=str(e))
             return []
 
         if not isinstance(result, dict):
@@ -438,7 +423,6 @@ class StartupAgent:
         if not jobs:
             return []
 
-        # Phase 1: deterministic
         scored: list[tuple[int, int, dict[str, Any]]] = []
         pass_through: list[dict[str, Any]] = []
 
@@ -456,18 +440,12 @@ class StartupAgent:
             scored.append((score, idx, j))
 
         if not scored:
-            return jobs  # nothing worth analyzing
+            return jobs
 
-        # Sort by priority — highest first
         scored.sort(key=lambda x: x[0], reverse=True)
 
-        console.print(
-            f"  🔬 [StartupAgent] Priority queue: {len(scored)}/{len(jobs)} "
-            f"companies selected for OSINT analysis "
-            f"(top score: {scored[0][0]})"
-        )
+        logger.info(f"StartupAgent: {len(scored)}/{len(jobs)} selected for OSINT")
 
-        # Phase 2: LLM
         sem = asyncio.Semaphore(concurrency)
         result_map: dict[int, dict[str, Any]] = {}
 
@@ -481,7 +459,6 @@ class StartupAgent:
         tasks = [_worker(idx, j) for _, idx, j in scored]
         await asyncio.gather(*tasks)
 
-        # Reconstruct original order
         output = jobs[:]
         for _, idx, _ in scored:
             if idx in result_map:

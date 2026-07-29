@@ -11,18 +11,22 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from src.configuration import get_config
+from src.logging import get_logger
+
 if TYPE_CHECKING:
     from src.memory.pgvector_store import MemoryStore
 
-EMBED_URL = "http://127.0.0.1:8900/v1"
+logger = get_logger("enrichment_agent")
 
 
 async def _get_embedding(text: str) -> list[float]:
-    """Fetch text embedding from local llama-server on :8900."""
+    """Fetch text embedding from local llama-server."""
+    cfg = get_config().embed
     try:
-        async with httpx.AsyncClient(timeout=4.0) as client:
+        async with httpx.AsyncClient(timeout=cfg.timeout) as client:
             resp = await client.post(
-                f"{EMBED_URL}/embeddings",
+                f"{cfg.url}/embeddings",
                 json={"input": text[:2000]},
             )
             if resp.status_code == 200:
@@ -30,10 +34,9 @@ async def _get_embedding(text: str) -> list[float]:
                 emb = data.get("data", [{}])[0].get("embedding", [])
                 if isinstance(emb, list) and len(emb) > 0:
                     return [float(v) for v in emb]
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Embedding fetch failed, using fallback", exception=str(e))
 
-    # Fallback deterministic pseudo-embedding (dim=1024)
     import hashlib
 
     h = hashlib.sha256(text.encode("utf-8")).digest()

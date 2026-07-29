@@ -14,7 +14,10 @@ import random
 
 import httpx
 
-_SEARCH_UA = random.choice  # forward ref; set below
+from src.configuration import get_config
+from src.logging import get_logger
+
+logger = get_logger("startup_discoverer")
 
 _USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",  # noqa: E501
@@ -24,10 +27,6 @@ _USER_AGENTS = [
     "Mozilla/5.0 (X11; Linux x86_64; rv:132.0) Gecko/20100101 Firefox/132.0",  # noqa: E501
 ]
 
-_SEARCH_UA = _USER_AGENTS
-
-
-# Sources
 
 YC_COMPANIES_API = "https://api.ycombinator.com/v0/companies"
 VC_PORTFOLIOS = {
@@ -50,15 +49,16 @@ async def _searxng_discover(query: str) -> list[dict[str, str]]:
     """Use SearXNG to discover startups from a domain-specific query."""
     results: list[dict[str, str]] = []
     try:
-        async with httpx.AsyncClient(timeout=8.0) as client:
+        cfg = get_config().searxng
+        async with httpx.AsyncClient(timeout=cfg.timeout) as client:
             resp = await client.get(
-                "http://localhost:8080/search",
+                cfg.url,
                 params={
                     "q": query,
                     "format": "json",
                     "time_range": "month",
                 },
-                headers={"User-Agent": random.choice(_SEARCH_UA)},
+                headers={"User-Agent": random.choice(_USER_AGENTS)},
             )
             if resp.status_code == 200:
                 for r in resp.json().get("results", [])[:10]:
@@ -73,7 +73,7 @@ async def _searxng_discover(query: str) -> list[dict[str, str]]:
                             }
                         )
     except Exception as e:
-        print(f"  [dim]Startup discoverer SearXNG: {e}[/dim]")
+        logger.warning("Startup discoverer SearXNG failed", source="searxng", exception=str(e))
     return results
 
 
@@ -85,7 +85,7 @@ async def discover_yc_companies() -> list[dict[str, str]]:
             resp = await client.get(
                 YC_COMPANIES_API,
                 params={"batch": "W25", "limit": "50"},
-                headers={"User-Agent": random.choice(_SEARCH_UA)},
+                headers={"User-Agent": random.choice(_USER_AGENTS)},
             )
             if resp.status_code == 200:
                 data = resp.json()
@@ -101,9 +101,8 @@ async def discover_yc_companies() -> list[dict[str, str]]:
                 if discovered:
                     return discovered
     except Exception as e:
-        print(f"  [dim]YC API: {e}[/dim]")
+        logger.warning("YC API failed", source="yc", exception=str(e))
 
-    # Fallback: SearXNG for YC companies
     return await _searxng_discover('site:ycombinator.com/companies "founded" "team size"')
 
 
@@ -144,9 +143,6 @@ async def discover_founder_hiring_posts() -> list[dict[str, str]]:
     )
 
 
-# Main orchestrator call
-
-
 async def discover_startups(positions: list[str]) -> list[dict[str, str]]:
     """Discover startups from all sources in parallel.
 
@@ -161,13 +157,11 @@ async def discover_startups(positions: list[str]) -> list[dict[str, str]]:
     tasks.append(asyncio.create_task(discover_hn_hiring()))
     tasks.append(asyncio.create_task(discover_founder_hiring_posts()))
 
-    # One VC per task to avoid hammering SearXNG
     for vc_name, vc_url in list(VC_PORTFOLIOS.items())[:4]:
         tasks.append(asyncio.create_task(discover_vc_portfolio(vc_name, vc_url)))
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    # Deduplicate by company name
     seen: set[str] = set()
     all_companies: list[dict[str, str]] = []
     for result in results:
@@ -179,5 +173,5 @@ async def discover_startups(positions: list[str]) -> list[dict[str, str]]:
                 seen.add(name)
                 all_companies.append(company)
 
-    print(f"  🏢 Discovered {len(all_companies)} startups from {len(tasks)} sources")
+    logger.info(f"Discovered {len(all_companies)} startups from {len(tasks)} sources")
     return all_companies

@@ -10,11 +10,15 @@ from urllib.parse import urlparse
 import httpx
 from firecrawl import FirecrawlApp
 
+from src.configuration import get_config
 from src.llm.context import ContextManager
+from src.logging import get_logger
 from src.pipeline.queue import JobPipeline, QueuedJob
 
 if TYPE_CHECKING:
     from src.memory.pgvector_store import MemoryStore
+
+logger = get_logger("searcher")
 
 _USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",  # noqa: E501
@@ -80,9 +84,6 @@ INDEX_EXTRACT_SCHEMA = {
 }
 
 
-FIRECRAWL_URL = "http://127.0.0.1:3002"
-
-
 async def _scrape_index(url: str, app: FirecrawlApp, pipeline: JobPipeline) -> None:
     try:
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
@@ -94,11 +95,11 @@ async def _scrape_index(url: str, app: FirecrawlApp, pipeline: JobPipeline) -> N
                 return
     except Exception:
         pass
-    # Fallback to Firecrawl if raw fetch fails
     try:
+        cfg = get_config().firecrawl
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(
-                f"{FIRECRAWL_URL}/v1/scrape",
+                f"{cfg.url}/v1/scrape",
                 json={"url": url, "formats": ["markdown"]},
             )
             if resp.status_code == 200:
@@ -108,7 +109,7 @@ async def _scrape_index(url: str, app: FirecrawlApp, pipeline: JobPipeline) -> N
                         QueuedJob(markdown=md, url=url, title=f"INDEX:{url.split('/')[-1]}")
                     )
     except Exception as e:
-        print(f"  [red]index fail {url}: {e}[/red]")
+        logger.warning("Index scrape failed", source=url, exception=str(e))
 
 
 async def scrape_url_to_pipeline(item: dict, app: FirecrawlApp, pipeline: JobPipeline) -> None:
@@ -116,9 +117,10 @@ async def scrape_url_to_pipeline(item: dict, app: FirecrawlApp, pipeline: JobPip
     if not url:
         return
     try:
+        cfg = get_config().firecrawl
         async with httpx.AsyncClient(timeout=6.0) as client:
             resp = await client.post(
-                f"{FIRECRAWL_URL}/v1/scrape",
+                f"{cfg.url}/v1/scrape",
                 json={"url": url, "formats": ["markdown"]},
             )
             if resp.status_code == 200:
@@ -148,15 +150,16 @@ async def _search_searxng(queries: list[str]) -> list[dict[str, str]]:
     """Query self-hosted SearXNG metasearch engine."""
     sem = asyncio.Semaphore(5)
     hits: list[dict[str, str]] = []
+    cfg = get_config().searxng
 
     async def _query_one(q: str) -> None:
         async with sem:
             try:
                 async with httpx.AsyncClient(
-                    timeout=6.0, headers={"User-Agent": random.choice(_USER_AGENTS)}
+                    timeout=cfg.timeout, headers={"User-Agent": random.choice(_USER_AGENTS)}
                 ) as client:
                     resp = await client.get(
-                        "http://localhost:8080/search",
+                        cfg.url,
                         params={"q": q, "format": "json", "time_range": "day"},
                     )
                     resp.raise_for_status()
@@ -196,6 +199,7 @@ async def _search_web(
         queries = [f"{p} intern remote" for p in positions[:2]]
 
     sem = asyncio.Semaphore(5)
+    cfg = get_config().firecrawl
 
     async def _fetch_query(q: str) -> list[dict[str, str]]:
         hits: list[dict[str, str]] = []
@@ -203,7 +207,7 @@ async def _search_web(
             try:
                 async with httpx.AsyncClient(timeout=6.0) as client:
                     resp = await client.post(
-                        f"{FIRECRAWL_URL}/v1/search",
+                        f"{cfg.url}/v1/search",
                         json={"query": q},
                     )
                     if resp.status_code == 200:
@@ -237,9 +241,12 @@ async def _search_web(
             results.extend(hl)
     results.extend(searxng_hits)
 
-    print(
-        f"  Search: {len(results)} URLs "
-        f"(Firecrawl + {len(searxng_hits)} SearXNG) from {len(queries)} queries"
+    logger.info(
+        f"Search: {len(results)} URLs from {len(queries)} queries",
+        extra={
+            "firecrawl_hits": sum(len(hl) for hl in hit_lists if isinstance(hl, list)),
+            "searxng_hits": len(searxng_hits),
+        },
     )
     return results
 
@@ -311,11 +318,11 @@ async def fetch_direct_json_feeds(positions: list[str], pipeline: JobPipeline) -
                             )
                         )
         except Exception as e:
-            print(f"  [dim]Remotive feed error: {e}[/dim]")
+            logger.warning("Remotive feed error", source="remotive", exception=str(e))
 
     async def _fetch_hn() -> None:
         try:
-            cutoff_ts = int(time.time()) - 86400  # 24 hours ago
+            cutoff_ts = int(time.time()) - 86400
             async with httpx.AsyncClient(timeout=15.0) as client:
                 resp = await client.get(
                     "https://hn.algolia.com/api/v1/search_by_date",
@@ -346,7 +353,7 @@ async def fetch_direct_json_feeds(positions: list[str], pipeline: JobPipeline) -
                             )
                         )
         except Exception as e:
-            print(f"  [dim]HN Algolia feed error: {e}[/dim]")
+            logger.warning("HN Algolia feed error", source="hn_algolia", exception=str(e))
 
     await asyncio.gather(_fetch_remotive(), _fetch_hn())
 
@@ -356,10 +363,11 @@ async def map_company_careers(
 ) -> list[dict[str, str]]:
     """Use Firecrawl /map to discover job listing URLs across ATS platforms and career portals."""
     discovered: list[dict[str, str]] = []
-    sem = asyncio.Semaphore(24)  # Map up to 24 domains concurrently
+    sem = asyncio.Semaphore(24)
     done_lock = asyncio.Lock()
     done_count = 0
     total = len(target_domains)
+    cfg = get_config().firecrawl
 
     non_job_slugs = (
         "/about",
@@ -387,12 +395,12 @@ async def map_company_careers(
         nonlocal done_count
         async with sem:
             try:
-                async with httpx.AsyncClient(timeout=60.0) as client:
+                async with httpx.AsyncClient(timeout=cfg.timeout) as client:
                     payload: dict[str, str] = {"url": domain}
                     if keyword:
                         payload["search"] = keyword
                     resp = await client.post(
-                        f"{FIRECRAWL_URL}/v1/map",
+                        f"{cfg.url}/v1/map",
                         json=payload,
                     )
                     if resp.status_code == 200:
@@ -408,11 +416,11 @@ async def map_company_careers(
                                             {"url": url, "title": url.split("/")[-1], "type": "map"}
                                         )
             except Exception as e:
-                print(f"  [dim]Map {domain}: {e}[/dim]")
+                logger.debug("map error", source=domain, exception=str(e))
             async with done_lock:
                 done_count += 1
                 if done_count % 5 == 0 or done_count == total:
-                    print(f"  Mapping domains... {done_count}/{total}")
+                    logger.debug(f"Mapping domains... {done_count}/{total}")
 
     await asyncio.gather(*(_map_one(d) for d in target_domains))
     return discovered

@@ -15,7 +15,11 @@ from urllib.parse import urlparse
 import httpx
 from bs4 import BeautifulSoup
 
+from src.configuration import get_config
+from src.logging import get_logger
 from src.pipeline.queue import JobPipeline, QueuedJob
+
+logger = get_logger("linkedin_guest")
 
 GUEST_API = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
 
@@ -24,7 +28,6 @@ LINKEDIN_PARAMS = {
     "start": 0,
 }
 
-# -- Domains that Linkedin often wraps in redirects we don't want ------------
 LINKEDIN_TRACKING = re.compile(r"https?://(?:www\.)?linkedin\.com/jobs/view/.*")
 
 HEADERS = {
@@ -79,6 +82,7 @@ async def scrape_linkedin_guest_jobs(
         Number of pages (25 results each) to scrape.  Default 4 (100 results).
     """
     discovered: list[dict[str, str]] = []
+    cfg = get_config().linkedin_guest
 
     async def _fetch_page(start: int) -> None:
         params = {**LINKEDIN_PARAMS, "start": str(start)}
@@ -88,14 +92,18 @@ async def scrape_linkedin_guest_jobs(
             params["location"] = location
 
         try:
-            async with httpx.AsyncClient(timeout=12.0, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=cfg.timeout, follow_redirects=True) as client:
                 hdrs = {"User-Agent": _random_ua()}
                 resp = await client.get(GUEST_API, params=params, headers=hdrs)
                 if resp.status_code != 200:
                     return
                 soup = BeautifulSoup(resp.text, "html.parser")
         except Exception as e:
-            print(f"  [dim]LinkedIn guest page {start}: {e}[/dim]")
+            logger.warning(
+                f"LinkedIn guest page {start} failed",
+                source="linkedin_guest",
+                exception=str(e),
+            )
             return
 
         cards = soup.select("a.base-card__full-link")
@@ -123,7 +131,6 @@ async def scrape_linkedin_guest_jobs(
             discovered.append(job)
 
             if pipeline is not None:
-                # Try to fetch the full JD from the guest jobPosting API
                 desc_parts = [f"**{title}** at {company}", f"Apply: {url}"]
                 jd_match = re.search(r"(?:view/|currentJobId=|-)(\d{8,10})", url)
                 if jd_match:
@@ -151,7 +158,7 @@ async def scrape_linkedin_guest_jobs(
     for start in range(0, max_pages * 25, 25):
         await _fetch_page(start)
         if start < (max_pages - 1) * 25:
-            delay = random.uniform(1.5, 3.5)
+            delay = random.uniform(cfg.delay_min, cfg.delay_max)
             await asyncio.sleep(delay)
 
     return discovered
