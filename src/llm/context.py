@@ -66,44 +66,6 @@ DIM = "\033[2m"
 ITALIC = "\033[3m"
 RESET = "\033[0m"
 
-MATCH_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "role": {"type": "string"},
-        "company": {"type": "string"},
-        "company_description": {"type": "string"},
-        "role_summary": {"type": "string"},
-        "match_percent": {"type": "integer", "minimum": 0, "maximum": 100},
-        "shortlist_probability": {"type": "integer", "minimum": 0, "maximum": 100},
-        "matching_skills": {"type": "array", "items": {"type": "string"}},
-        "missing_skills": {"type": "array", "items": {"type": "string"}},
-        "jd_summary": {"type": "string"},
-        "salary": {"type": ["string", "null"]},
-        "posted_date": {"type": ["string", "null"]},
-        "apply_link": {"type": ["string", "null"]},
-        "is_undergrad_friendly": {"type": "boolean"},
-        "is_remote": {"type": "boolean"},
-        "location": {"type": "string"},
-        "verdict": {
-            "type": "string",
-            "enum": ["STRONG_MATCH", "GOOD_MATCH", "WEAK_MATCH", "NO_MATCH"],
-        },
-    },
-    "required": [
-        "role",
-        "company",
-        "match_percent",
-        "shortlist_probability",
-        "matching_skills",
-        "missing_skills",
-        "jd_summary",
-        "location",
-        "is_undergrad_friendly",
-        "is_remote",
-        "verdict",
-    ],
-}
-
 VERIFY_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -139,6 +101,7 @@ class ContextManager:
             kwargs: dict[str, Any] = {
                 "model": self.model,
                 "messages": [{"role": "user", "content": current_prompt}],
+                "max_tokens": 4096,
             }
             if schema is not None:
                 kwargs["response_format"] = {"type": "json_object"}

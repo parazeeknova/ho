@@ -17,10 +17,11 @@ if TYPE_CHECKING:
     from src.memory.pgvector_store import MemoryStore
 
 
-def _normalize_key(company: str, role: str) -> str:
+def _normalize_key(company: str, role: str, location: str = "Remote") -> str:
     c = "".join(ch for ch in company.lower() if ch.isalnum())
     r = "".join(ch for ch in role.lower() if ch.isalnum())
-    return f"{c}:{r}"
+    loc = "".join(ch for ch in location.lower() if ch.isalnum())
+    return f"{c}:{r}:{loc}"
 
 
 class JobsAgent:
@@ -43,7 +44,7 @@ class JobsAgent:
         for job in new_jobs:
             company = str(job.get("company") or "Unknown")
             role = str(job.get("role") or "Position")
-            key = _normalize_key(company, role)
+            key = _normalize_key(company, role, job.get("location", "Remote"))
 
             apply_link = job.get("apply_link") or job.get("source_url") or job.get("url") or ""
             if not apply_link or not str(apply_link).startswith("http"):

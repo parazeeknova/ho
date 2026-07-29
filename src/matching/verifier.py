@@ -16,7 +16,7 @@ Return valid JSON matching the required schema."""
 async def _scrape_alternate(role: str, company: str, original_url: str) -> str:
     """Async Firecrawl call to verify job existence across alternate sources."""
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.post(
                 f"{FIRECRAWL_URL}/v1/search",
                 json={"query": f"{role} {company} job"},

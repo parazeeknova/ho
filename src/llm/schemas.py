@@ -26,6 +26,7 @@ class JobMatch(BaseModel):
     apply_link: str | None = None
     location: str = ""
     is_remote: bool = False
+    is_undergrad_friendly: bool = False
     verdict: str = Field(default="NO_MATCH")
 
     @model_validator(mode="after")

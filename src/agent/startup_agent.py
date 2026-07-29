@@ -124,7 +124,7 @@ class StartupAgent:
 
         prompt = (
             f"Analyze web OSINT data for company '{company}':\n\n"
-            f"{combined_snippets[:8000]}\n\n"
+            f"{combined_snippets[:40000]}\n\n"
             "Extract the following structured intelligence:\n\n"
             "1. is_startup: boolean (true if startup/venture-backed, false if enterprise).\n\n"
             "2. founders: array of founder objects with these keys:\n"

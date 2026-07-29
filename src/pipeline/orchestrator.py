@@ -1,11 +1,13 @@
 """Pipeline: resume → search → async MQ → graph pipeline → verify → output."""
 
 import asyncio
+import gc
 import os
 import re
 import signal
 import sys
 import time
+import traceback
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -434,219 +436,237 @@ async def _run_pipeline() -> None:
     while True:
         sweep += 1
         sweep_start = time.monotonic()
-        set_pipeline_state(sweep=sweep, phase=f"sweep {sweep}: scraping")
-        pipeline = JobPipeline()
 
-        retry_jobs = drain_retry_queue()
-        if retry_jobs:
-            console.print(
-                f"  [yellow]Retrying {len(retry_jobs)} rate-limited jobs"
-                f" from previous sweep[/yellow]"
-            )
-            retry_scored = await run_batch(retry_jobs, store, concurrency=MATCH_CONCURRENCY)
-            if retry_scored:
-                await _process_and_dispatch_batch(retry_scored, store, ctx, app)
+        try:
+            set_pipeline_state(sweep=sweep, phase=f"sweep {sweep}: scraping")
+            pipeline = JobPipeline()
 
-        console.rule(f"[bold cyan]PHASE 2 (sweep {sweep}): Scrape + Graph Match[/bold cyan]")
-
-        consumer_task = asyncio.create_task(_consumer(pipeline, store, app=app, ctx=ctx))
-
-        # 100+ Curated ATS Platforms, Big Tech Portals, AI Startups, and Indian Unicorns
-        _map_domains = [
-            # ATS Roots & Global VC Boards
-            "https://boards.greenhouse.io",
-            "https://jobs.lever.co",
-            "https://jobs.ashbyhq.com",
-            "https://apply.workable.com",
-            "https://jobs.smartrecruiters.com",
-            "https://app.rippling.com/careers",
-            "https://www.ycombinator.com/jobs",
-            "https://wellfound.com/jobs",
-            "https://jobs.sequoiacap.com",
-            "https://jobs.a16z.com",
-            # AI & Frontier Tech Labs
-            "https://openai.com/careers",
-            "https://jobs.ashbyhq.com/anthropic",
-            "https://jobs.lever.co/cohere",
-            "https://jobs.ashbyhq.com/mistral",
-            "https://jobs.ashbyhq.com/scaleai",
-            "https://apply.workable.com/huggingface",
-            "https://jobs.ashbyhq.com/perplexity",
-            "https://jobs.ashbyhq.com/character",
-            "https://jobs.ashbyhq.com/anyscale",
-            "https://jobs.lever.co/pinecone",
-            "https://jobs.ashbyhq.com/weaviate",
-            "https://jobs.ashbyhq.com/qdrant",
-            "https://jobs.ashbyhq.com/wandb",
-            "https://jobs.ashbyhq.com/replicate",
-            "https://jobs.ashbyhq.com/together",
-            # FAANG, Big Tech & Enterprise Cloud
-            "https://careers.google.com",
-            "https://careers.microsoft.com",
-            "https://amazon.jobs/en",
-            "https://jobs.apple.com",
-            "https://metacareers.com",
-            "https://jobs.netflix.com",
-            "https://nvidia.wd5.myworkdayjobs.com/NVIDIAExternalCareerSite",
-            "https://salesforce.wd12.myworkdayjobs.com/External_Career_Site",
-            "https://adobe.wd5.myworkdayjobs.com/external_experienced",
-            "https://redhat.wd5.myworkdayjobs.com/en-US/jobs",
-            "https://autodesk.wd1.myworkdayjobs.com/FAANG_Autodesk",
-            "https://paypal.wd1.myworkdayjobs.com/paypal-careers",
-            "https://crowdstrike.wd5.myworkdayjobs.com/crowdstrike",
-            "https://paloaltonetworks.wd1.myworkdayjobs.com/paloaltonetworks",
-            "https://jobs.ebayinc.com",
-            "https://careers.oracle.com",
-            "https://ibm.com/careers",
-            "https://jobs.sap.com",
-            "https://careers.servicenow.com",
-            "https://atlassian.com/company/careers",
-            "https://snowflake.com/careers",
-            "https://databricks.com/company/careers",
-            "https://mongodb.com/careers",
-            "https://twilio.com/company/jobs",
-            "https://elastic.co/about/careers",
-            "https://palantir.com/careers",
-            "https://cloudflare.com/careers",
-            "https://okta.com/company/careers",
-            "https://intuit.com/careers",
-            "https://uber.com/us/en/careers",
-            # Developer Tools, Fintech & Consumer Platforms
-            "https://stripe.com/jobs",
-            "https://block.xyz/careers",
-            "https://coinbase.com/careers",
-            "https://doordash.careers",
-            "https://lyft.com/careers",
-            "https://instacart.careers",
-            "https://pinterest.careers",
-            "https://snap.careers",
-            "https://redditinc.com/careers",
-            "https://roblox.careers",
-            "https://lifeatspotify.com",
-            "https://careers.duolingo.com",
-            "https://careers.zoom.us",
-            "https://slack.com/careers",
-            "https://github.careers",
-            "https://about.gitlab.com/jobs",
-            "https://docker.com/careers",
-            "https://hashicorp.com/careers",
-            "https://confluent.io/careers",
-            "https://zscaler.com/company/careers",
-            "https://cisco.jobs",
-            "https://qualcomm.com/company/careers",
-            "https://jobs.intel.com",
-            "https://jobs.amd.com",
-            "https://arm.com/company/careers",
-            # Top Indian Unicorns & Product Companies
-            "https://careers.flipkart.com",
-            "https://swiggy.com/careers",
-            "https://zomato.com/careers",
-            "https://jobs.lever.co/razorpay",
-            "https://cred.club/careers",
-            "https://meesho.com/careers",
-            "https://phonepe.com/careers",
-            "https://paytm.com/careers",
-            "https://zepto.co.in/careers",
-            "https://careers.olacabs.com",
-            "https://inmobi.com/company/careers",
-            "https://freshworks.com/company/careers",
-            "https://zoho.com/careers",
-            "https://jobs.lever.co/postman",
-            "https://jobs.lever.co/browserstack",
-            "https://jobs.lever.co/hasura",
-            "https://unacademy.com/careers",
-            "https://groww.in/careers",
-            "https://careers.zerodha.com",
-            "https://urbancompany.com/careers",
-            "https://dream11.com/careers",
-            "https://cars24.com/careers",
-            "https://delhivery.com/careers",
-            "https://nykaa.com/careers",
-            "https://make-my-trip.com/careers",
-        ]
-
-        uncrawled_dynamic = await store.get_uncrawled_domains(limit=30)
-        combined_domains = list(set(_map_domains + uncrawled_dynamic))
-
-        domain_task = asyncio.create_task(
-            _domain_producer(app, pipeline, store, combined_domains, uncrawled_dynamic)
-        )
-
-        await asyncio.gather(
-            scrape_all(app, positions, ctx, pipeline, max_workers=MAX_SCRAPE_WORKERS),
-            fetch_direct_json_feeds(positions, pipeline),
-            *(
-                scrape_linkedin_guest_jobs(pos, location="India", pipeline=pipeline)
-                for pos in positions[:3]
-            ),
-        )
-
-        await domain_task
-
-        console.print("  [yellow]Producers done. Signalling stop...[/yellow]")
-        pipeline.signal_done()
-
-        matched_result, index_queue = await consumer_task
-
-        if index_queue:
-            console.rule(
-                f"[bold cyan]PHASE 2b (sweep {sweep}): Extract Index Jobs + Graph Match[/bold cyan]"
-            )
-            index_jobs = await extract_index_jobs(index_queue, ctx)
-            console.print(f"  [cyan]Extracted {len(index_jobs)} jobs from indexes[/cyan]")
-
-            # Harvest fresh ATS/career domains from apply links
-            apply_links = [j.get("apply_link", "") for j in index_jobs if j.get("apply_link")]
-            if apply_links:
-                new_domains = await harvest_and_save_domains(apply_links, store)
+            retry_jobs = drain_retry_queue()
+            if retry_jobs:
                 console.print(
-                    f"  [dim]Harvested {new_domains} new career domains from apply links[/dim]"
+                    f"  [yellow]Retrying {len(retry_jobs)} rate-limited jobs"
+                    f" from previous sweep[/yellow]"
                 )
+                retry_scored = await run_batch(retry_jobs, store, concurrency=MATCH_CONCURRENCY)
+                if retry_scored:
+                    await _process_and_dispatch_batch(retry_scored, store, ctx, app)
 
-            if index_jobs:
+            console.rule(f"[bold cyan]PHASE 2 (sweep {sweep}): Scrape + Graph Match[/bold cyan]")
+
+            consumer_task = asyncio.create_task(_consumer(pipeline, store, app=app, ctx=ctx))
+
+            # 100+ Curated ATS Platforms, Big Tech Portals, AI Startups, and Indian Unicorns
+            _map_domains = [
+                # ATS Roots & Global VC Boards
+                "https://boards.greenhouse.io",
+                "https://jobs.lever.co",
+                "https://jobs.ashbyhq.com",
+                "https://apply.workable.com",
+                "https://jobs.smartrecruiters.com",
+                "https://app.rippling.com/careers",
+                "https://www.ycombinator.com/jobs",
+                "https://wellfound.com/jobs",
+                "https://jobs.sequoiacap.com",
+                "https://jobs.a16z.com",
+                # AI & Frontier Tech Labs
+                "https://openai.com/careers",
+                "https://jobs.ashbyhq.com/anthropic",
+                "https://jobs.lever.co/cohere",
+                "https://jobs.ashbyhq.com/mistral",
+                "https://jobs.ashbyhq.com/scaleai",
+                "https://apply.workable.com/huggingface",
+                "https://jobs.ashbyhq.com/perplexity",
+                "https://jobs.ashbyhq.com/character",
+                "https://jobs.ashbyhq.com/anyscale",
+                "https://jobs.lever.co/pinecone",
+                "https://jobs.ashbyhq.com/weaviate",
+                "https://jobs.ashbyhq.com/qdrant",
+                "https://jobs.ashbyhq.com/wandb",
+                "https://jobs.ashbyhq.com/replicate",
+                "https://jobs.ashbyhq.com/together",
+                # FAANG, Big Tech & Enterprise Cloud
+                "https://careers.google.com",
+                "https://careers.microsoft.com",
+                "https://amazon.jobs/en",
+                "https://jobs.apple.com",
+                "https://metacareers.com",
+                "https://jobs.netflix.com",
+                "https://nvidia.wd5.myworkdayjobs.com/NVIDIAExternalCareerSite",
+                "https://salesforce.wd12.myworkdayjobs.com/External_Career_Site",
+                "https://adobe.wd5.myworkdayjobs.com/external_experienced",
+                "https://redhat.wd5.myworkdayjobs.com/en-US/jobs",
+                "https://autodesk.wd1.myworkdayjobs.com/FAANG_Autodesk",
+                "https://paypal.wd1.myworkdayjobs.com/paypal-careers",
+                "https://crowdstrike.wd5.myworkdayjobs.com/crowdstrike",
+                "https://paloaltonetworks.wd1.myworkdayjobs.com/paloaltonetworks",
+                "https://jobs.ebayinc.com",
+                "https://careers.oracle.com",
+                "https://ibm.com/careers",
+                "https://jobs.sap.com",
+                "https://careers.servicenow.com",
+                "https://atlassian.com/company/careers",
+                "https://snowflake.com/careers",
+                "https://databricks.com/company/careers",
+                "https://mongodb.com/careers",
+                "https://twilio.com/company/jobs",
+                "https://elastic.co/about/careers",
+                "https://palantir.com/careers",
+                "https://cloudflare.com/careers",
+                "https://okta.com/company/careers",
+                "https://intuit.com/careers",
+                "https://uber.com/us/en/careers",
+                # Developer Tools, Fintech & Consumer Platforms
+                "https://stripe.com/jobs",
+                "https://block.xyz/careers",
+                "https://coinbase.com/careers",
+                "https://doordash.careers",
+                "https://lyft.com/careers",
+                "https://instacart.careers",
+                "https://pinterest.careers",
+                "https://snap.careers",
+                "https://redditinc.com/careers",
+                "https://roblox.careers",
+                "https://lifeatspotify.com",
+                "https://careers.duolingo.com",
+                "https://careers.zoom.us",
+                "https://slack.com/careers",
+                "https://github.careers",
+                "https://about.gitlab.com/jobs",
+                "https://docker.com/careers",
+                "https://hashicorp.com/careers",
+                "https://confluent.io/careers",
+                "https://zscaler.com/company/careers",
+                "https://cisco.jobs",
+                "https://qualcomm.com/company/careers",
+                "https://jobs.intel.com",
+                "https://jobs.amd.com",
+                "https://arm.com/company/careers",
+                # Top Indian Unicorns & Product Companies
+                "https://careers.flipkart.com",
+                "https://swiggy.com/careers",
+                "https://zomato.com/careers",
+                "https://jobs.lever.co/razorpay",
+                "https://cred.club/careers",
+                "https://meesho.com/careers",
+                "https://phonepe.com/careers",
+                "https://paytm.com/careers",
+                "https://zepto.co.in/careers",
+                "https://careers.olacabs.com",
+                "https://inmobi.com/company/careers",
+                "https://freshworks.com/company/careers",
+                "https://zoho.com/careers",
+                "https://jobs.lever.co/postman",
+                "https://jobs.lever.co/browserstack",
+                "https://jobs.lever.co/hasura",
+                "https://unacademy.com/careers",
+                "https://groww.in/careers",
+                "https://careers.zerodha.com",
+                "https://urbancompany.com/careers",
+                "https://dream11.com/careers",
+                "https://cars24.com/careers",
+                "https://delhivery.com/careers",
+                "https://nykaa.com/careers",
+                "https://make-my-trip.com/careers",
+            ]
+
+            uncrawled_dynamic = await store.get_uncrawled_domains(limit=30)
+            combined_domains = list(set(_map_domains + uncrawled_dynamic))
+
+            domain_task = asyncio.create_task(
+                _domain_producer(app, pipeline, store, combined_domains, uncrawled_dynamic)
+            )
+
+            await asyncio.gather(
+                scrape_all(app, positions, ctx, pipeline, max_workers=MAX_SCRAPE_WORKERS),
+                fetch_direct_json_feeds(positions, pipeline),
+                *(
+                    scrape_linkedin_guest_jobs(pos, location="India", pipeline=pipeline)
+                    for pos in positions[:3]
+                ),
+            )
+
+            await domain_task
+
+            console.print("  [yellow]Producers done. Signalling stop...[/yellow]")
+            pipeline.signal_done()
+
+            matched_result, index_queue = await consumer_task
+
+            if index_queue:
+                console.rule(
+                    f"[bold cyan]PHASE 2b (sweep {sweep}): Extract Index Jobs + Graph Match[/bold cyan]"  # noqa: E501
+                )
+                index_jobs = await extract_index_jobs(index_queue, ctx)
+                console.print(f"  [cyan]Extracted {len(index_jobs)} jobs from indexes[/cyan]")
+
+                # Harvest fresh ATS/career domains from apply links
+                apply_links = [j.get("apply_link", "") for j in index_jobs if j.get("apply_link")]
+                if apply_links:
+                    new_domains = await harvest_and_save_domains(apply_links, store)
+                    console.print(
+                        f"  [dim]Harvested {new_domains} new career domains from apply links[/dim]"
+                    )
+
+                if index_jobs:
+                    console.print(
+                        f"  [cyan]Scraping {len(index_jobs)} GitHub apply links for JD text...[/cyan]"  # noqa: E501
+                    )
+                    idx_batch = await _scrape_index_links(
+                        app, index_jobs, max_workers=MAX_SCRAPE_WORKERS
+                    )
+                    console.print(f"  [cyan]Scraped {len(idx_batch)} JDs from links[/cyan]")
+                    if idx_batch:
+                        idx_scored = await run_batch(
+                            idx_batch, store, concurrency=MATCH_CONCURRENCY
+                        )
+                        await _process_and_dispatch_batch(idx_scored, store, ctx, app)
+
+            cleanup_agent = CleanupAgent(store=store)
+            clean_jobs = await cleanup_agent.clean_and_format_ledger()
+
+            console.print(
+                f"  [green]✓ {len(clean_jobs)} clean, verified undergrad positions "
+                "stored & formatted in jobs.md[/green]"
+            )
+
+            if telegram_agent.is_configured:
                 console.print(
-                    f"  [cyan]Scraping {len(index_jobs)} GitHub apply links for JD text...[/cyan]"
+                    "  📱 [bold yellow][TelegramAgent][/bold yellow] "
+                    "Dispatching real-time notifications for verified jobs..."
                 )
-                idx_batch = await _scrape_index_links(
-                    app, index_jobs, max_workers=MAX_SCRAPE_WORKERS
+                await telegram_agent.notify_verified_jobs(clean_jobs, store=store)
+            else:
+                console.print(
+                    "  📱 [dim][TelegramAgent] Telegram alerts skipped "
+                    "(TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID unconfigured)[/dim]"
                 )
-                console.print(f"  [cyan]Scraped {len(idx_batch)} JDs from links[/cyan]")
-                if idx_batch:
-                    idx_scored = await run_batch(idx_batch, store, concurrency=MATCH_CONCURRENCY)
-                    await _process_and_dispatch_batch(idx_scored, store, ctx, app)
 
-        cleanup_agent = CleanupAgent(store=store)
-        clean_jobs = await cleanup_agent.clean_and_format_ledger()
+            total_matched += len(clean_jobs)
+            elapsed = time.monotonic() - sweep_start
+            console.print(f"[bold green]Sweep {sweep} complete ({elapsed:.1f}s)[/bold green]")
+            set_pipeline_state(matched_total=total_matched, phase="idle")
+            if telegram_agent.is_configured:
+                await telegram_agent.send_sweep_summary(sweep, len(clean_jobs), 0, elapsed)
 
-        console.print(
-            f"  [green]✓ {len(clean_jobs)} clean, verified undergrad positions "
-            "stored & formatted in jobs.md[/green]"
-        )
+            if os.environ.get("OVERNIGHT_LOOP", "false").lower() != "true":
+                break
 
-        if telegram_agent.is_configured:
-            console.print(
-                "  📱 [bold yellow][TelegramAgent][/bold yellow] "
-                "Dispatching real-time notifications for verified jobs..."
-            )
-            await telegram_agent.notify_verified_jobs(clean_jobs, store=store)
-        else:
-            console.print(
-                "  📱 [dim][TelegramAgent] Telegram alerts skipped "
-                "(TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID unconfigured)[/dim]"
-            )
+            console.print("\n[dim]Sleeping 30 minutes before next sweep...[/dim]")
+            gc.collect()
+            await asyncio.sleep(1800)
 
-        total_matched += len(clean_jobs)
-        elapsed = time.monotonic() - sweep_start
-        console.print(f"[bold green]Sweep {sweep} complete ({elapsed:.1f}s)[/bold green]")
-        set_pipeline_state(matched_total=total_matched, phase="idle")
-        if telegram_agent.is_configured:
-            await telegram_agent.send_sweep_summary(sweep, len(clean_jobs), 0, elapsed)
-
-        if os.environ.get("OVERNIGHT_LOOP", "false").lower() != "true":
-            break
-
-        console.print("\n[dim]Sleeping 30 minutes before next sweep...[/dim]")
-        await asyncio.sleep(1800)
+        except Exception as e:
+            tb = traceback.format_exc()
+            console.print(f"\n[red]Sweep {sweep} crashed:[/red]\n{tb}")
+            set_pipeline_state(last_error=str(e), phase="crashed")
+            if telegram_agent.is_configured:
+                await telegram_agent.send_error(
+                    f"Sweep {sweep} crashed: {e}",
+                    dedup_key=f"sweep_crash_{sweep}",
+                )
+            gc.collect()
+            console.print("  [yellow]Sleeping 15 minutes before next sweep...[/yellow]")
+            await asyncio.sleep(900)
 
     await telegram_agent.stop_polling()
     set_pipeline_state(running=False, phase="shutdown")

@@ -40,11 +40,14 @@ def drain_retry_queue() -> list[dict[str, str]]:
 
 
 def _queue_for_retry(state: GraphState) -> None:
-    _graph_retry_queue.append({
-        "markdown": state["markdown"],
-        "url": state["url"],
-        "title": state.get("title", ""),
-    })
+    _graph_retry_queue.append(
+        {
+            "markdown": state["markdown"],
+            "url": state["url"],
+            "title": state.get("title", ""),
+        }
+    )
+
 
 MATCHER_PROMPT = """\
 You are a job-resume matching engine. Compare this job description against the \
@@ -136,14 +139,23 @@ def _apply_hard_constraints(match: dict[str, Any]) -> CriticReview:
 
     # Non-tech role patterns (check role + jd_summary)
     _non_tech_pats = [
-        r"\bcontent\s+creator\b", r"\bhost\s+live\b",
-        r"\bsales\s+provider\b", r"\bsales\s+executive\b",
-        r"\bsales\s+representative\b", r"\bproperty\s+development\b",
-        r"\baccount\s+executive\b", r"\bmarketing\b",
-        r"\brecruiter\b", r"\bcustomer\s+service\b",
-        r"\bcustomer\s+support\b", r"\btelemarketing\b",
-        r"\bsocial\s+media\b", r"\badministrative\s+assistant\b",
-        r"\bstore\s+manager\b", r"\bcashier\b", r"\bdriver\b",
+        r"\bcontent\s+creator\b",
+        r"\bhost\s+live\b",
+        r"\bsales\s+provider\b",
+        r"\bsales\s+executive\b",
+        r"\bsales\s+representative\b",
+        r"\bproperty\s+development\b",
+        r"\baccount\s+executive\b",
+        r"\bmarketing\b",
+        r"\brecruiter\b",
+        r"\bcustomer\s+service\b",
+        r"\bcustomer\s+support\b",
+        r"\btelemarketing\b",
+        r"\bsocial\s+media\b",
+        r"\badministrative\s+assistant\b",
+        r"\bstore\s+manager\b",
+        r"\bcashier\b",
+        r"\bdriver\b",
     ]
     combined = role + " " + jd_summary
     for pat in _non_tech_pats:
@@ -157,10 +169,16 @@ def _apply_hard_constraints(match: dict[str, Any]) -> CriticReview:
     # Senior/title keywords — check ROLE TITLE ONLY so
     # 'reports to the Engineering Manager' is not a false positive.
     _title_pats = [
-        r"\bsenior\b", r"\bsr\.?\b", r"\bstaff\b",
-        r"\bmanager\b", r"\bdirector\b",
-        r"\bvp\b", r"\bvice\s+president\b",
-        r"\bhead\s+of\b", r"\barchitect\b", r"\bprincipal\b",
+        r"\bsenior\b",
+        r"\bsr\.?\b",
+        r"\bstaff\b",
+        r"\bmanager\b",
+        r"\bdirector\b",
+        r"\bvp\b",
+        r"\bvice\s+president\b",
+        r"\bhead\s+of\b",
+        r"\barchitect\b",
+        r"\bprincipal\b",
     ]
     for pat in _title_pats:
         if re.search(pat, role):
@@ -172,9 +190,13 @@ def _apply_hard_constraints(match: dict[str, Any]) -> CriticReview:
 
     # Experience-level keywords — check role + jd_summary
     _exp_pats = [
-        r"\b5\+?\s*years?\b", r"\b7\+?\s*years?\b",
-        r"\b10\+?\s*years?\b", r"\b\d{2,}\s*\+\s*years?\b",
-        r"\bph\.?d\b", r"\bdoctorate\b", r"\bpostdoc\b",
+        r"\b5\+?\s*years?\b",
+        r"\b7\+?\s*years?\b",
+        r"\b10\+?\s*years?\b",
+        r"\b\d{2,}\s*\+\s*years?\b",
+        r"\bph\.?d\b",
+        r"\bdoctorate\b",
+        r"\bpostdoc\b",
     ]
     for pat in _exp_pats:
         if re.search(pat, combined):
@@ -234,8 +256,8 @@ async def node_matcher(
     chunks = cast(list[dict[str, Any]], state.get("_rag_chunks", []))
     jd_text = state["markdown"]
 
-    if len(jd_text) > 5000:
-        jd_text = jd_text[:3000] + "\n...\n" + jd_text[-2000:]
+    if len(jd_text) > 80000:
+        jd_text = jd_text[:40000] + "\n...\n" + jd_text[-40000:]
 
     relevant = (
         "\n".join(
@@ -309,7 +331,7 @@ async def node_critic(
         return state
 
     prompt = CRITIC_PROMPT.replace("{result}", json.dumps(match, indent=2))
-    prompt = prompt.replace("{job_description}", state["markdown"][:3000])
+    prompt = prompt.replace("{job_description}", state["markdown"][:80000])
 
     result = await ctx.json_chat(prompt, CriticReview.model_json_schema())
 

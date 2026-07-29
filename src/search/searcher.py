@@ -1,6 +1,7 @@
 """Job searcher: GitHub internship indexes + web search via Firecrawl SDK."""
 
 import asyncio
+import random
 import re
 import time
 from typing import TYPE_CHECKING
@@ -14,6 +15,14 @@ from src.pipeline.queue import JobPipeline, QueuedJob
 
 if TYPE_CHECKING:
     from src.memory.pgvector_store import MemoryStore
+
+_USER_AGENTS = [
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",  # noqa: E501
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",  # noqa: E501
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15",  # noqa: E501
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0",  # noqa: E501
+    "Mozilla/5.0 (X11; Linux x86_64; rv:132.0) Gecko/20100101 Firefox/132.0",  # noqa: E501
+]
 
 GITHUB_INDEXES = [
     "https://raw.githubusercontent.com/SimplifyJobs/Summer2026-Internships/dev/README.md",
@@ -143,7 +152,9 @@ async def _search_searxng(queries: list[str]) -> list[dict[str, str]]:
     async def _query_one(q: str) -> None:
         async with sem:
             try:
-                async with httpx.AsyncClient(timeout=6.0) as client:
+                async with httpx.AsyncClient(
+                    timeout=6.0, headers={"User-Agent": random.choice(_USER_AGENTS)}
+                ) as client:
                     resp = await client.get(
                         "http://localhost:8080/search",
                         params={"q": q, "format": "json", "time_range": "day"},

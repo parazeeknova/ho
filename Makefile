@@ -1,4 +1,4 @@
-.PHONY: check check-types test serve run match health fc-up fc-down fc-logs dev dev-down start overnight clean-volumes
+.PHONY: check check-types test serve run match health fc-up fc-down fc-logs dev dev-down start overnight clean-volumes start-daemon stop-daemon
 
 check:
 	uv run ruff format . && uv run ruff check . --fix
@@ -57,4 +57,13 @@ clean-volumes:
 	podman rm -f firecrawl_rabbitmq_1 2>/dev/null; \
 	rm -rf storage/ 2>/dev/null; \
 	echo "All container volumes and local storage cleared."
+
+start-daemon:
+	@echo "Starting ho in background with nohup..."
+	@OVERNIGHT_LOOP=true nohup uv run python -m src.pipeline.orchestrator > pipeline.log 2>&1 &
+	@echo "Pipeline running in background. View logs with: tail -f pipeline.log"
+
+stop-daemon:
+	@pkill -f "python -m src.pipeline.orchestrator" || true
+	@echo "Daemon stopped."
 
