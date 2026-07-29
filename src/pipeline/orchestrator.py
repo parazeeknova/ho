@@ -481,9 +481,13 @@ async def _expand_company_graph(
             ]
         )
 
+    logger.info("Waiting for graph expansion to reach total silence...")
+    while bus.active_tasks > 0 or frontier.pending > 0 or len(engine._active_leases) > 0:
+        await asyncio.sleep(1.0)
+
     m = await engine.get_metrics()
     logger.info(f"Scheduler: {m.completed_work} done, {m.pending_work} pending")
-    await engine.shutdown(drain=True)
+    await engine.shutdown(drain=False)
     return nodes_created, events_fired
 
 
