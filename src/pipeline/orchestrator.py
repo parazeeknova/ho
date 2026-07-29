@@ -123,12 +123,6 @@ async def _scrape_index_links(
         "this position has been filled",
     )
 
-    def _md_fallback(j: dict) -> str:
-        return (
-            f"Position: {j.get('role', '')} at {j.get('company', '')}. "
-            f"Apply Link: {j.get('apply_link', '')}"
-        )
-
     _image_hosts = ("i.imgur.com", "imgur.com/", ".png", ".jpg", ".jpeg", ".gif", ".webp")
 
     async def _scrape_one(j: dict) -> None:
@@ -141,7 +135,7 @@ async def _scrape_index_links(
 
         async with sem:
             try:
-                async with httpx.AsyncClient(timeout=5.0) as client:
+                async with httpx.AsyncClient(timeout=15.0) as client:
                     resp = await client.post(
                         f"{firecrawl_url}/v1/scrape",
                         json={"url": url, "formats": ["markdown"]},
@@ -151,7 +145,7 @@ async def _scrape_index_links(
                         md_lower = md.lower()
                         if (
                             md
-                            and len(md) > 100
+                            and len(md) > 200
                             and not any(dead in md_lower for dead in _dead_page_texts)
                         ):
                             scraped.append(
@@ -165,15 +159,7 @@ async def _scrape_index_links(
                             return
             except Exception:
                 pass
-
-            scraped.append(
-                {
-                    "markdown": _md_fallback(j),
-                    "url": url,
-                    "title": j.get("role", ""),
-                    "snippet": str(j),
-                }
-            )
+    # No fallback — skip jobs we can't get real JD text for
 
     tasks = [asyncio.create_task(_scrape_one(j)) for j in jobs]
     await asyncio.gather(*tasks)
@@ -310,7 +296,6 @@ async def _index_resume_in_pgvector(
 
 async def _run_pipeline() -> None:
     ctx = ContextManager()
-    ContextManager.set_max_concurrency(4)  # stay under 100 RPM GeneralCompute limit
 
     def _cleanup(signum: int, frame: object) -> None:
         console.print("\n[yellow]Interrupted - flushing LLM context...[/yellow]")

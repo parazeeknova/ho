@@ -1,6 +1,6 @@
 import asyncio
 import json
-import threading
+import time
 from typing import Any
 
 from generalcompute import GeneralCompute
@@ -9,6 +9,31 @@ from src.llm.config import LLMConfig
 
 MAX_RETRIES = 3
 RETRY_DELAY = 2
+
+# Token bucket gating ALL LLM calls across every agent.
+# Rate = tokens replenished per second. 1.4/s = 84/min (safe under 100 RPM).
+# Max = burst capacity if the bucket has been idle.
+_TOKEN_RATE = 1.4
+_TOKEN_MAX = 30
+_token_lock = asyncio.Lock()
+_token_count = _TOKEN_MAX
+_token_last = time.monotonic()
+
+
+async def _acquire_llm_token() -> None:
+    """Wait until a rate-limit token is available (token bucket)."""
+    global _token_count, _token_last
+    while True:
+        async with _token_lock:
+            now = time.monotonic()
+            elapsed = now - _token_last
+            _token_last = now
+            _token_count = min(_TOKEN_MAX, _token_count + elapsed * _TOKEN_RATE)
+            if _token_count >= 1.0:
+                _token_count -= 1.0
+                return
+            wait = (1.0 - _token_count) / _TOKEN_RATE
+        await asyncio.sleep(wait)
 
 DIM = "\033[2m"
 ITALIC = "\033[3m"
@@ -63,23 +88,13 @@ VERIFY_SCHEMA: dict[str, Any] = {
 
 
 class ContextManager:
-    _global_sem: asyncio.Semaphore | None = None
-    _max_llm_concurrency = 8
-
-    @classmethod
-    def set_max_concurrency(cls, n: int) -> None:
-        cls._max_llm_concurrency = n
-        cls._global_sem = None
 
     def __init__(self, verbose: bool = True) -> None:
         self.cumulative_output_tokens = 0
         self.verbose = verbose
-        self._lock = threading.Lock()
         cfg = LLMConfig()
         self.model = cfg.model
         self._client = GeneralCompute(api_key=cfg.api_key)
-        if ContextManager._global_sem is None:
-            ContextManager._global_sem = asyncio.Semaphore(ContextManager._max_llm_concurrency)
 
     async def aclose(self) -> None:
         pass
@@ -105,20 +120,15 @@ class ContextManager:
             msg = resp.choices[0].message
             return msg.content or ""
 
-        sem = ContextManager._global_sem
-        if sem is None:
-            ContextManager._global_sem = asyncio.Semaphore(ContextManager._max_llm_concurrency)
-            sem = ContextManager._global_sem
-
         last_error: Exception | None = None
         backoff = RETRY_DELAY
         for attempt in range(1, MAX_RETRIES + 1):
-            async with sem:
-                try:
-                    output = await asyncio.to_thread(_call_llm)
-                    return output
-                except Exception as e:
-                    last_error = e
+            await _acquire_llm_token()
+            try:
+                output = await asyncio.to_thread(_call_llm)
+                return output
+            except Exception as e:
+                last_error = e
             if attempt < MAX_RETRIES:
                 print(f"  [LLM retry {attempt}/{MAX_RETRIES}] {last_error}")
                 await asyncio.sleep(backoff)

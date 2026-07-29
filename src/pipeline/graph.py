@@ -229,7 +229,12 @@ async def node_matcher(
             "Please rescore carefully, addressing the issues raised."
         )
 
-    result = await ctx.json_chat(prompt, JobMatch.model_json_schema())
+    try:
+        result = await ctx.json_chat(prompt, JobMatch.model_json_schema())
+    except Exception as e:
+        print(f"  [skip] LLM call failed for {state.get('title', state.get('url', '?'))}: {e}")
+        state["match"] = None
+        return state
 
     if not isinstance(result, dict) or "match_percent" not in result:
         state["match"] = None
