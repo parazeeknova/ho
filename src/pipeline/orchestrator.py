@@ -442,7 +442,7 @@ async def _run_pipeline() -> None:
             f"({len(uncrawled_dynamic)} dynamically discovered)[/bold lion]"
         )
 
-        map_urls = await map_company_careers(app, combined_domains, keyword="software intern")
+        map_urls = await map_company_careers(app, combined_domains)
         for mu in map_urls:
             await scrape_url_to_pipeline(mu, app, pipeline)
 

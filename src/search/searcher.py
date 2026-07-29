@@ -338,32 +338,57 @@ async def fetch_direct_json_feeds(positions: list[str], pipeline: JobPipeline) -
 
 
 async def map_company_careers(
-    app: FirecrawlApp, target_domains: list[str], keyword: str = "remote"
+    app: FirecrawlApp, target_domains: list[str], keyword: str = ""
 ) -> list[dict[str, str]]:
     """Use Firecrawl /map to discover job listing URLs across ATS platforms and career portals."""
     discovered: list[dict[str, str]] = []
     sem = asyncio.Semaphore(24)  # Map up to 24 domains concurrently
 
+    non_job_slugs = (
+        "/about",
+        "/team",
+        "/terms",
+        "/privacy",
+        "/login",
+        "/contact",
+        "/culture",
+        "/blog",
+        "/press",
+    )
+
+    job_patterns = (
+        "/jobs/",
+        "/job/",
+        "/careers/",
+        "/positions/",
+        "/openings/",
+        "/embed/job",
+        "myworkdayjobs.com",
+    )
+
     async def _map_one(domain: str) -> None:
         async with sem:
             try:
                 async with httpx.AsyncClient(timeout=5.0) as client:
+                    payload: dict[str, str] = {"url": domain}
+                    if keyword:
+                        payload["search"] = keyword
                     resp = await client.post(
                         f"{FIRECRAWL_URL}/v1/map",
-                        json={"url": domain, "search": keyword},
+                        json=payload,
                     )
                     if resp.status_code == 200:
                         links = resp.json().get("links", []) or []
                         if isinstance(links, list):
                             for url in links:
-                                if (
-                                    isinstance(url, str)
-                                    and url.startswith("http")
-                                    and "/jobs/" in url.lower()
-                                ):
-                                    discovered.append(
-                                        {"url": url, "title": url.split("/")[-1], "type": "map"}
-                                    )
+                                if isinstance(url, str) and url.startswith("http"):
+                                    u_lower = url.lower()
+                                    if any(pat in u_lower for pat in job_patterns) and not any(
+                                        bad in u_lower for bad in non_job_slugs
+                                    ):
+                                        discovered.append(
+                                            {"url": url, "title": url.split("/")[-1], "type": "map"}
+                                        )
             except Exception as e:
                 print(f"  [dim]Map {domain}: {e}[/dim]")
 
