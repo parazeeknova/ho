@@ -1,4 +1,4 @@
-"""Pipeline: resume → search → async MQ → concurrent match → verify → output."""
+"""Pipeline: resume → search → async MQ → graph pipeline → verify → output."""
 
 import asyncio
 import os
@@ -6,15 +6,16 @@ import signal
 import sys
 from datetime import UTC, datetime
 
+import httpx
 from firecrawl import FirecrawlApp
 from rich.console import Console
 
-from src.llm.context import REVALIDATE_SCHEMA, ContextManager
-from src.matching.matcher import batch_match
+from src.llm.context import ContextManager
 from src.matching.verifier import verify_jobs
+from src.memory.pgvector_store import MemoryStore
 from src.output.writer import write_md
+from src.pipeline.graph import EMBED_URL, run_batch
 from src.pipeline.queue import JobPipeline, QueuedJob
-from src.rag.engine import build_rag_from_chunks
 from src.rag.loader import load_resume
 from src.search.searcher import (
     TARGET_POSITIONS_SCHEMA,
@@ -50,64 +51,6 @@ def filter_recent(jobs: list[dict], max_days: int = 7) -> list[dict]:
     return filtered
 
 
-async def _revalidate_batch(
-    jobs: list[dict],
-    rag,
-    ctx: ContextManager,
-    concurrency: int = 4,
-) -> list[dict]:
-    loop = asyncio.get_running_loop()
-    sem = asyncio.Semaphore(concurrency)
-
-    async def _revalidate_one(job: dict) -> dict | None:
-        async with sem:
-            skills = job.get("matching_skills", []) + job.get("missing_skills", [])
-            query = " ".join(skills) if skills else str(job.get("role", ""))
-            chunks = await loop.run_in_executor(None, rag.retrieve, query, 5)
-            if not chunks or chunks[0][2] < 0.15:
-                return None
-
-            prompt = (
-                "Cross-check this job extraction against the candidate's relevant "
-                "resume snippets. Confirm or correct: role, company, match_percent, "
-                "shortlist_probability. Set match_percent to 0 if clearly wrong.\n\n"
-                f"Current extraction: {str(job)[:2000]}\n\n"
-                "Relevant resume:\n"
-                + "\n".join(f"[{c[0]}] {c[1]}" for c in chunks)
-                + "\n\nReturn valid JSON matching the required schema."
-            )
-
-            result = await ctx.json_chat(prompt, REVALIDATE_SCHEMA)
-            if isinstance(result, dict) and "match_percent" in result:
-                result["match_percent"] = int(result["match_percent"])
-                result["shortlist_probability"] = int(result.get("shortlist_probability", 0))
-                result["_revalidated"] = True
-                result["source_url"] = job.get("source_url", "")
-                result["apply_link"] = job.get("apply_link", "")
-                return result
-            return job
-
-    tasks = [asyncio.create_task(_revalidate_one(j)) for j in jobs]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-
-    validated: list[dict] = []
-    for j, result in zip(jobs, results, strict=True):
-        if isinstance(result, BaseException):
-            validated.append(j)
-            continue
-        if result is not None and result.get("match_percent", 0) >= 30:
-            validated.append(result)
-            pct = result.get("match_percent", "?")
-            role = result.get("role", "?")
-            company = result.get("company", "?")
-            tag = "[reval]" if result.get("_revalidated") else "[kept]"
-            console.print(f"  [green]{tag} {pct}% | {role} @ {company}[/green]")
-
-    dropped = len(jobs) - len(validated)
-    console.print(f"  [green]Kept {len(validated)}[/green], [red]dropped {dropped}[/red]")
-    return validated
-
-
 async def _scrape_index_links(
     app: FirecrawlApp, jobs: list[dict], max_workers: int = 4
 ) -> list[dict]:
@@ -136,7 +79,7 @@ async def _scrape_index_links(
             return
         url_lower = url.lower()
         if any(h in url_lower for h in _image_hosts):
-            return  # image-based apply button — not a real JD page
+            return
         async with sem:
             try:
                 result = await loop.run_in_executor(
@@ -156,7 +99,6 @@ async def _scrape_index_links(
                     return
             except Exception as e:
                 print(f"    [dim]Failed to scrape {url[:40]}...: {e} -> Trying /extract API[/dim]")
-            # ── /extract fallback for ATS pages ──
             try:
                 extract_result = await loop.run_in_executor(
                     None,
@@ -184,7 +126,6 @@ async def _scrape_index_links(
                         return
             except Exception:
                 pass
-            # ── metadata fallback ──
             print(f"    [dim]Using table metadata fallback for {url[:40]}...[/dim]")
             scraped.append(
                 {
@@ -202,8 +143,7 @@ async def _scrape_index_links(
 
 async def _consumer(
     pipeline: JobPipeline,
-    rag,
-    ctx: ContextManager,
+    store: MemoryStore,
 ) -> tuple[list[dict], list[QueuedJob]]:
     matched: list[dict] = []
     index_queue: list[QueuedJob] = []
@@ -224,7 +164,7 @@ async def _consumer(
 
         if len(web_buf) >= 5:
             batch = [{"markdown": j.markdown, "url": j.url, "title": j.title} for j in web_buf]
-            scored = await batch_match(batch, rag, ctx)
+            scored = await run_batch(batch, store, concurrency=MATCH_CONCURRENCY)
             matched.extend(scored)
             matched.sort(key=lambda j: j.get("match_percent", 0), reverse=True)
             write_md(matched[:30], output_path="jobs.md")
@@ -236,7 +176,7 @@ async def _consumer(
 
     if web_buf:
         batch = [{"markdown": j.markdown, "url": j.url, "title": j.title} for j in web_buf]
-        scored = await batch_match(batch, rag, ctx)
+        scored = await run_batch(batch, store, concurrency=MATCH_CONCURRENCY)
         matched.extend(scored)
         matched.sort(key=lambda j: j.get("match_percent", 0), reverse=True)
         write_md(matched[:30], output_path="jobs.md")
@@ -244,6 +184,58 @@ async def _consumer(
             await pipeline.task_done()
 
     return matched, index_queue
+
+
+async def _index_resume_in_pgvector(
+    chunks: dict[str, str],
+    store: MemoryStore,
+) -> None:
+    """Fetch embeddings from the embedding server and index resume chunks in pgvector."""
+    embed_client = httpx.AsyncClient(
+        timeout=httpx.Timeout(120.0, connect=10.0),
+        limits=httpx.Limits(max_keepalive_connections=2, max_connections=4),
+    )
+    try:
+        records: list[dict[str, object]] = []
+        for section, text in chunks.items():
+            raw_lines = [ln.strip() for ln in text.split("\n")]
+            lines = [ln for ln in raw_lines if ln and len(ln) > 10]
+            for i in range(0, len(lines), 8):
+                batch = lines[i : i + 8]
+                resp = await embed_client.post(
+                    f"{EMBED_URL}/v1/embeddings",
+                    json={"model": "Qwen/Qwen3-Embedding-0.6B", "input": batch},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                for item, content in zip(data["data"], batch, strict=True):
+                    records.append(
+                        {
+                            "section": section,
+                            "content": content,
+                            "embedding": item["embedding"],
+                        }
+                    )
+            if len(text) > 20 and len(text) <= 500:
+                resp = await embed_client.post(
+                    f"{EMBED_URL}/v1/embeddings",
+                    json={"model": "Qwen/Qwen3-Embedding-0.6B", "input": [text[:500]]},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                records.append(
+                    {
+                        "section": section,
+                        "content": text[:500],
+                        "embedding": data["data"][0]["embedding"],
+                    }
+                )
+        if records:
+            await store.clear_embeddings()
+            await store.index_resume_chunks(records)
+        console.print(f"  [green]Indexed {len(records)} resume chunks in pgvector[/green]")
+    finally:
+        await embed_client.aclose()
 
 
 async def _run_pipeline() -> None:
@@ -261,16 +253,19 @@ async def _run_pipeline() -> None:
     await ctx.flush()
     app = FirecrawlApp(api_key="sk-no-auth", api_url="http://127.0.0.1:3002")
 
-    console.rule("[bold cyan]PHASE 1: Load Resume + Build RAG Index[/bold cyan]")
+    console.rule("[bold cyan]PHASE 0: Initialise Agent Memory (pgvector)[/bold cyan]")
+    store = await MemoryStore.create()
+    console.print("  [green]Connected to agent-memory-db[/green]")
+
+    console.rule("[bold cyan]PHASE 1: Load Resume + Index in pgvector[/bold cyan]")
     loop = asyncio.get_running_loop()
 
-    def _load_and_build():
-        text, chunks = load_resume()
-        rag = build_rag_from_chunks(chunks)
-        return text, rag
+    def _load():
+        return load_resume()
 
-    full_text, rag = await loop.run_in_executor(None, _load_and_build)
-    console.print(f"  [green]Indexed {len(rag.doc_texts)} chunks[/green]")
+    full_text, chunks = await loop.run_in_executor(None, _load)
+
+    await _index_resume_in_pgvector(chunks, store)
 
     raw_roles = await ctx.json_chat(
         "Based on this resume, identify the top 2-4 best-fitting entry-level / "
@@ -286,21 +281,18 @@ async def _run_pipeline() -> None:
     console.print(f"  [yellow]Target positions:[/yellow] {', '.join(positions)}")
 
     sweep = 0
-    global_verified: dict[str, dict] = {}
     while True:
         sweep += 1
         pipeline = JobPipeline()
-        matched_result: list[dict] = []
 
-        console.rule(f"[bold cyan]PHASE 2 (sweep {sweep}): Scrape + Concurrent Match[/bold cyan]")
+        console.rule(f"[bold cyan]PHASE 2 (sweep {sweep}): Scrape + Graph Match[/bold cyan]")
 
-        consumer_task = asyncio.create_task(_consumer(pipeline, rag, ctx))
+        consumer_task = asyncio.create_task(_consumer(pipeline, store))
 
         await asyncio.gather(
             scrape_all(app, positions, ctx, pipeline, max_workers=MAX_SCRAPE_WORKERS),
             fetch_direct_json_feeds(positions, pipeline),
         )
-        # Discover YC / ATS career page listings via Firecrawl /map
         _map_domains = [
             "https://www.ycombinator.com/jobs",
             "https://jobs.lever.co",
@@ -319,7 +311,7 @@ async def _run_pipeline() -> None:
 
         if index_queue:
             console.rule(
-                f"[bold cyan]PHASE 2b (sweep {sweep}): Extract Index Jobs + Match[/bold cyan]"
+                f"[bold cyan]PHASE 2b (sweep {sweep}): Extract Index Jobs + Graph Match[/bold cyan]"
             )
             index_jobs = await extract_index_jobs(index_queue, ctx)
             console.print(f"  [cyan]Extracted {len(index_jobs)} jobs from indexes[/cyan]")
@@ -332,45 +324,21 @@ async def _run_pipeline() -> None:
                 )
                 console.print(f"  [cyan]Scraped {len(idx_batch)} JDs from links[/cyan]")
                 if idx_batch:
-                    idx_scored = await batch_match(idx_batch, rag, ctx)
+                    idx_scored = await run_batch(idx_batch, store, concurrency=MATCH_CONCURRENCY)
                     matched_result.extend(idx_scored)
 
-        console.rule(f"[bold cyan]PHASE 3 (sweep {sweep}): RAG Revalidation[/bold cyan]")
-        validated = await _revalidate_batch(matched_result, rag, ctx)
-
-        console.rule(f"[bold cyan]PHASE 4 (sweep {sweep}): Filter + Cross-Verify[/bold cyan]")
-        scored = filter_recent(validated, max_days=7)
+        console.rule(f"[bold cyan]PHASE 3 (sweep {sweep}): Filter + Cross-Verify[/bold cyan]")
+        scored = filter_recent(matched_result, max_days=7)
         scored.sort(key=lambda j: j["match_percent"], reverse=True)
         scored = scored[:TARGET]
 
         verified = await verify_jobs(app, scored[:TARGET], ctx, concurrency=VERIFY_CONCURRENCY)
 
-        console.rule(f"[bold cyan]PHASE 5 (sweep {sweep}): Generate Output[/bold cyan]")
-        for j in verified:
-            dedup_key = (
-                j.get("apply_link")
-                or j.get("source_url")
-                or f"{j.get('role', '')}@{j.get('company', '')}"
-            )
-            if not dedup_key:
-                continue
-            existing = global_verified.get(dedup_key)
-            if existing is None or j.get("match_percent", 0) > existing.get("match_percent", 0):
-                global_verified[dedup_key] = j
-
-        sorted_global = sorted(
-            global_verified.values(),
-            key=lambda x: x.get("match_percent", 0),
-            reverse=True,
-        )
-        write_md(sorted_global[:40])
+        console.rule(f"[bold cyan]PHASE 4 (sweep {sweep}): Generate Output[/bold cyan]")
+        write_md(verified[:40])
         await ctx.flush()
 
-        console.print(
-            f"  [cyan]Master Ledger: {len(global_verified)} unique verified"
-            f" positions saved to jobs.md[/cyan]"
-        )
-        console.print(f"\n  [dim]Queue: {pipeline.pending} items remaining[/dim]")
+        console.print(f"  [cyan]{len(verified)} verified positions saved to jobs.md[/cyan]")
         console.print(f"[bold green]Sweep {sweep} complete[/bold green]")
 
         if not continuous:
@@ -380,6 +348,7 @@ async def _run_pipeline() -> None:
         await asyncio.sleep(600)
 
     await ctx.aclose()
+    await store.close()
 
 
 def run() -> None:

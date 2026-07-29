@@ -146,51 +146,6 @@ async def _embed_chunks(client: httpx.AsyncClient, texts: list[str]) -> list[lis
     return [item["embedding"] for item in data["data"]]
 
 
-# ── Schema for structured LLM output ───────────────────────────────────────
-
-MATCH_SCHEMA_GRAPH: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "role": {"type": "string"},
-        "company": {"type": "string"},
-        "match_percent": {"type": "integer", "minimum": 0, "maximum": 100},
-        "shortlist_probability": {"type": "integer", "minimum": 0, "maximum": 100},
-        "matching_skills": {"type": "array", "items": {"type": "string"}},
-        "missing_skills": {"type": "array", "items": {"type": "string"}},
-        "jd_summary": {"type": "string"},
-        "salary": {"type": ["string", "null"]},
-        "location": {"type": "string"},
-        "is_remote": {"type": "boolean"},
-        "verdict": {
-            "type": "string",
-            "enum": ["STRONG_MATCH", "GOOD_MATCH", "WEAK_MATCH", "NO_MATCH"],
-        },
-    },
-    "required": [
-        "role",
-        "company",
-        "match_percent",
-        "shortlist_probability",
-        "matching_skills",
-        "missing_skills",
-        "jd_summary",
-        "location",
-        "is_remote",
-        "verdict",
-    ],
-}
-
-CRITIC_SCHEMA_GRAPH: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "passed": {"type": "boolean"},
-        "critique_reason": {"type": "string"},
-        "requires_rescore": {"type": "boolean"},
-    },
-    "required": ["passed", "critique_reason", "requires_rescore"],
-}
-
-
 def _strip_markdown_code(raw: str) -> str:
     raw = raw.strip()
     if raw.startswith("```"):
@@ -294,7 +249,7 @@ async def node_matcher(
             "Please rescore carefully, addressing the issues raised."
         )
 
-    raw = await _llm_chat(client, prompt, MATCH_SCHEMA_GRAPH)
+    raw = await _llm_chat(client, prompt, JobMatch.model_json_schema())
     raw = _strip_markdown_code(raw)
     try:
         match = json.loads(raw)
@@ -343,7 +298,7 @@ async def node_critic(
     prompt = CRITIC_PROMPT.replace("{result}", json.dumps(match, indent=2))
     prompt = prompt.replace("{job_description}", state["markdown"][:3000])
 
-    raw = await _llm_chat(client, prompt, CRITIC_SCHEMA_GRAPH)
+    raw = await _llm_chat(client, prompt, CriticReview.model_json_schema())
     raw = _strip_markdown_code(raw)
     try:
         critique = json.loads(raw)
@@ -362,68 +317,15 @@ async def node_memory_saver(
     state: GraphState,
     store: MemoryStore,
 ) -> GraphState:
-    """Node 4: Persist final result to pgvector ledger and jobs.md."""
+    """Node 4: Persist final result to pgvector ledger."""
     match = state.get("match")
     if match is None:
         return state
 
     match["url"] = state["url"]
-
     await store.save_job_result(match)
 
-    _append_to_jobs_md(match)
-
     return state
-
-
-def _append_to_jobs_md(match: dict[str, Any]) -> None:
-    """Append a single match to jobs.md markdown table."""
-    import os
-    from datetime import UTC, datetime
-
-    path = os.path.join(os.path.dirname(__file__), "..", "..", "jobs.md")
-
-    try:
-        with open(path) as fh:
-            existing = fh.read()
-    except FileNotFoundError:
-        existing = ""
-
-    lines: list[str] = []
-    now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
-    in_table = False
-
-    for line in existing.splitlines():
-        if line.startswith("| # | Role"):
-            in_table = True
-        elif in_table and line.startswith("|") and line.count("|") >= 8:
-            lines.append(line)
-        elif in_table and not line.startswith("|"):
-            in_table = False
-
-    role = match.get("role", "Unknown")
-    company = match.get("company", "Unknown")
-    match_pct = match.get("match_percent", 0)
-    shortlist = match.get("shortlist_probability", 0)
-    salary = match.get("salary") or "-"
-    location = match.get("location", "-")
-    apply_link = match.get("url", "")
-
-    idx = len(lines) + 1
-    new_row = (
-        f"| {idx} | {role} | {company} | {match_pct}% | {shortlist}% "
-        f"| {salary} | {now} | {location} | [Apply]({apply_link}) |"
-    )
-    lines.append(new_row)
-
-    header = (
-        "# Job Matches\n\n"
-        f"Generated: {now}\n\n"
-        "| # | Role | Company | JD Match | Shortlist% | Salary | Posted | Location | Apply |\n"
-        "|---|------|---------|----------|------------|--------|--------|----------|-------|\n"
-    )
-    with open(path, "w") as fh:
-        fh.write(header + "\n".join(lines) + "\n\n")
 
 
 # ── Graph runner ────────────────────────────────────────────────────────────
@@ -501,19 +403,14 @@ async def run_batch(
     """Run the graph pipeline concurrently over a batch of JDs.
 
     Each item must be a dict with keys ``markdown``, ``url``, and optionally
-    ``title``.
+    ``title``.  A single shared ``httpx.AsyncClient`` is used across the
+    entire batch for connection pooling.
     """
     sem = asyncio.Semaphore(concurrency)
     results: list[dict[str, Any]] = []
 
-    async def _one(jd: dict[str, str]) -> None:
-        async with (
-            sem,
-            httpx.AsyncClient(
-                timeout=httpx.Timeout(300.0, connect=10.0),
-                limits=httpx.Limits(max_keepalive_connections=1, max_connections=1),
-            ) as client,
-        ):
+    async def _one(jd: dict[str, str], client: httpx.AsyncClient) -> None:
+        async with sem:
             result = await run_graph(
                 {
                     "markdown": jd["markdown"],
@@ -534,8 +431,15 @@ async def run_batch(
                 company = result.get("company", "?")
                 print(f"    {pct}% | {verdict} | {role} @ {company}")
 
-    tasks = [asyncio.create_task(_one(jd)) for jd in jd_batch]
-    await asyncio.gather(*tasks, return_exceptions=True)
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(300.0, connect=10.0),
+        limits=httpx.Limits(
+            max_keepalive_connections=concurrency,
+            max_connections=concurrency * 2,
+        ),
+    ) as client:
+        tasks = [asyncio.create_task(_one(jd, client)) for jd in jd_batch]
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     results.sort(key=lambda j: j.get("match_percent", 0), reverse=True)
     return results
