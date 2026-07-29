@@ -10,10 +10,10 @@ import httpx
 from firecrawl import FirecrawlApp
 from rich.console import Console
 
+from src.agent.jobs_agent import JobsAgent
 from src.llm.context import ContextManager
 from src.matching.verifier import verify_jobs
 from src.memory.pgvector_store import MemoryStore
-from src.output.writer import write_md
 from src.pipeline.graph import EMBED_URL, run_batch
 from src.pipeline.queue import JobPipeline, QueuedJob
 from src.rag.loader import load_resume
@@ -126,6 +126,7 @@ async def _scrape_index_links(
 async def _consumer(
     pipeline: JobPipeline,
     store: MemoryStore,
+    ctx: ContextManager | None = None,
 ) -> tuple[list[dict], list[QueuedJob]]:
     matched: list[dict] = []
     index_queue: list[QueuedJob] = []
@@ -148,8 +149,7 @@ async def _consumer(
             batch = [{"markdown": j.markdown, "url": j.url, "title": j.title} for j in web_buf]
             scored = await run_batch(batch, store, concurrency=MATCH_CONCURRENCY)
             matched.extend(scored)
-            matched.sort(key=lambda j: j.get("match_percent", 0), reverse=True)
-            write_md(matched[:30], output_path="jobs.md")
+            await JobsAgent().add_or_merge_jobs(scored, ctx=ctx)
             for _ in web_buf:
                 await pipeline.task_done()
             web_buf.clear()
@@ -160,8 +160,7 @@ async def _consumer(
         batch = [{"markdown": j.markdown, "url": j.url, "title": j.title} for j in web_buf]
         scored = await run_batch(batch, store, concurrency=MATCH_CONCURRENCY)
         matched.extend(scored)
-        matched.sort(key=lambda j: j.get("match_percent", 0), reverse=True)
-        write_md(matched[:30], output_path="jobs.md")
+        await JobsAgent().add_or_merge_jobs(scored, ctx=ctx)
         for _ in web_buf:
             await pipeline.task_done()
 
@@ -310,7 +309,7 @@ async def _run_pipeline() -> None:
 
         console.rule(f"[bold cyan]PHASE 2 (sweep {sweep}): Scrape + Graph Match[/bold cyan]")
 
-        consumer_task = asyncio.create_task(_consumer(pipeline, store))
+        consumer_task = asyncio.create_task(_consumer(pipeline, store, ctx=ctx))
 
         await asyncio.gather(
             scrape_all(app, positions, ctx, pipeline, max_workers=MAX_SCRAPE_WORKERS),
@@ -488,10 +487,12 @@ async def _run_pipeline() -> None:
         verified = await verify_jobs(app, scored[:TARGET], ctx, concurrency=VERIFY_CONCURRENCY)
 
         console.rule(f"[bold cyan]PHASE 4 (sweep {sweep}): Generate Output[/bold cyan]")
-        write_md(verified[:40])
+        all_jobs = await JobsAgent().add_or_merge_jobs(verified, ctx=ctx)
         await ctx.flush()
 
-        console.print(f"  [cyan]{len(verified)} verified positions saved to jobs.md[/cyan]")
+        console.print(
+            f"  [cyan]{len(all_jobs)} verified positions stored & saved to jobs.md[/cyan]"
+        )
         console.print(f"[bold green]Sweep {sweep} complete[/bold green]")
 
         if not continuous:
