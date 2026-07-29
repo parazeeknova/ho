@@ -247,6 +247,14 @@ class GraphStore:
             neighbors.append((_row_to_edge(r), _row_to_node(r)))
         return neighbors
 
+    async def get_all_edges(self, limit: int = 500) -> list[GraphEdge]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM graph_edges ORDER BY created_at DESC LIMIT $1",
+                limit,
+            )
+        return [_row_to_edge(r) for r in rows if r]
+
 
 # ── Row-to-object helpers ──────────────────────────────────────────────────────
 

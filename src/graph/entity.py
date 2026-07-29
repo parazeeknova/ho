@@ -1,6 +1,7 @@
-"""Entity models: nodes, edges, work items, frontier entries, metrics.
+"""Entity models: graph, frontier entries with leasing, cost, utility, batching.
 
-Deterministic ID generation (no UUID) so work is deduplicable.
+Deterministic ID generation for deduplication. Lease heartbeats for
+long-running tasks. Utility scoring for information gain/cost tradeoffs.
 """
 
 from __future__ import annotations
@@ -14,8 +15,6 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-# ── Node types ─────────────────────────────────────────────────────────────────
-
 
 class NodeType(StrEnum):
     COMPANY = "company"
@@ -28,10 +27,6 @@ class NodeType(StrEnum):
     FUNDING_ROUND = "funding_round"
     JOB = "job"
     TECHNOLOGY = "technology"
-    OFFICE = "office"
-
-
-# ── Edge types ─────────────────────────────────────────────────────────────────
 
 
 class EdgeType(StrEnum):
@@ -40,33 +35,23 @@ class EdgeType(StrEnum):
     USES_ATS = "uses_ats"
     INVESTED_BY = "invested_by"
     HIRED_FOR = "hired_for"
-    MENTIONED_IN = "mentioned_in"
     POSTED_JOB = "posted_job"
     USES_TECH = "uses_tech"
-    RELATED_TO = "related_to"
     DISCOVERED_FROM = "discovered_from"
     HAS_CAREER_SITE = "has_career_site"
     HAS_FUNDING = "has_funding"
-    HAS_OFFICE = "has_office"
 
 
-# ── Work item agent types ─────────────────────────────────────────────────────
+class WorkState(StrEnum):
+    PENDING = "pending"
+    LEASED = "leased"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    EXPIRED = "expired"
 
 
-class AgentType(StrEnum):
-    FOUNDER_MINER = "founder_miner"
-    CAREER_SITE_DETECTOR = "career_site_detector"
-    FOUNDER_SOCIAL_OSINT = "founder_social_osint"
-    EMPLOYEE_DISCOVERY = "employee_discovery"
-    ATS_CRAWLER = "ats_crawler"
-    FUNDING_AGENT = "funding_agent"
-    TECH_STACK_AGENT = "tech_stack_agent"
-    HIRING_SIGNAL_AGENT = "hiring_signal_agent"
-    GRAPH_MAINTENANCE = "graph_maintenance"
-    RELATIONSHIP_BUILDER = "relationship_builder"
-
-
-# ── Confidence tracking ───────────────────────────────────────────────────────
+# ── Confidence ────────────────────────────────────────────────────────────────
 
 
 class Confidence(BaseModel):
@@ -84,8 +69,7 @@ def merge_confidence(old: Confidence, new: Confidence, source_bonus: int = 1) ->
     if new.verification_method != "heuristic":
         old.verification_method = new.verification_method
     raw = old.score * old.source_count + new.score * source_bonus
-    total = old.source_count + source_bonus
-    old.score = min(1.0, max(0.1, raw / max(total, 1)))
+    old.score = min(1.0, max(0.1, raw / max(1, old.source_count + source_bonus)))
     return old
 
 
@@ -96,7 +80,7 @@ def confidence_decay(c: Confidence, max_age_days: int = 30) -> Confidence:
     return c
 
 
-# ── Graph nodes ────────────────────────────────────────────────────────────────
+# ── Graph ─────────────────────────────────────────────────────────────────────
 
 
 class GraphNode(BaseModel):
@@ -122,7 +106,7 @@ class GraphEdge(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
-# ── Deterministic ID helpers ───────────────────────────────────────────────────
+# ── IDs ────────────────────────────────────────────────────────────────────────
 
 
 def _hash(*parts: str) -> str:
@@ -145,11 +129,64 @@ def make_founder_id(name: str, company_name: str) -> str:
     return _hash(f"founder:{name.lower().strip()}:{company_name.lower().strip()}")
 
 
-def make_job_id(company: str, role: str) -> str:
-    return _hash(f"job:{company.lower().strip()}:{role.lower().strip()}")
+# ── Cost ───────────────────────────────────────────────────────────────────────
 
 
-# ── FrontierEntry ──────────────────────────────────────────────────────────────
+@dataclass
+class CostEstimate:
+    llm_calls: float = 0.0
+    http_requests: float = 0.0
+    searxng_queries: float = 0.0
+    firecrawl_scrapes: float = 0.0
+    embedding_calls: float = 0.0
+    db_writes: float = 0.0
+
+    @property
+    def total_apx(self) -> float:
+        return (
+            self.llm_calls * 5.0
+            + self.http_requests * 0.5
+            + self.searxng_queries * 0.3
+            + self.firecrawl_scrapes * 2.0
+            + self.embedding_calls * 0.1
+            + self.db_writes * 0.01
+        )
+
+
+AGENT_COSTS: dict[str, CostEstimate] = {
+    "founder_miner": CostEstimate(searxng_queries=3, llm_calls=1, db_writes=3),
+    "career_site_detector": CostEstimate(http_requests=1, db_writes=1),
+    "founder_social_osint": CostEstimate(searxng_queries=1, llm_calls=1),
+    "employee_discovery": CostEstimate(searxng_queries=1, http_requests=1),
+    "ats_crawler": CostEstimate(firecrawl_scrapes=5, db_writes=5),
+    "funding_agent": CostEstimate(searxng_queries=2, llm_calls=1, db_writes=2),
+    "tech_stack_agent": CostEstimate(http_requests=1, llm_calls=1),
+    "graph_maintenance": CostEstimate(db_writes=1),
+}
+
+AGENT_CONCURRENCY: dict[str, int] = {
+    "founder_miner": 3,
+    "career_site_detector": 5,
+    "founder_social_osint": 2,
+    "employee_discovery": 3,
+    "ats_crawler": 2,
+    "funding_agent": 2,
+    "tech_stack_agent": 3,
+    "graph_maintenance": 5,
+}
+
+AGENT_BATCHABLE: set[str] = {
+    "founder_miner",
+    "career_site_detector",
+    "employee_discovery",
+    "graph_maintenance",
+}
+
+LEASE_TTL = 120.0
+HEARTBEAT_INTERVAL = 30.0
+
+
+# ── FrontierEntry ─────────────────────────────────────────────────────────────
 
 
 @dataclass
@@ -157,21 +194,45 @@ class FrontierEntry:
     id: str
     agent: str
     node_id: str
-    node_type: NodeType
+    node_type: NodeType = NodeType.COMPANY
     priority: int = 50
     depth: int = 0
-    revisit_interval: float = 86400.0  # seconds
+    state: WorkState = WorkState.PENDING
     confidence: float = 0.5
     freshness: float = field(default_factory=time.monotonic)
     retries: int = 0
     max_retries: int = 3
-    crawl_budget: int = 1
+    lease_expires: float = 0.0
+    lease_holder: int = -1
     dependencies: list[str] = field(default_factory=list)
+    cost: CostEstimate = field(default_factory=CostEstimate)
     source_connector: str = ""
-    entity_type: str = ""
     payload: dict[str, Any] = field(default_factory=dict)
     created_at: float = field(default_factory=time.monotonic)
     updated_at: float = field(default_factory=time.monotonic)
+
+    def __post_init__(self):
+        if self.agent in AGENT_COSTS:
+            self.cost = AGENT_COSTS[self.agent]
+
+    @property
+    def can_execute(self) -> bool:
+        return self.state == WorkState.PENDING and self.retries < self.max_retries
+
+    @property
+    def lease_expired(self) -> bool:
+        if self.state != WorkState.LEASED:
+            return False
+        return time.monotonic() > self.lease_expires
+
+    def renew_lease(self) -> None:
+        self.lease_expires = time.monotonic() + LEASE_TTL
+
+    @property
+    def expected_utility(self) -> float:
+        info_gain = self.confidence * 100.0
+        cost = max(self.cost.total_apx, 0.1)
+        return info_gain / cost
 
     def recalc_priority(
         self,
@@ -180,8 +241,10 @@ class FrontierEntry:
         has_recent_funding: bool = False,
         is_startup: bool = False,
         match_score: int = 0,
+        centrality: float = 0.0,
     ) -> None:
-        score = self.priority
+        weight = self.expected_utility / 10.0
+        score = int(min(100, weight * 60 + 20))
         if graph_confidence is not None:
             score = max(score, int(graph_confidence * 100))
         if has_hiring_signal:
@@ -192,18 +255,27 @@ class FrontierEntry:
             score += 10
         if match_score > 0:
             score = max(score, match_score // 2)
+        if centrality > 0:
+            score += min(15, int(centrality * 100))
         self.priority = min(100, score)
 
-    @property
-    def is_stale(self) -> bool:
-        return time.monotonic() - self.freshness > self.revisit_interval
 
-    @property
-    def can_execute(self) -> bool:
-        return self.retries < self.max_retries and self.crawl_budget > 0
+# ── Batch ──────────────────────────────────────────────────────────────────────
 
 
-# ── Graph event (publish-only) ─────────────────────────────────────────────────
+@dataclass
+class WorkBatch:
+    entries: list[FrontierEntry]
+    agent: str
+    batch_id: str = ""
+
+    def __post_init__(self):
+        if self.entries:
+            self.agent = self.entries[0].agent
+            self.batch_id = _hash("batch", self.agent, str(time.monotonic()))
+
+
+# ── Events ─────────────────────────────────────────────────────────────────────
 
 
 class GraphEvent(BaseModel):
@@ -224,17 +296,42 @@ class SchedulerMetrics:
     completed_work: int = 0
     retried_work: int = 0
     failed_work: int = 0
+    expired_work: int = 0
     total_enqueued: int = 0
+    batches_executed: int = 0
     connector_latency_ms: float = 0.0
-    avg_queue_wait_s: float = 0.0
-    llm_calls: int = 0
     events_fired: int = 0
     graph_nodes: int = 0
     graph_edges: int = 0
     uptime_s: float = 0.0
+    cost_consumed: float = 0.0
 
 
-# ── Node builders ──────────────────────────────────────────────────────────────
+# ── Graph analytics ────────────────────────────────────────────────────────────
+
+
+def compute_centrality(
+    node_ids: list[str], edge_dicts: list[dict], iterations: int = 10
+) -> dict[str, float]:
+    if not node_ids:
+        return {}
+    damping = 0.85
+    n = len(node_ids)
+    ranks: dict[str, float] = dict.fromkeys(node_ids, 1.0 / n)
+    if not edge_dicts:
+        return ranks
+    for _ in range(iterations):
+        new_ranks: dict[str, float] = dict.fromkeys(node_ids, (1.0 - damping) / n)
+        for e in edge_dicts:
+            src, tgt = e.get("source", ""), e.get("target", "")
+            if src in ranks and tgt in ranks:
+                out_deg = max(1, sum(1 for x in edge_dicts if x.get("source") == src))
+                new_ranks[tgt] = new_ranks.get(tgt, 0) + damping * ranks[src] / out_deg
+        ranks = new_ranks
+    return ranks
+
+
+# ── Builders ───────────────────────────────────────────────────────────────────
 
 
 def company_node(name: str, **extra: Any) -> GraphNode:

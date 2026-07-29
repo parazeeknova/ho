@@ -28,6 +28,7 @@ from src.graph.entity import (
     GraphNode,
     NodeType,
     company_node,
+    compute_centrality,
     edge,
     make_founder_id,
     make_work_id,
@@ -353,21 +354,16 @@ async def _expand_company_graph(
     ctx: ContextManager,
     telegram_agent: TelegramAgent,
 ) -> tuple[int, int]:
-    """Run one expansion round using the persistent WorkScheduler engine.
-
-    Connectors discover companies -> graph nodes created -> events fire ->
-    frontier entries enqueued -> workers process continuously.
-    Returns (nodes_created, events_fired).
-    """
+    """Graph expansion round with fire-and-forget event bus, centrality."""
     startup_agent = StartupAgent(ctx)
     frontier = CrawlFrontier(max_size=300)
     engine = WorkScheduler(frontier, worker_count=3)
 
-    # ── Event handlers (publish-only: return FrontierEntries) ─────────────
+    # Wire event bus -> frontier: handler results auto-enqueue
+    bus.set_enqueue_callback(engine.enqueue_many)
 
     async def _on_company_discovered(event):
-        data = event.payload
-        name = data.get("name", "")
+        d = event.payload
         entries = [
             FrontierEntry(
                 id=make_work_id("founder_miner", event.node_id),
@@ -376,11 +372,10 @@ async def _expand_company_graph(
                 node_type=NodeType.COMPANY,
                 priority=70,
                 depth=1,
-                payload={"company": name},
+                payload={"company": d["name"]},
             )
         ]
-        url = data.get("url", "")
-        if url:
+        if d.get("url"):
             entries.append(
                 FrontierEntry(
                     id=make_work_id("career_site_detector", event.node_id),
@@ -389,13 +384,13 @@ async def _expand_company_graph(
                     node_type=NodeType.COMPANY,
                     priority=60,
                     depth=1,
-                    payload={"company": name, "url": url},
+                    payload={"company": d["name"], "url": d["url"]},
                 )
             )
         return entries
 
     async def _on_founder_discovered(event):
-        data = event.payload
+        d = event.payload
         return [
             FrontierEntry(
                 id=make_work_id("founder_social_osint", event.node_id),
@@ -404,7 +399,7 @@ async def _expand_company_graph(
                 node_type=NodeType.FOUNDER,
                 priority=50,
                 depth=2,
-                payload={"founder_name": data.get("name", ""), "company": data.get("company", "")},
+                payload={"founder_name": d.get("name", ""), "company": d.get("company", "")},
             ),
             FrontierEntry(
                 id=make_work_id("employee_discovery", event.node_id),
@@ -413,16 +408,15 @@ async def _expand_company_graph(
                 node_type=NodeType.FOUNDER,
                 priority=45,
                 depth=2,
-                payload={"company": data.get("company", "")},
+                payload={"company": d.get("company", "")},
             ),
         ]
 
     async def _on_career_site_discovered(event):
-        data = event.payload
-        url = data.get("url", "")
+        url = event.payload.get("url", "")
         if any(
-            ats in url.lower()
-            for ats in ["greenhouse", "lever.co", "ashbyhq", "workable", "myworkdayjobs"]
+            a in url.lower()
+            for a in ("greenhouse", "lever.co", "ashbyhq", "workable", "myworkdayjobs")
         ):
             return [
                 FrontierEntry(
@@ -432,7 +426,7 @@ async def _expand_company_graph(
                     node_type=NodeType.CAREER_SITE,
                     priority=55,
                     depth=2,
-                    payload={"company": data.get("company", ""), "ats_url": url},
+                    payload={"company": event.payload.get("company", ""), "ats_url": url},
                 )
             ]
         return []
@@ -441,47 +435,44 @@ async def _expand_company_graph(
     bus.subscribe("founder_discovered", _on_founder_discovered)
     bus.subscribe("career_site_discovered", _on_career_site_discovered)
 
-    # ── Agent implementations ──────────────────────────────────────────────
-
     async def _founder_miner(entry: FrontierEntry) -> list[FrontierEntry]:
-        company_name = entry.payload.get("company", "")
-        if not company_name:
+        cn = entry.payload.get("company", "")
+        if not cn:
             return []
-        job_entry = {
-            "role": "Startup Analysis",
-            "company": company_name,
-            "match_percent": 50,
-            "verdict": "WEAK_MATCH",
-        }
-        enriched = await startup_agent.analyze_startup(job_entry)
+        enriched = await startup_agent.analyze_startup(
+            {
+                "role": "Startup Analysis",
+                "company": cn,
+                "match_percent": 50,
+                "verdict": "WEAK_MATCH",
+            }
+        )
         founders = enriched.get("founders", [])
         node = await graph.get_node(entry.node_id)
         if node:
             node.data["founders"] = founders
             node.data["funding_stage"] = enriched.get("funding_stage", "")
             await graph.upsert_node(node)
-
-        new_entries: list[FrontierEntry] = []
+        results: list[FrontierEntry] = []
         for f in founders[:3]:
             if isinstance(f, dict) and f.get("name"):
-                f_name = f["name"]
                 f_node = GraphNode(
-                    id=make_founder_id(f_name, company_name),
+                    id=make_founder_id(f["name"], cn),
                     node_type=NodeType.FOUNDER,
-                    data={**f, "company": company_name},
+                    data={**f, "company": cn},
                 )
                 await graph.upsert_node(f_node)
                 await graph.upsert_edge(edge(entry.node_id, EdgeType.FOUNDED_BY, f_node.id))
-                entries = await bus.fire(
+                # Fire-and-forget: spawns handler task, returns immediately
+                await bus.fire(
                     bus.new_event(
                         "founder_discovered",
                         f_node.id,
                         NodeType.FOUNDER,
-                        {"name": f_name, "company": company_name},
+                        {"name": f["name"], "company": cn},
                     )
                 )
-                new_entries.extend(entries)
-        return new_entries
+        return results
 
     async def _stub(entry: FrontierEntry) -> list[FrontierEntry]:
         return []
@@ -492,15 +483,13 @@ async def _expand_company_graph(
     engine.register_agent("employee_discovery", _stub)
     engine.register_agent("ats_crawler", _stub)
 
-    # ── Start persistent workers ──────────────────────────────────────────
-
     engine.start(worker_count=3)
 
-    # ── Discover + fire events → entries pushed to frontier ────────────────
+    # ── Discovery phase ──────────────────────────────────────────────────
 
     entities = await discover_all()
     if not entities:
-        engine.shutdown(drain=False)
+        await engine.shutdown(drain=False)
         return 0, 0
 
     console.print(f"  🏢 Connectors: {len(entities)} companies discovered")
@@ -509,37 +498,70 @@ async def _expand_company_graph(
 
     for entity in entities:
         node = company_node(
-            entity.name,
-            description=entity.description,
-            source=entity.source,
-            url=entity.url or "",
-            confidence=entity.confidence,
+            entity.name, description=entity.description, source=entity.source, url=entity.url or ""
         )
         node.confidence.score = entity.confidence
         node.confidence.source_count = 1
         await graph.upsert_node(node)
         nodes_created += 1
 
-        event = bus.new_event(
-            "company_discovered",
-            node.id,
-            NodeType.COMPANY,
-            {
-                "name": entity.name,
-                "url": entity.url,
-                "source": entity.source,
-                "description": entity.description,
-            },
+        await bus.fire(
+            bus.new_event(
+                "company_discovered",
+                node.id,
+                NodeType.COMPANY,
+                {
+                    "name": entity.name,
+                    "url": entity.url,
+                    "source": entity.source,
+                    "description": entity.description,
+                },
+            )
         )
-        entries = await bus.fire(event)
         events_fired += 1
-        if entries:
-            engine.enqueue_many(entries)
 
-    # Let workers process for a bit
+    # ── Centrality ───────────────────────────────────────────────────────
+
+    all_nodes = await graph.get_nodes_by_type(NodeType.COMPANY, limit=200)
+    all_edges = await graph.get_all_edges(limit=500)
+    node_map = {n.id: n for n in all_nodes}
+    edge_dicts = [{"source": e.source_id, "target": e.target_id} for e in all_edges]
+    centrality = compute_centrality(list(node_map.keys()), edge_dicts)
+    for nid, rank in centrality.items():
+        node = node_map.get(nid)
+        if node and rank > 0.01:
+            node.data["pagerank"] = rank
+            await graph.upsert_node(node)
+
     await asyncio.sleep(3)
 
-    # Store discoveries in jobs ledger
+    # ── Graph-driven work generation ─────────────────────────────────────
+    # New edges trigger discovery: FOUNDED_BY -> check for missing founder profiles
+    for e in all_edges:
+        target = await graph.get_node(e.target_id)
+        source = await graph.get_node(e.source_id)
+        if target and source and e.edge_type == EdgeType.FOUNDED_BY:
+            founder_name = target.data.get("name", "")
+            if founder_name:
+                existing = await graph.get_nodes_by_type(NodeType.FOUNDER, limit=1)
+                if not any(n.data.get("linkedin_url") for n in existing):
+                    await engine.enqueue(
+                        FrontierEntry(
+                            id=make_work_id("founder_social_osint", target.id),
+                            agent="founder_social_osint",
+                            node_id=target.id,
+                            node_type=NodeType.FOUNDER,
+                            priority=40,
+                            depth=2,
+                            payload={
+                                "founder_name": founder_name,
+                                "company": source.data.get("name", ""),
+                            },
+                        )
+                    )
+
+    # ── Store ────────────────────────────────────────────────────────────
+
     jobs_agent = JobsAgent(store=store)
     for entity in entities[:20]:
         await jobs_agent.add_or_merge_jobs(
@@ -558,11 +580,12 @@ async def _expand_company_graph(
             ]
         )
 
-    # Drain remaining work and shut down
     m = await engine.get_metrics()
-    console.print(f"  ⚙️  Scheduler: {m.completed_work} done, {m.pending_work} pending")
+    console.print(
+        f"  Scheduler: {m.completed_work} done, {m.pending_work} pending"
+        f" | Centrality: {len(centrality)} nodes"
+    )
     await engine.shutdown(drain=True)
-
     return nodes_created, events_fired
 
 
