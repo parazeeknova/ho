@@ -37,10 +37,18 @@ def container_running(pattern: str) -> bool:
     try:
         r = subprocess.run(
             [
-                "podman", "ps", "--filter", f"name={pattern}",
-                "--filter", "status=running", "--format", "{{.Names}}",
+                "podman",
+                "ps",
+                "--filter",
+                f"name={pattern}",
+                "--filter",
+                "status=running",
+                "--format",
+                "{{.Names}}",
             ],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         return bool(r.stdout.strip())
     except Exception:
@@ -59,21 +67,21 @@ def pg_ready(host: str, port: int, db: str) -> bool:
 
 
 print("LLM")
-check("llama-server :8899",      lambda: http_ok("http://localhost:8899/health"))
-check("llama-server :8900",      lambda: http_ok("http://localhost:8900/health"))
+check("llama-server :8899", lambda: http_ok("http://localhost:8899/health"))
+check("llama-server :8900", lambda: http_ok("http://localhost:8900/health"))
 
 print()
 print("Firecrawl")
-check("api              :3002",  lambda: http_ok("http://localhost:3002"))
-check("redis",                   lambda: container_running("firecrawl_redis"))
-check("rabbitmq",               lambda: container_running("firecrawl_rabbitmq"))
-check("playwright",             lambda: container_running("firecrawl_playwright"))
-check("nuq-postgres",           lambda: container_running("firecrawl_nuq-postgres"))
+check("api              :3002", lambda: http_ok("http://localhost:3002"))
+check("redis", lambda: container_running("firecrawl_redis"))
+check("rabbitmq", lambda: container_running("firecrawl_rabbitmq"))
+check("playwright", lambda: container_running("firecrawl_playwright"))
+check("nuq-postgres", lambda: container_running("firecrawl_nuq-postgres"))
 
 print()
 print("Agent Memory")
-check("agent-memory-db",        lambda: container_running("firecrawl_agent-memory-db"))
-check("pgvector :5433",         lambda: pg_ready("localhost", 5433, "agent_memory"))
+check("agent-memory-db", lambda: container_running("firecrawl_agent-memory-db"))
+check("pgvector :5433", lambda: pg_ready("localhost", 5433, "agent_memory"))
 
 print()
 print("Metasearch")
