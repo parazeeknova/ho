@@ -27,8 +27,13 @@ def cleanup() -> None:
     print("All servers stopped.")
 
 
-signal.signal(signal.SIGINT, lambda *_: cleanup() or sys.exit(0))
-signal.signal(signal.SIGTERM, lambda *_: cleanup() or sys.exit(0))
+def _signal_handler(signum: int, frame: object) -> None:
+    cleanup()
+    sys.exit(0)
+
+
+signal.signal(signal.SIGINT, _signal_handler)
+signal.signal(signal.SIGTERM, _signal_handler)
 
 # ── Process 1: LLM (Qwen3.5-4B Q4_K_M, chat completions) ──────────────
 

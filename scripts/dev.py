@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Rich dev launcher: start llama-server + firecrawl + agent-memory with live status."""
 
+import contextlib
+import socket
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -10,12 +13,16 @@ from rich.console import Console
 from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
-from rich.text import Text
 
 PROJECT = Path(__file__).resolve().parent.parent
 DOCKER_COMPOSE = f"docker compose -f {PROJECT}/docker-compose.yaml"
 
 console = Console()
+
+STATUS_DOWNLOADING = "[yellow]DOWNLOADING[/yellow]"
+STATUS_INIT = "[yellow]INITIALIZING[/yellow]"
+STATUS_UP = "[green]RUNNING[/green]"
+STATUS_DOWN = "[red]DOWN[/red]"
 
 
 def run(cmd: str, silent: bool = True) -> tuple[int, str]:
@@ -29,13 +36,18 @@ def run(cmd: str, silent: bool = True) -> tuple[int, str]:
 
 
 def check_http(url: str) -> bool:
-    try:
+    with contextlib.suppress(Exception):
         import urllib.request
 
         urllib.request.urlopen(url, timeout=3)
         return True
-    except Exception:
-        return False
+    return False
+
+
+def check_port(host: str, port: int) -> bool:
+    with contextlib.suppress(Exception), socket.create_connection((host, port), timeout=2):
+        return True
+    return False
 
 
 def container_running(name: str) -> bool:
@@ -43,6 +55,28 @@ def container_running(name: str) -> bool:
         f"podman ps --filter name='{name}' --filter status=running --format '{{{{.Names}}}}'"
     )
     return code == 0
+
+
+def build_table() -> Table:
+    t = Table(title="Status", box=box.SIMPLE_HEAVY, border_style="cyan")
+    t.add_column("Service", style="bold")
+    t.add_column("Status")
+    t.add_column("Port")
+    return t
+
+
+def row(table: Table, name: str, status: str, port: str) -> None:
+    table.add_row(name, status, port)
+
+
+def status_for(ok: bool, downloading: bool = False, initializing: bool = False) -> str:
+    if ok:
+        return STATUS_UP
+    if downloading:
+        return STATUS_DOWNLOADING
+    if initializing:
+        return STATUS_INIT
+    return STATUS_DOWN
 
 
 def main() -> None:
@@ -56,90 +90,156 @@ def main() -> None:
     )
 
     # ── Cleanup ──
-    with Live(
-        Text("Cleaning up stale processes..."), refresh_per_second=4, console=console
-    ) as live:
+    with Live(Table(), refresh_per_second=4, console=console) as live:
+        t = build_table()
+        row(t, "Cleanup", "[yellow]stopping stale...[/yellow]", "")
+        live.update(t)
+
         run(f"{DOCKER_COMPOSE} down 2>/dev/null", silent=True)
         run("podman rm -f firecrawl_rabbitmq_1 2>/dev/null", silent=True)
         run("killall llama-server 2>/dev/null", silent=True)
         time.sleep(1)
-        live.update("[green]✓ Clean[/green]")
 
-    # ── llama-server (LLM + Embeddings via serve.sh) ──
-    console.print("\n[bold]Starting llama-server (LLM :8899 + Embed :8900)...[/bold]")
-    subprocess.Popen(
-        [f"{PROJECT}/scripts/serve.py"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    for _ in range(12):
-        if check_http("http://localhost:8899/health") and check_http(
-            "http://localhost:8900/health"
-        ):
-            break
-        time.sleep(1)
-    llama_ok = check_http("http://localhost:8899/health")
-    embed_ok = check_http("http://localhost:8900/health")
+        t = build_table()
+        row(t, "Cleanup", "[green]✓ Clean[/green]", "")
+        live.update(t)
 
-    # ── Agent Memory (pgvector) ──
-    console.print("[bold]Starting agent-memory-db (pgvector :5433)...[/bold]")
-    run(f"{DOCKER_COMPOSE} up -d agent-memory-db", silent=False)
+    # ── Start everything under a live-updating status table ─────────────
+
+    llama_started = False
+    llama_ok = embed_ok = False
     pgvector_ok = False
-    for _ in range(10):
-        code, _ = run("pg_isready -h localhost -p 5433 -U postgres -d agent_memory -q")
-        if code == 0:
-            pgvector_ok = True
-            break
-        time.sleep(1)
+    pgvector_container = False
 
-    # ── Firecrawl infra ──
-    console.print("[bold]Starting firecrawl infrastructure...[/bold]")
-    run(f"{DOCKER_COMPOSE} up -d redis playwright-service nuq-postgres searxng", silent=False)
+    infra_started = False
+    api_started = False
+    api_ok = False
 
-    # ── Rabbitmq ──
-    console.print("[bold]Starting rabbitmq (podman)...[/bold]")
-    run(
-        "podman rm -f firecrawl_rabbitmq_1 2>/dev/null; "
-        "podman run -d --name firecrawl_rabbitmq_1 "
-        "--network firecrawl_default --network-alias rabbitmq "
-        "--entrypoint /bin/bash rabbitmq:3-management "
-        '-c "rm -f /var/lib/rabbitmq/.erlang.cookie; exec docker-entrypoint.sh rabbitmq-server"',
-        silent=True,
-    )
-    time.sleep(3)
+    deadman = 240  # max total startup seconds
 
-    # ── Firecrawl API ──
-    console.print("[bold]Starting firecrawl api (takes ~20s)...[/bold]")
-    run(f"{DOCKER_COMPOSE} up -d api", silent=False)
-    for _ in range(20):
-        if check_http("http://localhost:3002"):
-            break
-        time.sleep(2)
-    api_ok = check_http("http://localhost:3002")
-    searxng_ok = check_http("http://localhost:8080")
+    with Live(build_table(), refresh_per_second=2, console=console) as live:
+        for elapsed in range(deadman):
+            t = build_table()
 
-    # ── Status ──
-    table = Table(title="Status", box=box.SIMPLE_HEAVY, border_style="cyan")
-    table.add_column("Service", style="bold")
-    table.add_column("Status")
-    table.add_column("Port")
+            # ── Launch llama-server processes (first iteration only) ──
+            if not llama_started:
+                subprocess.Popen(
+                    [sys.executable, f"{PROJECT}/scripts/serve.py"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                llama_started = True
 
-    def row(name: str, ok: bool, port: str) -> None:
-        status = "[green]RUNNING[/green]" if ok else "[red]DOWN[/red]"
-        table.add_row(name, status, port)
+            llama_ok = check_http("http://localhost:8899/health")
+            embed_ok = check_http("http://localhost:8900/health")
 
-    row("llama-server (LLM)", llama_ok, ":8899")
-    row("llama-server (Embed)", embed_ok, ":8900")
-    row("agent-memory-db", pgvector_ok, ":5433")
-    row("firecrawl api", api_ok, ":3002")
-    row("redis", container_running("firecrawl_redis"), ":6379")
-    row("rabbitmq", container_running("firecrawl_rabbitmq"), ":5672")
-    row("playwright", container_running("firecrawl_playwright"), ":3000")
-    row("nuq-postgres", container_running("firecrawl_nuq-postgres"), ":5432")
-    row("searxng", searxng_ok, ":8080")
+            row(
+                t,
+                "llama-server (LLM)",
+                status_for(llama_ok, downloading=not llama_ok and elapsed < 120),
+                ":8899",
+            )
+            row(
+                t,
+                "llama-server (Embed)",
+                status_for(embed_ok, downloading=not embed_ok and elapsed < 120),
+                ":8900",
+            )
+
+            # ── Launch agent-memory-db (first iteration only) ──
+            if elapsed == 2:
+                run(f"{DOCKER_COMPOSE} up -d agent-memory-db", silent=True)
+
+            pgvector_container = container_running("agent-memory-db")
+            pgvector_ok = pgvector_container and check_port("localhost", 5433)
+            row(
+                t,
+                "agent-memory-db",
+                status_for(pgvector_ok, initializing=pgvector_container and not pgvector_ok),
+                ":5433",
+            )
+
+            # ── Launch firecrawl infra (first iteration only) ──
+            if not infra_started:
+                subprocess.Popen(
+                    f"{DOCKER_COMPOSE} up -d redis playwright-service nuq-postgres searxng",
+                    shell=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                infra_started = True
+
+            row(t, "redis", status_for(container_running("firecrawl_redis")), ":6379")
+            row(t, "nuq-postgres", status_for(container_running("firecrawl_nuq-postgres")), ":5432")
+            row(t, "searxng", status_for(check_http("http://localhost:8080")), ":8080")
+
+            # ── rabbitmq ──
+            if elapsed == 3:
+                run(
+                    "podman rm -f firecrawl_rabbitmq_1 2>/dev/null; "
+                    "podman run -d --name firecrawl_rabbitmq_1 "
+                    "--network firecrawl_default --network-alias rabbitmq "
+                    "--entrypoint /bin/bash rabbitmq:3-management "
+                    '-c "rm -f /var/lib/rabbitmq/.erlang.cookie; '
+                    'exec docker-entrypoint.sh rabbitmq-server"',
+                    silent=True,
+                )
+            row(
+                t,
+                "rabbitmq",
+                status_for(elapsed > 5 and container_running("firecrawl_rabbitmq")),
+                ":5672",
+            )
+
+            row(t, "playwright", status_for(container_running("firecrawl_playwright")), ":3000")
+
+            # ── firecrawl api ──
+            if elapsed == 6:
+                subprocess.Popen(
+                    f"{DOCKER_COMPOSE} up -d api",
+                    shell=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                api_started = True
+            api_ok = check_http("http://localhost:3002")
+            row(
+                t,
+                "firecrawl api",
+                status_for(api_ok, initializing=api_started and not api_ok),
+                ":3002",
+            )
+
+            live.update(t)
+
+            # ── All up? Break early ──
+            all_up = (
+                llama_ok
+                and embed_ok
+                and pgvector_ok
+                and api_ok
+                and container_running("firecrawl_redis")
+                and container_running("firecrawl_rabbitmq")
+            )
+            if all_up:
+                break
+
+            time.sleep(1)
+
+    # ── Final status ──
+    t = build_table()
+    row(t, "llama-server (LLM)", status_for(llama_ok), ":8899")
+    row(t, "llama-server (Embed)", status_for(embed_ok), ":8900")
+    row(t, "agent-memory-db", status_for(pgvector_ok), ":5433")
+    row(t, "firecrawl api", status_for(api_ok), ":3002")
+    row(t, "redis", status_for(container_running("firecrawl_redis")), ":6379")
+    row(t, "rabbitmq", status_for(container_running("firecrawl_rabbitmq")), ":5672")
+    row(t, "playwright", status_for(container_running("firecrawl_playwright")), ":3000")
+    row(t, "nuq-postgres", status_for(container_running("firecrawl_nuq-postgres")), ":5432")
+    row(t, "searxng", status_for(check_http("http://localhost:8080")), ":8080")
 
     console.print()
-    console.print(table)
+    console.print(t)
     console.print("\n[dim]Press Ctrl+C to stop all services.[/dim]")
 
     # Keep alive
