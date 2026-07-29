@@ -258,7 +258,7 @@ async def _process_and_dispatch_batch(
     cleanup_agent = CleanupAgent(store=store)
     clean_jobs = await cleanup_agent.clean_and_format_ledger()
 
-    telegram_agent = TelegramAgent()
+    telegram_agent = TelegramAgent(ctx=ctx)
     if telegram_agent.is_configured:
         await telegram_agent.notify_verified_jobs(clean_jobs, store=store)
 
@@ -364,7 +364,7 @@ async def _index_resume_in_pgvector(
 
 async def _run_pipeline() -> None:
     ctx = ContextManager()
-    telegram_agent = TelegramAgent()
+    telegram_agent = TelegramAgent(ctx=ctx)
 
     def _cleanup(signum: int, frame: object) -> None:
         console.print("\n[yellow]Interrupted - flushing LLM context...[/yellow]")

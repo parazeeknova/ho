@@ -14,9 +14,12 @@ import contextlib
 import html
 import os
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
+
+if TYPE_CHECKING:
+    from src.llm.context import ContextManager
 
 TELEGRAM_BASE = "https://api.telegram.org/bot{token}"
 TELEGRAM_SEND = f"{TELEGRAM_BASE}/sendMessage"
@@ -100,9 +103,11 @@ class TelegramAgent:
         self,
         bot_token: str | None = None,
         chat_id: str | None = None,
+        ctx: ContextManager | None = None,
     ) -> None:
         self.bot_token = bot_token if bot_token is not None else os.getenv("TELEGRAM_BOT_TOKEN", "")
         self.chat_id = chat_id if chat_id is not None else os.getenv("TELEGRAM_CHAT_ID", "")
+        self.ctx = ctx
         self._notified_keys: set[str] = set()
         self._update_id: int = 0
         self._poll_task: asyncio.Task[None] | None = None
@@ -133,6 +138,16 @@ class TelegramAgent:
                         return True
                     body = resp.text[:200]
                     print(f"  [yellow]Telegram {resp.status_code}: {body}[/yellow]")
+                    if resp.status_code == 400 and parse_mode == "HTML":
+                        fixed = await self._llm_fix_html(text, body)
+                        if fixed and fixed != text:
+                            print("  [dim]Telegram: retrying with LLM-fixed HTML[/dim]")
+                            text = fixed
+                            continue
+                        # Fallback: strip HTML and send as plain text
+                        print("  [dim]Telegram: falling back to plain text[/dim]")
+                        parse_mode = ""
+                        continue
                     if resp.status_code == 429:
                         await asyncio.sleep(2 << attempt)
                     elif resp.status_code >= 500:
@@ -144,6 +159,26 @@ class TelegramAgent:
                 if attempt < 2:
                     await asyncio.sleep(1 << attempt)
         return False
+
+    async def _llm_fix_html(self, text: str, error_body: str) -> str | None:
+        """Ask the LLM to fix Telegram parse_mode HTML violations."""
+        if self.ctx is None:
+            return None
+        prompt = (
+            "Telegram rejected this HTML message with error:\n"
+            f"{error_body}\n\n"
+            "Fix ALL parse_mode violations (unescaped &, unclosed tags, "
+            "invalid nesting, forbidden entities) and return ONLY the "
+            "corrected HTML with no explanation or code fences.\n\n"
+            f"Original message:\n{text}"
+        )
+        try:
+            fixed = await self.ctx.chat(prompt[:4000])
+            if fixed and "<b>" in fixed:
+                return fixed.strip()
+        except Exception as e:
+            print(f"  [dim]LLM HTML fix failed: {e}[/dim]")
+        return None
 
     # ---- command bot ------------------------------------------------------
 
