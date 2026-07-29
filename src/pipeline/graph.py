@@ -103,9 +103,20 @@ def _apply_hard_constraints(match: dict[str, Any]) -> CriticReview:
     text = role + " " + jd_summary
 
     senior_kws = (
-        "senior", "sr.", "staff ", "lead ", "principal",
-        "architect", "manager", "director", "head of",
-        "vp ", "vice president", "5+ year", "7+ year", "10+ year",
+        "senior",
+        "sr.",
+        "staff ",
+        "lead ",
+        "principal",
+        "architect",
+        "manager",
+        "director",
+        "head of",
+        "vp ",
+        "vice president",
+        "5+ year",
+        "7+ year",
+        "10+ year",
     )
     if any(kw in text for kw in senior_kws):
         return CriticReview(

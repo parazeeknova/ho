@@ -46,7 +46,7 @@ def filter_recent(jobs: list[dict], max_days: int = 7) -> list[dict]:
             dt = datetime.fromisoformat(str(date_str).replace("Z", "+00:00"))
             if (now - dt).days <= max_days:
                 filtered.append(j)
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             filtered.append(j)
     return filtered
 
@@ -268,20 +268,22 @@ async def _run_pipeline() -> None:
     if existing_count > 0:
         import questionary
 
-        choice = questionary.select(
-            f"Found {existing_count} existing resume chunks in pgvector. What now?",
-            choices=[
-                "Reuse existing resume (skip re-indexing)",
-                "Load new resume URL (re-index from scratch)",
-            ],
-        ).ask()
+        def _ask_reuse() -> str | None:
+            return questionary.select(
+                f"Found {existing_count} existing resume chunks in pgvector. What now?",
+                choices=[
+                    "Reuse existing resume (skip re-indexing)",
+                    "Load new resume URL (re-index from scratch)",
+                ],
+            ).ask()
+
+        choice = await loop.run_in_executor(None, _ask_reuse)
         if choice and choice.startswith("Reuse"):
             reuse_resume = True
-            console.print(
-                f"  [green]Reusing {existing_count} existing resume chunks[/green]"
-            )
+            console.print(f"  [green]Reusing {existing_count} existing resume chunks[/green]")
 
     if not reuse_resume:
+
         def _load():
             return load_resume()
 

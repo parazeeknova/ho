@@ -48,12 +48,18 @@ print(f"Starting LLM server on :8899 ({LLM_HF})...")
 p_llm = subprocess.Popen(
     [
         "llama-server",
-        "-hf", LLM_HF,
-        "--port", "8899",
-        "--ctx-size", "8192",
-        "--flash-attn", "on",
-        "--parallel", "2",
-        "--sleep-idle-seconds", "300",
+        "-hf",
+        LLM_HF,
+        "--port",
+        "8899",
+        "--ctx-size",
+        "8192",
+        "--flash-attn",
+        "on",
+        "--parallel",
+        "2",
+        "--sleep-idle-seconds",
+        "300",
     ],
 )
 procs.append(p_llm)
@@ -74,13 +80,19 @@ print(f"Starting Embedding server on :8900 ({EMBED_HF})...")
 p_embed = subprocess.Popen(
     [
         "llama-server",
-        "-hf", EMBED_HF,
-        "--port", "8900",
-        "--ctx-size", "32768",
+        "-hf",
+        EMBED_HF,
+        "--port",
+        "8900",
+        "--ctx-size",
+        "32768",
         "--embedding",
-        "--flash-attn", "on",
-        "--parallel", "2",
-        "--sleep-idle-seconds", "300",
+        "--flash-attn",
+        "on",
+        "--parallel",
+        "2",
+        "--sleep-idle-seconds",
+        "300",
     ],
 )
 procs.append(p_embed)

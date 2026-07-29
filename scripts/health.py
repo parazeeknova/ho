@@ -40,7 +40,6 @@ def check_port(host: str, port: int) -> bool:
     return False
 
 
-
 def container_running(pattern: str) -> bool:
     try:
         r = subprocess.run(
@@ -63,7 +62,6 @@ def container_running(pattern: str) -> bool:
         return False
 
 
-
 print("LLM")
 check("llama-server :8899", lambda: http_ok("http://localhost:8899/health"))
 check("llama-server :8900", lambda: http_ok("http://localhost:8900/health"))
@@ -79,7 +77,7 @@ check("nuq-postgres", lambda: container_running("firecrawl_nuq-postgres"))
 print()
 print("Agent Memory")
 check("agent-memory-db", lambda: container_running("firecrawl_agent-memory-db"))
-check("pgvector :5433",         lambda: check_port("localhost", 5433))
+check("pgvector :5433", lambda: check_port("localhost", 5433))
 
 print()
 print("Metasearch")
