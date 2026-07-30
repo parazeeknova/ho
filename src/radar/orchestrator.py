@@ -57,7 +57,7 @@ from src.radar.gates import run_gates
 from src.radar.models import JobCandidate, JobObservation
 from src.radar.outreach import generate_outreach_card
 from src.radar.queue import enqueue_candidate, get_queue_status, process_queue
-from src.radar.scoring import compute_underdog_score
+from src.radar.scoring import compute_underdog_score, rank_score
 from src.radar.signals import extract_signals
 from src.radar.sources import (
     diff_snapshots,
@@ -151,6 +151,18 @@ async def _discover_new_companies() -> list[dict[str, Any]]:
         ("hn", discover_from_hackernews, 30),
     ]
     searx_kinds = ["hiring", "funding", "launch"]
+
+    # Search crawler for direct job + signal discovery
+    from src.radar.crawler import run_search_discovery
+
+    try:
+        search_results = await run_search_discovery(max_total_results=60)
+        for c in search_results:
+            c["discovered_from"] = c.get("source", "search")
+        results.extend(search_results)
+        logger.info(f"Search crawler: {len(search_results)} results")
+    except Exception as e:
+        logger.warning("Search crawler failed", exception=str(e))
 
     for adp_name, func, limit in adapters:
         try:
@@ -472,23 +484,13 @@ def _rank_for_queue(candidates: list[JobCandidate]) -> list[JobCandidate]:
             rest.append(c)
 
     def _sort(x: JobCandidate) -> float:
-        return _sort_key(x)
+        return rank_score(x)
 
     return (
         sorted(urgent_high, key=_sort, reverse=True)
         + sorted(urgent, key=_sort, reverse=True)
         + sorted(sponsor, key=_sort, reverse=True)
         + sorted(rest, key=_sort, reverse=True)
-    )
-
-
-def _sort_key(c: JobCandidate) -> float:
-    sal = c.salary_annual_usd or 0
-    return (
-        (sal / 10000) * 0.4
-        + c.match_percent * 0.3
-        + c.underdog_score * 0.2
-        + c.source_confidence * 0.1
     )
 
 
