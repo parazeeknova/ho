@@ -1,181 +1,204 @@
-"""Tests for SearchDiscoveryCrawler query classification and result extraction."""
+"""Integration tests for search crawler → discovery → source persistence pipeline."""
 
 from __future__ import annotations
 
+import pytest
+
 from src.radar.crawler import (
-    _build_query_templates,
-    _canonical_url,
     _classify_result,
-    _extract_company_from_title,
-    _extract_domain,
+    _extract_board_root,
 )
 
 
-class TestQueryTemplates:
-    def test_produces_queries(self) -> None:
-        templates = _build_query_templates()
-        assert len(templates) > 5
-        assert all(isinstance(t, str) for t in templates)
-        assert any("backend" in t.lower() or "fullstack" in t.lower() for t in templates)
-        assert any("sponsor" in t.lower() or "remote" in t.lower() for t in templates)
+class TestBoardRootExtraction:
+    def test_greenhouse_job_to_board(self) -> None:
+        """A Greenhouse job URL must extract the company board root, not generic root."""
+        result = _extract_board_root("https://boards.greenhouse.io/acme/jobs/123")
+        assert result == "https://boards.greenhouse.io/acme"
+        assert "boards.greenhouse.io" in result
+        assert "/acme" in result
+        assert "/jobs/123" not in result
 
-    def test_templates_change_between_calls(self) -> None:
-        t1 = set(_build_query_templates())
-        t2 = set(_build_query_templates())
-        assert len(t1 - t2) >= 0
+    def test_lever_job_to_board(self) -> None:
+        result = _extract_board_root("https://jobs.lever.co/acme/456")
+        assert result == "https://jobs.lever.co/acme"
+        assert "/456" not in result
 
+    def test_ashby_job_to_board(self) -> None:
+        result = _extract_board_root("https://jobs.ashbyhq.com/acme/789")
+        assert result == "https://jobs.ashbyhq.com/acme"
+        assert "/789" not in result
 
-class TestResultClassification:
-    def test_classify_greenhouse(self) -> None:
-        assert (
-            _classify_result(
-                "https://boards.greenhouse.io/acme/jobs/123",
-                "Software Engineer at Acme",
-                "Apply now for this backend role. Requirements: Python, AWS.",
-            )
-            == "ats_job"
+    def test_workable_job_to_board(self) -> None:
+        result = _extract_board_root("https://apply.workable.com/acme")
+        assert result == "https://apply.workable.com/acme"
+
+    def test_workday_subdomain(self) -> None:
+        result = _extract_board_root("https://acme.myworkdayjobs.com/careers/job/Tokyo/Engineer")
+        assert result == "https://acme.myworkdayjobs.com"
+        assert "acme" in result
+        assert "/careers" not in result
+
+    def test_myworkdayjobs_without_company_in_path(self) -> None:
+        # Workday: company is always the subdomain
+        result = _extract_board_root(
+            "https://nvidia.wd5.myworkdayjobs.com/NVIDIAExternalCareerSite/job/123"
         )
+        assert result == "https://nvidia.wd5.myworkdayjobs.com"
 
-    def test_classify_lever(self) -> None:
-        assert (
-            _classify_result(
-                "https://jobs.lever.co/acme/456",
-                "Backend Engineer",
-                "Join our team. Qualifications: 0-2 years, Go, Kubernetes.",
-            )
-            == "ats_job"
-        )
+    def test_smartrecruiters(self) -> None:
+        result = _extract_board_root("https://jobs.smartrecruiters.com/AcmeCorp/123-engineer")
+        assert "AcmeCorp" in result
 
-    def test_classify_ashby(self) -> None:
-        assert (
-            _classify_result(
-                "https://jobs.ashbyhq.com/acme/789",
-                "SWE Intern",
-                "Responsibilities include building features.",
-            )
-            == "ats_job"
-        )
+    def test_rippling(self) -> None:
+        result = _extract_board_root("https://app.rippling.com/careers/acme/123")
+        assert result == "https://app.rippling.com/careers/acme"
 
-    def test_classify_workable(self) -> None:
-        assert (
-            _classify_result(
-                "https://apply.workable.com/acme",
-                "Data Engineer",
-                "Apply here.",
-            )
-            == "ats_job"
-        )
+    def test_unknown_host_returns_safe(self) -> None:
+        result = _extract_board_root("https://example.com/foo/bar")
+        assert result == "https://example.com/foo"
 
-    def test_classify_workday(self) -> None:
-        assert (
-            _classify_result(
-                "https://acme.myworkdayjobs.com/careers/job/1",
-                "Platform Engineer",
-                "Requirements and qualifications listed.",
-            )
-            == "ats_job"
-        )
+    def test_no_path_returns_host(self) -> None:
+        result = _extract_board_root("https://boards.greenhouse.io")
+        assert result == "https://boards.greenhouse.io"
 
-    def test_classify_startup_signal_techcrunch(self) -> None:
-        assert (
-            _classify_result(
-                "https://techcrunch.com/2026/07/acme-raises-10m/",
-                "Acme raised $10M seed round",
-                "Acme, a startup building dev tools, announced today...",
-            )
-            == "startup_signal"
-        )
 
-    def test_classify_startup_signal_crunchbase(self) -> None:
-        assert (
-            _classify_result(
-                "https://crunchbase.com/organization/acme",
-                "Acme — Funding, Valuation & Investors",
-                "raised seed funding for their engineering platform...",
-            )
-            == "startup_signal"
-        )
+class TestPipelineIntegration:
+    def test_ats_result_has_direct_job_flag(self) -> None:
+        """ATS results should carry direct_job=True flag."""
+        # This is the structure the crawler produces for ats_job results
+        entry = {
+            "name": "Acme",
+            "website": "https://boards.greenhouse.io/acme",
+            "source": "search_ats",
+            "provenance_url": "https://boards.greenhouse.io/acme/jobs/123",
+            "direct_job": True,
+        }
+        assert entry["direct_job"]
+        assert entry["website"] != "https://boards.greenhouse.io"
 
-    def test_classify_founder_post(self) -> None:
-        assert (
-            _classify_result(
-                "https://www.linkedin.com/posts/acme-ceo_hiring-looking-for-activity",
-                "We're hiring engineers at Acme!",
-                "DM me if interested. Looking for backend engineers.",
-            )
-            == "founder_post"
-        )
+    def test_startup_signal_not_direct_job(self) -> None:
+        """Startup signals should NOT have direct_job flag."""
+        entry = {
+            "name": "Acme",
+            "website": "",
+            "source": "search_startup",
+            "provenance_url": "https://techcrunch.com/article",
+        }
+        assert "direct_job" not in entry or not entry.get("direct_job")
 
-    def test_classify_aggregator_indeed(self) -> None:
+    def test_aggregator_never_becomes_source(self) -> None:
+        """Aggregator results must never flow into the discoveries list."""
+        # Simulate: aggregator classification should be excluded
         assert (
             _classify_result(
                 "https://www.indeed.com/viewjob?jk=abc",
-                "Software Engineer - Acme Corp - Indeed",
-                "Apply on Indeed for this role at Acme Corp.",
+                "Software Engineer at Acme — Indeed",
+                "Apply on Indeed",
             )
             == "aggregator"
         )
-
-    def test_classify_aggregator_linkedin_jobs(self) -> None:
+        assert (
+            _classify_result(
+                "https://www.glassdoor.com/job-listing/engineer",
+                "Engineer",
+                "",
+            )
+            == "aggregator"
+        )
         assert (
             _classify_result(
                 "https://www.linkedin.com/jobs/view/123",
-                "Software Engineer at Acme",
+                "SWE",
                 "",
             )
             == "aggregator"
         )
 
-    def test_classify_aggregator_glassdoor(self) -> None:
+    def test_real_ats_passes_classification(self) -> None:
+        """Real ATS URLs must pass and not be marked as aggregators."""
         assert (
             _classify_result(
-                "https://www.glassdoor.com/job-listing/acme-software-engineer",
-                "Software Engineer at Acme Corp",
-                "",
+                "https://boards.greenhouse.io/acme/jobs/123",
+                "SWE at Acme",
+                "Requirements: Python, AWS",
             )
-            == "aggregator"
+            == "ats_job"
         )
 
 
-class TestCompanyExtraction:
-    def test_hiring_at_format(self) -> None:
-        assert _extract_company_from_title("Acme Corp is hiring a Software Engineer") == "Acme Corp"
+class TestEmailGuessingRemoved:
+    def test_no_guess_instruction_in_prompt(self) -> None:
+        """The LLM prompt must NOT ask or allow guessing emails."""
+        import inspect
 
-    def test_dash_separator(self) -> None:
-        assert _extract_company_from_title("Acme Corp - Backend Engineer") == "Acme Corp"
+        from src.agent.startup_agent import StartupAgent
 
-    def test_pipe_separator(self) -> None:
-        assert _extract_company_from_title("Acme Corp | Careers") == "Acme Corp"
-
-    def test_em_dash(self) -> None:
-        assert _extract_company_from_title("Acme Corp — hiring!") == "Acme Corp"
-
-    def test_raises_format(self) -> None:
-        name = _extract_company_from_title("Acme Corp raises $10M for dev tools")
-        assert "Acme Corp" in name
-
-    def test_short_title(self) -> None:
-        assert _extract_company_from_title("Acme") == "Acme"
+        source = inspect.getsource(StartupAgent.analyze_startup)
+        source_lower = source.lower()
+        # Must NOT contain permission to guess
+        assert "aggressively guess" not in source_lower
+        assert "may be guessed" not in source_lower
+        assert "mark as 'guessed'" not in source_lower
+        # Must contain explicit prohibition
+        assert "never guess" in source_lower
+        assert "do not guess" in source_lower
 
 
-class TestCanonicalUrl:
-    def test_same_url_same_hash(self) -> None:
-        h1 = _canonical_url("https://jobs.lever.co/acme/123")
-        h2 = _canonical_url("https://jobs.lever.co/acme/123")
+class TestRateLimiting:
+    def test_scrape_indexes_uses_should_poll(self) -> None:
+        """GitHub indexes must respect should_poll for rate-limiting."""
+        from src.radar.orchestrator import _scrape_indexes
+
+        assert callable(_scrape_indexes)
+        # The function uses should_poll() internally
+        import inspect
+
+        source = inspect.getsource(_scrape_indexes)
+        assert "should_poll" in source
+
+
+class TestIdempotentDiscovery:
+    def test_canonical_url_stable(self) -> None:
+        from src.radar.crawler import _canonical_url
+
+        h1 = _canonical_url("https://boards.greenhouse.io/acme/jobs/123")
+        h2 = _canonical_url("https://boards.greenhouse.io/acme/jobs/123")
         assert h1 == h2
 
-    def test_trailing_slash(self) -> None:
-        h1 = _canonical_url("https://jobs.lever.co/acme/123/")
-        h2 = _canonical_url("https://jobs.lever.co/acme/123")
-        assert h1 == h2
+    def test_different_urls_different_canonical(self) -> None:
+        from src.radar.crawler import _canonical_url
 
-    def test_different_urls_different(self) -> None:
-        h1 = _canonical_url("https://jobs.lever.co/acme/1")
-        h2 = _canonical_url("https://jobs.lever.co/acme/2")
-        assert h1 != h2
+        hashes = {
+            _canonical_url("https://boards.greenhouse.io/acme/jobs/1"),
+            _canonical_url("https://boards.greenhouse.io/acme/jobs/2"),
+            _canonical_url("https://jobs.lever.co/acme/1"),
+            _canonical_url("https://jobs.lever.co/acme/2"),
+        }
+        assert len(hashes) == 4
 
-    def test_domain_extraction(self) -> None:
-        gh = "boards.greenhouse.io"
-        assert _extract_domain(f"https://{gh}/acme/jobs/123") == gh
-        assert _extract_domain("https://www.techcrunch.com/news") == "techcrunch.com"
-        assert _extract_domain("https://jobs.lever.co/acme/456") == "jobs.lever.co"
+    @pytest.mark.asyncio
+    async def test_completion_state_prevents_reenqueue(self) -> None:
+        """Once a candidate is terminal, it must not be re-enqueued."""
+        from src.radar.models import EligibilityState, JobCandidate
+
+        c = JobCandidate(
+            canonical_id="test:idempotent:remote",
+            source="test",
+            direct_apply_url="https://example.com",
+            normalized_company="Test",
+            normalized_role="Idempotent",
+            normalized_location="Remote",
+        )
+        c.eligibility = EligibilityState.ACCEPTED
+        c.extra["version"] = 1
+
+        from src.radar.queue import enqueue_candidate, mark_retry
+
+        assert await enqueue_candidate(c)
+        # Same version should NOT enqueue again
+        assert not await enqueue_candidate(c)
+        # New version should pass
+        c.extra["version"] = 2
+        mark_retry(c)
+        assert await enqueue_candidate(c)

@@ -280,8 +280,9 @@ class StartupAgent:
             "   - title (string): e.g. 'CEO', 'CTO', 'Co-founder'.\n"
             "   - linkedin_url (string|null): full https://www.linkedin.com/in/... URL.\n"
             "   - github_url (string|null): full https://github.com/... URL.\n"
-            "   - email (string|null): if not found, aggressively guess using format\n"
-            "     first@company.com or first.last@company.com based on founder name.\n\n"
+            "   - email (string|null): ONLY if EXPLICITLY LISTED in the source material.\n"
+            "     Do NOT guess or invent email addresses. Return null if no publicly\n"
+            "     listed email was found.\n\n"
             "3. funding_info: object with keys:\n"
             "   - round (string|null): 'Pre-Seed', 'Seed', 'Series A', 'Series B', etc.\n"
             "   - amount_raised (string|null): e.g. '$3.5M', '$25M'.\n"
@@ -297,7 +298,8 @@ class StartupAgent:
             "CRITICAL RULES:\n"
             "- All URLs MUST be valid https:// links. Return null if no valid URL found.\n"
             "- Missing fields must be explicit null, never invented.\n"
-            "- Emails may be guessed from name+domain pattern, mark as 'guessed' if so.\n"
+            "- NEVER guess or fabricate email addresses. Return null for email unless\n"
+            "  the email was explicitly present in the search results.\n"
             "- Return valid JSON matching the exact schema."
         )
 

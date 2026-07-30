@@ -1019,6 +1019,8 @@ async def _run_radar_pipeline() -> None:
 
     sweep = 0
     last_discovery = 0.0
+    last_index_scrape = 0.0
+    _index_interval = 1800.0  # 30 min between GitHub index scrapes
     while True:
         if shutdown_requested.is_set():
             break
@@ -1041,7 +1043,10 @@ async def _run_radar_pipeline() -> None:
                 await persist_checkpoints(store)  # Persist new sources immediately
 
             all_obs: list[JobObservation] = []
-            all_obs.extend(await _scrape_indexes())
+            # GitHub indexes: low-freq supplementary source
+            if time.monotonic() - last_index_scrape > _index_interval:
+                last_index_scrape = time.monotonic()
+                all_obs.extend(await _scrape_indexes())
 
             # Load active sources (seeds + dynamically discovered, all with URLs)
             active_sources = await load_active_sources(store)

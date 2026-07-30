@@ -202,15 +202,16 @@ async def run_search_discovery(
     # Resolve domains and ATS endpoints for non-aggregator results
     discoveries: list[dict[str, Any]] = []
     for r in classified["ats_job"]:
-        domain = _extract_domain(r["url"])
+        board_url = _extract_board_root(r["url"])
         name = _extract_company_from_title(r["title"])
-        if domain and name:
+        if board_url and name:
             discoveries.append(
                 {
                     "name": name,
-                    "website": f"https://{domain}",
+                    "website": board_url,
                     "source": "search_ats",
                     "provenance_url": r["url"],
+                    "direct_job": True,
                 }
             )
 
@@ -266,6 +267,48 @@ def _extract_domain(url: str) -> str:
         return host[4:] if host.startswith("www.") else host
     except Exception:
         return ""
+
+
+def _extract_board_root(job_url: str) -> str:
+    """Extract the company-specific board URL from an ATS job URL.
+
+    boards.greenhouse.io/acme/jobs/123 → https://boards.greenhouse.io/acme
+    jobs.lever.co/acme/456 → https://jobs.lever.co/acme
+    acme.myworkdayjobs.com/careers/job/1 → https://acme.myworkdayjobs.com
+    """
+    try:
+        p = urlparse(job_url)
+    except Exception:
+        return ""
+
+    host = (p.hostname or "").lower()
+    path = p.path.rstrip("/")
+
+    # Workday: company is the subdomain
+    if "myworkdayjobs.com" in host:
+        return f"https://{host}"
+
+    # Greenhouse: /{company}/jobs/{id} → /{company}
+    if "greenhouse.io" in host:
+        parts = [x for x in path.split("/") if x]
+        if len(parts) >= 1:
+            return f"https://{host}/{parts[0]}"
+        return f"https://{host}"
+
+    # Lever/Ashby/Workable/SmartRecruiters/Rippling: /{company}/{id}
+    parts = [x for x in path.split("/") if x]
+    if len(parts) >= 1:
+        # Rippling path: /careers/{company}/{id} → keep /careers/{company}
+        if "rippling.com" in host and len(parts) >= 2:
+            return f"https://{host}/{parts[0]}/{parts[1]}"
+        # SmartRecruiters: /{company}/{job-id}
+        # Lever/Ashby/Workable: /{company}/{id}
+        skip = {"jobs", "careers", "job", "postings", "apply"}
+        company = parts[0]
+        if company.lower() in skip and len(parts) >= 2:
+            company = parts[1]
+        return f"https://{host}/{company}"
+    return f"https://{host}"
 
 
 def _extract_company_from_title(title: str) -> str:
