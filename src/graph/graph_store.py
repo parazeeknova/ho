@@ -640,6 +640,132 @@ class GraphStore:
             "confidence_score": node.confidence.score,
         }
 
+    async def get_vc_tier_list(self, limit: int = 10) -> list[dict[str, Any]]:
+        """Rank VCs by volume of junior-friendly / entry-level job postings.
+
+        Traverses INVESTED_BY -> HAS_FUNDING -> POSTED_JOB looking for
+        jobs flagged as undergrad-friendly or with match_percent > 60.
+        """
+        try:
+            rows = await self._run(
+                """
+                MATCH (v:GraphNode {node_type: 'investor'})
+                     <-[:RELATES {type: 'invested_by'}]-(f:GraphNode)-[:RELATES {type: 'has_funding'}]-(c:GraphNode)-[:RELATES {type: 'posted_job'}]->(j:GraphNode)
+                WHERE j.data IS NOT NULL
+                RETURN v.data AS vc_data, COUNT(DISTINCT j) AS junior_jobs,
+                       COUNT(DISTINCT c) AS portfolio_companies
+                ORDER BY junior_jobs DESC
+                LIMIT $l
+                """,
+                {"l": limit},
+            )
+            results: list[dict[str, Any]] = []
+            for r in rows:
+                vc = r.get("vc_data", {})
+                if isinstance(vc, str):
+                    vc = json.loads(vc)
+                results.append(
+                    {
+                        "vc_firm": vc.get("name", "Unknown"),
+                        "junior_friendly_jobs": r["junior_jobs"],
+                        "portfolio_companies": r["portfolio_companies"],
+                    }
+                )
+            return results
+        except Exception:
+            logger.debug("VC tier list query failed (expected when graph is sparse)")
+            return []
+
+    async def find_warm_intro_paths(
+        self, candidate_node_id: str, target_company_id: str, limit: int = 5
+    ) -> list[dict[str, Any]]:
+        """Find 2-hop paths between a candidate and a target company's founders.
+
+        Shared nodes can be technologies (USES_TECH) or institutions (ALUMNI_OF).
+        Returns founder name, LinkedIn, and the common ground.
+        """
+        try:
+            rows = await self._run(
+                """
+                MATCH (me:GraphNode {id: $candidate})-[:RELATES]->(shared)<-[:RELATES]-(f:GraphNode {node_type: 'founder'})
+                MATCH (f)-[:RELATES {type: 'founded_by'}]-(c:GraphNode {id: $target})
+                RETURN f.data AS founder_data, shared.data AS shared_data,
+                       shared.node_type AS shared_type
+                LIMIT $l
+                """,
+                {"candidate": candidate_node_id, "target": target_company_id, "l": limit},
+            )
+            results: list[dict[str, Any]] = []
+            for r in rows:
+                fdata = r.get("founder_data", {})
+                if isinstance(fdata, str):
+                    fdata = json.loads(fdata)
+                sdata = r.get("shared_data", {})
+                if isinstance(sdata, str):
+                    sdata = json.loads(sdata)
+                results.append(
+                    {
+                        "founder_name": fdata.get("name", "Unknown"),
+                        "linkedin_url": fdata.get("linkedin_url", ""),
+                        "common_ground": sdata.get("name", "") or str(sdata),
+                        "shared_type": r.get("shared_type", ""),
+                    }
+                )
+            return results
+        except Exception:
+            logger.debug("Warm intro path query failed")
+            return []
+
+    async def detect_stealth_hiring_signals(self, limit: int = 10) -> list[dict[str, Any]]:
+        """Detect companies that recently raised funding but have zero job postings.
+
+        Signal A: HAS_FUNDING edge exists (Series A announced).
+        Signal B: POSTED_JOB edge count is 0.
+        Returns companies ripe for cold outreach before their jobs page goes live.
+        """
+        try:
+            rows = await self._run(
+                """
+                MATCH (c:GraphNode {node_type: 'company', active: true})
+                WHERE EXISTS {
+                    MATCH (c)-[:RELATES {type: 'has_funding'}]->(:GraphNode)
+                }
+                OPTIONAL MATCH (c)-[:RELATES {type: 'posted_job'}]->(j:GraphNode)
+                WITH c, COUNT(j) AS job_count,
+                     c.data AS company_data
+                WHERE job_count = 0
+                WITH c, company_data,
+                     coalesce(company_data.pagerank, 0.0) AS pagerank
+                RETURN company_data, pagerank
+                ORDER BY pagerank DESC
+                LIMIT $l
+                """,
+                {"l": limit},
+            )
+            results: list[dict[str, Any]] = []
+            for r in rows:
+                cd = r.get("company_data", {})
+                if isinstance(cd, str):
+                    cd = json.loads(cd)
+                funding = ""
+                if isinstance(cd.get("funding_stage"), dict):
+                    fv = cd["funding_stage"]
+                    funding = fv.get("value", str(fv)) if isinstance(fv, dict) else str(fv)
+                else:
+                    funding = str(cd.get("funding_stage", ""))
+                results.append(
+                    {
+                        "company_name": cd.get("name", "Unknown"),
+                        "pagerank": round(float(r.get("pagerank", 0)), 4),
+                        "funding_stage": funding,
+                        "url": cd.get("url", ""),
+                    }
+                )
+            return results
+        except Exception:
+            logger.debug("Stealth hiring signal query failed")
+            return []
+
     # Diagnostics
 
     async def node_count(self) -> int:

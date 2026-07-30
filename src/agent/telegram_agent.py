@@ -254,8 +254,34 @@ class TelegramAgent:
                 await self._handle_status()
             elif cmd == "/health":
                 await self._handle_health()
+            elif cmd == "/analytics":
+                await self._handle_analytics()
             elif cmd == "/help":
                 await self._handle_help()
+
+    async def _handle_analytics(self) -> None:
+        await self._send_raw("⏳ <i>Crunching market data and calculating skill arbitrage...</i>")
+        try:
+            from src.agent.analytics_agent import AnalyticsAgent
+            from src.graph.graph_store import GraphStore
+            from src.memory.pgvector_store import MemoryStore
+
+            store = await MemoryStore.create()
+            graph = await GraphStore.create()
+            try:
+                agent = AnalyticsAgent(store=store, graph=graph, ctx=self.ctx)
+                report = await agent.generate_market_report()
+                await self._send_raw(report)
+            finally:
+                await graph.close()
+                await store.close()
+        except Exception as e:
+            logger.exception("Analytics report generation failed", exc=e)
+            await self._send_raw(
+                "❌ <b>Analytics Report Failed</b>\n\n"
+                f"<code>{str(e)[:400]}</code>\n\n"
+                "Try again in a moment."
+            )
 
     async def _handle_status(self) -> None:
         s = _pipeline_state
@@ -291,9 +317,10 @@ class TelegramAgent:
         lines = [
             "<b>Commands</b>",
             "",
-            "/status – pipeline state + match count",
-            "/health – live service health check",
-            "/help   – this message",
+            "/status    – pipeline state + match count",
+            "/health    – live service health check",
+            "/analytics – market intelligence & skill arbitrage report",
+            "/help      – this message",
             "",
             "I'll also notify you instantly on pipeline errors and new job matches.",
         ]

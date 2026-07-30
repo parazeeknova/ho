@@ -445,6 +445,271 @@ class MemoryStore:
     async def job_ledger_count(self) -> int:
         return await self.get_job_ledger_count()
 
+    async def get_top_skills(self, days: int = 30, limit: int = 15) -> list[dict[str, Any]]:
+        """Top matching skills across jobs seen in the last *days*."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT skill, COUNT(*) AS job_count
+                FROM (
+                    SELECT jsonb_array_elements_text(
+                        COALESCE(raw_json->'matching_skills', '[]'::jsonb)
+                    ) AS skill
+                    FROM jobs_ledger
+                    WHERE raw_json IS NOT NULL
+                      AND created_at >= NOW() - ($1 || ' days')::interval
+                ) sub
+                WHERE skill IS NOT NULL AND skill != ''
+                GROUP BY skill
+                ORDER BY job_count DESC
+                LIMIT $2
+                """,
+                str(days),
+                limit,
+            )
+        return [{"skill": r["skill"], "job_count": r["job_count"]} for r in rows]
+
+    async def get_skill_arbitrage(
+        self, min_match: int = 50, max_match: int = 69
+    ) -> list[dict[str, Any]]:
+        """Missing skills that caused near-misses (match in [min_match, max_match])."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT skill, COUNT(*) AS miss_count,
+                       AVG(NULLIF(
+                           (raw_json->>'salary')::numeric, 0)
+                       )::numeric(12,0) AS avg_salary
+                FROM (
+                    SELECT jsonb_array_elements_text(
+                        COALESCE(raw_json->'missing_skills', '[]'::jsonb)
+                    ) AS skill,
+                        raw_json
+                    FROM jobs_ledger
+                    WHERE raw_json IS NOT NULL
+                      AND match_percent BETWEEN $1 AND $2
+                ) sub
+                WHERE skill IS NOT NULL AND skill != ''
+                GROUP BY skill
+                ORDER BY miss_count DESC
+                LIMIT 15
+                """,
+                min_match,
+                max_match,
+            )
+        return [
+            {
+                "skill": r["skill"],
+                "miss_count": r["miss_count"],
+                "avg_salary": int(r["avg_salary"]) if r["avg_salary"] is not None else 0,
+            }
+            for r in rows
+        ]
+
+    async def get_company_aggregate_data(self, company_name: str) -> dict[str, Any]:
+        """Aggregate hiring patterns for a specific company."""
+        async with self._pool.acquire() as conn:
+            summary = await conn.fetchrow(
+                """
+                SELECT
+                    COUNT(*) AS total_postings,
+                    ROUND(AVG(match_percent))::int AS avg_match,
+                    MAX(match_percent)::int AS best_match
+                FROM jobs_ledger
+                WHERE LOWER(company) = LOWER($1)
+                """,
+                company_name,
+            )
+
+            top_skills = await conn.fetch(
+                """
+                SELECT skill, COUNT(*) AS cnt
+                FROM (
+                    SELECT jsonb_array_elements_text(
+                        COALESCE(raw_json->'matching_skills', '[]'::jsonb)
+                    ) AS skill
+                    FROM jobs_ledger
+                    WHERE LOWER(company) = LOWER($1)
+                      AND raw_json IS NOT NULL
+                ) sub
+                WHERE skill IS NOT NULL AND skill != ''
+                GROUP BY skill
+                ORDER BY cnt DESC
+                LIMIT 5
+                """,
+                company_name,
+            )
+
+            roles = await conn.fetch(
+                """
+                SELECT role, match_percent, location, posted_date
+                FROM jobs_ledger
+                WHERE LOWER(company) = LOWER($1)
+                ORDER BY match_percent DESC
+                LIMIT 20
+                """,
+                company_name,
+            )
+
+        return {
+            "company": company_name,
+            "total_postings": summary["total_postings"] if summary else 0,
+            "avg_match": summary["avg_match"] if summary else 0,
+            "best_match": summary["best_match"] if summary else 0,
+            "top_matching_skills": [{"skill": r["skill"], "count": r["cnt"]} for r in top_skills],
+            "roles": [
+                {
+                    "role": r["role"],
+                    "match_percent": r["match_percent"],
+                    "location": r["location"] or "Remote",
+                    "posted_date": str(r["posted_date"]) if r["posted_date"] else "",
+                }
+                for r in roles
+            ],
+        }
+
+    async def get_tech_stack_momentum(self, limit: int = 10) -> list[dict[str, Any]]:
+        """Month-over-month growth rate of skills in job descriptions.
+
+        Returns skills with the highest 30-day velocity trending upward.
+        Only includes skills with at least 5 current occurrences.
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                WITH current_month AS (
+                    SELECT skill, COUNT(*) AS current_count
+                    FROM jobs_ledger,
+                         LATERAL jsonb_array_elements_text(
+                             COALESCE(raw_json->'matching_skills', '[]'::jsonb)
+                         ) AS skill
+                    WHERE raw_json IS NOT NULL
+                      AND created_at >= NOW() - INTERVAL '30 days'
+                    GROUP BY skill
+                ),
+                previous_month AS (
+                    SELECT skill, COUNT(*) AS prev_count
+                    FROM jobs_ledger,
+                         LATERAL jsonb_array_elements_text(
+                             COALESCE(raw_json->'matching_skills', '[]'::jsonb)
+                         ) AS skill
+                    WHERE raw_json IS NOT NULL
+                      AND created_at >= NOW() - INTERVAL '60 days'
+                      AND created_at < NOW() - INTERVAL '30 days'
+                    GROUP BY skill
+                )
+                SELECT
+                    c.skill,
+                    c.current_count,
+                    COALESCE(p.prev_count, 0) AS prev_count,
+                    ROUND(
+                        ((c.current_count - COALESCE(p.prev_count, 0))::numeric
+                         / GREATEST(COALESCE(p.prev_count, 1), 1)) * 100, 1
+                    ) AS pct_growth
+                FROM current_month c
+                LEFT JOIN previous_month p ON c.skill = p.skill
+                WHERE c.current_count >= 5
+                ORDER BY pct_growth DESC
+                LIMIT $1
+                """,
+                limit,
+            )
+        return [
+            {
+                "skill": r["skill"],
+                "current_count": r["current_count"],
+                "prev_count": r["prev_count"],
+                "pct_growth": float(r["pct_growth"]),
+            }
+            for r in rows
+        ]
+
+    async def get_ats_blackhole_index(self) -> list[dict[str, Any]]:
+        """Rank ATS domains by ghost-job risk and aggregate candidate match rates.
+
+        Extracts the domain root (e.g. 'greenhouse', 'workday') from
+        apply_link and computes avg match_percent per domain so candidates
+        can avoid low-response enterprise portals.
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT
+                    CASE
+                        WHEN apply_link ILIKE '%greenhouse%' THEN 'greenhouse'
+                        WHEN apply_link ILIKE '%lever.co%' THEN 'lever'
+                        WHEN apply_link ILIKE '%ashbyhq%' THEN 'ashby'
+                        WHEN apply_link ILIKE '%workable%' THEN 'workable'
+                        WHEN apply_link ILIKE '%myworkday%' THEN 'workday'
+                        WHEN apply_link ILIKE '%smartrecruiters%' THEN 'smartrecruiters'
+                        WHEN apply_link ILIKE '%rippling%' THEN 'rippling'
+                        ELSE 'other'
+                    END AS ats_domain,
+                    COUNT(*) AS job_count,
+                    ROUND(AVG(match_percent))::int AS avg_match,
+                    ROUND(AVG(
+                        EXTRACT(DAY FROM (NOW() - created_at))
+                    ))::int AS avg_days_open
+                FROM jobs_ledger
+                WHERE apply_link IS NOT NULL AND apply_link != ''
+                GROUP BY ats_domain
+                ORDER BY avg_match DESC
+                """
+            )
+        return [
+            {
+                "ats_domain": r["ats_domain"],
+                "job_count": r["job_count"],
+                "avg_match": r["avg_match"],
+                "avg_days_open": r["avg_days_open"],
+            }
+            for r in rows
+        ]
+
+    async def get_marginal_skill_valuation(self) -> list[dict[str, Any]]:
+        """Estimate the salary premium per skill by comparing jobs with and
+        without each skill in the matching_skills array.
+
+        Only considers skills appearing in 5+ jobs where salary data exists.
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT
+                    skill,
+                    COUNT(*) AS job_count,
+                    ROUND(AVG(NULLIF(
+                        (raw_json->>'salary')::numeric, 0)
+                    ))::int AS avg_salary,
+                    ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (
+                        ORDER BY NULLIF((raw_json->>'salary')::numeric, 0)
+                    ))::int AS median_salary
+                FROM jobs_ledger,
+                     LATERAL jsonb_array_elements_text(
+                         COALESCE(raw_json->'matching_skills', '[]'::jsonb)
+                     ) AS skill
+                WHERE raw_json IS NOT NULL
+                  AND raw_json->>'salary' IS NOT NULL
+                  AND NULLIF((raw_json->>'salary')::numeric, 0) > 0
+                  AND skill IS NOT NULL AND skill != ''
+                GROUP BY skill
+                HAVING COUNT(*) >= 3
+                ORDER BY avg_salary DESC
+                LIMIT 20
+                """
+            )
+        results: list[dict[str, Any]] = []
+        for r in rows:
+            results.append(
+                {
+                    "skill": r["skill"],
+                    "job_count": r["job_count"],
+                    "avg_salary": r["avg_salary"],
+                    "median_salary": r["median_salary"],
+                }
+            )
+        return results
+
     async def discovered_domain_count(self) -> int:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow("SELECT COUNT(*) AS cnt FROM discovered_domains")
