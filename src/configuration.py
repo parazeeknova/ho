@@ -221,11 +221,11 @@ class CandidateConfig:
 class LlmQueueConfig:
     """LLM work-queue rate-limiting and budget controls for the radar pipeline."""
 
-    requests_per_minute: int = field(default_factory=lambda: _env_int("LLM_QUEUE_RPM", 70))
+    requests_per_minute: int = field(default_factory=lambda: _env_int("LLM_QUEUE_RPM", 90))
     estimated_tokens_per_minute: int = field(
-        default_factory=lambda: _env_int("LLM_QUEUE_TPM", 50000)
+        default_factory=lambda: _env_int("LLM_QUEUE_TPM", 90000)
     )
-    max_in_flight: int = field(default_factory=lambda: _env_int("LLM_QUEUE_MAX_IN_FLIGHT", 2))
+    max_in_flight: int = field(default_factory=lambda: _env_int("LLM_QUEUE_MAX_IN_FLIGHT", 4))
     match_token_budget: int = field(
         default_factory=lambda: _env_int("LLM_QUEUE_MATCH_TOKENS", 1200)
     )

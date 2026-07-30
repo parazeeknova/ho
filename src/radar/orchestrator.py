@@ -1068,9 +1068,19 @@ async def _run_radar_pipeline() -> None:
                 if should_poll(id_) and not any(s["id"] == id_ for s in active_sources):
                     active_sources.append({"id": id_, "url": url, "source_type": source_type})
 
-            for board in active_sources:
-                board_obs = await _poll_board(board, app)
-                all_obs.extend(board_obs)
+            # Parallel source polling
+            poll_sem = asyncio.Semaphore(8)
+            board_results: list[list[JobObservation]] = []
+
+            async def _poll_one(board, sem):
+                async with sem:
+                    return await _poll_board(board, app)
+
+            tasks = [asyncio.create_task(_poll_one(b, poll_sem)) for b in active_sources]
+            for task in asyncio.as_completed(tasks):
+                board_results.append(await task)
+            for obs_list in board_results:
+                all_obs.extend(obs_list)
 
             logger.info(
                 f"Sources: {len(all_obs)} observations across {len(active_sources)} active sources"
