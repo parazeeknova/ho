@@ -1,12 +1,13 @@
-"""WorkScheduler — persistent event-driven execution engine with AdaptiveSemaphore,
+"""WorkScheduler - persistent event-driven execution engine with AdaptiveSemaphore,
 true batch dispatch, graph expansion loop, and comprehensive observability.
 
 Key properties:
-  • AdaptiveSemaphore for mutable concurrency limits (no object recreation).
-  • Batch-capable agents receive WorkBatch directly (shared HTTP, LLM, embeds).
-  • GraphExpansionEngine auto-generates FrontierEntries from graph state.
-  • Lease heartbeats for long-running tasks.
-  • Latency, throughput, and retry-reason tracking in metrics.
+  - AdaptiveSemaphore for mutable concurrency limits (no object recreation).
+  - Batch-capable agents receive WorkBatch directly (shared HTTP, LLM, embeds).
+  - InferenceDrivenExpander auto-generates FrontierEntries from graph state
+    using capability graphs and information gain scoring.
+  - Lease heartbeats for long-running tasks.
+  - Latency, throughput, and retry-reason tracking in metrics.
 """
 
 from __future__ import annotations
@@ -24,15 +25,17 @@ from src.configuration import SchedulerConfig, get_config
 from src.graph.entity import (
     AGENT_BATCHABLE,
     AGENT_CONCURRENCY,
-    MUTATION_EXPANSION_RULES,
+    CAPABILITY_GRAPH,
     AdaptiveSemaphore,
     BatchHandlerType,
+    EdgeType,
     FrontierEntry,
     HandlerType,
     MutationEvent,
     NodeType,
     SchedulerMetrics,
     WorkState,
+    compute_uncertainty_score,
     make_work_id,
 )
 from src.graph.frontier import CrawlFrontier
@@ -42,62 +45,190 @@ console = Console()
 logger = get_logger("scheduler")
 
 
-class GraphExpansionEngine:
-    """On every mutation, check expansion rules and enqueue work.
-    Only the affected neighborhood is evaluated."""
+class InferenceDrivenExpander:
+    """Declarative, inference-driven expansion engine.
+
+    Replaces static mutation rules with:
+    1. Capability graph: expected relationship patterns per node type.
+    2. Information gain: compute uncertainty/completeness per node.
+    3. Dynamic frontier: generate tasks based on expected information gain
+       rather than hardcoded mutation triggers.
+
+    On any mutation event, evaluates the affected node's capability graph
+    to identify missing relationships and enqueues information-gathering
+    tasks ordered by expected information gain.
+    """
+
+    _CAPABILITY_TO_AGENT: dict[EdgeType, str] = {
+        EdgeType.FOUNDED_BY: "founder_miner",
+        EdgeType.USES_ATS: "ats_crawler",
+        EdgeType.HAS_FUNDING: "funding_agent",
+        EdgeType.HAS_CAREER_SITE: "career_site_detector",
+        EdgeType.POSTED_JOB: "ats_crawler",
+        EdgeType.USES_TECH: "tech_stack_agent",
+    }
+
+    _CAPABILITY_PRIORITY: dict[EdgeType, int] = {
+        EdgeType.FOUNDED_BY: 70,
+        EdgeType.USES_ATS: 55,
+        EdgeType.HAS_FUNDING: 50,
+        EdgeType.HAS_CAREER_SITE: 60,
+        EdgeType.POSTED_JOB: 45,
+        EdgeType.USES_TECH: 35,
+    }
 
     def __init__(self) -> None:
         self._seen_triggers: set[str] = set()
+        self._expansion_count: int = 0
 
     async def on_mutation(
-        self, event: MutationEvent, enqueue: Any, get_node: Any, _get_adjacency: Any = None
+        self,
+        event: MutationEvent,
+        enqueue,
+        get_node,
+        get_adjacency=None,
     ) -> int:
         if event.event_id in self._seen_triggers:
             return 0
         self._seen_triggers.add(event.event_id)
+
+        nid = event.mutated_id
+        node = await get_node(nid)
+        if node is None:
+            return 0
+
+        patterns = CAPABILITY_GRAPH.get(node.node_type, [])
+        if not patterns:
+            return 0
+
+        adjacency: dict[str, Any] = {"edges_out": set(), "edges_in": set()}
+        if get_adjacency is not None:
+            adjacency = await get_adjacency(nid)
+
+        uncertainty = compute_uncertainty_score(node, adjacency, CAPABILITY_GRAPH)
+
         generated = 0
+        for pattern in sorted(
+            patterns,
+            key=lambda p: (1.0 if p.required else 0.0, p.min_count),
+            reverse=True,
+        ):
+            edge_key = f"{pattern.edge_type.value}:"
+            existing_matches = sum(
+                1 for e in adjacency.get("edges_out", set()) if edge_key in e
+            ) + sum(1 for e in adjacency.get("edges_in", set()) if edge_key in e)
 
-        for rule in MUTATION_EXPANSION_RULES:
-            if rule["change"] != event.change:
-                continue
-            if rule.get("node_type") and event.node_type != rule["node_type"]:
-                continue
-            if rule.get("edge_type") and event.edge_type != rule["edge_type"]:
+            if existing_matches >= pattern.min_count:
                 continue
 
-            nid = event.mutated_id
-            node = await get_node(nid)
-            if node is None:
+            agent = self._CAPABILITY_TO_AGENT.get(pattern.edge_type)
+            if agent is None:
                 continue
 
-            if "check_field" in rule:
-                field = rule["check_field"]
-                if node.data.get(field):
-                    continue
+            info_gain = uncertainty.total
+            priority = self._CAPABILITY_PRIORITY.get(
+                pattern.edge_type,
+                int(info_gain * 100),
+            )
+            priority = min(99, priority + int(info_gain * 40))
 
-            wid = make_work_id(rule["agent"], nid, rule["depth"])
+            wid = make_work_id(agent, nid, 1)
             if wid in self._seen_triggers:
                 continue
             self._seen_triggers.add(wid)
 
-            payload: dict[str, Any] = {"company": node.data.get("name", ""), "node_id": nid}
-            if event.related_id and rule.get("edge_type"):
-                payload["related_id"] = event.related_id
+            payload = {
+                "company": node.data.get("name", ""),
+                "node_id": nid,
+                "missing_edge": pattern.edge_type.value,
+                "info_gain": round(info_gain, 3),
+                "required": pattern.required,
+            }
 
             await enqueue(
                 FrontierEntry(
                     id=wid,
-                    agent=rule["agent"],
+                    agent=agent,
                     node_id=nid,
-                    node_type=event.node_type,
-                    priority=rule["priority"],
-                    depth=rule["depth"],
+                    node_type=node.node_type,
+                    priority=priority,
+                    depth=1,
                     payload=payload,
+                )
+            )
+            generated += 1
+            self._expansion_count += 1
+
+        return generated
+
+    async def evaluate_node(
+        self,
+        node_id: str,
+        get_node,
+        get_adjacency,
+        enqueue,
+    ) -> int:
+        """Proactively evaluate a node and generate expansion tasks."""
+        node = await get_node(node_id)
+        if node is None:
+            return 0
+
+        patterns = CAPABILITY_GRAPH.get(node.node_type, [])
+        if not patterns:
+            return 0
+
+        adjacency: dict[str, Any] = {"edges_out": set(), "edges_in": set()}
+        if get_adjacency:
+            adjacency = await get_adjacency(node_id)
+
+        uncertainty = compute_uncertainty_score(node, adjacency)
+        generated = 0
+
+        for pattern in patterns:
+            edge_key = f"{pattern.edge_type.value}:"
+            existing = sum(1 for e in adjacency.get("edges_out", set()) if edge_key in e) + sum(
+                1 for e in adjacency.get("edges_in", set()) if edge_key in e
+            )
+            if existing >= pattern.min_count:
+                continue
+
+            agent = self._CAPABILITY_TO_AGENT.get(pattern.edge_type)
+            if agent is None:
+                continue
+
+            priority = self._CAPABILITY_PRIORITY.get(
+                pattern.edge_type,
+                int(uncertainty.total * 100),
+            )
+            wid = make_work_id(f"proactive:{agent}", node_id, 1)
+            if wid in self._seen_triggers:
+                continue
+            self._seen_triggers.add(wid)
+
+            await enqueue(
+                FrontierEntry(
+                    id=wid,
+                    agent=agent,
+                    node_id=node_id,
+                    node_type=node.node_type,
+                    priority=min(99, priority + int(uncertainty.total * 40)),
+                    depth=1,
+                    payload={
+                        "company": node.data.get("name", ""),
+                        "node_id": node_id,
+                        "missing_edge": pattern.edge_type.value,
+                        "info_gain": round(uncertainty.total, 3),
+                        "required": pattern.required,
+                    },
                 )
             )
             generated += 1
 
         return generated
+
+    @property
+    def expansion_count(self) -> int:
+        return self._expansion_count
 
 
 class WorkScheduler:
@@ -116,7 +247,7 @@ class WorkScheduler:
         self._running = False
         self._shutdown = asyncio.Event()
         self._drain_mode = asyncio.Event()
-        self._expansion = GraphExpansionEngine()
+        self._expansion = InferenceDrivenExpander()
 
         self._agent_sems: dict[str, AdaptiveSemaphore] = {
             name: AdaptiveSemaphore(limit) for name, limit in AGENT_CONCURRENCY.items()
@@ -147,14 +278,23 @@ class WorkScheduler:
             self._agent_sems[name] = AdaptiveSemaphore(3)
 
     async def expansion_cycle(self, graph_store) -> int:
+        """Proactively evaluate company nodes for missing capability edges.
+
+        Scans all company nodes, computes uncertainty scores, and
+        enqueues information-gathering tasks for the highest-priority gaps.
+        Returns the total number of expansion tasks generated.
+        """
         nodes = await graph_store.get_nodes_by_type(NodeType.COMPANY, limit=200)
-        edges = await graph_store.get_all_edges(limit=500)
-        node_map = {n.id: n for n in nodes}
-        edge_dicts = [
-            {"source": e.source_id, "target": e.target_id, "type": e.edge_type.value} for e in edges
-        ]
-        node_dicts = [{"id": n.id, "node_type": n.node_type.value, "data": n.data} for n in nodes]
-        return await self._expansion.expand(node_dicts, edge_dicts, node_map, self.enqueue)
+        total_generated = 0
+        for node in nodes:
+            generated = await self._expansion.evaluate_node(
+                node.id,
+                graph_store.get_node,
+                lambda nid: graph_store.get_node_adjacency(nid),
+                self.enqueue,
+            )
+            total_generated += generated
+        return total_generated
 
     # Lifecycle
 

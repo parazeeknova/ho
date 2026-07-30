@@ -19,7 +19,11 @@ from src.graph.entity import (
     MutationEvent,
     NodeType,
     confidence_decay,
+    fuzzy_match_companies,
+    make_canonical_company_id,
     merge_confidence,
+    normalize_company_name,
+    resolve_entity,
 )
 from src.logging import get_logger
 
@@ -123,7 +127,15 @@ class GraphStore:
         events: list[MutationEvent] = []
         if existing:
             old_len = len(existing.data)
-            existing.data = {**existing.data, **node.data}
+            new_data = dict(node.data)
+            new_alias = node.name
+            existing.data = resolve_entity(
+                existing_aliases=existing.data.get("aliases", []),
+                new_alias=new_alias,
+                existing_data=existing.data,
+                new_data=new_data,
+                new_source=new_data.get("source", "unknown"),
+            )
             existing.confidence = merge_confidence(existing.confidence, node.confidence)
             existing.updated_at = datetime.now(UTC)
             existing.active = True
@@ -137,6 +149,9 @@ class GraphStore:
                     )
                 )
         else:
+            node.data.setdefault("aliases", [])
+            if node.name not in node.data["aliases"]:
+                node.data["aliases"].append(node.name)
             events.append(
                 MutationEvent(
                     mutated_id=node.id,
@@ -163,6 +178,145 @@ class GraphStore:
             self._node_params(node),
         )
         return node, events
+
+    async def upsert_node_canonical(
+        self, node: GraphNode
+    ) -> tuple[GraphNode, list[MutationEvent], bool]:
+        """Upsert using canonical ID resolution.
+
+        Returns (node, events, is_new).
+        Attempts fuzzy matching against existing companies and merges
+        if a duplicate is found, preserving aliases.
+        """
+        canonical_id = make_canonical_company_id(node.name)
+        events: list[MutationEvent] = []
+        is_new = False
+
+        existing = await self.get_node(node.id)
+        if existing:
+            existing.data["aliases"] = list(set(existing.data.get("aliases", []) + [node.name]))
+            resolved, resolved_events = await self.upsert_node(
+                GraphNode(
+                    id=existing.id,
+                    node_type=existing.node_type,
+                    data=existing.data,
+                    confidence=merge_confidence(existing.confidence, node.confidence),
+                )
+            )
+            return resolved, resolved_events, False
+
+        existing_canonical = await self.get_node(canonical_id)
+        if existing_canonical:
+            existing_canonical.data["aliases"] = list(
+                set(existing_canonical.data.get("aliases", []) + [node.name, node.id])
+            )
+            resolved_data = resolve_entity(
+                existing_aliases=existing_canonical.data.get("aliases", []),
+                new_alias=node.name,
+                existing_data=existing_canonical.data,
+                new_data=node.data,
+                new_source=node.data.get("source", "unknown"),
+            )
+            resolved, resolved_events = await self.upsert_node(
+                GraphNode(
+                    id=existing_canonical.id,
+                    node_type=existing_canonical.node_type,
+                    data=resolved_data,
+                    confidence=merge_confidence(existing_canonical.confidence, node.confidence),
+                )
+            )
+            return resolved, resolved_events, False
+
+        companies = await self.search_companies(normalize_company_name(node.name)[:20], limit=20)
+        for candidate in companies:
+            if candidate.id == node.id:
+                continue
+            is_dup, score = fuzzy_match_companies(
+                node.name,
+                candidate.data.get("name", ""),
+                node.data.get("url"),
+                candidate.data.get("url"),
+            )
+            if is_dup and score > 0.85:
+                candidate.data["aliases"] = list(
+                    set(candidate.data.get("aliases", []) + [node.name, node.id])
+                )
+                candidate.data["duplicate_score"] = score
+                resolved_data = resolve_entity(
+                    existing_aliases=candidate.data.get("aliases", []),
+                    new_alias=node.name,
+                    existing_data=candidate.data,
+                    new_data=node.data,
+                    new_source=node.data.get("source", "unknown"),
+                )
+                resolved, resolved_events = await self.upsert_node(
+                    GraphNode(
+                        id=candidate.id,
+                        node_type=candidate.node_type,
+                        data=resolved_data,
+                        confidence=merge_confidence(candidate.confidence, node.confidence),
+                    )
+                )
+                return resolved, resolved_events, False
+
+        node.id = canonical_id
+        node.data["aliases"] = list(set(node.data.get("aliases", []) + [node.name, node.id]))
+        is_new = True
+        events.append(
+            MutationEvent(
+                mutated_id=canonical_id,
+                node_type=node.node_type,
+                change="node_created",
+            )
+        )
+        events.append(
+            MutationEvent(
+                mutated_id=canonical_id,
+                node_type=node.node_type,
+                change="node_upsert",
+            )
+        )
+        await self._run(
+            """
+            MERGE (n:GraphNode {id: $id})
+            SET n.node_type = $node_type, n.data = $data,
+                n.confidence_score = $confidence_score, n.confidence_src = $confidence_src,
+                n.confidence_mtd = $confidence_mtd, n.last_verified = $last_verified,
+                n.first_seen = $first_seen, n.created_at = $created_at,
+                n.updated_at = $updated_at, n.active = $active
+        """,
+            self._node_params(node),
+        )
+        return node, events, is_new
+
+    async def find_duplicates(self, min_score: float = 0.8) -> list[dict[str, Any]]:
+        """Find duplicate company nodes in the graph using fuzzy matching.
+
+        Returns list of {node_a, node_b, score} for manual or automatic resolution.
+        """
+        companies = await self.get_nodes_by_type(NodeType.COMPANY, limit=500)
+        duplicates: list[dict[str, Any]] = []
+        for i, a in enumerate(companies):
+            for b in companies[i + 1 :]:
+                if a.id == b.id:
+                    continue
+                is_dup, score = fuzzy_match_companies(
+                    a.data.get("name", ""),
+                    b.data.get("name", ""),
+                    a.data.get("url"),
+                    b.data.get("url"),
+                )
+                if is_dup and score >= min_score:
+                    duplicates.append(
+                        {
+                            "node_a_id": a.id,
+                            "node_b_id": b.id,
+                            "node_a_name": a.data.get("name", ""),
+                            "node_b_name": b.data.get("name", ""),
+                            "score": score,
+                        }
+                    )
+        return duplicates
 
     async def get_node(self, node_id: str) -> GraphNode | None:
         rows = await self._run("MATCH (n:GraphNode {id: $id}) RETURN n", {"id": node_id})
@@ -348,6 +502,136 @@ class GraphStore:
                     )
                 )
         return {"nodes": nodes, "edges": edges}
+
+    # Neo4j Graph Data Science (GDS)
+
+    async def compute_pagerank(self) -> dict[str, float]:
+        """Native Neo4j PageRank across all active Company and Founder nodes.
+
+        Returns mapping of node_id -> PageRank score (0-1, sum ≈ 1.0).
+        Falls back to Python-based PageRank if GDS library not installed.
+        """
+        try:
+            rows = await self._run(
+                """
+                CALL gds.pageRank.stream('graph_view')
+                YIELD nodeId, score
+                RETURN gds.util.asNode(nodeId).id AS node_id, score
+                ORDER BY score DESC
+                LIMIT 200
+                """
+            )
+            if rows:
+                return {r["node_id"]: r["score"] for r in rows}
+        except Exception:
+            logger.debug("Neo4j GDS not available, using fallback PageRank")
+
+        nodes = await self.get_nodes_by_type(NodeType.COMPANY, limit=200)
+        edges = await self.get_all_edges(limit=1000)
+        node_ids = [n.id for n in nodes]
+        edge_dicts = [{"source": e.source_id, "target": e.target_id} for e in edges]
+        from src.graph.entity import compute_centrality
+
+        return compute_centrality(node_ids, edge_dicts)
+
+    async def compute_connected_components(self) -> dict[str, int]:
+        """Weakly Connected Components via Neo4j GDS.
+
+        Returns mapping of node_id -> component_id.
+        Used to find isolated subgraphs (stealth startups, closed ecosystems).
+        """
+        try:
+            rows = await self._run(
+                """
+                CALL gds.wcc.stream('graph_view')
+                YIELD nodeId, componentId
+                RETURN gds.util.asNode(nodeId).id AS node_id, componentId
+                LIMIT 500
+                """
+            )
+            if rows:
+                return {r["node_id"]: r["componentId"] for r in rows}
+        except Exception:
+            logger.debug("Neo4j GDS WCC not available")
+
+        return {}
+
+    async def compute_betweenness_centrality(self) -> dict[str, float]:
+        """Betweenness Centrality via Neo4j GDS.
+
+        Returns mapping of node_id -> betweenness score.
+        High betweenness nodes are critical bridges in the graph.
+        """
+        try:
+            rows = await self._run(
+                """
+                CALL gds.betweenness.stream('graph_view')
+                YIELD nodeId, score
+                RETURN gds.util.asNode(nodeId).id AS node_id, score
+                ORDER BY score DESC
+                LIMIT 200
+                """
+            )
+            if rows:
+                return {r["node_id"]: r["score"] for r in rows}
+        except Exception:
+            logger.debug("Neo4j GDS betweenness not available")
+
+        return {}
+
+    async def update_all_graph_metrics(self) -> dict[str, Any]:
+        """Periodically execute all graph algorithms and store results
+        in node data properties for use in priority scoring.
+
+        Returns dict with counts of updated nodes per metric.
+        """
+        pagerank = await self.compute_pagerank()
+        components = await self.compute_connected_components()
+        betweenness = await self.compute_betweenness_centrality()
+
+        for node_id, score in pagerank.items():
+            await self._run(
+                "MATCH (n:GraphNode {id: $id}) SET n.data = apoc.convert.setProperty(n.data, 'pagerank', $score), n.updated_at = $now",
+                {"id": node_id, "score": score, "now": datetime.now(UTC).isoformat()},
+            )
+
+        for node_id, component in components.items():
+            await self._run(
+                "MATCH (n:GraphNode {id: $id}) SET n.data = apoc.convert.setProperty(n.data, 'wcc_component', $comp), n.updated_at = $now",
+                {"id": node_id, "comp": component, "now": datetime.now(UTC).isoformat()},
+            )
+
+        for node_id, score in betweenness.items():
+            await self._run(
+                "MATCH (n:GraphNode {id: $id}) SET n.data = apoc.convert.setProperty(n.data, 'betweenness', $score), n.updated_at = $now",
+                {"id": node_id, "score": score, "now": datetime.now(UTC).isoformat()},
+            )
+
+        logger.info(
+            "Graph metrics updated",
+            extra={
+                "pagerank_nodes": len(pagerank),
+                "wcc_components": len(set(components.values())),
+                "betweenness_nodes": len(betweenness),
+            },
+        )
+        return {
+            "pagerank_nodes": len(pagerank),
+            "wcc_components": len(set(components.values())),
+            "betweenness_nodes": len(betweenness),
+        }
+
+    async def get_graph_metrics_for_node(self, node_id: str) -> dict[str, float]:
+        """Retrieve stored graph metrics for a single node."""
+        node = await self.get_node(node_id)
+        if node is None:
+            return {}
+        return {
+            "pagerank": float(node.data.get("pagerank", 0)),
+            "wcc_component": int(node.data.get("wcc_component", -1)),
+            "betweenness": float(node.data.get("betweenness", 0)),
+            "confidence_score": node.confidence.score,
+        }
 
     # Diagnostics
 

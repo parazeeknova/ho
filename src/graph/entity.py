@@ -2,6 +2,9 @@
 
 Deterministic ID generation for deduplication. Lease heartbeats for
 long-running tasks. Utility scoring for information gain/cost tradeoffs.
+
+Entity Resolution: fuzzy matching for duplicate detection with canonical
+IDs and alias preservation across Neo4j and PostgreSQL.
 """
 
 from __future__ import annotations
@@ -155,6 +158,147 @@ def make_founder_id(name: str, company_name: str) -> str:
     return _hash(f"founder:{name.lower().strip()}:{company_name.lower().strip()}")
 
 
+# Entity Resolution
+
+
+def normalize_company_name(name: str) -> str:
+    """Produce a canonical, normalized form for fuzzy-deduping company names.
+
+    Handles: 'Stripe Inc.' -> 'stripe', 'stripe.com' -> 'stripe',
+    'Stripe, Inc.' -> 'stripe'.
+    """
+    n = name.lower().strip()
+    for suffix in (
+        " inc.",
+        " inc",
+        ", inc.",
+        ", inc",
+        " ltd.",
+        " ltd",
+        " llc",
+        " llc.",
+        " corp.",
+        " corp",
+        " corporation",
+        " co.",
+        " co",
+        " limited",
+        " l.l.c.",
+        " pvt ltd",
+        " private limited",
+        " pte ltd",
+        " gmbh",
+    ):
+        if n.endswith(suffix):
+            n = n[: -len(suffix)].strip()
+    if n.startswith("www."):
+        n = n[4:]
+    for tld in (".com", ".io", ".co", ".ai", ".dev", ".app", ".org", ".net", ".in"):
+        if n.endswith(tld):
+            n = n[: -len(tld)].strip()
+    n = " ".join(n.split())
+    return n
+
+
+def make_canonical_company_id(name: str) -> str:
+    """Canonical ID from normalized name for stable cross-source merging."""
+    return _hash(f"company_canonical:{normalize_company_name(name)}")
+
+
+def fuzzy_match_companies(
+    a_name: str,
+    b_name: str,
+    a_url: str | None = None,
+    b_url: str | None = None,
+) -> tuple[bool, float]:
+    """Detect duplicate company names with fuzzy matching.
+
+    Returns (is_duplicate, similarity_score).
+
+    Rules:
+    - Exact match after normalize: score 1.0
+    - Same domain: score 0.95
+    - High Jaccard similarity on tokenized name: score 0.7-0.9
+    """
+    a_norm = normalize_company_name(a_name)
+    b_norm = normalize_company_name(b_name)
+    if a_norm == b_norm:
+        return True, 1.0
+    if a_url and b_url:
+        from urllib.parse import urlparse
+
+        try:
+            a_domain = urlparse(a_url).netloc.lower().replace("www.", "")
+            b_domain = urlparse(b_url).netloc.lower().replace("www.", "")
+            if a_domain and b_domain and a_domain == b_domain:
+                return True, 0.95
+        except Exception:
+            pass
+    a_tokens = set(a_norm.replace("-", " ").split())
+    b_tokens = set(b_norm.replace("-", " ").split())
+    if a_tokens and b_tokens:
+        intersection = a_tokens & b_tokens
+        union = a_tokens | b_tokens
+        jaccard = len(intersection) / len(union) if union else 0
+        if jaccard >= 0.75:
+            return True, 0.7 + jaccard * 0.3
+    return False, 0.0
+
+
+class PropertyProvenance(BaseModel):
+    value: Any
+    source: str
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    confidence: float = 0.5
+
+
+def property_provenance(
+    value: Any,
+    source: str,
+    confidence: float = 0.5,
+) -> PropertyProvenance:
+    return PropertyProvenance(value=value, source=source, confidence=confidence)
+
+
+def resolve_entity(
+    existing_aliases: list[str],
+    new_alias: str,
+    existing_data: dict[str, Any],
+    new_data: dict[str, Any],
+    new_source: str,
+) -> dict[str, Any]:
+    """Merge data from a new source into existing node data with provenance.
+
+    Existing non-provenance fields are upgraded to PropertyProvenance.
+    Conflicting values from different sources coexist until resolved
+    by confidence scores.
+    """
+    merged: dict[str, Any] = dict(existing_data)
+    merged.setdefault("aliases", [])
+    if existing_aliases:
+        for alias in existing_aliases:
+            if alias not in merged["aliases"]:
+                merged["aliases"].append(alias)
+    if new_alias not in merged["aliases"]:
+        merged["aliases"].append(new_alias)
+
+    for key, value in new_data.items():
+        if key == "aliases":
+            continue
+        existing = merged.get(key)
+        if existing is None:
+            merged[key] = property_provenance(value, new_source).model_dump()
+            continue
+        if isinstance(existing, dict) and "value" in existing and "source" in existing:
+            if existing["value"] != value:
+                alt_key = f"{key}__alt_{new_source}"
+                merged[alt_key] = property_provenance(value, new_source).model_dump()
+        else:
+            merged[key] = property_provenance(value, new_source).model_dump()
+
+    return merged
+
+
 # Cost
 
 
@@ -266,22 +410,51 @@ class FrontierEntry:
         is_startup: bool = False,
         match_score: int = 0,
         centrality: float = 0.0,
+        pagerank: float = 0.0,
+        betweenness: float = 0.0,
+        relationship_density: int = 0,
+        entity_uncertainty: float = 0.0,
+        freshness_days: float = 0.0,
     ) -> None:
-        weight = self.expected_utility / 10.0
-        score = int(min(100, weight * 60 + 20))
-        if graph_confidence is not None:
-            score = max(score, int(graph_confidence * 100))
+        """Recalculate priority driven by GDS graph metrics.
+
+        Formula weights (sums to ~100):
+          - PageRank influence:         25%
+          - Relationship density:       20%
+          - Entity uncertainty:         25%
+          - Freshness bonus:            10%
+          - Hiring / funding signals:   10%
+          - Match score / centrality:   10%
+
+        Higher PageRank, more missing relationships, higher uncertainty,
+        and fresher data all push the priority up.
+        """
+        pagerank_component = min(25, pagerank * 250)
+        density_component = min(20, relationship_density * 2)
+        uncertainty_component = min(25, entity_uncertainty * 25)
+        freshness_component = max(0, 10 - min(10, freshness_days * 0.5))
+
+        signal_component = 0
         if has_hiring_signal:
-            score += 20
+            signal_component += 5
         if has_recent_funding:
-            score += 20
-        if is_startup:
-            score += 10
-        if match_score > 0:
-            score = max(score, match_score // 2)
+            signal_component += 5
+
+        residual = max(0, match_score / 10)
         if centrality > 0:
-            score += min(15, int(centrality * 100))
-        self.priority = min(100, score)
+            residual += min(5, centrality * 50)
+        if betweenness > 0:
+            residual += min(5, betweenness * 50)
+
+        score = int(
+            pagerank_component
+            + density_component
+            + uncertainty_component
+            + freshness_component
+            + signal_component
+            + residual
+        )
+        self.priority = min(100, max(1, score))
 
 
 # Adaptive Semaphore
@@ -390,46 +563,155 @@ class MutationEvent:
         return _hash("mutation", *parts)
 
 
-# Graph expansion rules (triggered by mutations, not full scans)
-MUTATION_EXPANSION_RULES: list[dict[str, Any]] = [
-    {
-        "change": "node_upsert",
-        "node_type": NodeType.COMPANY,
-        "check_field": "founders",
-        "agent": "founder_miner",
-        "priority": 70,
-        "depth": 1,
-    },
-    {
-        "change": "node_upsert",
-        "node_type": NodeType.COMPANY,
-        "check_field": "funding_stage",
-        "agent": "funding_agent",
-        "priority": 50,
-        "depth": 2,
-    },
-    {
-        "change": "edge_added",
-        "edge_type": EdgeType.FOUNDED_BY,
-        "agent": "founder_social_osint",
-        "priority": 50,
-        "depth": 2,
-    },
-    {
-        "change": "edge_added",
-        "edge_type": EdgeType.USES_ATS,
-        "agent": "ats_crawler",
-        "priority": 55,
-        "depth": 2,
-    },
-    {
-        "change": "edge_added",
-        "edge_type": EdgeType.HAS_FUNDING,
-        "agent": "funding_agent",
-        "priority": 45,
-        "depth": 2,
-    },
-]
+# Capability Graph Definitions
+
+
+@dataclass
+class CapabilityPattern:
+    edge_type: EdgeType
+    target_type: NodeType
+    required: bool = False
+    min_count: int = 1
+    description: str = ""
+
+
+CAPABILITY_GRAPH: dict[NodeType, list[CapabilityPattern]] = {
+    NodeType.COMPANY: [
+        CapabilityPattern(
+            EdgeType.FOUNDED_BY,
+            NodeType.FOUNDER,
+            required=True,
+            description="Should have at least one known founder",
+        ),
+        CapabilityPattern(
+            EdgeType.USES_ATS,
+            NodeType.ATS,
+            required=False,
+            description="May use an ATS for hiring",
+        ),
+        CapabilityPattern(
+            EdgeType.HAS_FUNDING,
+            NodeType.FUNDING_ROUND,
+            required=False,
+            description="May have funding rounds",
+        ),
+        CapabilityPattern(
+            EdgeType.HAS_CAREER_SITE,
+            NodeType.CAREER_SITE,
+            required=False,
+            description="May have a career site",
+        ),
+        CapabilityPattern(
+            EdgeType.USES_TECH,
+            NodeType.TECHNOLOGY,
+            required=False,
+            description="Uses specific technologies",
+        ),
+        CapabilityPattern(
+            EdgeType.POSTED_JOB,
+            NodeType.JOB,
+            required=False,
+            description="Has posted job openings",
+        ),
+    ],
+    NodeType.FOUNDER: [
+        CapabilityPattern(
+            EdgeType.FOUNDED_BY,
+            NodeType.COMPANY,
+            required=True,
+            description="Associated with a company",
+        ),
+        CapabilityPattern(
+            EdgeType.WORKS_AT,
+            NodeType.COMPANY,
+            required=False,
+            description="May work at a specific company",
+        ),
+    ],
+    NodeType.CAREER_SITE: [
+        CapabilityPattern(
+            EdgeType.POSTED_JOB,
+            NodeType.JOB,
+            required=True,
+            description="Should have job postings",
+        ),
+    ],
+    NodeType.FUNDING_ROUND: [
+        CapabilityPattern(
+            EdgeType.INVESTED_BY,
+            NodeType.INVESTOR,
+            required=False,
+            description="May have known investors",
+        ),
+    ],
+}
+
+
+class NodeUncertaintyScore(BaseModel):
+    completeness: float = 0.0
+    uncertainty: float = 0.0
+    staleness: float = 0.0
+    total: float = 0.0
+
+
+def compute_uncertainty_score(
+    node: GraphNode,
+    adjacency: dict[str, Any],
+    capability_graph: dict | None = None,
+    max_age_days: int = 30,
+) -> NodeUncertaintyScore:
+    """Calculate uncertainty and completeness for a node.
+
+    - completeness: fraction of required and optional capability patterns satisfied
+    - uncertainty: inverse of confidence, weighted by missing required edges
+    - staleness: how stale the data is (age / max_age)
+    - total: composite score suitable for ranking frontier expansion
+
+    Lower completeness and higher uncertainty mean the node is a priority
+    target for information-gathering operations.
+    """
+    patterns = (capability_graph or CAPABILITY_GRAPH).get(node.node_type, [])
+    if not patterns:
+        return NodeUncertaintyScore(completeness=1.0, uncertainty=0.0, staleness=0.0, total=0.0)
+
+    edges_out = adjacency.get("edges_out", set())
+    edges_in = adjacency.get("edges_in", set())
+
+    satisfied = 0
+    required_total = 0
+    required_satisfied = 0
+
+    for pat in patterns:
+        key = f"{pat.edge_type.value}:"
+        matches = sum(1 for e in edges_out if key in e) + sum(1 for e in edges_in if key in e)
+        if matches >= pat.min_count:
+            satisfied += 1
+            if pat.required:
+                required_satisfied += 1
+        if pat.required:
+            required_total += 1
+
+    total_patterns = len(patterns)
+    completeness = satisfied / total_patterns if total_patterns > 0 else 1.0
+
+    required_penalty = 0.0
+    if required_total > 0:
+        required_penalty = (required_total - required_satisfied) / required_total * 0.5
+    uncertainty = (1.0 - node.confidence.score) * (0.5 + required_penalty)
+    uncertainty = min(1.0, uncertainty)
+
+    age = (datetime.now(UTC) - node.updated_at).days
+    staleness = min(1.0, age / max_age_days)
+
+    total = (1.0 - completeness) * 0.5 + uncertainty * 0.3 + staleness * 0.2
+    total = min(1.0, max(0.0, total))
+
+    return NodeUncertaintyScore(
+        completeness=completeness,
+        uncertainty=uncertainty,
+        staleness=staleness,
+        total=total,
+    )
 
 
 # Graph analytics

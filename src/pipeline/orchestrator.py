@@ -60,8 +60,8 @@ console = Console()
 logger = get_logger("orchestrator")
 
 
-def filter_last_24_hours(jobs: list[dict]) -> list[dict]:
-    """Drop any job with a posted_date provably older than 24 hours.
+def filter_recent_jobs(jobs: list[dict]) -> list[dict]:
+    """Drop any job with a posted_date provably older than 14 days.
 
     Null / unparseable dates get checked for relative-date phrases
     (e.g. '3d ago', 'last week') before being admitted.
@@ -77,10 +77,10 @@ def filter_last_24_hours(jobs: list[dict]) -> list[dict]:
         r"\b(?:today|now|just|hour|mins?|minutes?|seconds?|recently)\b",
         re.IGNORECASE,
     )
-    _one_day_rx = re.compile(r"\b(?:1\s*(?:day|d)\s*ago)\b", re.IGNORECASE)
+    _short_rx = re.compile(r"\b(?:(\d+)\s*(?:day|d)\s*ago)\b", re.IGNORECASE)
 
     filtered = []
-    cutoff = datetime.now(UTC) - timedelta(hours=24)
+    cutoff = datetime.now(UTC) - timedelta(days=14)
     for j in jobs:
         date_str = j.get("posted_date") or j.get("posted")
         if not date_str:
@@ -94,12 +94,12 @@ def filter_last_24_hours(jobs: list[dict]) -> list[dict]:
                 filtered.append(j)
         except ValueError, TypeError:
             d_lower = str(date_str).lower()
-            if (
-                _recent_rx.search(d_lower)
-                or _one_day_rx.search(d_lower)
-                or not _old_date_rx.search(d_lower)
-            ):
+            if _recent_rx.search(d_lower) or _short_rx.search(d_lower):
                 filtered.append(j)
+            else:
+                m = _old_date_rx.search(d_lower)
+                if not m:
+                    filtered.append(j)
     return filtered
 
 
@@ -235,7 +235,7 @@ async def _process_and_dispatch_batch(
 
     cfg = get_config().pipeline
 
-    scored = filter_last_24_hours(scored)
+    scored = filter_recent_jobs(scored)
 
     enricher = EnrichmentAgent(store)
     enriched = await enricher.batch_enrich_and_rescore(scored, concurrency=cfg.verify_concurrency)
@@ -802,7 +802,7 @@ async def _run_pipeline() -> None:
                 "https://make-my-trip.com/careers",
             ]
 
-            uncrawled_dynamic = await store.get_uncrawled_domains(limit=30)
+            uncrawled_dynamic = await store.get_uncrawled_domains(limit=150)
             combined_domains = list(set(_map_domains + uncrawled_dynamic))
 
             domain_task = asyncio.create_task(
@@ -869,6 +869,25 @@ async def _run_pipeline() -> None:
             set_pipeline_state(matched_total=total_matched, phase="idle")
             if telegram_agent.is_configured:
                 await telegram_agent.send_sweep_summary(sweep, len(clean_jobs), 0, elapsed)
+
+            if sweep % 3 == 0:
+                set_pipeline_state(phase="graph maintenance")
+                console.print(
+                    "\n[bold cyan]PHASE 2c: Graph Maintenance (metrics + decay)[/bold cyan]"
+                )
+                try:
+                    decayed = await graph.decay_stale_confidence(max_age_days=30)
+                    logger.info(f"Confidence decay: {decayed} nodes decayed")
+                    metrics = await graph.update_all_graph_metrics()
+                    logger.info(
+                        "Graph metrics updated",
+                        extra={
+                            "pagerank": metrics.get("pagerank_nodes", 0),
+                            "components": metrics.get("wcc_components", 0),
+                        },
+                    )
+                except Exception as ge:
+                    logger.exception("Graph maintenance skipped", exc=ge)
 
             if os.environ.get("OVERNIGHT_LOOP", "false").lower() != "true":
                 break
