@@ -47,7 +47,6 @@ ATS_SIGNATURES = {
 _VC_PORTFOLIOS = [
     "https://a16z.com/portfolio/",
     "https://www.sequoiacap.com/our-companies/",
-    "https://www.benchmark.com/portfolio/",
     "https://www.accel.com/companies",
 ]
 
@@ -114,16 +113,28 @@ async def discover_from_yc(limit: int = 50) -> list[dict[str, str]]:
 
 
 async def discover_from_vc_portfolios(limit: int = 40) -> list[dict[str, str]]:
+    """Discover companies from VC portfolio pages via Firecrawl.
+
+    All VC portfolio pages are JS-rendered (React/WordPress); static HTTP
+    won't produce company names. We use Firecrawl's Playwright-backed
+    scrape to get rendered content.
+    """
     companies: list[dict[str, str]] = []
-    for portfolio_url in _VC_PORTFOLIOS:
-        try:
-            async with httpx.AsyncClient(timeout=20.0) as client:
-                resp = await client.get(portfolio_url)
+    cfg = get_config().firecrawl
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        for portfolio_url in _VC_PORTFOLIOS:
+            try:
+                resp = await client.post(
+                    f"{cfg.url}/v1/scrape",
+                    json={"url": portfolio_url, "formats": ["html"], "onlyMainContent": True},
+                )
                 if resp.status_code != 200:
                     continue
-                names = _extract_portfolio_company_names(resp.text, limit)
+                html = (resp.json().get("data") or {}).get("html", "") or ""
+                if not html:
+                    continue
+                names = _extract_portfolio_company_names(html, limit)
                 for name in names:
-                    # Resolve official domain for portfolio companies
                     domain = await _resolve_company_domain(name)
                     companies.append(
                         {
@@ -132,29 +143,50 @@ async def discover_from_vc_portfolios(limit: int = 40) -> list[dict[str, str]]:
                             "source": "vc_portfolio",
                         }
                     )
-        except Exception:
-            continue
+            except Exception:
+                continue
     return companies[:limit]
 
 
 def _extract_portfolio_company_names(html: str, limit: int = 30) -> list[str]:
     names: list[str] = []
-    seen = set()
-    # Try common portfolio page patterns
+    seen: set[str] = set()
+    noise = {
+        "home",
+        "about",
+        "contact",
+        "careers",
+        "portfolio",
+        "menu",
+        "jobs",
+        "team",
+        "news",
+        "blog",
+        "press",
+        "events",
+        "privacy",
+        "terms",
+    }
+
     for pat in (
-        r'"name"\s*:\s*"([^"]+)"',
-        r'alt="([^"]+)"[^>]*class="[^"]*logo',
-        r"<h3[^>]*>([^<]+)</h3>",
+        r"<a[^>]*href=\"https?://([^\"]+)\"[^>]*>([^<]{2,40})</a>",
+        r"<h3[^>]*>([^<]{2,60})</h3>",
+        r"<span[^>]*>([^<]{2,60})</span>",
+        r"<p[^>]*>([^<]{2,60})</p>",
     ):
         for m in re.finditer(pat, html, re.IGNORECASE):
-            name = m.group(1).strip()
+            name = (m.lastindex and m.group(m.lastindex)) or m.group(1)
+            name = _clean_name(name)
             if (
                 2 < len(name) < 60
-                and name.lower() not in ("home", "about", "contact")
+                and name.lower() not in noise
+                and not name.startswith("http")
                 and name not in seen
             ):
                 seen.add(name)
                 names.append(name)
+            if len(names) >= limit:
+                return names[:limit]
     return names[:limit]
 
 
@@ -224,94 +256,6 @@ async def discover_from_hackernews(limit: int = 30) -> list[dict[str, str]]:
         companies = companies[:limit]
     except Exception:
         pass
-    return companies
-
-
-async def discover_from_wellfound(limit: int = 30) -> list[dict[str, str]]:
-    companies: list[dict[str, str]] = []
-    try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            resp = await client.get("https://wellfound.com/jobs")
-            if resp.status_code != 200:
-                return companies
-            seen: set[str] = set()
-            for m in re.finditer(r'href="/company/([^"]+)"', resp.text):
-                slug = m.group(1)
-                if slug in seen:
-                    continue
-                seen.add(slug)
-                name = slug.replace("-", " ").title()
-                # Try to resolve company page for website
-                try:
-                    company_resp = await client.get(f"https://wellfound.com/company/{slug}")
-                    if company_resp.status_code == 200:
-                        site = _extract_website(company_resp.text)
-                        companies.append(
-                            {
-                                "name": name,
-                                "website": site or f"https://wellfound.com/company/{slug}",
-                                "source": "wellfound",
-                            }
-                        )
-                        continue
-                except Exception:
-                    pass
-                companies.append({"name": name, "website": "", "source": "wellfound"})
-    except Exception:
-        pass
-    return companies[:limit]
-
-
-async def discover_from_searxng(kind: str = "hiring") -> list[dict[str, str]]:
-    companies: list[dict[str, str]] = []
-    cfg = get_config().searxng
-
-    queries = {
-        "funding": (
-            'site:techcrunch.com OR site:crunchbase.com "raised" '
-            '"seed" OR "series a" startup hiring'
-        ),
-        "hiring": ('site:linkedin.com/posts "hiring" "software engineer" "startup" "remote"'),
-        "launch": (
-            'site:producthunt.com OR site:wellfound.com "hiring" "software engineer" remote'
-        ),
-    }
-
-    query = queries.get(kind, queries["hiring"])
-    try:
-        async with httpx.AsyncClient(timeout=cfg.timeout) as client:
-            resp = await client.get(
-                cfg.url,
-                params={"q": query, "format": "json", "time_range": "week"},
-            )
-            if resp.status_code == 200:
-                for r in resp.json().get("results", [])[:20]:
-                    title = r.get("title", "")
-                    snippet = r.get("content", "")
-                    source_url = r.get("url", "")
-                    if not title and not snippet:
-                        continue
-                    name = _clean_name(title[:120] or snippet[:120])
-                    if not name or len(name) < 3:
-                        continue
-                    # Store as evidence only; resolve official domain separately
-                    companies.append(
-                        {
-                            "name": name,
-                            "website": "",
-                            "source": f"searxng_{kind}",
-                            "provenance_url": source_url,
-                            "provenance_snippet": snippet[:200],
-                        }
-                    )
-    except Exception:
-        pass
-
-    # Resolve official domains for SearXNG-discovered companies
-    for c in companies:
-        domain = await _resolve_official_domain(c["name"])
-        if domain and not is_aggregator_domain(domain):
-            c["website"] = f"https://{domain}"
     return companies
 
 
