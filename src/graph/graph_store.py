@@ -126,9 +126,16 @@ class GraphStore:
         existing = await self.get_node(node.id)
         events: list[MutationEvent] = []
         if existing:
-            old_len = len(existing.data)
             new_data = dict(node.data)
             new_alias = node.name
+
+            existing_keys = set(existing.data.keys())
+            has_new_material = any(
+                k not in existing_keys or existing.data.get(k) != v
+                for k, v in new_data.items()
+                if k not in ("aliases", "source")
+            )
+
             existing.data = resolve_entity(
                 existing_aliases=existing.data.get("aliases", []),
                 new_alias=new_alias,
@@ -140,7 +147,7 @@ class GraphStore:
             existing.updated_at = datetime.now(UTC)
             existing.active = True
             node = existing
-            if len(existing.data) > old_len:
+            if has_new_material:
                 events.append(
                     MutationEvent(
                         mutated_id=node.id,

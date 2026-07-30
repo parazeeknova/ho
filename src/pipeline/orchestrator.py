@@ -28,9 +28,7 @@ from src.graph.entity import (
     GraphNode,
     NodeType,
     company_node,
-    compute_centrality,
     edge,
-    make_company_id,
     make_founder_id,
     make_work_id,
 )
@@ -290,218 +288,6 @@ async def _process_and_dispatch_batch(
         return filter_recent_jobs(scored)
 
 
-async def _expand_company_graph(
-    graph: GraphStore,
-    bus: EventBus,
-    store: MemoryStore,
-    ctx: ContextManager,
-    telegram_agent: TelegramAgent,
-) -> tuple[int, int]:
-    """Graph expansion round with fire-and-forget event bus, centrality."""
-    cfg = get_config().scheduler
-    startup_agent = StartupAgent(ctx)
-    frontier = CrawlFrontier(max_size=cfg.max_queue_size)
-    engine = WorkScheduler(frontier, worker_count=3)
-
-    bus.set_enqueue_callback(engine.enqueue_many)
-
-    async def _on_company_discovered(event):
-        d = event.payload
-        entries = [
-            FrontierEntry(
-                id=make_work_id("founder_miner", event.node_id),
-                agent="founder_miner",
-                node_id=event.node_id,
-                node_type=NodeType.COMPANY,
-                priority=70,
-                depth=1,
-                payload={"company": d["name"]},
-            )
-        ]
-        if d.get("url"):
-            entries.append(
-                FrontierEntry(
-                    id=make_work_id("career_site_detector", event.node_id),
-                    agent="career_site_detector",
-                    node_id=event.node_id,
-                    node_type=NodeType.COMPANY,
-                    priority=60,
-                    depth=1,
-                    payload={"company": d["name"], "url": d["url"]},
-                )
-            )
-        return entries
-
-    async def _on_founder_discovered(event):
-        d = event.payload
-        return [
-            FrontierEntry(
-                id=make_work_id("founder_social_osint", event.node_id),
-                agent="founder_social_osint",
-                node_id=event.node_id,
-                node_type=NodeType.FOUNDER,
-                priority=50,
-                depth=2,
-                payload={"founder_name": d.get("name", ""), "company": d.get("company", "")},
-            ),
-            FrontierEntry(
-                id=make_work_id("employee_discovery", event.node_id),
-                agent="employee_discovery",
-                node_id=event.node_id,
-                node_type=NodeType.FOUNDER,
-                priority=45,
-                depth=2,
-                payload={"company": d.get("company", "")},
-            ),
-        ]
-
-    async def _on_career_site_discovered(event):
-        url = event.payload.get("url", "")
-        if any(
-            a in url.lower()
-            for a in ("greenhouse", "lever.co", "ashbyhq", "workable", "myworkdayjobs")
-        ):
-            return [
-                FrontierEntry(
-                    id=make_work_id("ats_crawler", event.node_id),
-                    agent="ats_crawler",
-                    node_id=event.node_id,
-                    node_type=NodeType.CAREER_SITE,
-                    priority=55,
-                    depth=2,
-                    payload={"company": event.payload.get("company", ""), "ats_url": url},
-                )
-            ]
-        return []
-
-    bus.subscribe("company_discovered", _on_company_discovered)
-    bus.subscribe("founder_discovered", _on_founder_discovered)
-    bus.subscribe("career_site_discovered", _on_career_site_discovered)
-
-    async def _founder_miner(entry: FrontierEntry) -> list[FrontierEntry]:
-        cn = entry.payload.get("company", "")
-        if not cn:
-            return []
-        enriched = await startup_agent.analyze_startup(
-            {
-                "role": "Startup Analysis",
-                "company": cn,
-                "match_percent": 50,
-                "verdict": "WEAK_MATCH",
-            }
-        )
-        founders = enriched.get("founders", [])
-        node = await graph.get_node(entry.node_id)
-        if node:
-            node.data["founders"] = founders
-            node.data["funding_stage"] = enriched.get("funding_stage", "")
-            node, _ = await graph.upsert_node(node)
-        results: list[FrontierEntry] = []
-        for f in founders[:3]:
-            if isinstance(f, dict) and f.get("name"):
-                f_node = GraphNode(
-                    id=make_founder_id(f["name"], cn),
-                    node_type=NodeType.FOUNDER,
-                    data={**f, "company": cn},
-                )
-                f_node, _ = await graph.upsert_node(f_node)
-                _, _ = await graph.upsert_edge(edge(entry.node_id, EdgeType.FOUNDED_BY, f_node.id))
-                await bus.fire(
-                    bus.new_event(
-                        "founder_discovered",
-                        f_node.id,
-                        NodeType.FOUNDER,
-                        {"name": f["name"], "company": cn},
-                    )
-                )
-        return results
-
-    async def _stub(entry: FrontierEntry) -> list[FrontierEntry]:
-        return []
-
-    engine.register_agent("founder_miner", _founder_miner)
-    engine.register_agent("career_site_detector", _stub)
-    engine.register_agent("founder_social_osint", _stub)
-    engine.register_agent("employee_discovery", _stub)
-    engine.register_agent("ats_crawler", _stub)
-
-    engine.start(worker_count=3)
-
-    entities = await discover_all()
-    if not entities:
-        await engine.shutdown(drain=False)
-        return 0, 0
-
-    logger.info(f"Connectors: {len(entities)} companies discovered")
-    nodes_created = 0
-    events_fired = 0
-
-    for entity in entities:
-        node = company_node(
-            entity.name, description=entity.description, source=entity.source, url=entity.url or ""
-        )
-        node.confidence.score = entity.confidence
-        node.confidence.source_count = 1
-        node, node_events = await graph.upsert_node(node)
-        nodes_created += 1
-
-        for evt in node_events:
-            await engine.process_mutation(evt, graph)
-
-        await bus.fire(
-            bus.new_event(
-                "company_discovered",
-                node.id,
-                NodeType.COMPANY,
-                {
-                    "name": entity.name,
-                    "url": entity.url,
-                    "source": entity.source,
-                    "description": entity.description,
-                },
-            )
-        )
-        events_fired += 1
-
-    for entity in entities[:30]:
-        nid = make_company_id(entity.name)
-        local = await graph.get_local_graph(nid, radius=1)
-        lm = {n.id: n for n in local["nodes"]}
-        le = [{"source": e.source_id, "target": e.target_id} for e in local["edges"]]
-        for nid2, rank in compute_centrality(list(lm.keys()), le).items():
-            n = lm.get(nid2)
-            if n and rank > 0.01:
-                n.data["pagerank"] = rank
-                _ = await graph.upsert_node(n)
-
-    jobs_agent = JobsAgent(store=store)
-    for entity in entities[:20]:
-        await jobs_agent.add_or_merge_jobs(
-            [
-                {
-                    "role": "[Graph Discovery]",
-                    "company": entity.name,
-                    "company_description": entity.description,
-                    "apply_link": entity.url or "",
-                    "source": entity.source,
-                    "location": "Remote",
-                    "match_percent": 40,
-                    "verdict": "WEAK_MATCH",
-                    "shortlist_probability": 30,
-                }
-            ]
-        )
-
-    logger.info("Waiting for graph expansion to reach total silence...")
-    while bus.active_tasks > 0 or frontier.pending > 0 or len(engine._active_leases) > 0:
-        await asyncio.sleep(1.0)
-
-    m = await engine.get_metrics()
-    logger.info(f"Scheduler: {m.completed_work} done, {m.pending_work} pending")
-    await engine.shutdown(drain=False)
-    return nodes_created, events_fired
-
-
 async def _consumer(
     pipeline: JobPipeline,
     store: MemoryStore,
@@ -634,6 +420,137 @@ async def _run_pipeline() -> None:
     graph = await GraphStore.create()
     bus = EventBus()
     logger.info("Graph store initialised")
+
+    engine_cfg = get_config().scheduler
+    frontier = CrawlFrontier(max_size=engine_cfg.max_queue_size)
+    engine = WorkScheduler(frontier, worker_count=3)
+
+    bus.set_enqueue_callback(engine.enqueue_many)
+
+    startup_agent = StartupAgent(ctx)
+
+    async def _on_company_discovered(event):
+        d = event.payload
+        entries: list[FrontierEntry] = [
+            FrontierEntry(
+                id=make_work_id("founder_miner", event.node_id),
+                agent="founder_miner",
+                node_id=event.node_id,
+                node_type=NodeType.COMPANY,
+                priority=70,
+                depth=1,
+                payload={"company": d["name"]},
+            )
+        ]
+        if d.get("url"):
+            entries.append(
+                FrontierEntry(
+                    id=make_work_id("career_site_detector", event.node_id),
+                    agent="career_site_detector",
+                    node_id=event.node_id,
+                    node_type=NodeType.COMPANY,
+                    priority=60,
+                    depth=1,
+                    payload={"company": d["name"], "url": d["url"]},
+                )
+            )
+        return entries
+
+    async def _on_founder_discovered(event):
+        d = event.payload
+        return [
+            FrontierEntry(
+                id=make_work_id("founder_social_osint", event.node_id),
+                agent="founder_social_osint",
+                node_id=event.node_id,
+                node_type=NodeType.FOUNDER,
+                priority=50,
+                depth=2,
+                payload={"founder_name": d.get("name", ""), "company": d.get("company", "")},
+            ),
+            FrontierEntry(
+                id=make_work_id("employee_discovery", event.node_id),
+                agent="employee_discovery",
+                node_id=event.node_id,
+                node_type=NodeType.FOUNDER,
+                priority=45,
+                depth=2,
+                payload={"company": d.get("company", "")},
+            ),
+        ]
+
+    async def _on_career_site_discovered(event):
+        url = event.payload.get("url", "")
+        if any(
+            a in url.lower()
+            for a in ("greenhouse", "lever.co", "ashbyhq", "workable", "myworkdayjobs")
+        ):
+            return [
+                FrontierEntry(
+                    id=make_work_id("ats_crawler", event.node_id),
+                    agent="ats_crawler",
+                    node_id=event.node_id,
+                    node_type=NodeType.CAREER_SITE,
+                    priority=55,
+                    depth=2,
+                    payload={"company": event.payload.get("company", ""), "ats_url": url},
+                )
+            ]
+        return []
+
+    async def _founder_miner(entry: FrontierEntry) -> list[FrontierEntry]:
+        cn = entry.payload.get("company", "")
+        if not cn:
+            return []
+        enriched = await startup_agent.analyze_startup(
+            {
+                "role": "Startup Analysis",
+                "company": cn,
+                "match_percent": 50,
+                "verdict": "WEAK_MATCH",
+            }
+        )
+        founders = enriched.get("founders", [])
+        node = await graph.get_node(entry.node_id)
+        if node:
+            node.data["founders"] = founders
+            node.data["funding_stage"] = enriched.get("funding_stage", "")
+            node, _ = await graph.upsert_node(node)
+        results: list[FrontierEntry] = []
+        for f in founders[:3]:
+            if isinstance(f, dict) and f.get("name"):
+                f_node = GraphNode(
+                    id=make_founder_id(f["name"], cn),
+                    node_type=NodeType.FOUNDER,
+                    data={**f, "company": cn},
+                )
+                f_node, _ = await graph.upsert_node(f_node)
+                _, _ = await graph.upsert_edge(edge(entry.node_id, EdgeType.FOUNDED_BY, f_node.id))
+                await bus.fire(
+                    bus.new_event(
+                        "founder_discovered",
+                        f_node.id,
+                        NodeType.FOUNDER,
+                        {"name": f["name"], "company": cn},
+                    )
+                )
+        return results
+
+    async def _stub(entry: FrontierEntry) -> list[FrontierEntry]:
+        return []
+
+    bus.subscribe("company_discovered", _on_company_discovered)
+    bus.subscribe("founder_discovered", _on_founder_discovered)
+    bus.subscribe("career_site_discovered", _on_career_site_discovered)
+
+    engine.register_agent("founder_miner", _founder_miner)
+    engine.register_agent("career_site_detector", _stub)
+    engine.register_agent("founder_social_osint", _stub)
+    engine.register_agent("employee_discovery", _stub)
+    engine.register_agent("ats_crawler", _stub)
+
+    engine.start(worker_count=3)
+    logger.info("Graph expansion engine started")
 
     console.rule("[bold cyan]PHASE 1: Load Resume + Index in pgvector[/bold cyan]")
     loop = asyncio.get_running_loop()
@@ -897,19 +814,42 @@ async def _run_pipeline() -> None:
                             "components": metrics.get("wcc_components", 0),
                         },
                     )
+                    generated = await engine.expansion_cycle(graph)
+                    if generated:
+                        logger.info(f"Expansion cycle: {generated} tasks enqueued")
+                    entities = await discover_all()
+                    if entities:
+                        logger.info("Connector discovery: %d new companies", len(entities))
+                        for entity in entities:
+                            node = company_node(
+                                entity.name,
+                                description=entity.description,
+                                source=entity.source,
+                                url=entity.url or "",
+                            )
+                            node.confidence.score = entity.confidence
+                            node.confidence.source_count = 1
+                            node, node_events = await graph.upsert_node(node)
+                            for evt in node_events:
+                                await engine.process_mutation(evt, graph)
+                            await bus.fire(
+                                bus.new_event(
+                                    "company_discovered",
+                                    node.id,
+                                    NodeType.COMPANY,
+                                    {
+                                        "name": entity.name,
+                                        "url": entity.url,
+                                        "source": entity.source,
+                                        "description": entity.description,
+                                    },
+                                )
+                            )
                 except Exception as ge:
                     logger.exception("Graph maintenance skipped", exc=ge)
 
             if os.environ.get("OVERNIGHT_LOOP", "false").lower() != "true":
                 break
-
-            set_pipeline_state(phase="graph expansion")
-            console.print("\n[bold cyan]PHASE 3: Company Graph Expansion[/bold cyan]")
-            try:
-                nodes, events = await _expand_company_graph(graph, bus, store, ctx, telegram_agent)
-                logger.info(f"Graph: {nodes} nodes, {events} events")
-            except Exception as ge:
-                logger.exception("Graph expansion skipped", exc=ge)
 
             gc.collect()
             await asyncio.sleep(cfg.pipeline.sweep_interval)
@@ -932,6 +872,8 @@ async def _run_pipeline() -> None:
                 )
             gc.collect()
             await asyncio.sleep(cfg.pipeline.sweep_interval)
+
+    await engine.shutdown(drain=False)
 
     await telegram_agent.stop_polling()
     set_pipeline_state(running=False, phase="shutdown")

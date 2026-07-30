@@ -126,6 +126,9 @@ class InferenceDrivenExpander:
                 continue
 
             info_gain = uncertainty.total
+            if info_gain < 0.4:
+                continue
+
             priority = self._CAPABILITY_PRIORITY.get(
                 pattern.edge_type,
                 int(info_gain * 100),
@@ -145,6 +148,10 @@ class InferenceDrivenExpander:
                 "required": pattern.required,
             }
 
+            new_depth = 1
+            if new_depth >= 2:
+                continue
+
             await enqueue(
                 FrontierEntry(
                     id=wid,
@@ -152,7 +159,7 @@ class InferenceDrivenExpander:
                     node_id=nid,
                     node_type=node.node_type,
                     priority=priority,
-                    depth=1,
+                    depth=new_depth,
                     payload=payload,
                 )
             )
@@ -196,6 +203,9 @@ class InferenceDrivenExpander:
             if agent is None:
                 continue
 
+            if uncertainty.total < 0.4:
+                continue
+
             priority = self._CAPABILITY_PRIORITY.get(
                 pattern.edge_type,
                 int(uncertainty.total * 100),
@@ -205,6 +215,10 @@ class InferenceDrivenExpander:
                 continue
             self._seen_triggers.add(wid)
 
+            new_depth = 1
+            if new_depth >= 2:
+                continue
+
             await enqueue(
                 FrontierEntry(
                     id=wid,
@@ -212,7 +226,7 @@ class InferenceDrivenExpander:
                     node_id=node_id,
                     node_type=node.node_type,
                     priority=min(99, priority + int(uncertainty.total * 40)),
-                    depth=1,
+                    depth=new_depth,
                     payload={
                         "company": node.data.get("name", ""),
                         "node_id": node_id,
