@@ -2,10 +2,10 @@
 
 Discovers companies from:
 - YC accelerator directories
-- VC portfolio pages (a16z, Sequoia, Benchmark, Accel)
-- Wellfound/startup-job pages
+- VC portfolio pages (a16z, Sequoia, Accel)
 - HN "Who is Hiring"
-- SearXNG hiring/funding/launch queries
+- RemoteOK API
+- SearXNG (via crawler.py search discovery)
 
 Every discovered company's website is probed for its ATS/career page.
 Generic vendor roots are never used.
@@ -256,6 +256,65 @@ async def discover_from_hackernews(limit: int = 30) -> list[dict[str, str]]:
         companies = companies[:limit]
     except Exception:
         pass
+    return companies
+
+
+async def discover_from_remoteok(limit: int = 30) -> list[dict[str, str]]:
+    """Discover company names from the RemoteOK public API.
+
+    RemoteOK provides structured JSON with company, position, location, salary,
+    and tags. We extract company names and resolve their official domains.
+    """
+    companies: list[dict[str, str]] = []
+    seen: set[str] = set()
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get("https://remoteok.com/api?tag=dev")
+            if resp.status_code != 200:
+                return companies
+            data = resp.json()
+            for entry in data[1:]:  # first entry is legal notice
+                company = (entry.get("company") or "").strip()
+                position = (entry.get("position") or "").strip()
+                if not company or company in seen:
+                    continue
+                # Only take tech roles
+                tech_terms = (
+                    "engineer",
+                    "developer",
+                    "backend",
+                    "frontend",
+                    "fullstack",
+                    "devops",
+                    "software",
+                    "platform",
+                    "infrastructure",
+                    "data",
+                    "ml",
+                    "ai",
+                    "machine learning",
+                    "sre",
+                )
+                if not any(t in position.lower() for t in tech_terms):
+                    continue
+                seen.add(company)
+                companies.append(
+                    {
+                        "name": company,
+                        "website": "",
+                        "source": "remoteok",
+                    }
+                )
+                if len(companies) >= limit:
+                    break
+    except Exception:
+        pass
+
+    # Resolve official domains for discovered companies
+    for c in companies:
+        domain = await _resolve_official_domain(c["name"])
+        if domain and not is_aggregator_domain(domain):
+            c["website"] = f"https://{domain}"
     return companies
 
 
