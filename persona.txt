@@ -1,0 +1,7 @@
+Candidate Profile:
+- Experience: 0-2 years (New Grad / Junior). Do not accept roles requiring 3+ years.
+- Tech Stack: Python, Go, React, PostgreSQL, Docker.
+- Location: Based in India. Open to remote worldwide, or onsite in India/EU/UK.
+- Visa: Requires Visa sponsorship for EU/UK/US roles. Reject onsite US roles unless they explicitly mention H1B/O1 transfers or new grad sponsorship.
+- Industries to Reject: Web3, Crypto.
+- Minimum Salary: 80,000 INR/month, or $60k USD/yr for remote.

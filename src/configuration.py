@@ -201,15 +201,19 @@ class LinkedinGuestConfig:
     delay_max: float = field(default_factory=lambda: _env_float("LINKEDIN_DELAY_MAX", 3.5))
 
 
+def _load_persona_file() -> str:
+    """Load persona.txt if it exists, otherwise fall back to env var."""
+    if os.path.exists("persona.txt"):
+        with open("persona.txt") as f:
+            return f.read()
+    return _env_str("CANDIDATE_PERSONA", "early-career / new-grad / intern based in India")
+
+
 @dataclass
 class CandidateConfig:
     """Candidate-specific job-matching parameters — configurable by persona."""
 
-    persona: str = field(
-        default_factory=lambda: _env_str(
-            "CANDIDATE_PERSONA", "early-career / new-grad / intern based in India"
-        )
-    )
+    persona: str = field(default_factory=_load_persona_file)
     min_salary: str = field(
         default_factory=lambda: _env_str("CANDIDATE_MIN_SALARY", "70K INR/month")
     )

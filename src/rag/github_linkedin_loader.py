@@ -1,19 +1,22 @@
 """GitHub, LinkedIn & Personal Portfolio link parser & loader.
 
-Automatically extracts GitHub handles, LinkedIn profile links, and portfolio website URLs
-from resume text to build a candidate Knowledge Graph in RAG memory.
-"""
+Automatically extracts GitHub handles, LinkedIn profile links, and portfolio
+website URLs from resume text to build a candidate Knowledge Graph in RAG
+memory. All HTTP requests are async via httpx to avoid blocking the event loop.
+"""  # noqa: E501
 
 from __future__ import annotations
 
-import json
 import os
 import re
-import urllib.request
 from typing import Any
 
 import httpx
 from bs4 import BeautifulSoup
+
+from src.logging import get_logger
+
+logger = get_logger("github_linkedin_loader")
 
 
 def extract_links_from_text(text: str) -> dict[str, Any]:
@@ -24,19 +27,18 @@ def extract_links_from_text(text: str) -> dict[str, Any]:
         "portfolio_urls": [],
     }
 
-    # Extract GitHub handle
     gh_match = re.search(r"github\.com/([A-Za-z0-9_\-]+)", text, re.IGNORECASE)
     if gh_match:
         extracted["github_username"] = gh_match.group(1)
 
-    # Extract LinkedIn URL
     li_match = re.search(
-        r"(https?://(?:www\.)?linkedin\.com/in/[A-Za-z0-9_\-]+)", text, re.IGNORECASE
+        r"(https?://(?:www\.)?linkedin\.com/in/[A-Za-z0-9_\-]+)",
+        text,
+        re.IGNORECASE,
     )
     if li_match:
         extracted["linkedin_url"] = li_match.group(1)
 
-    # Extract HTTP/HTTPS links excluding generic domains
     all_urls = re.findall(r"https?://[^\s<>\"']+", text)
     ignored_domains = [
         "github.com",
@@ -55,28 +57,26 @@ def extract_links_from_text(text: str) -> dict[str, Any]:
     return extracted
 
 
-def fetch_github_profile(username: str | None = None) -> str:
-    """Fetch public repositories and tech stack from GitHub API."""
+async def fetch_github_profile(username: str | None = None) -> str:
+    """Fetch public repositories and tech stack from GitHub API (async)."""
     user = username or os.environ.get("GITHUB_USERNAME") or "parazeeknova"
     url = f"https://api.github.com/users/{user}/repos?sort=updated&per_page=15"
 
-    try:
-        req = urllib.request.Request(
-            url,
-            headers={
-                "User-Agent": "AntigravityJobSearch/1.0",
-                "Accept": "application/vnd.github.v3+json",
-            },
-        )
-        token = os.environ.get("GITHUB_TOKEN")
-        if token:
-            req.add_header("Authorization", f"token {token}")
+    headers: dict[str, str] = {
+        "User-Agent": "AntigravityJobSearch/1.0",
+        "Accept": "application/vnd.github.v3+json",
+    }
+    token = os.environ.get("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"token {token}"
 
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            if resp.status == 200:
-                data: list[dict[str, Any]] = json.loads(resp.read().decode())
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url, headers=headers)
+            if resp.status_code == 200:
+                data: list[dict[str, Any]] = resp.json()
                 repo_lines = [f"GitHub Profile: {user}"]
-                languages = set()
+                languages: set[str] = set()
 
                 for r in data:
                     name = r.get("name", "")
@@ -98,16 +98,20 @@ def fetch_github_profile(username: str | None = None) -> str:
 
                 return "\n".join(repo_lines)
     except Exception as e:
-        print(f"  [dim]GitHub Profile ({user}): {e}[/dim]")
+        logger.warning(
+            "GitHub profile fetch failed",
+            entity=user,
+            exception=str(e),
+        )
 
     return f"GitHub Username: {user}"
 
 
-def scrape_portfolio(url: str) -> str:
-    """Scrape personal portfolio site to extract bio and projects."""
+async def scrape_portfolio(url: str) -> str:
+    """Scrape personal portfolio site to extract bio and projects (async)."""
     try:
-        with httpx.Client(timeout=5.0, follow_redirects=True) as client:
-            resp = client.get(
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            resp = await client.get(
                 url,
                 headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
             )
@@ -119,33 +123,44 @@ def scrape_portfolio(url: str) -> str:
                 if len(clean_text) > 100:
                     return clean_text[:4000]
     except Exception as e:
-        print(f"  [dim]Portfolio ({url}): {e}[/dim]")
+        logger.warning(
+            "Portfolio scrape failed",
+            source=url,
+            exception=str(e),
+        )
     return ""
 
 
-def enrich_candidate_chunks(chunks: dict[str, str], resume_text: str = "") -> dict[str, str]:
-    """Auto-parse resume links and enrich RAG chunks with GitHub, LinkedIn, and Portfolio nodes."""
+async def enrich_candidate_chunks(chunks: dict[str, str], resume_text: str = "") -> dict[str, str]:
+    """Auto-parse resume links and enrich RAG chunks with GitHub, LinkedIn,
+    and Portfolio nodes (all async)."""
     parsed_links = extract_links_from_text(resume_text)
 
-    # 1. GitHub Integration
     gh_user = parsed_links.get("github_username") or os.environ.get("GITHUB_USERNAME")
-    github_text = fetch_github_profile(gh_user)
+    github_text = await fetch_github_profile(gh_user)
     if github_text:
         user_display = gh_user or "parazeeknova"
-        print(f"    [PASS] Auto-extracted GitHub (@{user_display}) ({len(github_text)} chars)")
+        logger.info(
+            "GitHub profile extracted",
+            entity=user_display,
+            extra={"chars": len(github_text)},
+        )
 
-    # 2. LinkedIn Integration
     li_url = parsed_links.get("linkedin_url") or os.environ.get("LINKEDIN_PROFILE_URL")
     if li_url:
         chunks["linkedin_profile"] = f"LinkedIn Profile: {li_url}"
-        print(f"    [PASS] Auto-extracted LinkedIn link ({li_url})")
+        logger.info("LinkedIn link extracted", entity=li_url)
 
-    # 3. Personal Portfolio Integration
     portfolio_urls = parsed_links.get("portfolio_urls", [])
     for p_url in portfolio_urls[:2]:
-        p_text = scrape_portfolio(p_url)
+        p_text = await scrape_portfolio(p_url)
         if p_text:
-            chunks[f"portfolio_{p_url.split('//')[-1][:15]}"] = p_text
-            print(f"    [PASS] Auto-scraped Personal Portfolio ({p_url}) ({len(p_text)} chars)")
+            key = f"portfolio_{p_url.split('//')[-1][:15]}"
+            chunks[key] = p_text
+            logger.info(
+                "Portfolio scraped",
+                source=p_url,
+                extra={"chars": len(p_text)},
+            )
 
     return chunks

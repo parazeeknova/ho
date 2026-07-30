@@ -139,7 +139,18 @@ class TelegramAgent:
             return False
 
         all_ok = True
-        chunks = [text[i : i + _TG_MAX_LEN] for i in range(0, len(text), _TG_MAX_LEN)]
+        chunks: list[str] = []
+        current = ""
+        for paragraph in text.split("\n\n"):
+            if len(current) + len(paragraph) + 2 > _TG_MAX_LEN:
+                if current:
+                    chunks.append(current)
+                current = paragraph
+            else:
+                current += ("\n\n" + paragraph) if current else paragraph
+        if current:
+            chunks.append(current)
+
         for i, chunk in enumerate(chunks):
             if i > 0:
                 await asyncio.sleep(0.5)

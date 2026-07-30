@@ -61,6 +61,9 @@ Relevant resume snippets:
 Full job listing:
 {job_description}
 
+CANDIDATE PROFILE (enforce ALL of these constraints rigorously):
+{candidate_persona}
+
 CRITICAL RULES:
 - Extract all metadata fields: role title, company name, \
 company_description (1-2 sentence company overview), role_summary (1-2 sentence role overview), \
@@ -68,21 +71,27 @@ location (city/country or "Remote"), salary (if mentioned), posted_date, and app
 - If the text is a company homepage, job directory, error page, or lists \
 multiple different jobs instead of ONE SINGLE posting, set match_percent=0 and \
 verdict=NO_MATCH.
-- The candidate is {candidate_persona}. Accept remote roles worldwide, onsite \
-roles in India, and roles with visa sponsorship.
+- Enforce EVERY constraint from the Candidate Profile above: experience level, \
+tech stack, location preferences, visa requirements, rejected industries, and \
+minimum salary.
 - If salary is specified below {min_salary} (or equivalent), set match_percent=0 \
 and verdict=NO_MATCH.
 - If the job description explicitly states the posting is older than 24 hours \
 or more than 1 day old, set match_percent=0 and verdict=NO_MATCH.
-- If the job requires 5+ years of experience or is titled Senior/Staff/Lead/\
+- If the job requires 3+ years of experience or is titled Senior/Staff/Lead/\
 Principal/Manager/Director/Architect, set match_percent=0 and verdict=NO_MATCH.
+- If the role is in Crypto, Web3, Gambling, Defense, or Military industries, \
+set match_percent=0 and verdict=NO_MATCH.
 - Be conservative. STRONG_MATCH only with genuine skill alignment.
 - Return valid JSON matching the required schema.
 """
 
 CRITIC_PROMPT = """\
 You are a strict job-match auditor. Review this match result and check it \
-against hard constraints.
+against the Candidate Profile and hard constraints.
+
+CANDIDATE PROFILE (enforce ALL of these):
+{candidate_persona}
 
 Match result:
 {result}
@@ -92,12 +101,16 @@ Job description:
 
 HARD CONSTRAINTS — fail the match if ANY of these are true:
 1. The role title contains Senior, Staff, Lead, Principal, Manager, Director, \
-Architect, VP, or "5+ years", "7+ years", "10+ years" of experience.
+Architect, VP, or "3+ years", "5+ years", "7+ years", "10+ years" of experience.
 2. The salary (if present) is below {min_salary} per month or equivalent.
-3. The match_percent is unreasonably high given the skills gap or JD content.
-4. The JD text is clearly a landing page, directory, or error page rather than \
+3. The role requires onsite presence in a country where the candidate does NOT \
+have work authorization (per the Candidate Profile).
+4. The role is in a rejected industry: Crypto, Web3, Gambling, Defense, Military.
+5. The role requires US onsite without explicit H1B/O1 or new-grad sponsorship.
+6. The match_percent is unreasonably high given the skills gap or JD content.
+7. The JD text is clearly a landing page, directory, or error page rather than \
 a real job posting.
-5. The JD explicitly mentions it was posted more than 24 hours ago (or >1 day \
+8. The JD explicitly mentions it was posted more than 24 hours ago (or >1 day \
 ago, or a date older than yesterday).
 
 Return a JSON object with:
@@ -349,6 +362,7 @@ async def node_critic(
     prompt = CRITIC_PROMPT.replace("{result}", json.dumps(match, indent=2))
     prompt = prompt.replace("{job_description}", state["markdown"][:80000])
     prompt = prompt.replace("{min_salary}", get_config().candidate.min_salary)
+    prompt = prompt.replace("{candidate_persona}", get_config().candidate.persona)
 
     result = await ctx.json_chat(prompt, CriticReview.model_json_schema())
 

@@ -542,7 +542,7 @@ async def _run_pipeline() -> None:
             return load_resume()
 
         full_text, chunks = await loop.run_in_executor(None, _load)
-        chunks = enrich_candidate_chunks(chunks, full_text)
+        chunks = await enrich_candidate_chunks(chunks, full_text)
         await _index_resume_in_pgvector(chunks, store)
 
     positions: list[str]

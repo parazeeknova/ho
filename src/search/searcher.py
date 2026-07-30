@@ -384,7 +384,7 @@ async def map_company_careers(
 ) -> list[dict[str, str]]:
     """Use Firecrawl /map to discover job listing URLs across ATS platforms and career portals."""
     discovered: list[dict[str, str]] = []
-    sem = asyncio.Semaphore(24)
+    sem = asyncio.Semaphore(5)
     done_lock = asyncio.Lock()
     done_count = 0
     total = len(target_domains)
