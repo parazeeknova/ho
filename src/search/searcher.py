@@ -94,8 +94,8 @@ async def _scrape_index(url: str, app: FirecrawlApp, pipeline: JobPipeline) -> N
                     QueuedJob(markdown=resp.text, url=url, title=f"INDEX:{url.split('/')[-1]}")
                 )
                 return
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("Index http scrape failed, trying Firecrawl", source=url, exception=str(e))
     try:
         cfg = get_config().firecrawl
         async with httpx.AsyncClient(timeout=10.0) as client:

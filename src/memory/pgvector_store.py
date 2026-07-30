@@ -309,28 +309,11 @@ class MemoryStore:
         return job
 
     async def upsert_job_ledger(self, dedup_key: str, data: dict[str, Any]) -> int:
-        """Insert or merge a job into the ledger. Higher match_percent wins."""
-        existing = await self.get_job_by_key(dedup_key)
-        if existing:
-            data["match_percent"] = max(
-                existing.get("match_percent", 0), data.get("match_percent", 0)
-            )
-            data["shortlist_probability"] = max(
-                existing.get("shortlist_probability", 0),
-                data.get("shortlist_probability", 0),
-            )
-            for field in (
-                "company_description",
-                "role_summary",
-                "salary",
-                "posted_date",
-                "apply_link",
-                "jd_summary",
-            ):
-                if not existing.get(field) and data.get(field):
-                    existing[field] = data[field]
-            data = existing
+        """Insert or merge a job into the ledger atomically.
 
+        The ON CONFLICT DO UPDATE with GREATEST and COALESCE handles
+        merging entirely in the database — no Python-side read-modify-write.
+        """
         async with self._pool.acquire() as conn:
             await conn.execute(
                 """

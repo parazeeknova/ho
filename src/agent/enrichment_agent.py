@@ -2,7 +2,7 @@
 
 The LLM metadata extraction (company_description, role_summary, location, salary)
 now lives exclusively in node_matcher. This agent ONLY handles vector rescoring.
-"""
+"""  # noqa: E501
 
 from __future__ import annotations
 
@@ -20,8 +20,8 @@ if TYPE_CHECKING:
 logger = get_logger("enrichment_agent")
 
 
-async def _get_embedding(text: str) -> list[float]:
-    """Fetch text embedding from local llama-server."""
+async def _get_embedding(text: str) -> list[float] | None:
+    """Fetch text embedding from local llama-server. Returns None on failure."""
     cfg = get_config().embed
     try:
         async with httpx.AsyncClient(timeout=cfg.timeout) as client:
@@ -35,15 +35,11 @@ async def _get_embedding(text: str) -> list[float]:
                 if isinstance(emb, list) and len(emb) > 0:
                     return [float(v) for v in emb]
     except Exception as e:
-        logger.debug("Embedding fetch failed, using fallback", exception=str(e))
-
-    import hashlib
-
-    h = hashlib.sha256(text.encode("utf-8")).digest()
-    vec = [(float(b) / 255.0) for b in h]
-    while len(vec) < 1024:
-        vec.extend(vec[: 1024 - len(vec)])
-    return vec[:1024]
+        logger.error(
+            "Embedding fetch failed, returning None",
+            exception=str(e),
+        )
+    return None
 
 
 class EnrichmentAgent:
@@ -68,6 +64,8 @@ class EnrichmentAgent:
             jd_text = f"{role} {company}"
 
         jd_vector = await _get_embedding(jd_text)
+        if jd_vector is None:
+            return job
 
         resume_chunks = await self.store.search_similar_chunks(jd_vector, top_k=5)
         if resume_chunks:

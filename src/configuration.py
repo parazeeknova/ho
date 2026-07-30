@@ -202,6 +202,20 @@ class LinkedinGuestConfig:
 
 
 @dataclass
+class CandidateConfig:
+    """Candidate-specific job-matching parameters — configurable by persona."""
+
+    persona: str = field(
+        default_factory=lambda: _env_str(
+            "CANDIDATE_PERSONA", "early-career / new-grad / intern based in India"
+        )
+    )
+    min_salary: str = field(
+        default_factory=lambda: _env_str("CANDIDATE_MIN_SALARY", "70K INR/month")
+    )
+
+
+@dataclass
 class Config:
     """Root configuration aggregating all subsystems."""
 
@@ -218,6 +232,7 @@ class Config:
     embed: EmbedConfig = field(default_factory=EmbedConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
     linkedin_guest: LinkedinGuestConfig = field(default_factory=LinkedinGuestConfig)
+    candidate: CandidateConfig = field(default_factory=CandidateConfig)
 
     def validate(self) -> list[str]:
         """Run startup validation. Returns list of problems (empty = all good)."""

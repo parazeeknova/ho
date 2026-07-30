@@ -190,6 +190,17 @@ class EventBus:
         self._duplicate_count = 0
         self._enqueue_cb: EnqueueCallback | None = None
         self._supervisor = TaskSupervisor()
+        self._shutdown_event = asyncio.Event()
+
+        async def _evict_loop() -> None:
+            while not self._shutdown_event.is_set():
+                self._seen_ids._evict_stale()
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(self._shutdown_event.wait(), timeout=60.0)
+
+        _task = asyncio.create_task(_evict_loop())
+        self._supervisor._tasks.add(_task)
+        _task.add_done_callback(self._supervisor._done_callback)
 
     # callback registration
 
@@ -263,7 +274,8 @@ class EventBus:
     # lifecycle
 
     async def shutdown(self, timeout: float = 10.0) -> None:
-        """Gracefully shut down background tasks."""
+        """Gracefully shut down background tasks including TTL eviction loop."""
+        self._shutdown_event.set()
         await self._supervisor.shutdown(timeout=timeout)
 
     # diagnostics

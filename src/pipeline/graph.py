@@ -68,9 +68,9 @@ location (city/country or "Remote"), salary (if mentioned), posted_date, and app
 - If the text is a company homepage, job directory, error page, or lists \
 multiple different jobs instead of ONE SINGLE posting, set match_percent=0 and \
 verdict=NO_MATCH.
-- The candidate is early-career / new-grad / intern based in India. Accept \
-remote roles worldwide, onsite roles in India, and roles with visa sponsorship.
-- If salary is specified below 70K INR/month (or equivalent), set match_percent=0 \
+- The candidate is {candidate_persona}. Accept remote roles worldwide, onsite \
+roles in India, and roles with visa sponsorship.
+- If salary is specified below {min_salary} (or equivalent), set match_percent=0 \
 and verdict=NO_MATCH.
 - If the job description explicitly states the posting is older than 24 hours \
 or more than 1 day old, set match_percent=0 and verdict=NO_MATCH.
@@ -93,7 +93,7 @@ Job description:
 HARD CONSTRAINTS — fail the match if ANY of these are true:
 1. The role title contains Senior, Staff, Lead, Principal, Manager, Director, \
 Architect, VP, or "5+ years", "7+ years", "10+ years" of experience.
-2. The salary (if present) is below 70K INR per month or equivalent.
+2. The salary (if present) is below {min_salary} per month or equivalent.
 3. The match_percent is unreasonably high given the skills gap or JD content.
 4. The JD text is clearly a landing page, directory, or error page rather than \
 a real job posting.
@@ -268,6 +268,10 @@ async def node_matcher(
     prompt = MATCHER_PROMPT.replace("{relevant_chunks}", relevant[:3000])
     prompt = prompt.replace("{job_description}", jd_text)
 
+    candidate_cfg = get_config().candidate
+    prompt = prompt.replace("{candidate_persona}", candidate_cfg.persona)
+    prompt = prompt.replace("{min_salary}", candidate_cfg.min_salary)
+
     if critique_feedback:
         prompt += (
             "\n\nPREVIOUS ATTEMPT WAS REJECTED by the critic. "
@@ -344,6 +348,7 @@ async def node_critic(
 
     prompt = CRITIC_PROMPT.replace("{result}", json.dumps(match, indent=2))
     prompt = prompt.replace("{job_description}", state["markdown"][:80000])
+    prompt = prompt.replace("{min_salary}", get_config().candidate.min_salary)
 
     result = await ctx.json_chat(prompt, CriticReview.model_json_schema())
 

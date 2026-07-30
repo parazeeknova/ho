@@ -107,8 +107,12 @@ class YCConnector(BaseConnector):
                             confidence=0.4,
                         )
                     )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(
+                "YC SearXNG fallback scrape failed",
+                connector="yc",
+                exception=str(e),
+            )
         return entities
 
     async def enrich(self, entity: DiscoveredEntity) -> DiscoveredEntity:
@@ -134,8 +138,13 @@ class YCConnector(BaseConnector):
                 entity.extra["founded_at"] = detail.get("created_at", "")
                 entity.extra["website"] = detail.get("website", "")
                 entity.confidence = max(entity.confidence, 0.85)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(
+                "YC single-company enrichment failed",
+                connector="yc",
+                entity=entity.name,
+                exception=str(e),
+            )
         return entity
 
     async def sync_incremental(
