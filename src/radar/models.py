@@ -49,6 +49,7 @@ class RejectionReason(Enum):
     SOURCE_LOW_CONFIDENCE = "source_low_confidence"
     MATCHER_NO_MATCH = "matcher_no_match"
     MATCHER_LOW_SCORE = "matcher_low_score"
+    NO_SPONSORSHIP = "no_sponsorship"
     UNKNOWN = "unknown"
 
 
@@ -136,6 +137,10 @@ class JobCandidate:
     founder_socials: list[str] = field(default_factory=list)
     company_news: str = ""
     osint_signals: list[str] = field(default_factory=list)
+
+    sponsors_visa: bool = False
+    salary_annual_usd: float | None = None
+    underdog_score: float = 0.0
 
     extra: dict[str, Any] = field(default_factory=dict)
 

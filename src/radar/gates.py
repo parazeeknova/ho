@@ -315,6 +315,22 @@ def gate_explicit_ineligibility(
     known_hashes: set[str],
     last_seen: dict[str, float],
 ) -> RejectionReason | None:
+    """Detect clear no-gos: no-sponsorship, citizenship-only, explicit ineligibility."""
+    text = f"{obs.title} {obs.snippet} {obs.raw_markdown[:5000]}".lower()
+
+    _no_sponsor_pats = [
+        r"\b(?:no|not\s+able\s+to)\s+sponsor\b",
+        r"\bdoes\s+not\s+sponsor\b",
+        r"\bunable\s+to\s+sponsor\b",
+        r"\bsponsorship\s*(?:is|)\s*not\s+(?:available|provided|offered)\b",
+        r"\bmust\s+be\s+(?:a\s+)?(?:us|u\.s\.|united\s+states)\s+(?:citizen|person)\b",
+        r"\b(?:us|u\.s\.)\s+citizens?\s+only\b",
+        r"\bno\s+(?:visa|h1b|h-1b)\s+sponsorship\b",
+    ]
+    for pat in _no_sponsor_pats:
+        if re.search(pat, text):
+            return RejectionReason.NO_SPONSORSHIP
+
     return None
 
 
@@ -460,6 +476,7 @@ _REJECTION_DESCRIPTIONS: dict[RejectionReason, str] = {
     RejectionReason.ROLE_FAMILY_MISMATCH: "Role does not match target families",
     RejectionReason.SALARY_BELOW_MIN: "Salary is below candidate minimum",
     RejectionReason.CLEARANCE_REQUIRED: "Requires security clearance or citizenship",
+    RejectionReason.NO_SPONSORSHIP: "Company explicitly does not sponsor visas",
     RejectionReason.SOURCE_STALE: "Source has not produced fresh content",
     RejectionReason.SOURCE_LOW_CONFIDENCE: "Source quality score is too low",
     RejectionReason.MATCHER_NO_MATCH: "LLM matcher returned NO_MATCH verdict",

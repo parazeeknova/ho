@@ -297,7 +297,9 @@ def _apply_llm_result(candidate: JobCandidate, result: dict[str, Any]) -> None:
     if raw_salary:
         candidate.salary = normalize_salary(str(raw_salary))
 
-    candidate.canonical_id = _build_canonical_from_result(candidate, result)
+    # Keep posting_id as immutable canonical ID; store group key separately.
+    # canonical_id is the URL hash, never overwritten by company/role/location.
+    candidate.extra["group_key"] = _build_group_key(candidate)
 
     verdict = candidate.verdict
     if verdict == "NO_MATCH" or candidate.match_percent < 30:
@@ -309,7 +311,20 @@ def _apply_llm_result(candidate: JobCandidate, result: dict[str, Any]) -> None:
         candidate.eligibility = EligibilityState.NEAR_MISS
 
 
-def _build_canonical_from_result(candidate: JobCandidate, result: dict[str, Any]) -> str:
+def _build_group_key(candidate: JobCandidate) -> str:
+    from src.radar.models import make_canonical_id
+
+    return make_canonical_id(
+        candidate.normalized_company,
+        candidate.normalized_role,
+        candidate.normalized_location,
+    )
+
+
+def _build_canonical_from_result(
+    candidate: JobCandidate,
+    result: dict[str, Any],
+) -> str:
     from src.radar.models import make_canonical_id
 
     return make_canonical_id(

@@ -1,4 +1,4 @@
-"""ho — job matching pipeline."""
+"""ho — global high-pay underdog job radar."""
 
 from src.radar.orchestrator import run
 
