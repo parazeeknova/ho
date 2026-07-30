@@ -159,6 +159,8 @@ class FirecrawlConfig:
 
     url: str = field(default_factory=lambda: _env_str("FIRECRAWL_URL", "http://127.0.0.1:3002"))
     timeout: float = field(default_factory=lambda: _env_float("FIRECRAWL_TIMEOUT", 60.0))
+    map_limit: int = field(default_factory=lambda: _env_int("FIRECRAWL_MAP_LIMIT", 200))
+    scrape_limit: int = field(default_factory=lambda: _env_int("FIRECRAWL_SCRAPE_LIMIT", 200))
 
 
 @dataclass
@@ -174,11 +176,7 @@ class EmbedConfig:
 class LLMConfig:
     """LLM / GeneralCompute settings."""
 
-    api_key: str = field(
-        default_factory=lambda: _env_str(
-            "GENERALCOMPUTE_API_KEY", "gc_beRSKulIP-ae0ojXrZ5tqaANK2oxFO5e"
-        )
-    )
+    api_key: str = field(default_factory=lambda: _env_str("GENERALCOMPUTE_API_KEY", ""))
     model: str = field(default_factory=lambda: _env_str("GENERALCOMPUTE_MODEL", "deepseek-v3.2"))
     context_length: int = field(default_factory=lambda: _env_int("LLM_CONTEXT_LENGTH", 32768))
     token_rate: float = field(default_factory=lambda: _env_float("LLM_TOKEN_RATE", 1.4))

@@ -71,6 +71,7 @@ class AnalyticsAgent:
             ("🕳️ ATS Black Hole Index", self._section_ats_blackhole),
             ("💰 Marginal Skill Valuation", self._section_marginal_valuation),
             ("🕵️ Stealth Hiring Signals", self._section_stealth_signals),
+            ("🧮 Radar Gate Stats", self._section_radar_gate_stats),
         ]
 
         for name, func in section_funcs:
@@ -214,6 +215,30 @@ class AnalyticsAgent:
                 )
         else:
             lines.append("  <i>No stealth signals detected.</i>")
+        lines.append("")
+        return lines
+
+    async def _section_radar_gate_stats(self) -> list[str]:
+        """Radar v2 rejection and eligibility statistics."""
+        lines = ["<b>🧮 Radar Gate Stats</b>"]
+        try:
+            stats = await self.store.get_radar_gate_stats()
+            lines.append(f"  Total candidates: {stats.get('total', 0)}")
+            lines.append(f"  Accepted: {stats.get('accepted', 0)}")
+            lines.append(f"  Near-miss: {stats.get('near_miss', 0)}")
+            lines.append(f"  Rejected: {stats.get('rejected', 0)}")
+            lines.append(f"  Urgent lane: {stats.get('urgent', 0)}")
+            lines.append(f"  Review lane: {stats.get('review', 0)}")
+
+            top_rejections = stats.get("top_rejection_reasons", [])
+            if top_rejections:
+                lines.append("  <b>Top Rejection Reasons:</b>")
+                for rr in top_rejections[:5]:
+                    reason = rr.get("reason", "?").replace("_", " ")
+                    lines.append(f"    • {reason}: {rr.get('count', 0)}")
+        except Exception as e:
+            logger.warning("Radar gate stats failed", exception=str(e))
+            lines.append("  <i>Radar data not yet available.</i>")
         lines.append("")
         return lines
 

@@ -19,6 +19,7 @@ from src.radar.models import SourceCheckpoint, SourceState
 logger = get_logger("radar_sources")
 
 _SOURCE_CHECKPOINTS: dict[str, SourceCheckpoint] = {}
+_LAST_SNAPSHOT_URLS: dict[str, set[str]] = {}
 
 
 def get_checkpoint(source_id: str) -> SourceCheckpoint:
@@ -59,14 +60,16 @@ def diff_snapshots(
 ) -> SourceState:
     checkpoint = get_checkpoint(source_id)
     current_set = set(current_urls)
-    previous_set = set()  # TODO: load from DB
+    previous_set = _LAST_SNAPSHOT_URLS.get(source_id, set())
 
     new_hashes: list[str] = []
     removed_hashes: list[str] = []
 
-    if checkpoint.last_snapshot_hash:
+    if previous_set:
         new_hashes = list(current_set - previous_set)
         removed_hashes = list(previous_set - current_set)
+    else:
+        new_hashes = list(current_set)
 
     new_hash = compute_url_snapshot_hash(current_urls)
 
@@ -78,6 +81,8 @@ def diff_snapshots(
     else:
         checkpoint.consecutive_empty += 1
         checkpoint.last_polled = time.time()
+
+    _LAST_SNAPSHOT_URLS[source_id] = current_set
 
     return SourceState(
         checkpoint=checkpoint,
@@ -91,64 +96,88 @@ async def persist_checkpoints(store) -> None:
     """Persist all checkpoint state to Postgres."""
     if store is None:
         return
-    for source_id, cp in _SOURCE_CHECKPOINTS.items():
-        with contextlib.suppress(Exception):
-            await store._pool.execute(
-                """
-                INSERT INTO source_checkpoints
-                    (source_id, source_type, last_polled, last_snapshot_hash,
-                     last_snapshot_count, consecutive_failures, consecutive_empty,
-                     quality_score, active, backoff_until, total_jobs_produced,
-                     total_direct_url_rate)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-                ON CONFLICT (source_id) DO UPDATE SET
-                    last_polled = EXCLUDED.last_polled,
-                    last_snapshot_hash = EXCLUDED.last_snapshot_hash,
-                    last_snapshot_count = EXCLUDED.last_snapshot_count,
-                    consecutive_failures = EXCLUDED.consecutive_failures,
-                    consecutive_empty = EXCLUDED.consecutive_empty,
-                    quality_score = EXCLUDED.quality_score,
-                    active = EXCLUDED.active,
-                    backoff_until = EXCLUDED.backoff_until,
-                    total_jobs_produced = EXCLUDED.total_jobs_produced,
-                    total_direct_url_rate = EXCLUDED.total_direct_url_rate
-                """,
-                source_id,
-                cp.source_type,
-                cp.last_polled,
-                cp.last_snapshot_hash,
-                cp.last_snapshot_count,
-                cp.consecutive_failures,
-                cp.consecutive_empty,
-                cp.quality_score,
-                cp.active,
-                cp.backoff_until,
-                cp.total_jobs_produced,
-                cp.total_direct_url_rate,
-            )
+    async with store._pool.acquire() as conn:
+        for source_id, cp in _SOURCE_CHECKPOINTS.items():
+            with contextlib.suppress(Exception):
+                await conn.execute(
+                    """
+                    INSERT INTO source_checkpoints
+                        (source_id, source_type, last_polled, last_snapshot_hash,
+                         last_snapshot_count, consecutive_failures, consecutive_empty,
+                         quality_score, active, backoff_until, total_jobs_produced,
+                         total_direct_url_rate)
+                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+                    ON CONFLICT (source_id) DO UPDATE SET
+                        last_polled = EXCLUDED.last_polled,
+                        last_snapshot_hash = EXCLUDED.last_snapshot_hash,
+                        last_snapshot_count = EXCLUDED.last_snapshot_count,
+                        consecutive_failures = EXCLUDED.consecutive_failures,
+                        consecutive_empty = EXCLUDED.consecutive_empty,
+                        quality_score = EXCLUDED.quality_score,
+                        active = EXCLUDED.active,
+                        backoff_until = EXCLUDED.backoff_until,
+                        total_jobs_produced = EXCLUDED.total_jobs_produced,
+                        total_direct_url_rate = EXCLUDED.total_direct_url_rate
+                    """,
+                    source_id,
+                    cp.source_type,
+                    cp.last_polled,
+                    cp.last_snapshot_hash,
+                    cp.last_snapshot_count,
+                    cp.consecutive_failures,
+                    cp.consecutive_empty,
+                    cp.quality_score,
+                    cp.active,
+                    cp.backoff_until,
+                    cp.total_jobs_produced,
+                    cp.total_direct_url_rate,
+                )
+        for source_id, urls in _LAST_SNAPSHOT_URLS.items():
+            with contextlib.suppress(Exception):
+                snapshot_json = json.dumps(sorted(urls))
+                await conn.execute(
+                    """
+                    INSERT INTO source_snapshots (source_id, snapshot_data)
+                    VALUES ($1, $2)
+                    ON CONFLICT (source_id) DO UPDATE SET
+                        snapshot_data = EXCLUDED.snapshot_data,
+                        updated_at = NOW()
+                    """,
+                    source_id,
+                    snapshot_json,
+                )
 
 
 async def load_checkpoints(store) -> None:
     """Load checkpoint state from Postgres."""
     if store is None:
         return
-    with contextlib.suppress(Exception):
-        rows = await store._pool.fetch("SELECT * FROM source_checkpoints")
-        for row in rows:
-            _SOURCE_CHECKPOINTS[row["source_id"]] = SourceCheckpoint(
-                source_id=row["source_id"],
-                source_type=row["source_type"],
-                last_polled=row["last_polled"] or 0.0,
-                last_snapshot_hash=row["last_snapshot_hash"] or "",
-                last_snapshot_count=row["last_snapshot_count"] or 0,
-                consecutive_failures=row["consecutive_failures"] or 0,
-                consecutive_empty=row["consecutive_empty"] or 0,
-                quality_score=row["quality_score"] or 0.5,
-                active=row.get("active", True),
-                backoff_until=row["backoff_until"] or 0.0,
-                total_jobs_produced=row["total_jobs_produced"] or 0,
-                total_direct_url_rate=row["total_direct_url_rate"] or 0.0,
-            )
+    async with store._pool.acquire() as conn:
+        with contextlib.suppress(Exception):
+            rows = await conn.fetch("SELECT * FROM source_checkpoints")
+            for row in rows:
+                _SOURCE_CHECKPOINTS[row["source_id"]] = SourceCheckpoint(
+                    source_id=row["source_id"],
+                    source_type=row["source_type"],
+                    last_polled=row["last_polled"] or 0.0,
+                    last_snapshot_hash=row["last_snapshot_hash"] or "",
+                    last_snapshot_count=row["last_snapshot_count"] or 0,
+                    consecutive_failures=row["consecutive_failures"] or 0,
+                    consecutive_empty=row["consecutive_empty"] or 0,
+                    quality_score=row["quality_score"] or 0.5,
+                    active=row.get("active", True),
+                    backoff_until=row["backoff_until"] or 0.0,
+                    total_jobs_produced=row["total_jobs_produced"] or 0,
+                    total_direct_url_rate=row["total_direct_url_rate"] or 0.0,
+                )
+        with contextlib.suppress(Exception):
+            snap_rows = await conn.fetch("SELECT source_id, snapshot_data FROM source_snapshots")
+            for sr in snap_rows:
+                try:
+                    urls = set(json.loads(sr["snapshot_data"]))
+                    _LAST_SNAPSHOT_URLS[sr["source_id"]] = urls
+                except Exception:
+                    pass
 
 
 def record_failure(source_id: str) -> None:

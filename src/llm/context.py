@@ -163,11 +163,18 @@ class ContextManager:
         schema: dict[str, Any] | None = None,
         content: str = "",
         limit: int = 16000,
+        max_tokens: int | None = None,
     ) -> dict[str, Any] | list[Any]:
         full = prompt
         if content:
             full = prompt + "\n\n" + content[:limit]
-        raw = await self.chat(full, schema=schema)
+        saved = self._max_tokens
+        if max_tokens is not None:
+            self._max_tokens = max_tokens
+        try:
+            raw = await self.chat(full, schema=schema)
+        finally:
+            self._max_tokens = saved
         raw = _strip_markdown(raw)
         try:
             return json.loads(raw)

@@ -196,15 +196,17 @@ async def ats_crawler(entry: FrontierEntry) -> list[FrontierEntry]:
 
     try:
         cfg = get_config().firecrawl
+        ats_cfg = get_config().ats
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
             resp = await client.post(
                 f"{cfg.url}/v1/map",
-                json={"url": ats_url, "limit": cfg.get("map_limit", 200)},
+                json={"url": ats_url, "limit": cfg.map_limit},
             )
             if resp.status_code == 200:
                 data = resp.json()
                 links = data.get("links", []) or []
-                for link in links[:200]:
+                limit = min(ats_cfg.max_pages_per_board * 20, 200)
+                for link in links[:limit]:
                     if not isinstance(link, str):
                         continue
                     if _ATS_PATTERN.search(link) or "/jobs/" in link or "/postings/" in link:

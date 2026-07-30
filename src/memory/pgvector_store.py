@@ -174,6 +174,12 @@ CREATE TABLE IF NOT EXISTS radar_analytics (
     created_at    TIMESTAMP DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS source_snapshots (
+    source_id     TEXT PRIMARY KEY,
+    snapshot_data TEXT DEFAULT '',
+    updated_at    TIMESTAMP DEFAULT NOW()
+);
+
 CREATE INDEX IF NOT EXISTS idx_radar_candidates_eligibility ON radar_candidates(eligibility);
 CREATE INDEX IF NOT EXISTS idx_radar_candidates_freshness ON radar_candidates(freshness_lane);
 CREATE INDEX IF NOT EXISTS idx_radar_candidates_rejection ON radar_candidates(rejection_reason);
@@ -970,3 +976,89 @@ def _row_to_radar_candidate(row: asyncpg.Record) -> dict[str, Any]:
                 val = []
         result[key] = val
     return result
+
+
+async def _radar_gate_stats(self: MemoryStore) -> dict[str, Any]:
+    """Return counts by eligibility and rejection reason from radar_candidates."""
+    async with self._pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT
+                COUNT(*) AS total,
+                COUNT(*) FILTER (WHERE eligibility = 'accepted') AS accepted,
+                COUNT(*) FILTER (WHERE eligibility = 'near_miss') AS near_miss,
+                COUNT(*) FILTER (WHERE eligibility = 'rejected') AS rejected,
+                COUNT(*) FILTER (WHERE eligibility = 'pending') AS pending,
+                COUNT(*) FILTER (WHERE freshness_lane = 'urgent') AS urgent,
+                COUNT(*) FILTER (WHERE freshness_lane = 'review') AS review
+            FROM radar_candidates
+            """
+        )
+        if row is None:
+            return {
+                "total": 0,
+                "accepted": 0,
+                "near_miss": 0,
+                "rejected": 0,
+                "pending": 0,
+                "urgent": 0,
+                "review": 0,
+            }
+        rejections = await conn.fetch(
+            """
+            SELECT rejection_reason, COUNT(*) AS cnt
+            FROM radar_candidates
+            WHERE eligibility = 'rejected' AND rejection_reason != ''
+            GROUP BY rejection_reason ORDER BY cnt DESC LIMIT 8
+            """
+        )
+        return {
+            "total": row["total"] or 0,
+            "accepted": row["accepted"] or 0,
+            "near_miss": row["near_miss"] or 0,
+            "rejected": row["rejected"] or 0,
+            "pending": row["pending"] or 0,
+            "urgent": row["urgent"] or 0,
+            "review": row["review"] or 0,
+            "top_rejection_reasons": [
+                {"reason": r["rejection_reason"], "count": r["cnt"]} for r in rejections
+            ],
+        }
+
+
+async def _radar_top_skills(self: MemoryStore, limit: int = 12) -> list[dict[str, Any]]:
+    """Top matching skills from accepted/near-miss candidates."""
+    async with self._pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT skill, COUNT(*) AS cnt
+            FROM radar_candidates,
+                 LATERAL jsonb_array_elements_text(matching_skills) AS skill
+            WHERE eligibility IN ('accepted', 'near_miss')
+              AND skill IS NOT NULL AND skill != ''
+            GROUP BY skill ORDER BY cnt DESC LIMIT $1
+            """,
+            limit,
+        )
+    return [{"skill": r["skill"], "count": r["cnt"]} for r in rows]
+
+
+async def _radar_skill_arbitrage(self: MemoryStore) -> list[dict[str, Any]]:
+    """Missing skills that caused near-misses."""
+    async with self._pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT skill, COUNT(*) AS miss_count
+            FROM radar_candidates,
+                 LATERAL jsonb_array_elements_text(missing_skills) AS skill
+            WHERE eligibility = 'near_miss'
+              AND skill IS NOT NULL AND skill != ''
+            GROUP BY skill ORDER BY miss_count DESC LIMIT 12
+            """
+        )
+    return [{"skill": r["skill"], "miss_count": r["miss_count"]} for r in rows]
+
+
+MemoryStore.get_radar_gate_stats = _radar_gate_stats  # type: ignore[attr-defined]
+MemoryStore.get_radar_top_skills = _radar_top_skills  # type: ignore[attr-defined]
+MemoryStore.get_radar_skill_arbitrage = _radar_skill_arbitrage  # type: ignore[attr-defined]

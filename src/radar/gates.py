@@ -11,6 +11,7 @@ from typing import Any
 
 from src.radar.models import (
     EligibilityState,
+    FreshnessLane,
     JobCandidate,
     JobObservation,
     RejectionReason,
@@ -38,7 +39,7 @@ async def run_gates(
     rejection_log: list[tuple[str, RejectionReason, str]] = []
 
     candidate = JobCandidate(
-        canonical_id=make_canonical_id(observation.title, observation.source),
+        canonical_id=make_canonical_id(observation.title or "unknown", "", "Remote"),
         source=observation.source,
         direct_apply_url=observation.url,
         normalized_company=observation.title or "unknown",
@@ -309,31 +310,47 @@ def gate_source_freshness(
     known_hashes: set[str],
     last_seen: dict[str, float],
 ) -> RejectionReason | None:
+    """Assign freshness lane from evidence and observation history.
+
+    URGENT when:
+      - Source provides a verified timestamp within 24 hours.
+      - First-seen from an already-monitored official source.
+
+    REVIEW for strong roles with unknown posting date.
+    STALE for verified-old postings.
+    """
+    import time
+
     from src.configuration import get_config
 
     cfg = get_config().radar
-    import time
 
     url_hash = obs.canonical_url_hash()
     prev_seen = last_seen.get(url_hash, 0.0)
     now = time.time()
+    window_secs = cfg.urgent_window_hours * 3600
 
-    if prev_seen > 0 and (now - prev_seen) < cfg.urgent_window_hours * 3600:
-        if obs.source_freshness_evidence:
-            candidate.freshness_lane = __import__(
-                "src.radar.models", fromlist=["FreshnessLane"]
-            ).FreshnessLane.URGENT
-        return None
+    has_timestamp_evidence = bool(obs.source_freshness_evidence)
 
-    if obs.source_freshness_evidence:
+    is_first_seen_from_monitored = prev_seen == 0 and obs.source not in (
+        "github_index",
+        "searxng",
+        "unknown",
+    )
+
+    if has_timestamp_evidence or is_first_seen_from_monitored:
+        candidate.freshness_lane = FreshnessLane.URGENT
         return None
 
     if prev_seen > 0:
-        candidate.freshness_lane = __import__(
-            "src.radar.models", fromlist=["FreshnessLane"]
-        ).FreshnessLane.REVIEW
-        return None
+        age = now - prev_seen
+        if age > cfg.stale_days * 86400:
+            candidate.freshness_lane = FreshnessLane.STALE
+            return RejectionReason.SOURCE_STALE
+        if age < window_secs:
+            candidate.freshness_lane = FreshnessLane.URGENT
 
+    candidate.freshness_lane = FreshnessLane.REVIEW
     return None
 
 
