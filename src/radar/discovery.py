@@ -1,11 +1,14 @@
 """Continuous company discovery from public startup ecosystems.
 
-Discovers companies from:
-- YC accelerator directories
-- VC portfolio pages (a16z, Sequoia, Accel)
-- HN "Who is Hiring"
-- RemoteOK API
-- SearXNG (via crawler.py search discovery)
+Discovered via live endpoint scan (2026-07-30):
+  READABLE: Crunchbase, Dealroom, Failory, Antler, Plug and Play,
+    a16z, Sequoia, Khosla, BVP, Index Ventures, Insight Partners, GV,
+    Salesforce Ventures, We Work Remotely, Arc, BetaList, TechCrunch
+  JS-SPA (via Firecrawl): YC, Techstars, 500 Global, Accel, Greylock,
+    NEA, First Round, Felicis, Tracxn, Himalayas, DevHunt, Lever, Workable
+  BLOCKED 403: PitchBook, OpenVC, F6S, StartupBlink, EF, Lightspeed,
+    Founders Fund, Sapphire, M12, Wellfound, ProductHunt, Sifted
+  404: Benchmark, General Catalyst, Alchemist (no portfolio page)
 
 Every discovered company's website is probed for its ATS/career page.
 Generic vendor roots are never used.
@@ -48,6 +51,18 @@ _VC_PORTFOLIOS = [
     "https://a16z.com/portfolio/",
     "https://www.sequoiacap.com/our-companies/",
     "https://www.accel.com/companies",
+    "https://www.khoslaventures.com/portfolio/",
+    "https://www.bvp.com/portfolio",
+    "https://www.indexventures.com/companies/",
+    "https://www.insightpartners.com/portfolio/",
+    "https://www.gv.com/portfolio/",
+    "https://www.salesforceventures.com/portfolio/",
+    "https://greylock.com/portfolio/",
+    "https://www.nea.com/portfolio",
+    "https://firstround.com/companies/",
+    "https://www.felicis.com/companies",
+    "https://500.co/companies",
+    "https://www.techstars.com/portfolio/",
 ]
 
 
@@ -375,6 +390,76 @@ async def discover_from_remoteok(limit: int = 30) -> list[dict[str, str]]:
         pass
 
     # Resolve official domains for discovered companies
+    for c in companies:
+        domain = await _resolve_official_domain(c["name"])
+        if domain and not is_aggregator_domain(domain):
+            c["website"] = f"https://{domain}"
+    return companies
+
+
+async def discover_from_weworkremotely(limit: int = 30) -> list[dict[str, str]]:
+    """Discover companies from We Work Remotely's readable HTML listings.
+
+    WWR is a plain-HTML remote job board — no JS rendering needed.
+    Each job card contains a company name and apply link.
+    """
+    companies: list[dict[str, str]] = []
+    seen: set[str] = set()
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get("https://weworkremotely.com/")
+            if resp.status_code != 200:
+                return companies
+            html = resp.text
+            for m in re.finditer(
+                r'<span class="company">([^<]+)</span>',
+                html,
+                re.IGNORECASE,
+            ):
+                name = m.group(1).strip()
+                if name and name not in seen and 2 < len(name) < 80:
+                    seen.add(name)
+                    companies.append({"name": name, "website": "", "source": "weworkremotely"})
+                    if len(companies) >= limit:
+                        break
+    except Exception:
+        pass
+
+    for c in companies:
+        domain = await _resolve_official_domain(c["name"])
+        if domain and not is_aggregator_domain(domain):
+            c["website"] = f"https://{domain}"
+    return companies
+
+
+async def discover_from_betalist(limit: int = 30) -> list[dict[str, str]]:
+    """Discover startups from BetaList's readable HTML listing.
+
+    BetaList showcases recently launched startups with company names,
+    descriptions, and website links.
+    """
+    companies: list[dict[str, str]] = []
+    seen: set[str] = set()
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get("https://betalist.com/")
+            if resp.status_code != 200:
+                return companies
+            html = resp.text
+            for m in re.finditer(
+                r'<a[^>]*href="(/startup/[^"]+)"[^>]*>([^<]+)</a>',
+                html,
+                re.IGNORECASE,
+            ):
+                name = m.group(2).strip()
+                if name and name not in seen and 2 < len(name) < 80:
+                    seen.add(name)
+                    companies.append({"name": name, "website": "", "source": "betalist"})
+                    if len(companies) >= limit:
+                        break
+    except Exception:
+        pass
+
     for c in companies:
         domain = await _resolve_official_domain(c["name"])
         if domain and not is_aggregator_domain(domain):

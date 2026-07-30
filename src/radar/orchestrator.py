@@ -45,10 +45,12 @@ from src.radar.discovery import (
 from src.radar.discovery import (
     _resolve_company_domain,
     detect_ats_for_company,
+    discover_from_betalist,
     discover_from_dealroom,
     discover_from_hackernews,
     discover_from_remoteok,
     discover_from_vc_portfolios,
+    discover_from_weworkremotely,
     discover_from_yc,
     is_aggregator_domain,
 )
@@ -158,6 +160,8 @@ async def _discover_new_companies() -> list[dict[str, Any]]:
         ("vc", discover_from_vc_portfolios, 40),
         ("hn", discover_from_hackernews, 30),
         ("remoteok", discover_from_remoteok, 30),
+        ("weworkremotely", discover_from_weworkremotely, 30),
+        ("betalist", discover_from_betalist, 30),
     ]
 
     # Search crawler for direct job + signal discovery
