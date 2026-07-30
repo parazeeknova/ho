@@ -97,6 +97,11 @@ def _classify_result(url: str, title: str, snippet: str) -> str:
         "jobs.smartrecruiters.com",
         "myworkdayjobs.com",
         "app.rippling.com",
+        ".teamtailor.com/jobs",
+        ".recruitee.com/",
+        ".comeet.com/jobs",
+        ".jobscore.com/jobs",
+        ".jazzhr.com",
     )
     if any(s in url_lower for s in ats_signs) or any(
         kw in text
@@ -275,6 +280,11 @@ def _extract_board_root(job_url: str) -> str:
     boards.greenhouse.io/acme/jobs/123 → https://boards.greenhouse.io/acme
     jobs.lever.co/acme/456 → https://jobs.lever.co/acme
     acme.myworkdayjobs.com/careers/job/1 → https://acme.myworkdayjobs.com
+    acme.teamtailor.com/jobs/123 → https://acme.teamtailor.com
+    acme.recruitee.com/jobs/456 → https://acme.recruitee.com
+    acme.comeet.com/jobs/789 → https://acme.comeet.com
+    acme.jobscore.com/jobs/123 → https://acme.jobscore.com
+    acme.jazzhr.com → https://acme.jazzhr.com
     """
     try:
         p = urlparse(job_url)
@@ -288,6 +298,17 @@ def _extract_board_root(job_url: str) -> str:
     if "myworkdayjobs.com" in host:
         return f"https://{host}"
 
+    # Subdomain-based ATS: company is the subdomain
+    for subdomain_ats in (
+        ".teamtailor.com",
+        ".recruitee.com",
+        ".comeet.com",
+        ".jobscore.com",
+        ".jazzhr.com",
+    ):
+        if subdomain_ats in host:
+            return f"https://{host}"
+
     # Greenhouse: /{company}/jobs/{id} → /{company}
     if "greenhouse.io" in host:
         parts = [x for x in path.split("/") if x]
@@ -295,14 +316,13 @@ def _extract_board_root(job_url: str) -> str:
             return f"https://{host}/{parts[0]}"
         return f"https://{host}"
 
+    # icims: /jobs/{id}?company={companyId} — too opaque, skip
+
     # Lever/Ashby/Workable/SmartRecruiters/Rippling: /{company}/{id}
     parts = [x for x in path.split("/") if x]
     if len(parts) >= 1:
-        # Rippling path: /careers/{company}/{id} → keep /careers/{company}
         if "rippling.com" in host and len(parts) >= 2:
             return f"https://{host}/{parts[0]}/{parts[1]}"
-        # SmartRecruiters: /{company}/{job-id}
-        # Lever/Ashby/Workable: /{company}/{id}
         skip = {"jobs", "careers", "job", "postings", "apply"}
         company = parts[0]
         if company.lower() in skip and len(parts) >= 2:

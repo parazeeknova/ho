@@ -23,7 +23,9 @@ logger = get_logger("radar_agents")
 
 _ATS_PATTERN = re.compile(
     r"(?:greenhouse\.io|lever\.co|ashbyhq\.com|workable\.com|"
-    r"smartrecruiters\.com|myworkdayjobs\.com|rippling\.com)",
+    r"smartrecruiters\.com|myworkdayjobs\.com|rippling\.com|"
+    r"teamtailor\.com|recruitee\.com|comeet\.com|jobscore\.com|"
+    r"jazzhr\.com)",
     re.IGNORECASE,
 )
 
@@ -176,6 +178,16 @@ def _identify_ats(url: str) -> str:
         return "workday"
     if "rippling.com" in url_lower:
         return "rippling"
+    if "teamtailor.com" in url_lower:
+        return "teamtailor"
+    if "recruitee.com" in url_lower:
+        return "recruitee"
+    if "comeet.com" in url_lower:
+        return "comeet"
+    if "jobscore.com" in url_lower:
+        return "jobscore"
+    if "jazzhr.com" in url_lower:
+        return "jazzhr"
     return "careers_page"
 
 

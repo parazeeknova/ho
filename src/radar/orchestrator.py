@@ -963,7 +963,20 @@ async def _run_radar_pipeline() -> None:
         url = event.payload.get("url", "")
         if any(
             a in url.lower()
-            for a in ("greenhouse", "lever.co", "ashbyhq", "workable", "myworkdayjobs")
+            for a in (
+                "greenhouse",
+                "lever.co",
+                "ashbyhq",
+                "workable",
+                "myworkdayjobs",
+                "smartrecruiters",
+                "rippling",
+                "teamtailor",
+                "recruitee",
+                "comeet",
+                "jobscore",
+                "jazzhr",
+            )
         ):
             return [
                 FrontierEntry(

@@ -45,6 +45,11 @@ ATS_SIGNATURES = {
     "smartrecruiters": "jobs.smartrecruiters.com",
     "workday": "myworkdayjobs.com",
     "rippling": "app.rippling.com",
+    "teamtailor": ".teamtailor.com",
+    "recruitee": ".recruitee.com",
+    "comeet": ".comeet.com",
+    "jobscore": ".jobscore.com",
+    "jazzhr": ".jazzhr.com",
 }
 
 _VC_PORTFOLIOS = [
