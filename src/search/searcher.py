@@ -273,6 +273,7 @@ async def scrape_all(
     ctx: ContextManager,
     pipeline: JobPipeline,
     max_workers: int = 12,
+    map_urls: list[dict[str, str]] | None = None,
 ) -> None:
     tasks = []
 
@@ -282,6 +283,10 @@ async def scrape_all(
     web_hits = await _search_web(app, positions, ctx)
     for hit in web_hits:
         tasks.append(lambda h=hit: scrape_url_to_pipeline(h, app, pipeline))
+
+    if map_urls:
+        for mu in map_urls:
+            tasks.append(lambda u=mu: scrape_url_to_pipeline(u, app, pipeline))
 
     sem = asyncio.Semaphore(max_workers)
 

@@ -51,7 +51,6 @@ from src.search.searcher import (
     harvest_and_save_domains,
     map_company_careers,
     scrape_all,
-    scrape_url_to_pipeline,
 )
 
 console = Console()
@@ -101,25 +100,17 @@ def filter_recent_jobs(jobs: list[dict]) -> list[dict]:
     return filtered
 
 
-async def _limited_scrape(
-    item: dict,
+async def map_new_domains(
     app: FirecrawlApp,
-    pipeline: JobPipeline,
-    sem: asyncio.Semaphore,
-) -> None:
-    async with sem:
-        await scrape_url_to_pipeline(item, app, pipeline)
-
-
-async def _domain_producer(
-    app: FirecrawlApp,
-    pipeline: JobPipeline,
     store: MemoryStore,
     combined_domains: list[str],
     uncrawled_dynamic: list[str],
-) -> None:
-    """Map company career pages and push discovered job URLs into the pipeline."""
-    cfg = get_config().pipeline
+) -> list[dict[str, str]]:
+    """Map company career pages and return discovered job URLs.
+
+    Returns the raw map_urls list so the caller can feed them into
+    scrape_all for unified concurrent scraping.
+    """
     console.print(
         f"  [bold lion]Aggressive Crawler: Mapping {len(combined_domains)} total domains "
         f"({len(uncrawled_dynamic)} dynamically discovered)[/bold lion]"
@@ -127,29 +118,10 @@ async def _domain_producer(
     map_urls = await map_company_careers(app, combined_domains)
     logger.info(f"Map discovery: {len(map_urls)} career-page URLs")
 
-    max_map = 300
-    if len(map_urls) > max_map:
-        map_urls = map_urls[:max_map]
-
-    scrape_sem = asyncio.Semaphore(cfg.max_scrape_workers)
-    scrape_done = 0
-    scrape_total = len(map_urls)
-    scrape_lock = asyncio.Lock()
-
-    async def _scrape_with_progress(item: dict) -> None:
-        nonlocal scrape_done
-        async with scrape_sem:
-            await scrape_url_to_pipeline(item, app, pipeline)
-        async with scrape_lock:
-            scrape_done += 1
-            if scrape_done % 20 == 0 or scrape_done == scrape_total:
-                logger.debug(f"Scraping map URLs... {scrape_done}/{scrape_total}")
-
-    scrape_tasks = [_scrape_with_progress(mu) for mu in map_urls]
-    await asyncio.gather(*scrape_tasks)
-
     if uncrawled_dynamic:
         await store.mark_domains_crawled(uncrawled_dynamic)
+
+    return map_urls
 
 
 async def _scrape_index_links(
@@ -733,9 +705,10 @@ async def _run_pipeline() -> None:
             uncrawled_dynamic = await store.get_uncrawled_domains(limit=150)
             combined_domains = list(set(_map_domains + uncrawled_dynamic))
 
-            domain_task = asyncio.create_task(
-                _domain_producer(app, pipeline, store, combined_domains, uncrawled_dynamic)
-            )
+            map_urls = await map_new_domains(app, store, combined_domains, uncrawled_dynamic)
+            max_map = 300
+            if len(map_urls) > max_map:
+                map_urls = map_urls[:max_map]
 
             await asyncio.gather(
                 scrape_all(
@@ -744,6 +717,7 @@ async def _run_pipeline() -> None:
                     ctx,
                     pipeline,
                     max_workers=cfg.pipeline.max_scrape_workers,
+                    map_urls=map_urls,
                 ),
                 fetch_direct_json_feeds(positions, pipeline),
                 *(
@@ -751,8 +725,6 @@ async def _run_pipeline() -> None:
                     for pos in positions[:3]
                 ),
             )
-
-            await domain_task
 
             pipeline.signal_done()
 
