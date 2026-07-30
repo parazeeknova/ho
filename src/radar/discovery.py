@@ -81,67 +81,54 @@ _VC_PORTFOLIOS = [
 
 
 async def discover_from_yc(limit: int = 50) -> list[dict[str, str]]:
-    """Discover YC companies from the directory page via Firecrawl.
+    """Discover YC companies via SearXNG search for YC-backed startups.
 
-    One Firecrawl scrape gets the rendered company listing HTML.
-    We extract company names directly — no detail-page calls.
+    YC's official directory is a React SPA blocked by anti-bot
+    protection — even Firecrawl Playwright returns empty HTML.
+    We use SearXNG to find YC company list mirrors and directories.
     """
     companies: list[dict[str, str]] = []
-    cfg = get_config().firecrawl
+    seen: set[str] = set()
+    cfg = get_config().searxng
     try:
-        async with httpx.AsyncClient(timeout=45.0) as client:
-            resp = await client.post(
-                f"{cfg.url}/v1/scrape",
-                json={
-                    "url": "https://www.ycombinator.com/companies",
-                    "formats": ["html"],
-                    "onlyMainContent": True,
+        async with httpx.AsyncClient(timeout=cfg.timeout) as client:
+            resp = await client.get(
+                cfg.url,
+                params={
+                    "q": "YC W25 YC S25 YC-backed startup companies list 2026",
+                    "format": "json",
                 },
             )
             if resp.status_code != 200:
                 return companies
-            html = (resp.json().get("data") or {}).get("html", "") or ""
-            if not html:
-                return companies
-
-            seen: set[str] = set()
-            for m in re.finditer(r">(?:\s*)([A-Z][A-Za-z0-9 .&,-]{2,40})(?:\s*)<", html):
-                name = m.group(1).strip()
-                if (
-                    name not in seen
-                    and 3 < len(name) < 60
-                    and not any(
-                        n in name.lower()
-                        for n in (
-                            "companies",
-                            "learn more",
-                            "apply",
-                            "read more",
-                            "portfolio",
-                            "careers",
-                            "jobs",
-                            "news",
-                            "blog",
-                            "cookie",
-                            "privacy",
-                            "terms",
-                            "home",
-                            "about",
+            for r in resp.json().get("results", [])[:30]:
+                title = r.get("title", "")
+                snippet = r.get("content", "")
+                text = f"{title} {snippet}"
+                for m in re.finditer(r"([A-Z][A-Za-z0-9 .&,-]{3,50})", text):
+                    name = m.group(1).strip()
+                    if (
+                        name not in seen
+                        and len(name) > 3
+                        and not any(
+                            n in name.lower()
+                            for n in (
+                                "home",
+                                "about",
+                                "list",
+                                "search",
+                                "login",
+                                "signup",
+                                "apply now",
+                            )
                         )
-                    )
-                ):
-                    seen.add(name)
-                    companies.append(
-                        {
-                            "name": name,
-                            "website": "",
-                            "source": "yc_directory",
-                        }
-                    )
-                    if len(companies) >= limit:
-                        break
-    except Exception as e:
-        logger.warning("YC discovery failed", exception=str(e))
+                    ):
+                        seen.add(name)
+                        companies.append({"name": name, "website": "", "source": "yc_directory"})
+                        if len(companies) >= limit:
+                            return companies
+    except Exception:
+        pass
 
     for c in companies:
         domain = await _resolve_official_domain(c["name"])
@@ -298,26 +285,26 @@ async def discover_from_hackernews(limit: int = 30) -> list[dict[str, str]]:
 
 
 async def discover_from_dealroom(limit: int = 50) -> list[dict[str, str]]:
-    """Discover funded startups from Dealroom.co's public API.
-
-    First queries /api/marketmaps to get fresh map IDs, then drills
-    into each map to extract companies with names and websites.
-    """
+    """Discover funded startups from Dealroom.co's public API."""
     companies: list[dict[str, str]] = []
     seen: set[str] = set()
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
-            # Get fresh market map IDs
-            resp = await client.get(
-                "https://dealroom.co/api/marketmaps",
-                params={"q": "ai engineer startup saas", "limit": 5},
-            )
-            if resp.status_code != 200:
-                return companies
-            maps_data = resp.json()
-            map_ids = [m["id"] for m in maps_data.get("results", [])[:3] if m.get("id")]
+            # Get fresh market map IDs — try multiple queries
+            all_map_ids: list[str] = []
+            for q in ("ai", "saas", "fintech", "health"):
+                resp = await client.get(
+                    "https://dealroom.co/api/marketmaps",
+                    params={"q": q, "limit": 3},
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    for m in data.get("results", []):
+                        mid = m.get("id", "")
+                        if mid and mid not in all_map_ids:
+                            all_map_ids.append(mid)
 
-            for map_id in map_ids:
+            for map_id in all_map_ids[:6]:
                 resp2 = await client.get(f"https://dealroom.co/api/marketmap?id={map_id}")
                 if resp2.status_code != 200:
                     continue
