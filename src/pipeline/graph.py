@@ -71,6 +71,18 @@ location (city/country or "Remote"), salary (if mentioned), posted_date, and app
 - If the text is a company homepage, job directory, error page, or lists \
 multiple different jobs instead of ONE SINGLE posting, set match_percent=0 and \
 verdict=NO_MATCH.
+- FIELD DEFINITIONS (critical — follow exactly):
+  * matching_skills: skills FROM THE RESUME that match specific JD requirements.
+    Only list skills actually mentioned in both. Never list JD skills absent from
+    the resume as matching_skills.
+  * missing_skills: skills the JD REQUIRES that the resume does NOT have.
+    Never list skills the candidate already has. If the role doesn't require
+    the candidate's specific stack (e.g. a C++ role when the candidate codes in
+    Python/Go), do NOT list Python/Go as missing_skills — instead mark it as a
+    poor domain match and set match_percent accordingly. Only list genuinely
+    REQUIRED skills the candidate lacks.
+  * Do NOT conflate the two. matching_skills = candidate's strengths that help.
+    missing_skills = genuine gaps in the candidate's profile for this role.
 - Enforce EVERY constraint from the Candidate Profile above: experience level, \
 tech stack, location preferences, visa requirements, rejected industries, and \
 minimum salary.
