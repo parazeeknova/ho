@@ -54,6 +54,59 @@ class AnalyticsAgent:
 
         return "\n".join(lines)
 
+    async def generate_resilient_report(self) -> list[str]:
+        """Generate analytics with each section executing independently.
+
+        A single failing section does not crash the entire report.
+        Salary rows with malformed data are silently ignored.
+        Returns list of message chunks so TelegramAgent can send
+        them without hitting the 4000-char limit.
+        """
+        sections: list[list[str]] = []
+        section_funcs = [
+            ("🔥 Most In-Demand Skills", self._section_top_skills),
+            ("📈 High-ROI Missing Skills", self._section_arbitrage),
+            ("💸 VC Tier List", self._section_vc_tier_list),
+            ("🚀 Pre-Trend Radar", self._section_tech_momentum),
+            ("🕳️ ATS Black Hole Index", self._section_ats_blackhole),
+            ("💰 Marginal Skill Valuation", self._section_marginal_valuation),
+            ("🕵️ Stealth Hiring Signals", self._section_stealth_signals),
+        ]
+
+        for name, func in section_funcs:
+            try:
+                result = await func()
+                if result:
+                    sections.append(result)
+            except Exception as e:
+                logger.warning("Analytics section failed", section=name, exception=str(e))
+                sections.append(
+                    [f"<b>{name}</b>", "  <i>Data unavailable for this section.</i>", ""]
+                )
+
+        try:
+            count = await self.store.get_job_ledger_count()
+            sections.append([f"<i>Total jobs tracked: {count}</i>"])
+        except Exception:
+            sections.append(["<i>Job count unavailable.</i>"])
+
+        try:
+            salary_stats = await self.store.get_salary_stats()
+            if salary_stats.get("count", 0) > 0:
+                sections.append(
+                    [
+                        "<b>💵 Salary Stats</b>",
+                        f"  Median: {salary_stats.get('median', 0):,}",
+                        f"  Average: {salary_stats.get('avg', 0):,}",
+                        f"  Roles with salary data: {salary_stats.get('count', 0)}",
+                        "",
+                    ]
+                )
+        except Exception:
+            pass
+
+        return ["\n".join(s) for s in sections]
+
     async def _section_top_skills(self) -> list[str]:
         top = await self.store.get_top_skills(days=30, limit=12)
         lines = ["<b>🔥 Most In-Demand Skills</b>"]

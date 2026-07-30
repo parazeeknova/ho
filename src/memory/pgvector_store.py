@@ -96,6 +96,92 @@ CREATE TABLE IF NOT EXISTS frontier_state (
 CREATE TABLE IF NOT EXISTS frontier_completed (
     work_id        TEXT PRIMARY KEY, completed_at TIMESTAMP DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS source_checkpoints (
+    source_id            TEXT PRIMARY KEY,
+    source_type          TEXT NOT NULL DEFAULT 'unknown',
+    last_polled          DOUBLE PRECISION DEFAULT 0,
+    last_snapshot_hash   TEXT DEFAULT '',
+    last_snapshot_count  INT DEFAULT 0,
+    consecutive_failures INT DEFAULT 0,
+    consecutive_empty    INT DEFAULT 0,
+    quality_score        REAL DEFAULT 0.5,
+    active               BOOLEAN DEFAULT TRUE,
+    backoff_until        DOUBLE PRECISION DEFAULT 0,
+    total_jobs_produced  INT DEFAULT 0,
+    total_direct_url_rate REAL DEFAULT 0.0,
+    updated_at           TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS job_observations (
+    url_hash              TEXT PRIMARY KEY,
+    url                   TEXT NOT NULL,
+    source                TEXT NOT NULL DEFAULT '',
+    title                 TEXT DEFAULT '',
+    snippet               TEXT DEFAULT '',
+    first_seen            DOUBLE PRECISION DEFAULT 0,
+    last_seen             DOUBLE PRECISION DEFAULT 0,
+    freshness_lane        TEXT DEFAULT 'review',
+    direct_posting_verified BOOLEAN DEFAULT FALSE,
+    raw_json              JSONB DEFAULT '{{}}'::jsonb,
+    created_at            TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS radar_candidates (
+    canonical_id          TEXT PRIMARY KEY,
+    source                TEXT NOT NULL DEFAULT '',
+    direct_apply_url      TEXT DEFAULT '',
+    normalized_company    TEXT DEFAULT '',
+    normalized_role       TEXT DEFAULT '',
+    normalized_location   TEXT DEFAULT 'Remote',
+    freshness_lane        TEXT DEFAULT 'review',
+    source_confidence     REAL DEFAULT 0.5,
+    eligibility           TEXT DEFAULT 'pending',
+    rejection_reason      TEXT DEFAULT '',
+    rejection_detail      TEXT DEFAULT '',
+    role_family           TEXT DEFAULT 'unknown',
+    salary_amount         REAL,
+    salary_currency       TEXT DEFAULT '',
+    salary_period         TEXT DEFAULT '',
+    salary_raw            TEXT DEFAULT '',
+    posted_date           TEXT DEFAULT '',
+    first_seen            DOUBLE PRECISION DEFAULT 0,
+    last_seen             DOUBLE PRECISION DEFAULT 0,
+    matching_skills       JSONB DEFAULT '[]'::jsonb,
+    missing_skills        JSONB DEFAULT '[]'::jsonb,
+    match_percent         INT DEFAULT 0,
+    shortlist_probability INT DEFAULT 0,
+    verdict               TEXT DEFAULT 'NO_MATCH',
+    jd_summary            TEXT DEFAULT '',
+    company_description   TEXT DEFAULT '',
+    role_summary          TEXT DEFAULT '',
+    is_remote             BOOLEAN DEFAULT FALSE,
+    founders              JSONB DEFAULT '[]'::jsonb,
+    funding_stage         TEXT DEFAULT '',
+    funding_info          JSONB DEFAULT '{{}}'::jsonb,
+    founder_socials       JSONB DEFAULT '[]'::jsonb,
+    company_news          TEXT DEFAULT '',
+    osint_signals         JSONB DEFAULT '[]'::jsonb,
+    extra                 JSONB DEFAULT '{{}}'::jsonb,
+    created_at            TIMESTAMP DEFAULT NOW(),
+    updated_at            TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS radar_analytics (
+    id            SERIAL PRIMARY KEY,
+    event_type    TEXT NOT NULL DEFAULT '',
+    event_data    JSONB DEFAULT '{{}}'::jsonb,
+    created_at    TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_radar_candidates_eligibility ON radar_candidates(eligibility);
+CREATE INDEX IF NOT EXISTS idx_radar_candidates_freshness ON radar_candidates(freshness_lane);
+CREATE INDEX IF NOT EXISTS idx_radar_candidates_rejection ON radar_candidates(rejection_reason);
+CREATE INDEX IF NOT EXISTS idx_radar_candidates_role_family ON radar_candidates(role_family);
+CREATE INDEX IF NOT EXISTS idx_radar_candidates_created ON radar_candidates(created_at);
+CREATE INDEX IF NOT EXISTS idx_job_observations_source ON job_observations(source);
+CREATE INDEX IF NOT EXISTS idx_job_observations_first_seen ON job_observations(first_seen);
+CREATE INDEX IF NOT EXISTS idx_source_checkpoints_active ON source_checkpoints(active);
 """
 
 
@@ -697,3 +783,190 @@ class MemoryStore:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow("SELECT COUNT(*) AS cnt FROM discovered_domains")
             return row["cnt"] if row else 0
+
+    # ── Radar v2 methods ──────────────────────────────────────────────
+
+    async def upsert_radar_candidate(self, data: dict[str, Any]) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO radar_candidates (
+                    canonical_id, source, direct_apply_url, normalized_company,
+                    normalized_role, normalized_location, freshness_lane,
+                    source_confidence, eligibility, rejection_reason,
+                    rejection_detail, role_family, salary_amount, salary_currency,
+                    salary_period, salary_raw, posted_date, first_seen, last_seen,
+                    matching_skills, missing_skills, match_percent,
+                    shortlist_probability, verdict, jd_summary,
+                    company_description, role_summary, is_remote,
+                    founders, funding_stage, funding_info, founder_socials,
+                    company_news, osint_signals, extra
+                ) VALUES (
+                    $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,
+                    $13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,
+                    $28,$29,$30,$31,$32,$33,$34,$35
+                )
+                ON CONFLICT (canonical_id) DO UPDATE SET
+                    last_seen = EXCLUDED.last_seen,
+                    match_percent = GREATEST(
+                        radar_candidates.match_percent, EXCLUDED.match_percent
+                    ),
+                    eligibility = EXCLUDED.eligibility,
+                    matching_skills = EXCLUDED.matching_skills,
+                    missing_skills = EXCLUDED.missing_skills,
+                    verdict = EXCLUDED.verdict,
+                    updated_at = NOW()
+                """,
+                data.get("canonical_id", ""),
+                data.get("source", ""),
+                data.get("direct_apply_url", ""),
+                data.get("normalized_company", ""),
+                data.get("normalized_role", ""),
+                data.get("normalized_location", "Remote"),
+                data.get("freshness_lane", "review"),
+                data.get("source_confidence", 0.5),
+                data.get("eligibility", "pending"),
+                data.get("rejection_reason", ""),
+                data.get("rejection_detail", ""),
+                data.get("role_family", "unknown"),
+                data.get("salary_amount"),
+                data.get("salary_currency", ""),
+                data.get("salary_period", ""),
+                data.get("salary_raw", ""),
+                data.get("posted_date", ""),
+                data.get("first_seen", 0.0),
+                data.get("last_seen", 0.0),
+                json.dumps(data.get("matching_skills", [])),
+                json.dumps(data.get("missing_skills", [])),
+                int(data.get("match_percent", 0)),
+                int(data.get("shortlist_probability", 0)),
+                data.get("verdict", "NO_MATCH"),
+                data.get("jd_summary", ""),
+                data.get("company_description", ""),
+                data.get("role_summary", ""),
+                bool(data.get("is_remote", False)),
+                json.dumps(data.get("founders", [])),
+                data.get("funding_stage", ""),
+                json.dumps(data.get("funding_info", {})),
+                json.dumps(data.get("founder_socials", [])),
+                data.get("company_news", ""),
+                json.dumps(data.get("osint_signals", [])),
+                json.dumps(data.get("extra", {})),
+            )
+
+    async def record_rejection(self, canonical_id: str, reason: str, detail: str) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE radar_candidates SET
+                    eligibility = 'rejected',
+                    rejection_reason = $2,
+                    rejection_detail = $3,
+                    updated_at = NOW()
+                WHERE canonical_id = $1
+                """,
+                canonical_id,
+                reason,
+                detail,
+            )
+
+    async def get_rejection_counts_by_reason(self) -> list[dict[str, Any]]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT rejection_reason, COUNT(*) as cnt
+                FROM radar_candidates
+                WHERE eligibility = 'rejected' AND rejection_reason != ''
+                GROUP BY rejection_reason
+                ORDER BY cnt DESC
+                """
+            )
+        return [{"reason": r["rejection_reason"], "count": r["cnt"]} for r in rows]
+
+    async def get_urgent_candidates(self, limit: int = 20) -> list[dict[str, Any]]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT * FROM radar_candidates
+                WHERE freshness_lane = 'urgent' AND eligibility = 'accepted'
+                ORDER BY match_percent DESC LIMIT $1
+                """,
+                limit,
+            )
+        return [_row_to_radar_candidate(r) for r in rows]
+
+    async def get_candidates_by_eligibility(
+        self, eligibility: str, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT * FROM radar_candidates
+                WHERE eligibility = $1
+                ORDER BY match_percent DESC NULLS LAST
+                LIMIT $2
+                """,
+                eligibility,
+                limit,
+            )
+        return [_row_to_radar_candidate(r) for r in rows]
+
+    async def insert_analytics_event(self, event_type: str, event_data: dict[str, Any]) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO radar_analytics (event_type, event_data) VALUES ($1, $2)",
+                event_type,
+                json.dumps(event_data),
+            )
+
+    async def get_salary_stats(self) -> dict[str, Any]:
+        async with self._pool.acquire() as conn:
+            try:
+                row = await conn.fetchrow(
+                    """
+                    SELECT
+                        COUNT(*) FILTER (
+                            WHERE salary_amount IS NOT NULL AND salary_amount > 0
+                        ) AS count_with_salary,
+                        ROUND(AVG(salary_amount) FILTER (
+                            WHERE salary_amount IS NOT NULL AND salary_amount > 0
+                        ))::int AS avg_salary,
+                        ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY salary_amount)
+                            FILTER (
+                                WHERE salary_amount IS NOT NULL AND salary_amount > 0
+                            ))::int AS median_salary
+                    FROM radar_candidates
+                    """
+                )
+                if row is None:
+                    return {"count": 0, "avg": 0, "median": 0}
+                return {
+                    "count": row["count_with_salary"] or 0,
+                    "avg": row["avg_salary"] or 0,
+                    "median": row["median_salary"] or 0,
+                }
+            except Exception:
+                return {"count": 0, "avg": 0, "median": 0, "error": "salary_stats_failed"}
+
+
+def _row_to_radar_candidate(row: asyncpg.Record) -> dict[str, Any]:
+    jsonb_cols = (
+        "matching_skills",
+        "missing_skills",
+        "founders",
+        "funding_info",
+        "founder_socials",
+        "osint_signals",
+        "extra",
+        "raw_json",
+    )
+    result: dict[str, Any] = {}
+    for key in row:
+        val = row[key]
+        if key in jsonb_cols and isinstance(val, str):
+            try:
+                val = json.loads(val) if val else []
+            except Exception:
+                val = []
+        result[key] = val
+    return result

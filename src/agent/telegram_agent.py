@@ -275,6 +275,7 @@ class TelegramAgent:
 
     async def _handle_analytics(self) -> None:
         await self._send_raw("⏳ <i>Crunching market data and calculating skill arbitrage...</i>")
+        sections: list[str] = []
         try:
             from src.agent.analytics_agent import AnalyticsAgent
             from src.graph.graph_store import GraphStore
@@ -284,18 +285,22 @@ class TelegramAgent:
             graph = await GraphStore.create()
             try:
                 agent = AnalyticsAgent(store=store, graph=graph, ctx=self.ctx)
-                report = await agent.generate_market_report()
-                await self._send_raw(report)
+                sections = await agent.generate_resilient_report()
             finally:
                 await graph.close()
                 await store.close()
         except Exception as e:
             logger.exception("Analytics report generation failed", exc=e)
-            await self._send_raw(
+            sections.append(
                 "❌ <b>Analytics Report Failed</b>\n\n"
                 f"<code>{str(e)[:400]}</code>\n\n"
                 "Try again in a moment."
             )
+
+        for section in sections:
+            if section.strip():
+                await self._send_raw(section)
+                await asyncio.sleep(0.5)
 
     async def _handle_status(self) -> None:
         s = _pipeline_state
@@ -313,10 +318,45 @@ class TelegramAgent:
             f"State: {status}",
             f"Phase: <code>{s['phase']}</code>",
             f"Sweep: #{s['sweep']}",
-            f"✅ Matched total: <b>{s['matched_total']}</b>",
-            f"❌ Rejected total: <b>{s['rejected_total']}</b>",
-            f"Scraped this sweep: {s['scraped_count']}",
         ]
+
+        queue_status = s.get("llm_queue", {})
+        if queue_status:
+            cooldown = "🛑 Active" if queue_status.get("cooldown_active") else "✅ Clear"
+            lines.extend(
+                [
+                    "",
+                    "<b>LLM Queue</b>",
+                    f"Pending: {queue_status.get('pending', 0)}",
+                    f"In-flight: {queue_status.get('in_flight', 0)}",
+                    f"RPM used: {queue_status.get('requests_this_minute', 0)}",
+                    f"TPM used: {queue_status.get('tokens_this_minute', 0)}",
+                    f"Cooldown: {cooldown}",
+                    f"Total 429s: {queue_status.get('total_429s', 0)}",
+                ]
+            )
+
+        rejection_counts = s.get("rejection_counts", [])
+        if rejection_counts:
+            lines.extend(["", "<b>Top Rejection Reasons</b>"])
+            for rc in rejection_counts[:5]:
+                reason = rc.get("reason", "?").replace("_", " ")
+                lines.append(f"  • {reason}: {rc.get('count', 0)}")
+
+        source_health = s.get("source_health", {})
+        if source_health:
+            disabled = [sid for sid, sh in source_health.items() if not sh.get("active")]
+            if disabled:
+                lines.extend(["", f"⚠️ Disabled sources: {len(disabled)}"])
+
+        lines.extend(
+            [
+                "",
+                f"✅ Matched total: <b>{s['matched_total']}</b>",
+                f"❌ Rejected total: <b>{s['rejected_total']}</b>",
+                f"Scraped this sweep: {s['scraped_count']}",
+            ]
+        )
 
         sweep_start = s.get("sweep_started_at", 0)
         if sweep_start:
@@ -561,6 +601,97 @@ class TelegramAgent:
                 await asyncio.sleep(1.2)
 
         return sent_count
+
+    # ── categorized alerts (radar v2) ─────────────────────────────────
+
+    _CATEGORY_ICONS: dict[str, str] = {
+        "urgent": "🔴",
+        "startup_signal": "🟣",
+        "outreach": "🟡",
+        "eligible": "🔵",
+        "review": "⚪",
+    }
+
+    _CATEGORY_LABELS: dict[str, str] = {
+        "urgent": "Urgent High-Fit Verified-Fresh",
+        "startup_signal": "Startup Hiring Signal",
+        "outreach": "Cold Outreach Opportunity",
+        "eligible": "Eligible Role",
+        "review": "Freshness-Unknown Review",
+    }
+
+    async def send_categorized_alert(
+        self,
+        category: str,
+        job: dict[str, Any],
+        dedup_key: str = "",
+    ) -> bool:
+        if not self.is_configured:
+            return False
+
+        if dedup_key and dedup_key in self._notified_keys:
+            return False
+
+        icon = self._CATEGORY_ICONS.get(category, "⚪")
+        label = self._CATEGORY_LABELS.get(category, category)
+
+        text = self.format_job_card(job)
+        header = f"{icon} <b>{label}</b>\n\n"
+        text = header + text
+
+        buttons: list[list[dict[str, str]]] = []
+        link = job.get("apply_link") or job.get("direct_apply_url") or job.get("url") or ""
+        if link and str(link).startswith("http"):
+            buttons.append([{"text": "🚀 Apply Direct", "url": link}])
+
+        founders = job.get("founders", [])
+        if founders and isinstance(founders[0], dict):
+            for f in founders[:2]:
+                if f.get("linkedin_url"):
+                    name = html.escape(str(f.get("name", "Founder")))
+                    buttons.append([{"text": f"👤 {name} LinkedIn", "url": f["linkedin_url"]}])
+
+        reply_markup = {"inline_keyboard": buttons} if buttons else None
+        success = await self._send_to_chat(self._primary_chat_id, text, "HTML", reply_markup)
+
+        if success and dedup_key:
+            self._notified_keys.add(dedup_key)
+
+        return success
+
+    async def send_category_digest(
+        self,
+        category: str,
+        jobs: list[dict[str, Any]],
+        max_jobs: int = 5,
+    ) -> int:
+        if not self.is_configured or not jobs:
+            return 0
+
+        icon = self._CATEGORY_ICONS.get(category, "⚪")
+        label = self._CATEGORY_LABELS.get(category, category)
+
+        lines = [f"{icon} <b>{label} Digest</b>", f"  <i>{len(jobs)} roles found</i>", ""]
+
+        sent = 0
+        for j in jobs[:max_jobs]:
+            role = html.escape(str(j.get("role") or j.get("normalized_role") or "Position"))
+            company = html.escape(str(j.get("company") or j.get("normalized_company") or "Company"))
+            match_pct = j.get("match_percent", 0)
+            location = html.escape(
+                str(j.get("location") or j.get("normalized_location") or "Remote")
+            )
+            link = j.get("apply_link") or j.get("direct_apply_url", "")
+
+            line = f"<b>{company}</b> — {role} ({match_pct}% match, {location})"
+            if link and link.startswith("http"):
+                line += f'\n  <a href="{html.escape(link)}">Apply →</a>'
+            lines.append(line)
+            lines.append("")
+            sent += 1
+
+        await self._send_raw("\n".join(lines))
+        return sent
 
     # ── proactive stealth & warm-intro signals ──────────────────────
 

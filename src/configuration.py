@@ -220,6 +220,56 @@ class CandidateConfig:
 
 
 @dataclass
+class LlmQueueConfig:
+    """LLM work-queue rate-limiting and budget controls for the radar pipeline."""
+
+    requests_per_minute: int = field(default_factory=lambda: _env_int("LLM_QUEUE_RPM", 20))
+    estimated_tokens_per_minute: int = field(
+        default_factory=lambda: _env_int("LLM_QUEUE_TPM", 30000)
+    )
+    max_in_flight: int = field(default_factory=lambda: _env_int("LLM_QUEUE_MAX_IN_FLIGHT", 2))
+    match_token_budget: int = field(default_factory=lambda: _env_int("LLM_QUEUE_MATCH_TOKENS", 600))
+    cooldown_seconds: float = field(default_factory=lambda: _env_float("LLM_QUEUE_COOLDOWN", 30.0))
+    jitter_seconds: float = field(default_factory=lambda: _env_float("LLM_QUEUE_JITTER", 5.0))
+
+
+@dataclass
+class RadarConfig:
+    """Job radar v2 pipeline settings."""
+
+    poll_high_freq_seconds: float = field(
+        default_factory=lambda: _env_float("RADAR_HIGH_FREQ_POLL", 180.0)
+    )
+    poll_low_freq_seconds: float = field(
+        default_factory=lambda: _env_float("RADAR_LOW_FREQ_POLL", 1800.0)
+    )
+    max_candidates_per_sweep: int = field(
+        default_factory=lambda: _env_int("RADAR_MAX_CANDIDATES", 200)
+    )
+    urgent_window_hours: int = field(
+        default_factory=lambda: _env_int("RADAR_URGENT_WINDOW_HOURS", 24)
+    )
+    stale_days: int = field(default_factory=lambda: _env_int("RADAR_STALE_DAYS", 14))
+    source_min_confidence: float = field(
+        default_factory=lambda: _env_float("RADAR_SOURCE_MIN_CONFIDENCE", 0.3)
+    )
+
+
+@dataclass
+class ATSCrawlerConfig:
+    """ATS-specific crawling parameters."""
+
+    greenhouse_base: str = "https://boards.greenhouse.io"
+    lever_base: str = "https://jobs.lever.co"
+    ashby_base: str = "https://jobs.ashbyhq.com"
+    workable_base: str = "https://apply.workable.com"
+    smartrecruiters_base: str = "https://jobs.smartrecruiters.com"
+    rippling_base: str = "https://app.rippling.com/careers"
+    max_pages_per_board: int = field(default_factory=lambda: _env_int("ATS_MAX_PAGES", 10))
+    snapshot_ttl_hours: int = field(default_factory=lambda: _env_int("ATS_SNAPSHOT_TTL_HOURS", 6))
+
+
+@dataclass
 class Config:
     """Root configuration aggregating all subsystems."""
 
@@ -237,6 +287,9 @@ class Config:
     llm: LLMConfig = field(default_factory=LLMConfig)
     linkedin_guest: LinkedinGuestConfig = field(default_factory=LinkedinGuestConfig)
     candidate: CandidateConfig = field(default_factory=CandidateConfig)
+    llm_queue: LlmQueueConfig = field(default_factory=LlmQueueConfig)
+    radar: RadarConfig = field(default_factory=RadarConfig)
+    ats: ATSCrawlerConfig = field(default_factory=ATSCrawlerConfig)
 
     def validate(self) -> list[str]:
         """Run startup validation. Returns list of problems (empty = all good)."""
@@ -287,6 +340,15 @@ class Config:
             },
             "llm": {
                 "model": self.llm.model,
+            },
+            "llm_queue": {
+                "rpm": self.llm_queue.requests_per_minute,
+                "tpm": self.llm_queue.estimated_tokens_per_minute,
+                "max_in_flight": self.llm_queue.max_in_flight,
+            },
+            "radar": {
+                "urgent_window_hours": self.radar.urgent_window_hours,
+                "stale_days": self.radar.stale_days,
             },
         }
 
