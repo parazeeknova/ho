@@ -13,7 +13,8 @@ serve:
 	uv run python scripts/serve.py
 
 run: health
-	uv run python -m src.pipeline.orchestrator
+	@mkdir -p logs
+	uv run python -m src.pipeline.orchestrator 2>&1 | tee logs/run.log
 
 match: health
 	uv run python -m src.pipeline.orchestrator
