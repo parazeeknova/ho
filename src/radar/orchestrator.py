@@ -168,7 +168,7 @@ async def _discover_new_companies() -> list[dict[str, Any]]:
     from src.radar.crawler import run_search_discovery
 
     try:
-        search_results = await run_search_discovery(max_total_results=60)
+        search_results = await run_search_discovery(max_total_results=100)
         for c in search_results:
             c["discovered_from"] = c.get("source", "search")
         results.extend(search_results)
@@ -1069,7 +1069,7 @@ async def _run_radar_pipeline() -> None:
                     active_sources.append({"id": id_, "url": url, "source_type": source_type})
 
             # Parallel source polling
-            poll_sem = asyncio.Semaphore(8)
+            poll_sem = asyncio.Semaphore(12)
             board_results: list[list[JobObservation]] = []
 
             async def _poll_one(board, sem):

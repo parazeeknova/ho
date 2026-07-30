@@ -30,9 +30,9 @@ def reset_governor() -> None:
     _gs.cooldown_until = 0.0
     _gs.total_requests = 0
     _gs.total_429s = 0
-    _gs.rpm_limit = 70
-    _gs.tpm_limit = 50000
-    _gs.max_in_flight = 2
+    _gs.rpm_limit = 90
+    _gs.tpm_limit = 180000
+    _gs.max_in_flight = 5
     _gs.reserved_requests_this_minute = 0
     yield
 
@@ -58,9 +58,9 @@ class TestGovernor:
 
     def test_status_initial(self) -> None:
         s = get_governor_status()
-        assert s["rpm_limit"] == 70
-        assert s["tpm_limit"] == 50000
-        assert s["max_in_flight"] == 2
+        assert s["rpm_limit"] == 90
+        assert s["tpm_limit"] == 180000
+        assert s["max_in_flight"] == 5
         assert "cooldown_active" in s
 
 

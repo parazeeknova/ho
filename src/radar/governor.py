@@ -23,9 +23,9 @@ logger = get_logger("llm_governor")
 
 @dataclass
 class GovernorState:
-    rpm_limit: int = 70
-    tpm_limit: int = 50000
-    max_in_flight: int = 2
+    rpm_limit: int = 90
+    tpm_limit: int = 180000
+    max_in_flight: int = 5
     in_flight: int = 0
     requests_this_minute: int = 0
     tokens_this_minute: int = 0

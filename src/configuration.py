@@ -223,11 +223,11 @@ class LlmQueueConfig:
 
     requests_per_minute: int = field(default_factory=lambda: _env_int("LLM_QUEUE_RPM", 90))
     estimated_tokens_per_minute: int = field(
-        default_factory=lambda: _env_int("LLM_QUEUE_TPM", 90000)
+        default_factory=lambda: _env_int("LLM_QUEUE_TPM", 180000)
     )
-    max_in_flight: int = field(default_factory=lambda: _env_int("LLM_QUEUE_MAX_IN_FLIGHT", 4))
+    max_in_flight: int = field(default_factory=lambda: _env_int("LLM_QUEUE_MAX_IN_FLIGHT", 5))
     match_token_budget: int = field(
-        default_factory=lambda: _env_int("LLM_QUEUE_MATCH_TOKENS", 1200)
+        default_factory=lambda: _env_int("LLM_QUEUE_MATCH_TOKENS", 2000)
     )
     cooldown_seconds: float = field(default_factory=lambda: _env_float("LLM_QUEUE_COOLDOWN", 30.0))
     jitter_seconds: float = field(default_factory=lambda: _env_float("LLM_QUEUE_JITTER", 5.0))
@@ -244,7 +244,7 @@ class RadarConfig:
         default_factory=lambda: _env_float("RADAR_LOW_FREQ_POLL", 1800.0)
     )
     max_candidates_per_sweep: int = field(
-        default_factory=lambda: _env_int("RADAR_MAX_CANDIDATES", 200)
+        default_factory=lambda: _env_int("RADAR_MAX_CANDIDATES", 300)
     )
     urgent_window_hours: int = field(
         default_factory=lambda: _env_int("RADAR_URGENT_WINDOW_HOURS", 24)
