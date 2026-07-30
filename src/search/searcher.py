@@ -31,10 +31,9 @@ _USER_AGENTS = [
 GITHUB_INDEXES = [
     "https://raw.githubusercontent.com/SimplifyJobs/Summer2026-Internships/dev/README.md",
     "https://raw.githubusercontent.com/LorenzoLaCorte/european-tech-internships-2026/main/README.md",
-    "https://raw.githubusercontent.com/zapplyjobs/Research-Internships-for-Undergraduates/main/README.md",
     "https://raw.githubusercontent.com/DereC4/internships-and-newgrad/main/README.md",
     "https://raw.githubusercontent.com/SimplifyJobs/New-Grad-Positions/dev/README.md",
-    "https://raw.githubusercontent.com/ReaVNaiL/New-Grad-2026/main/README.md",
+    "https://raw.githubusercontent.com/vanshb03/Summer2027-Internships/main/README.md",
 ]
 
 SEARCH_QUERIES_SCHEMA = {
@@ -211,6 +210,8 @@ async def _search_web(
     for pos in positions[:3]:
         queries.append(f"{pos} intern remote")
         queries.append(f"{pos} new grad visa sponsorship")
+        queries.append(f"{pos} new grad india bangalore remote")
+        queries.append(f"{pos} graduate 2025 2026 uk eu remote")
     if not queries:
         queries = [f"{p} intern remote" for p in positions[:2]]
 

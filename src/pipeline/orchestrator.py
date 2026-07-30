@@ -303,7 +303,6 @@ async def _consumer(
         matched.extend(processed)
         for _ in web_buf:
             await pipeline.task_done()
-
     return matched, index_queue
 
 
@@ -562,7 +561,14 @@ async def _run_pipeline() -> None:
             positions = ["Software Engineer", "Backend Developer"]
     logger.info(f"Target positions: {', '.join(positions)}")
 
-    set_pipeline_state(running=True, started_at=time.time(), phase="starting", sweep=0)
+    set_pipeline_state(
+        running=True,
+        started_at=time.time(),
+        phase="starting",
+        sweep=0,
+        rejected_total=0,
+        matched_total=0,
+    )
     if telegram_agent.is_configured:
         existing = await store.chunk_count()
         await telegram_agent.send_startup(existing)
@@ -578,7 +584,12 @@ async def _run_pipeline() -> None:
         sweep_start = time.monotonic()
 
         try:
-            set_pipeline_state(sweep=sweep, phase=f"sweep {sweep}: scraping")
+            set_pipeline_state(
+                sweep=sweep,
+                phase=f"sweep {sweep}: scraping",
+                sweep_started_at=time.time(),
+                sweep_interval=cfg.pipeline.sweep_interval,
+            )
             pipeline = JobPipeline()
 
             retry_jobs = drain_retry_queue()
@@ -764,9 +775,15 @@ async def _run_pipeline() -> None:
                 await telegram_agent.notify_verified_jobs(clean_jobs, store=store)
 
             total_matched += len(clean_jobs)
+            total_rejected = (await store.get_job_ledger_count()) - total_matched
             elapsed = time.monotonic() - sweep_start
             logger.info(f"Sweep {sweep} complete ({elapsed:.1f}s, {len(clean_jobs)} matches)")
-            set_pipeline_state(matched_total=total_matched, phase="idle")
+            set_pipeline_state(
+                matched_total=total_matched,
+                rejected_total=total_rejected,
+                phase="idle",
+                sweep_interval=cfg.pipeline.sweep_interval,
+            )
             if telegram_agent.is_configured:
                 await telegram_agent.send_sweep_summary(sweep, len(clean_jobs), 0, elapsed)
 
@@ -825,7 +842,7 @@ async def _run_pipeline() -> None:
                 except Exception as ge:
                     logger.exception("Graph maintenance skipped", exc=ge)
 
-            if os.environ.get("OVERNIGHT_LOOP", "false").lower() != "true":
+            if os.environ.get("OVERNIGHT_LOOP", "true").lower() != "true":
                 break
 
             gc.collect()

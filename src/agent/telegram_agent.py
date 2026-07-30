@@ -40,8 +40,10 @@ _pipeline_state: dict[str, Any] = {
     "sweep": 0,
     "phase": "idle",
     "matched_total": 0,
+    "rejected_total": 0,
     "last_error": None,
     "started_at": None,
+    "sweep_started_at": 0.0,
     "llm_tokens_used": 0,
     "scraped_count": 0,
 }
@@ -309,11 +311,22 @@ class TelegramAgent:
             "<b>Pipeline Status</b>",
             "",
             f"State: {status}",
-            f"Phase: {s['phase']}",
-            f"Sweep: {s['sweep']}",
-            f"Matched total: {s['matched_total']}",
+            f"Phase: <code>{s['phase']}</code>",
+            f"Sweep: #{s['sweep']}",
+            f"✅ Matched total: <b>{s['matched_total']}</b>",
+            f"❌ Rejected total: <b>{s['rejected_total']}</b>",
             f"Scraped this sweep: {s['scraped_count']}",
         ]
+
+        sweep_start = s.get("sweep_started_at", 0)
+        if sweep_start:
+            interval = s.get("sweep_interval", 300)
+            elapsed = time.time() - sweep_start
+            if s["phase"].startswith("idle") and s["running"]:
+                remaining = max(0, interval - elapsed)
+                m, sec = divmod(int(remaining), 60)
+                lines.append(f"⏳ Next sweep in: <b>{m}m {sec}s</b>")
+
         if uptime:
             lines.append(f"Uptime: {uptime}")
         if s.get("last_error"):
