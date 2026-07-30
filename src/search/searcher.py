@@ -126,12 +126,25 @@ async def scrape_url_to_pipeline(item: dict, app: FirecrawlApp, pipeline: JobPip
             )
             if resp.status_code == 200:
                 md = (resp.json().get("data") or {}).get("markdown", "") or ""
-                if md and len(md) > 100:
+                if md and len(md) >= 300:
+                    md_lower = md.lower()
+                    if not any(kw in md_lower for kw in _JOB_KEYWORDS):
+                        return
                     await pipeline.push(
                         QueuedJob(markdown=md, url=url, title=item.get("title", ""))
                     )
     except Exception:
         pass
+
+
+_JOB_KEYWORDS = (
+    "requirements",
+    "qualifications",
+    "experience",
+    "responsibilities",
+    "apply",
+    "salary",
+)
 
 
 _url_blacklist = (

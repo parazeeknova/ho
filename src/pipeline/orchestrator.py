@@ -233,50 +233,61 @@ async def _process_and_dispatch_batch(
     if not scored:
         return []
 
-    cfg = get_config().pipeline
+    try:
+        cfg = get_config().pipeline
 
-    scored = filter_recent_jobs(scored)
+        scored = filter_recent_jobs(scored)
 
-    enricher = EnrichmentAgent(store)
-    enriched = await enricher.batch_enrich_and_rescore(scored, concurrency=cfg.verify_concurrency)
+        enricher = EnrichmentAgent(store)
+        enriched = await enricher.batch_enrich_and_rescore(
+            scored, concurrency=cfg.verify_concurrency
+        )
 
-    startup_agent = StartupAgent(ctx)
-    startup_enriched = await startup_agent.batch_analyze_startups(
-        enriched, concurrency=cfg.verify_concurrency
-    )
+        startup_agent = StartupAgent(ctx)
+        startup_enriched = await startup_agent.batch_analyze_startups(
+            enriched, concurrency=cfg.verify_concurrency
+        )
 
-    high_match = [j for j in startup_enriched if int(j.get("match_percent", 0)) >= 70]
-    if high_match:
-        for j in high_match:
-            company = str(j.get("company", ""))
-            if not company or company in ("N/A", "Unknown"):
-                continue
-            try:
-                posts = await startup_agent.mine_founder_posts(
-                    company, roles=[str(j.get("role", ""))]
-                )
-                if posts:
-                    j["founder_posts"] = posts
-                    logger.info(
-                        "Founder hiring post discovered",
-                        entity=company,
-                        extra={"founder": posts[0].get("founder_name", "?")},
+        high_match = [j for j in startup_enriched if int(j.get("match_percent", 0)) >= 70]
+        if high_match:
+            for j in high_match:
+                company = str(j.get("company", ""))
+                if not company or company in ("N/A", "Unknown"):
+                    continue
+                try:
+                    posts = await startup_agent.mine_founder_posts(
+                        company, roles=[str(j.get("role", ""))]
                     )
-            except Exception:
-                pass
+                    if posts:
+                        j["founder_posts"] = posts
+                        logger.info(
+                            "Founder hiring post discovered",
+                            entity=company,
+                            extra={"founder": posts[0].get("founder_name", "?")},
+                        )
+                except Exception:
+                    pass
 
-    await JobsAgent(store=store).add_or_merge_jobs(startup_enriched)
-    if ctx:
-        await ctx.flush()
+        await JobsAgent(store=store).add_or_merge_jobs(startup_enriched)
+        if ctx:
+            await ctx.flush()
 
-    cleanup_agent = CleanupAgent(store=store)
-    clean_jobs = await cleanup_agent.clean_and_format_ledger()
+        cleanup_agent = CleanupAgent(store=store)
+        clean_jobs = await cleanup_agent.clean_and_format_ledger()
 
-    telegram_agent = TelegramAgent(ctx=ctx)
-    if telegram_agent.is_configured:
-        await telegram_agent.notify_verified_jobs(clean_jobs, store=store)
+        telegram_agent = TelegramAgent(ctx=ctx)
+        if telegram_agent.is_configured:
+            await telegram_agent.notify_verified_jobs(clean_jobs, store=store)
 
-    return clean_jobs
+        return clean_jobs
+
+    except Exception as e:
+        logger.error(
+            "Dispatch batch failed, returning un-enriched jobs",
+            exception=str(e),
+            extra={"job_count": len(scored)},
+        )
+        return filter_recent_jobs(scored)
 
 
 async def _expand_company_graph(
