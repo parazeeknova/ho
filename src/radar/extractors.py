@@ -15,6 +15,14 @@ from src.radar.models import JobObservation
 
 logger = get_logger("index_extractor")
 
+GITHUB_INDEXES = [
+    "https://raw.githubusercontent.com/SimplifyJobs/Summer2026-Internships/dev/README.md",
+    "https://raw.githubusercontent.com/LorenzoLaCorte/european-tech-internships-2026/main/README.md",
+    "https://raw.githubusercontent.com/DereC4/internships-and-newgrad/main/README.md",
+    "https://raw.githubusercontent.com/SimplifyJobs/New-Grad-Positions/dev/README.md",
+    "https://raw.githubusercontent.com/vanshb03/Summer2027-Internships/main/README.md",
+]
+
 _TABLE_ROW_RE = re.compile(
     r"^\|(.+)\|$",
     re.MULTILINE,

@@ -1,9 +1,13 @@
-"""Resume loader: download, extract, verify, interactive review."""
+"""Resume loader: download, extract, verify, interactive review, embed-index."""
 
 import subprocess
 import tempfile
 import urllib.request
 from pathlib import Path
+
+import httpx
+
+from src.configuration import get_config
 
 
 def download_resume(url: str) -> tuple[Path, str]:
@@ -229,3 +233,54 @@ def chunk_resume(text: str) -> dict[str, str]:
             sections.setdefault(current_section, []).append(stripped)
 
     return {k: "\n".join(v) for k, v in sections.items() if v}
+
+
+async def index_resume_in_pgvector(
+    chunks: dict[str, str],
+    store,
+) -> None:
+    cfg = get_config().embed
+    embed_client = httpx.AsyncClient(
+        timeout=httpx.Timeout(120.0, connect=10.0),
+        limits=httpx.Limits(max_keepalive_connections=2, max_connections=4),
+    )
+    try:
+        records: list[dict[str, object]] = []
+        for section, text in chunks.items():
+            raw_lines = [ln.strip() for ln in text.split("\n")]
+            lines = [ln for ln in raw_lines if ln and len(ln) > 10]
+            for i in range(0, len(lines), 8):
+                batch = lines[i : i + 8]
+                resp = await embed_client.post(
+                    f"{cfg.url}/embeddings",
+                    json={"model": cfg.model, "input": batch},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                for item, content in zip(data["data"], batch, strict=True):
+                    records.append(
+                        {
+                            "section": section,
+                            "content": content,
+                            "embedding": item["embedding"],
+                        }
+                    )
+            if len(text) > 20:
+                resp = await embed_client.post(
+                    f"{cfg.url}/embeddings",
+                    json={"model": cfg.model, "input": [text[:500]]},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                records.append(
+                    {
+                        "section": section,
+                        "content": text[:500],
+                        "embedding": data["data"][0]["embedding"],
+                    }
+                )
+        if records:
+            await store.clear_embeddings()
+            await store.index_resume_chunks(records)
+    finally:
+        await embed_client.aclose()

@@ -14,13 +14,13 @@ serve:
 
 run: health
 	@mkdir -p logs
-	uv run python -m src.pipeline.orchestrator 2>&1 | tee logs/run.log
+	uv run python -m src.radar.orchestrator 2>&1 | tee logs/run.log
 
 match: health
-	uv run python -m src.pipeline.orchestrator
+	uv run python -m src.radar.orchestrator
 
 overnight: health
-	OVERNIGHT_LOOP=true uv run python -m src.pipeline.orchestrator
+	OVERNIGHT_LOOP=true uv run python -m src.radar.orchestrator
 
 fc-up:
 	@docker compose -f docker-compose.yaml up -d redis playwright-service nuq-postgres searxng neo4j; \
@@ -61,11 +61,11 @@ clean-volumes:
 
 start-daemon:
 	@echo "Starting ho in background with nohup..."
-	@OVERNIGHT_LOOP=true nohup uv run python -m src.pipeline.orchestrator > pipeline.log 2>&1 &
+	@OVERNIGHT_LOOP=true nohup uv run python -m src.radar.orchestrator > pipeline.log 2>&1 &
 	@echo "Pipeline running in background. View logs with: tail -f pipeline.log"
 
 stop-daemon:
-	@pkill -f "python -m src.pipeline.orchestrator" || true
+	@pkill -f "python -m src.radar.orchestrator" || true
 	@echo "Daemon stopped."
 
 graph:

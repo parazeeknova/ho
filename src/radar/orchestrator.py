@@ -52,7 +52,7 @@ from src.radar.discovery import (
     discover_from_yc,
     is_aggregator_domain,
 )
-from src.radar.extractors import extract_github_index_markdown
+from src.radar.extractors import GITHUB_INDEXES, extract_github_index_markdown
 from src.radar.gates import run_gates
 from src.radar.models import JobCandidate, JobObservation
 from src.radar.outreach import generate_outreach_card
@@ -71,8 +71,7 @@ from src.radar.sources import (
     register_source,
     should_poll,
 )
-from src.rag.loader import load_resume
-from src.search.searcher import GITHUB_INDEXES
+from src.rag.loader import index_resume_in_pgvector, load_resume
 
 console = Console()
 logger = get_logger("radar_orchestrator")
@@ -1009,10 +1008,8 @@ async def _run_radar_pipeline() -> None:
     if existing_count > 0:
         logger.info(f"Reusing {existing_count} existing resume chunks")
     else:
-        from src.pipeline.orchestrator import _index_resume_in_pgvector
-
         full_text, chunks = await loop.run_in_executor(None, load_resume)
-        await _index_resume_in_pgvector(chunks, store)
+        await index_resume_in_pgvector(chunks, store)
 
     candidate_persona = cfg.candidate.persona
     set_pipeline_state(
