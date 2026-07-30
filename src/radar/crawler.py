@@ -312,14 +312,39 @@ def _extract_board_root(job_url: str) -> str:
 
 
 def _extract_company_from_title(title: str) -> str:
-    """Extract likely company name from a title/snippet."""
-    for sep in (" is hiring", " hiring ", " at ", " — ", " | ", " - "):
+    """Extract likely company name from a title/snippet.
+
+    Order matters: try unambiguous suffixes first (' is hiring'),
+    then symmetric separators (' — ', ' | ', ' - '), then ' at '
+    (where company is on the RIGHT: 'SWE at Acme' → 'Acme').
+    """
+    # Company-first patterns: suffix makes company unambiguous
+    for sep in (
+        " is hiring",
+        " hiring ",
+    ):
         parts = title.split(sep, 1)
         if len(parts) > 1:
             name = parts[0].strip()
             if 2 < len(name) < 60:
                 return name
-    # Try H1/H2 pattern: "Company Name raises $X"
+
+    # Role-first pattern: "Role at Company" → company is on the right
+    role_at_idx = title.lower().find(" at ")
+    if role_at_idx > 0 and role_at_idx < 60:
+        name = title[role_at_idx + 4 :].strip()
+        if len(name) >= 1:
+            return name
+
+    # Symmetric separators: take first side as company
+    for sep in (" — ", " | ", " - "):
+        parts = title.split(sep, 1)
+        if len(parts) > 1:
+            name = parts[0].strip()
+            if 2 < len(name) < 60:
+                return name
+
+    # News headline patterns: company before verb
     for pat in (" raises ", " raised ", " announces ", " launches "):
         idx = title.lower().find(pat)
         if idx > 0:
