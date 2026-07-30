@@ -43,6 +43,7 @@ from src.radar.discovery import (
     _extract_domain as _discovery_domain,
 )
 from src.radar.discovery import (
+    _resolve_company_domain,
     detect_ats_for_company,
     discover_from_hackernews,
     discover_from_searxng,
@@ -95,6 +96,8 @@ _PIPELINE_METRICS: dict[str, Any] = {
     "job_processor_failures": 0,
 }
 
+_DISCOVERY_METRICS: dict[str, int] = {}
+
 
 def _posting_id(obs: JobObservation) -> str:
     return obs.canonical_url_hash()
@@ -136,6 +139,7 @@ async def _persist_discovered_sources(
 
 async def _discover_new_companies() -> list[dict[str, Any]]:
     logger.info("Starting company discovery sweep")
+    _DISCOVERY_METRICS["sweeps"] = _DISCOVERY_METRICS.get("sweeps", 0) + 1
     results: list[dict[str, Any]] = []
     adapters = [
         ("yc", discover_from_yc, 30),
@@ -154,6 +158,7 @@ async def _discover_new_companies() -> list[dict[str, Any]]:
             logger.info(f"Discovery {adp_name}: {len(companies)} companies")
         except Exception as e:
             logger.warning(f"Discovery adapter {adp_name} failed", exception=str(e))
+            _DISCOVERY_METRICS[f"failed_{adp_name}"] += 1
 
     for kind in searx_kinds:
         try:
@@ -179,12 +184,29 @@ async def _discover_new_companies() -> list[dict[str, Any]]:
     new_sources = 0
     for c in deduped:
         website = c.get("website", "")
+        if (
+            (not website or not website.startswith("http"))
+            and c.get("name")
+            and (domain := await _resolve_company_domain(c["name"]))
+        ):
+            website = f"https://{domain}"
+            c["website"] = website
         if not website or not website.startswith("http"):
+            _DISCOVERY_METRICS["no_domain"] = _DISCOVERY_METRICS.get("no_domain", 0) + 1
             continue
         ats_url = await detect_ats_for_company(website)
         if ats_url:
             c["ats_url"] = ats_url
             new_sources += 1
+            _DISCOVERY_METRICS["ats_verified"] = _DISCOVERY_METRICS.get("ats_verified", 0) + 1
+
+    _DISCOVERY_METRICS["companies_found"] = _DISCOVERY_METRICS.get("companies_found", 0) + len(
+        deduped
+    )
+    _DISCOVERY_METRICS["domain_resolved"] = _DISCOVERY_METRICS.get("domain_resolved", 0) + len(
+        [c for c in deduped if c.get("website") and c["website"].startswith("http")]
+    )
+    _DISCOVERY_METRICS["sources_added"] = _DISCOVERY_METRICS.get("sources_added", 0) + new_sources
 
     logger.info(f"Discovery: {len(deduped)} companies, {new_sources} ATS detected")
     return deduped
@@ -245,8 +267,8 @@ async def _poll_board(board: dict[str, str], app: FirecrawlApp) -> list[JobObser
         record_success(source_id, 0, 0)
         return []
 
-    state = diff_snapshots(source_id, direct_urls)
     had_prior = bool(get_checkpoint(source_id).last_snapshot_hash)
+    state = diff_snapshots(source_id, direct_urls)
     new_urls = state.new_urls
 
     observations: list[JobObservation] = []
@@ -257,7 +279,11 @@ async def _poll_board(board: dict[str, str], app: FirecrawlApp) -> list[JobObser
                 source=source_id,
                 title="",
                 snippet="",
-                extra={"is_snapshot_delta": had_prior},
+                extra={
+                    "is_snapshot_delta": had_prior,
+                    "official_source": True,
+                    "source_type": "ats_board",
+                },
                 source_freshness_evidence=None,
             )
         )
@@ -1062,6 +1088,7 @@ async def _run_radar_pipeline() -> None:
                 source_health=get_source_health(),
                 scheduler_errors=dict(_SCHEDULER_ERRORS),
                 pipeline_metrics=dict(_PIPELINE_METRICS),
+                discovery_metrics=dict(_DISCOVERY_METRICS),
                 sweep_interval=cfg.pipeline.sweep_interval,
             )
 

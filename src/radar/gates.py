@@ -344,12 +344,11 @@ def gate_source_freshness(
 
     URGENT when:
       - Source provides a verified posting timestamp ≤24 hours old.
-      - The URL is a delta from a previously persisted official-source snapshot
-        (i.e. it already existed in the snapshot store before this poll).
+      - The URL is a delta from a previously persisted official-source snapshot.
 
     REVIEW for unknown posting date or first-ever source crawl.
     STALE for verified-old postings > stale_days.
-    GitHub/index sources are never URGENT on first-seen.
+    Index/discovery sources are never URGENT on first-seen alone.
     """
     cfg = get_config().radar
 
@@ -360,10 +359,9 @@ def gate_source_freshness(
 
     age_from_evidence = _parse_freshness_evidence(obs.source_freshness_evidence)
 
-    is_monitored = any(obs.source.startswith(p) for p in _MONITORED_SOURCE_PREFIXES)
-    is_index = any(obs.source.startswith(p) for p in _INDEX_SOURCE_PREFIXES)
-    is_baseline_crawl = prev_seen == 0
+    is_official = obs.extra.get("official_source", False)
     is_snapshot_delta = obs.extra.get("is_snapshot_delta", False)
+    is_baseline_crawl = prev_seen == 0
 
     if age_from_evidence is not None:
         candidate.posted_date = obs.source_freshness_evidence
@@ -374,7 +372,7 @@ def gate_source_freshness(
             candidate.freshness_lane = FreshnessLane.STALE
             return RejectionReason.SOURCE_STALE
 
-    if is_snapshot_delta and is_monitored and not is_index:
+    if is_snapshot_delta and is_official:
         candidate.freshness_lane = FreshnessLane.URGENT
         return None
 

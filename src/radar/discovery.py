@@ -89,17 +89,23 @@ async def discover_from_vc_portfolios(limit: int = 40) -> list[dict[str, str]]:
                 resp = await client.get(portfolio_url)
                 if resp.status_code != 200:
                     continue
-                text = resp.text
-                names = _extract_portfolio_company_names(text, portfolio_url)
-                for name in names[:limit]:
-                    if name:
-                        companies.append({"name": name, "website": "", "source": "vc_portfolio"})
+                names = _extract_portfolio_company_names(resp.text, limit)
+                for name in names:
+                    # Resolve official domain for portfolio companies
+                    domain = await _resolve_company_domain(name)
+                    companies.append(
+                        {
+                            "name": name,
+                            "website": f"https://{domain}" if domain else "",
+                            "source": "vc_portfolio",
+                        }
+                    )
         except Exception:
             continue
-    return companies
+    return companies[:limit]
 
 
-def _extract_portfolio_company_names(html: str, url: str) -> list[str]:
+def _extract_portfolio_company_names(html: str, limit: int = 30) -> list[str]:
     names: list[str] = []
     seen = set()
     # Try common portfolio page patterns
@@ -117,30 +123,73 @@ def _extract_portfolio_company_names(html: str, url: str) -> list[str]:
             ):
                 seen.add(name)
                 names.append(name)
-    return names[:30]
+    return names[:limit]
 
 
-async def discover_from_hackernews() -> list[dict[str, str]]:
+async def _resolve_company_domain(name: str) -> str:
+    """Resolve official domain for a company name."""
+    slug = name.lower().replace(" ", "").replace(".", "").replace("-", "")
+    candidates = [
+        f"https://{slug}.com",
+        f"https://{slug}.io",
+        f"https://{slug}.co",
+        f"https://www.{slug}.com",
+        f"https://{slug}.ai",
+    ]
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            for url in candidates:
+                try:
+                    resp = await client.head(url)
+                    if resp.status_code < 400:
+                        return urlparse(url).hostname or slug
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return ""
+
+
+async def discover_from_hackernews(limit: int = 30) -> list[dict[str, str]]:
     companies: list[dict[str, str]] = []
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.get(
                 "https://hn.algolia.com/api/v1/search_by_date",
-                params={"query": "hiring engineer", "tags": "story", "hitsPerPage": 30},
+                params={
+                    "query": "Ask HN: Who is hiring",
+                    "tags": "story",
+                    "hitsPerPage": min(limit, 30),
+                },
             )
             if resp.status_code == 200:
                 for hit in resp.json().get("hits", []):
                     title = hit.get("title", "")
-                    url_str = hit.get("url") or ""
-                    domain = _extract_domain(url_str)
-                    if domain and "hiring" in title.lower():
-                        companies.append(
-                            {
-                                "name": title[:80],
-                                "website": f"https://{domain}",
-                                "source": "hackernews",
-                            }
-                        )
+                    if not title or "who is hiring" not in title.lower():
+                        continue
+                    # Fetch the actual thread page and extract companies from comments
+                    obj_id = hit.get("objectID", "")
+                    thread_url = f"https://news.ycombinator.com/item?id={obj_id}" if obj_id else ""
+                    if thread_url:
+                        thread_resp = await client.get(thread_url)
+                        if thread_resp.status_code == 200:
+                            for line in thread_resp.text.split("\n"):
+                                # HN comment format has company names with URLs
+                                m = re.search(r'href="(https?://[^"]+)"[^>]*>([^<]+)</a>', line)
+                                if m:
+                                    name = m.group(2).strip()
+                                    company_url = m.group(1)
+                                    if 2 < len(name) < 60 and "http" in company_url:
+                                        domain = _extract_domain(company_url)
+                                        if domain:
+                                            companies.append(
+                                                {
+                                                    "name": name,
+                                                    "website": f"https://{domain}",
+                                                    "source": "hackernews",
+                                                }
+                                            )
+        companies = companies[:limit]
     except Exception:
         pass
     return companies
@@ -153,10 +202,28 @@ async def discover_from_wellfound(limit: int = 30) -> list[dict[str, str]]:
             resp = await client.get("https://wellfound.com/jobs")
             if resp.status_code != 200:
                 return companies
-            # Extract company names from listing page
+            seen: set[str] = set()
             for m in re.finditer(r'href="/company/([^"]+)"', resp.text):
                 slug = m.group(1)
+                if slug in seen:
+                    continue
+                seen.add(slug)
                 name = slug.replace("-", " ").title()
+                # Try to resolve company page for website
+                try:
+                    company_resp = await client.get(f"https://wellfound.com/company/{slug}")
+                    if company_resp.status_code == 200:
+                        site = _extract_website(company_resp.text)
+                        companies.append(
+                            {
+                                "name": name,
+                                "website": site or f"https://wellfound.com/company/{slug}",
+                                "source": "wellfound",
+                            }
+                        )
+                        continue
+                except Exception:
+                    pass
                 companies.append({"name": name, "website": "", "source": "wellfound"})
     except Exception:
         pass

@@ -97,15 +97,6 @@ CREATE TABLE IF NOT EXISTS frontier_completed (
     work_id        TEXT PRIMARY KEY, completed_at TIMESTAMP DEFAULT NOW()
 );
 
-ALTER TABLE source_checkpoints
-ADD COLUMN IF NOT EXISTS board_url TEXT DEFAULT '';
-
-ALTER TABLE source_checkpoints
-ADD COLUMN IF NOT EXISTS company_name TEXT DEFAULT '';
-
-ALTER TABLE source_checkpoints
-ADD COLUMN IF NOT EXISTS discovery_origin TEXT DEFAULT '';
-
 CREATE TABLE IF NOT EXISTS source_checkpoints (
     source_id            TEXT PRIMARY KEY,
     source_type          TEXT NOT NULL DEFAULT 'unknown',
@@ -120,8 +111,19 @@ CREATE TABLE IF NOT EXISTS source_checkpoints (
     backoff_until        DOUBLE PRECISION DEFAULT 0,
     total_jobs_produced  INT DEFAULT 0,
     total_direct_url_rate REAL DEFAULT 0.0,
+    company_name         TEXT DEFAULT '',
+    discovery_origin     TEXT DEFAULT '',
     updated_at           TIMESTAMP DEFAULT NOW()
 );
+
+ALTER TABLE source_checkpoints
+ADD COLUMN IF NOT EXISTS board_url TEXT DEFAULT '';
+
+ALTER TABLE source_checkpoints
+ADD COLUMN IF NOT EXISTS company_name TEXT DEFAULT '';
+
+ALTER TABLE source_checkpoints
+ADD COLUMN IF NOT EXISTS discovery_origin TEXT DEFAULT '';
 
 CREATE TABLE IF NOT EXISTS job_observations (
     url_hash              TEXT PRIMARY KEY,
