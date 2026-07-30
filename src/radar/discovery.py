@@ -16,6 +16,7 @@ Generic vendor roots are never used.
 
 from __future__ import annotations
 
+import asyncio
 import re
 from urllib.parse import urljoin, urlparse
 
@@ -147,30 +148,37 @@ async def discover_from_vc_portfolios(limit: int = 40) -> list[dict[str, str]]:
     """
     companies: list[dict[str, str]] = []
     cfg = get_config().firecrawl
+    sem = asyncio.Semaphore(2)
     async with httpx.AsyncClient(timeout=60.0) as client:
-        for portfolio_url in _VC_PORTFOLIOS:
-            try:
-                resp = await client.post(
-                    f"{cfg.url}/v1/scrape",
-                    json={"url": portfolio_url, "formats": ["html"], "onlyMainContent": True},
-                )
-                if resp.status_code != 200:
-                    continue
-                html = (resp.json().get("data") or {}).get("html", "") or ""
-                if not html:
-                    continue
-                names = _extract_portfolio_company_names(html, limit)
-                for name in names:
-                    domain = await _resolve_company_domain(name)
-                    companies.append(
-                        {
-                            "name": name,
-                            "website": f"https://{domain}" if domain else "",
-                            "source": "vc_portfolio",
-                        }
+
+        async def _scrape_one(p_url):
+            async with sem:
+                try:
+                    resp = await client.post(
+                        f"{cfg.url}/v1/scrape",
+                        json={"url": p_url, "formats": ["html"], "onlyMainContent": True},
                     )
-            except Exception:
+                    if resp.status_code != 200:
+                        return ""
+                    return (resp.json().get("data") or {}).get("html", "") or ""
+                except Exception:
+                    return ""
+
+        tasks = [_scrape_one(url) for url in _VC_PORTFOLIOS]
+        htmls = await asyncio.gather(*tasks)
+        for html in htmls:
+            if not html:
                 continue
+            names = _extract_portfolio_company_names(html, limit)
+            for name in names:
+                domain = await _resolve_company_domain(name)
+                companies.append(
+                    {
+                        "name": name,
+                        "website": f"https://{domain}" if domain else "",
+                        "source": "vc_portfolio",
+                    }
+                )
     return companies[:limit]
 
 
