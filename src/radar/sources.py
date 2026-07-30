@@ -201,7 +201,13 @@ async def load_active_sources(store) -> list[dict[str, str]]:
                 "AND board_url != ''"
             )
             for r in rows:
-                sources.append({"id": r["source_id"], "url": r["board_url"]})
+                sources.append(
+                    {
+                        "id": r["source_id"],
+                        "url": r["board_url"],
+                        "source_type": "official_ats",
+                    }
+                )
     except Exception:
         pass
     return sources

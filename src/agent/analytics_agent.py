@@ -26,8 +26,10 @@ class AnalyticsAgent:
         self.store = store
         self.graph = graph
         self.ctx = ctx
+        self._interactive = False
 
-    async def generate_resilient_report(self) -> list[str]:
+    async def generate_resilient_report(self, interactive: bool = False) -> list[str]:
+        self._interactive = interactive
         sections: list[list[str]] = []
         section_funcs = [
             ("🧮 Radar Gate Stats", self._section_radar_stats),

@@ -162,9 +162,21 @@ def _is_429(err_msg: str) -> bool:
 
 
 def is_aggregator_domain(domain: str) -> bool:
+    """Check if a domain is a known aggregator/news/social/VC site."""
     d = domain.lower().rstrip(".")
+    if d.startswith("www."):
+        d = d[4:]
+    # Exact match
     if d in _AGGREGATOR_DOMAINS:
         return True
+    # Parent-domain match (e.g. sub.techcrunch.com → techcrunch.com)
+    parts = d.split(".")
+    if len(parts) >= 2:
+        for i in range(1, len(parts)):
+            parent = ".".join(parts[i:])
+            if parent in _AGGREGATOR_DOMAINS:
+                return True
+    # Suffix-based checks
     for suffix in (".linkedin.com", ".blogspot.com", ".wordpress.com"):
         if d.endswith(suffix):
             return True

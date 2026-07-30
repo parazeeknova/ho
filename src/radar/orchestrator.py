@@ -78,13 +78,15 @@ console = Console()
 logger = get_logger("radar_orchestrator")
 
 _SEED_BOARDS = [
-    ("openai:greenhouse", "https://boards.greenhouse.io/openai", "greenhouse"),
-    ("anthropic:ashby", "https://jobs.ashbyhq.com/anthropic", "ashby"),
-    ("stripe:greenhouse", "https://boards.greenhouse.io/stripe", "greenhouse"),
-    ("airbnb:greenhouse", "https://boards.greenhouse.io/airbnb", "greenhouse"),
-    ("ycombinator:jobs", "https://www.ycombinator.com/jobs", "careers_page"),
-    ("wellfound:jobs", "https://wellfound.com/jobs", "careers_page"),
+    ("openai:greenhouse", "https://boards.greenhouse.io/openai", "official_ats"),
+    ("anthropic:ashby", "https://jobs.ashbyhq.com/anthropic", "official_ats"),
+    ("stripe:greenhouse", "https://boards.greenhouse.io/stripe", "official_ats"),
+    ("airbnb:greenhouse", "https://boards.greenhouse.io/airbnb", "official_ats"),
+    ("ycombinator:jobs", "https://www.ycombinator.com/jobs", "discovery_index"),
+    ("wellfound:jobs", "https://wellfound.com/jobs", "discovery_index"),
 ]
+
+_DISCOVERY_INDEX_SOURCES = frozenset({"ycombinator:jobs", "wellfound:jobs"})
 
 _SCHEDULER_ERRORS: dict[str, int] = {}
 _PIPELINE_METRICS: dict[str, Any] = {
@@ -251,6 +253,8 @@ async def _scrape_indexes() -> list[JobObservation]:
 async def _poll_board(board: dict[str, str], app: FirecrawlApp) -> list[JobObservation]:
     source_id = board["id"]
     board_url = board["url"]
+    source_type = board.get("source_type", "discovery_index")
+    is_official = source_type == "official_ats"
     if not should_poll(source_id):
         return []
     if not board_url or not board_url.startswith("http"):
@@ -290,8 +294,8 @@ async def _poll_board(board: dict[str, str], app: FirecrawlApp) -> list[JobObser
                 snippet="",
                 extra={
                     "is_snapshot_delta": had_prior,
-                    "official_source": True,
-                    "source_type": "ats_board",
+                    "official_source": is_official,
+                    "source_type": source_type,
                 },
                 source_freshness_evidence=None,
             )
@@ -895,7 +899,7 @@ async def _run_radar_pipeline() -> None:
     sa = StartupAgent(ctx)
     await load_checkpoints(store)
 
-    for id_, _url, _adapter in _SEED_BOARDS:
+    for id_, _url, _source_type in _SEED_BOARDS:
         cp = register_source(id_, "ats_board", initial_quality=0.6)
         cp.board_url = _url
     for idx_url in GITHUB_INDEXES:
@@ -1040,9 +1044,9 @@ async def _run_radar_pipeline() -> None:
             # Load active sources (seeds + dynamically discovered, all with URLs)
             active_sources = await load_active_sources(store)
             # Also poll seed boards
-            for id_, url, _adapter in _SEED_BOARDS:
+            for id_, url, source_type in _SEED_BOARDS:
                 if should_poll(id_) and not any(s["id"] == id_ for s in active_sources):
-                    active_sources.append({"id": id_, "url": url})
+                    active_sources.append({"id": id_, "url": url, "source_type": source_type})
 
             for board in active_sources:
                 board_obs = await _poll_board(board, app)
