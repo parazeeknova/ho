@@ -1069,7 +1069,7 @@ async def _run_radar_pipeline() -> None:
                     active_sources.append({"id": id_, "url": url, "source_type": source_type})
 
             # Parallel source polling
-            poll_sem = asyncio.Semaphore(12)
+            poll_sem = asyncio.Semaphore(6)
             board_results: list[list[JobObservation]] = []
 
             async def _poll_one(board, sem):

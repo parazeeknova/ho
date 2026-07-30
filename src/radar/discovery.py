@@ -81,23 +81,21 @@ _VC_PORTFOLIOS = [
 
 
 async def discover_from_yc(limit: int = 50) -> list[dict[str, str]]:
-    """Discover YC companies from the YC jobs page via Firecrawl scrape.
+    """Discover YC companies from the directory page via Firecrawl.
 
-    The YC pages are JS-rendered React SPAs; static HTTP won't work.
-    We use Firecrawl's /v1/scrape (which drives Playwright) to get
-    rendered HTML content.
+    One Firecrawl scrape gets the rendered company listing HTML.
+    We extract company names directly — no detail-page calls.
     """
     companies: list[dict[str, str]] = []
     cfg = get_config().firecrawl
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            # Scrape the YC companies directory via Firecrawl
+        async with httpx.AsyncClient(timeout=45.0) as client:
             resp = await client.post(
                 f"{cfg.url}/v1/scrape",
                 json={
                     "url": "https://www.ycombinator.com/companies",
                     "formats": ["html"],
-                    "onlyMainContent": False,
+                    "onlyMainContent": True,
                 },
             )
             if resp.status_code != 200:
@@ -106,38 +104,49 @@ async def discover_from_yc(limit: int = 50) -> list[dict[str, str]]:
             if not html:
                 return companies
 
-            links = re.findall(r'href="(/companies/[^"]+)"', html)
             seen: set[str] = set()
-            for path in links[:limit]:
-                if path in seen:
-                    continue
-                seen.add(path)
-                try:
-                    detail_resp = await client.post(
-                        f"{cfg.url}/v1/scrape",
-                        json={
-                            "url": f"https://www.ycombinator.com{path}",
-                            "formats": ["html"],
-                            "onlyMainContent": True,
-                        },
+            for m in re.finditer(r">(?:\s*)([A-Z][A-Za-z0-9 .&,-]{2,40})(?:\s*)<", html):
+                name = m.group(1).strip()
+                if (
+                    name not in seen
+                    and 3 < len(name) < 60
+                    and not any(
+                        n in name.lower()
+                        for n in (
+                            "companies",
+                            "learn more",
+                            "apply",
+                            "read more",
+                            "portfolio",
+                            "careers",
+                            "jobs",
+                            "news",
+                            "blog",
+                            "cookie",
+                            "privacy",
+                            "terms",
+                            "home",
+                            "about",
+                        )
                     )
-                    if detail_resp.status_code == 200:
-                        detail_html = (detail_resp.json().get("data") or {}).get("html", "") or ""
-                        if detail_html:
-                            name = _extract_name(detail_html, path)
-                            site = _extract_website(detail_html)
-                            if name:
-                                companies.append(
-                                    {
-                                        "name": name,
-                                        "website": site or "",
-                                        "source": "yc_directory",
-                                    }
-                                )
-                except Exception:
-                    pass
+                ):
+                    seen.add(name)
+                    companies.append(
+                        {
+                            "name": name,
+                            "website": "",
+                            "source": "yc_directory",
+                        }
+                    )
+                    if len(companies) >= limit:
+                        break
     except Exception as e:
         logger.warning("YC discovery failed", exception=str(e))
+
+    for c in companies:
+        domain = await _resolve_official_domain(c["name"])
+        if domain and not is_aggregator_domain(domain):
+            c["website"] = f"https://{domain}"
     return companies
 
 
@@ -291,23 +300,28 @@ async def discover_from_hackernews(limit: int = 30) -> list[dict[str, str]]:
 async def discover_from_dealroom(limit: int = 50) -> list[dict[str, str]]:
     """Discover funded startups from Dealroom.co's public API.
 
-    Dealroom provides free structured data: company names, websites,
-    funding rounds, HQ cities, and founder names from curated market maps.
+    First queries /api/marketmaps to get fresh map IDs, then drills
+    into each map to extract companies with names and websites.
     """
     companies: list[dict[str, str]] = []
     seen: set[str] = set()
-    maps = [
-        "landscape-53885",  # AI Agents
-        "landscape-52820",  # AI x climate tech
-        "landscape-48993",  # sample landscape
-    ]
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
-            for map_id in maps:
-                resp = await client.get(f"https://dealroom.co/api/marketmap?id={map_id}")
-                if resp.status_code != 200:
+            # Get fresh market map IDs
+            resp = await client.get(
+                "https://dealroom.co/api/marketmaps",
+                params={"q": "ai engineer startup saas", "limit": 5},
+            )
+            if resp.status_code != 200:
+                return companies
+            maps_data = resp.json()
+            map_ids = [m["id"] for m in maps_data.get("results", [])[:3] if m.get("id")]
+
+            for map_id in map_ids:
+                resp2 = await client.get(f"https://dealroom.co/api/marketmap?id={map_id}")
+                if resp2.status_code != 200:
                     continue
-                data = resp.json()
+                data = resp2.json()
                 for comp in data.get("companies", []):
                     name = (comp.get("name") or "").strip()
                     website = (comp.get("website") or "").strip()
@@ -324,7 +338,7 @@ async def discover_from_dealroom(limit: int = 50) -> list[dict[str, str]]:
                         }
                     )
                     if len(companies) >= limit:
-                        return companies
+                        break
     except Exception:
         pass
 
