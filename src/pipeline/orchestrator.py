@@ -8,6 +8,7 @@ import signal
 import time
 import traceback
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import httpx
 from dotenv import load_dotenv
@@ -55,6 +56,120 @@ from src.search.searcher import (
 
 console = Console()
 logger = get_logger("orchestrator")
+
+_LOG_DIR = Path("logs")
+_RUN_LOG_PATH = _LOG_DIR / "pipeline_run.log"
+
+
+def _build_auto_persona(chunks: dict[str, str], full_text: str, positions: list[str]) -> str:
+    """Auto-generate a candidate persona from resume data.
+
+    Uses extracted resume sections, GitHub profile, and target positions
+    to build a comprehensive persona without requiring manual persona.txt.
+    """
+    skills = chunks.get("skills", "")
+    projects = chunks.get("projects", "")
+    experience = chunks.get("experience", "")
+    github = chunks.get("github_profile", "")
+
+    skill_terms = re.findall(r"[A-Za-z+#./-]+", skills[:300] + " " + full_text[:800])
+    _noise = {"the", "and", "of", "in", "with", "for", "is", "to", "a", "an"}
+    unique_skills = sorted({s for s in skill_terms if len(s) > 1 and s.lower() not in _noise})
+
+    years_match = re.search(
+        r"(\d{1,2})\s*(?:\+)?\s*years?\s*(?:of\s+)?(?:experience|pro)",
+        full_text[:2000],
+        re.IGNORECASE,
+    )
+    exp_str = (
+        "0-3 years (New Grad / Junior / Intern)"
+        if not years_match
+        else f"{years_match.group(1)}-{int(years_match.group(1)) + 2} years"
+    )
+
+    remote_ok = any(
+        kw in (experience + projects).lower()
+        for kw in ("remote", "distributed", "work from anywhere")
+    )
+
+    lines = [
+        "Candidate Profile (auto-generated from resume):",
+        f"- Experience: {exp_str}. Accept internships and full-time roles.",
+        f"- Tech Stack: {', '.join(unique_skills[:25])}.",
+        "- Location: Based in India. Open to remote worldwide, or onsite in India/EU/UK.",
+        "- Visa: Requires sponsorship for EU/UK roles. "
+        "For US roles, FAANG/unicorn-funded companies",
+        "  can sponsor even if JD doesn't mention it — do not reject those.",
+        "- Industries to Reject: Web3, Crypto, Gambling, Defense/Military/security clearance.",
+        f"- Target Roles: {', '.join(positions)}.",
+    ]
+    if remote_ok:
+        lines.append("- Has remote work experience — prefers remote-friendly companies.")
+    if github and len(github) > 100:
+        lines.append(f"- GitHub: {github.split(chr(10))[0].replace('GitHub Profile: ', '')}")
+
+    lines.extend(
+        [
+            "- Minimum Salary: 50,000 INR/month for India, $50k USD/yr remote.",
+            "- For internships, accept any paid position.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _write_run_context(
+    persona: str,
+    min_salary: str,
+    positions: list[str],
+    full_text: str,
+    chunks: dict[str, str],
+) -> None:
+    _LOG_DIR.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+    lines = [
+        "=" * 72,
+        f"  PIPELINE RUN — {now}",
+        "=" * 72,
+        "",
+        "── Candidate Persona ──",
+        persona.strip(),
+        "",
+        f"Minimum Salary Threshold: {min_salary}",
+        "",
+        f"Target Positions: {', '.join(positions)}",
+        "",
+        "── Resume Sections Indexed ──",
+    ]
+    for section, text in sorted(chunks.items()):
+        preview = text[:200].replace("\n", " ")
+        lines.append(f"  [{section}] ({len(text)} chars) {preview}...")
+    lines.extend(
+        [
+            "",
+            "── Full Resume Text (first 3000 chars) ──",
+            full_text[:3000],
+            "",
+            "── Match Results ──",
+            "",
+        ]
+    )
+    _RUN_LOG_PATH.write_text("\n".join(lines))
+
+
+def _append_match_log(
+    role: str,
+    company: str,
+    match_pct: int,
+    verdict: str,
+    url: str,
+    reason: str = "",
+) -> None:
+    line = f"[{verdict}] {role} @ {company} (match: {match_pct}%)"
+    if reason:
+        line += f" — {reason}"
+    line += f" | {url}"
+    with open(_RUN_LOG_PATH, "a") as f:
+        f.write(line + "\n")
 
 
 def filter_recent_jobs(jobs: list[dict]) -> list[dict]:
@@ -787,6 +902,45 @@ async def _run_pipeline() -> None:
             if telegram_agent.is_configured:
                 await telegram_agent.send_sweep_summary(sweep, len(clean_jobs), 0, elapsed)
 
+            set_pipeline_state(phase="discovery")
+            console.print("\n[bold cyan]PHASE 3: Startup & Connector Discovery[/bold cyan]")
+            try:
+                entities = await discover_all()
+                if entities:
+                    logger.info("Connector discovery: %d new companies", len(entities))
+                    for entity in entities:
+                        node = company_node(
+                            entity.name,
+                            description=entity.description,
+                            source=entity.source,
+                            url=entity.url or "",
+                        )
+                        node.confidence.score = entity.confidence
+                        node.confidence.source_count = 1
+                        node, node_events = await graph.upsert_node(node)
+                        for evt in node_events:
+                            await engine.process_mutation(evt, graph)
+                        await bus.fire(
+                            bus.new_event(
+                                "company_discovered",
+                                node.id,
+                                NodeType.COMPANY,
+                                {
+                                    "name": entity.name,
+                                    "url": entity.url,
+                                    "source": entity.source,
+                                    "description": entity.description,
+                                },
+                            )
+                        )
+
+                if telegram_agent.is_configured:
+                    stealth = await graph.detect_stealth_hiring_signals(limit=8)
+                    if stealth:
+                        await telegram_agent.push_stealth_and_warm_intro_batch(stealth)
+            except Exception as de:
+                logger.exception("Discovery phase skipped", exc=de)
+
             if sweep % 3 == 0:
                 set_pipeline_state(phase="graph maintenance")
                 console.print(
@@ -806,39 +960,6 @@ async def _run_pipeline() -> None:
                     generated = await engine.expansion_cycle(graph)
                     if generated:
                         logger.info(f"Expansion cycle: {generated} tasks enqueued")
-                    entities = await discover_all()
-                    if entities:
-                        logger.info("Connector discovery: %d new companies", len(entities))
-                        for entity in entities:
-                            node = company_node(
-                                entity.name,
-                                description=entity.description,
-                                source=entity.source,
-                                url=entity.url or "",
-                            )
-                            node.confidence.score = entity.confidence
-                            node.confidence.source_count = 1
-                            node, node_events = await graph.upsert_node(node)
-                            for evt in node_events:
-                                await engine.process_mutation(evt, graph)
-                            await bus.fire(
-                                bus.new_event(
-                                    "company_discovered",
-                                    node.id,
-                                    NodeType.COMPANY,
-                                    {
-                                        "name": entity.name,
-                                        "url": entity.url,
-                                        "source": entity.source,
-                                        "description": entity.description,
-                                    },
-                                )
-                            )
-
-                    if telegram_agent.is_configured:
-                        stealth = await graph.detect_stealth_hiring_signals(limit=8)
-                        if stealth:
-                            await telegram_agent.push_stealth_and_warm_intro_batch(stealth)
                 except Exception as ge:
                     logger.exception("Graph maintenance skipped", exc=ge)
 

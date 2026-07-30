@@ -84,16 +84,12 @@ verdict=NO_MATCH.
   * Do NOT conflate the two. matching_skills = candidate's strengths that help.
     missing_skills = genuine gaps in the candidate's profile for this role.
 - Enforce EVERY constraint from the Candidate Profile above: experience level, \
-tech stack, location preferences, visa requirements, rejected industries, and \
-minimum salary.
-- If salary is specified below {min_salary} (or equivalent), set match_percent=0 \
-and verdict=NO_MATCH.
-- If the job description explicitly states the posting is older than 24 hours \
-or more than 1 day old, set match_percent=0 and verdict=NO_MATCH.
+tech stack, location, visa, salary. But be reasonable — if 80% of the \
+profile matches, score the job accordingly instead of rejecting outright.
+- If salary is below {min_salary} but the company is top-tier or the role is \
+an internship, still score it (just lower match_percent).
 - If the job requires 3+ years of experience or is titled Senior/Staff/Lead/\
 Principal/Manager/Director/Architect, set match_percent=0 and verdict=NO_MATCH.
-- If the role is in Crypto, Web3, Gambling, Defense, or Military industries, \
-set match_percent=0 and verdict=NO_MATCH.
 - Be conservative. STRONG_MATCH only with genuine skill alignment.
 - Return valid JSON matching the required schema.
 """
@@ -113,17 +109,17 @@ Job description:
 
 HARD CONSTRAINTS — fail the match if ANY of these are true:
 1. The role title contains Senior, Staff, Lead, Principal, Manager, Director, \
-Architect, VP, or "3+ years", "5+ years", "7+ years", "10+ years" of experience.
-2. The salary (if present) is below {min_salary} per month or equivalent.
-3. The role requires onsite presence in a country where the candidate does NOT \
-have work authorization (per the Candidate Profile).
-4. The role is in a rejected industry: Crypto, Web3, Gambling, Defense, Military.
-5. The role requires US onsite without explicit H1B/O1 or new-grad sponsorship.
-6. The match_percent is unreasonably high given the skills gap or JD content.
-7. The JD text is clearly a landing page, directory, or error page rather than \
-a real job posting.
-8. The JD explicitly mentions it was posted more than 24 hours ago (or >1 day \
-ago, or a date older than yesterday).
+Architect, VP, or "3+ years", "5+ years", "7+ years", "10+ years" of experience. \
+Do NOT reject internships, new grad, or junior roles — those are all acceptable.
+2. If salary is explicitly listed and it is below {min_salary} AND the company is \
+not a well-known top-tier employer (FAANG, unicorn, YC-backed), then fail. \
+If salary is not listed at all, let it through. For internships, accept any paid position.
+3. Don't reject for location if the role offers relocation assistance, remote, \
+or is at a company known to sponsor visas.
+4. Do NOT reject for industry unless it's explicitly Web3/Crypto/Gambling/Defense.
+5. The match_percent is unreasonably high given a genuine skills gap.
+6. The JD is clearly a landing page, directory, or error page.
+7. The JD says posted more than 24 hours ago. Do NOT reject for missing dates.
 
 Return a JSON object with:
 - passed: bool (true if the match passes all hard constraints)
@@ -196,7 +192,6 @@ def _apply_hard_constraints(match: dict[str, Any]) -> CriticReview:
         r"\bsenior\b",
         r"\bsr\.?\b",
         r"\bstaff\b",
-        r"\bmanager\b",
         r"\bdirector\b",
         r"\bvp\b",
         r"\bvice\s+president\b",
@@ -211,6 +206,13 @@ def _apply_hard_constraints(match: dict[str, Any]) -> CriticReview:
                 critique_reason="Role title contains senior/leadership keyword — hard-constraint.",
                 requires_rescore=False,
             )
+
+    if re.search(r"\bmanager\b", role) and not re.search(r"\b(product|project|program)\b", role):
+        return CriticReview(
+            passed=False,
+            critique_reason="Role title contains senior/leadership keyword — hard-constraint.",
+            requires_rescore=False,
+        )
 
     _exp_pats = [
         r"\b5\+?\s*years?\b",

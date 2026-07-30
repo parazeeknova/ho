@@ -9,6 +9,8 @@ __pycache__/
 jobs.md
 jobs.md.bak
 storage/
+logs/
+run.log
 
 .env
 
