@@ -41,7 +41,9 @@ _queue_state = QueueState()
 _queue_lock = asyncio.Lock()
 _queue_not_empty = asyncio.Event()
 
-_seen_ids: set[str] = set()
+_ACTIVE_IDS: dict[str, float] = {}
+_CANDIDATE_VERSIONS: dict[str, int] = {}
+_ID_LOCK = asyncio.Lock()
 
 MATCHER_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -95,15 +97,33 @@ Return valid JSON matching the required schema.
 
 
 async def enqueue_candidate(candidate: JobCandidate, priority: int = 50) -> bool:
-    async with _queue_lock:
-        if candidate.canonical_id in _seen_ids:
+    key = f"{candidate.canonical_id}:v{candidate.extra.get('version', 1)}"
+    async with _ID_LOCK:
+        if key in _ACTIVE_IDS:
             return False
-        _seen_ids.add(candidate.canonical_id)
+        _ACTIVE_IDS[key] = time.monotonic()
+        _CANDIDATE_VERSIONS[candidate.canonical_id] = candidate.extra.get("version", 1)
+    async with _queue_lock:
         _queue_state.pending.append((priority, candidate))
         _queue_state.total_enqueued += 1
         _queue_state.pending = deque(sorted(_queue_state.pending, key=lambda x: x[0], reverse=True))
         _queue_not_empty.set()
     return True
+
+
+def _clear_queued(candidate: JobCandidate) -> None:
+    key = f"{candidate.canonical_id}:v{candidate.extra.get('version', 1)}"
+    _ACTIVE_IDS.pop(key, None)
+    can_ver = _CANDIDATE_VERSIONS.get(candidate.canonical_id, 0)
+    candidate_ver = candidate.extra.get("version", 1)
+    if candidate_ver >= can_ver:
+        _CANDIDATE_VERSIONS.pop(candidate.canonical_id, None)
+
+
+def mark_retry(candidate: JobCandidate) -> None:
+    """Allow a 429-retry candidate to be requeued."""
+    key = f"{candidate.canonical_id}:v{candidate.extra.get('version', 1)}"
+    _ACTIVE_IDS.pop(key, None)
 
 
 async def process_queue(
@@ -115,13 +135,12 @@ async def process_queue(
 ) -> list[JobCandidate]:
     cfg = get_config().llm_queue
     results: list[JobCandidate] = []
-    _sem = asyncio.Semaphore(cfg.max_in_flight)
 
     async def _worker(candidate: JobCandidate) -> None:
         try:
             await _acquire_budget(cfg)
         except Exception:
-            logger.warning("Budget acquisition failed, dropping candidate")
+            _clear_queued(candidate)
             return
 
         try:
@@ -155,8 +174,10 @@ async def process_queue(
                 _queue_state.total_failed += 1
             if _is_429(err_msg):
                 await _handle_429(cfg)
-                candidate.extra["queue_attempts"] = candidate.extra.get("queue_attempts", 0) + 1
-                if candidate.extra["queue_attempts"] <= 3:
+                attempts = candidate.extra.get("queue_attempts", 0) + 1
+                candidate.extra["queue_attempts"] = attempts
+                if attempts <= 3:
+                    mark_retry(candidate)
                     await enqueue_candidate(candidate, priority=30)
                 else:
                     candidate.eligibility = EligibilityState.ERROR
@@ -201,8 +222,9 @@ async def _acquire_budget(cfg: LlmQueueConfig) -> None:
                 _queue_state.window_start = now
                 _queue_state.requests_this_minute = 0
                 _queue_state.tokens_this_minute = 0
-            elif _queue_state.requests_this_minute >= cfg.requests_per_minute or (
-                _queue_state.tokens_this_minute + cfg.match_token_budget
+            elif (
+                _queue_state.requests_this_minute >= cfg.requests_per_minute
+                or _queue_state.tokens_this_minute + cfg.match_token_budget
                 > cfg.estimated_tokens_per_minute
             ):
                 wait_secs = 60.0 - (now - _queue_state.window_start)
@@ -271,6 +293,8 @@ def _apply_llm_result(candidate: JobCandidate, result: dict[str, Any]) -> None:
     if raw_salary:
         candidate.salary = normalize_salary(str(raw_salary))
 
+    candidate.canonical_id = _build_canonical_from_result(candidate, result)
+
     verdict = candidate.verdict
     if verdict == "NO_MATCH" or candidate.match_percent < 30:
         candidate.eligibility = EligibilityState.REJECTED
@@ -279,6 +303,16 @@ def _apply_llm_result(candidate: JobCandidate, result: dict[str, Any]) -> None:
         candidate.eligibility = EligibilityState.ACCEPTED
     elif verdict == "WEAK_MATCH":
         candidate.eligibility = EligibilityState.NEAR_MISS
+
+
+def _build_canonical_from_result(candidate: JobCandidate, result: dict[str, Any]) -> str:
+    from src.radar.models import make_canonical_id
+
+    return make_canonical_id(
+        str(result.get("company", candidate.normalized_company)),
+        str(result.get("role", candidate.normalized_role)),
+        str(result.get("location", candidate.normalized_location)),
+    )
 
 
 async def _persist_candidate(store, candidate: JobCandidate) -> None:

@@ -7,8 +7,10 @@ budget. Gates are ordered from cheapest to most expensive.
 from __future__ import annotations
 
 import re
+import time
 from typing import Any
 
+from src.configuration import get_config
 from src.radar.models import (
     EligibilityState,
     FreshnessLane,
@@ -17,6 +19,18 @@ from src.radar.models import (
     RejectionReason,
     RoleFamily,
     make_canonical_id,
+)
+
+_INDEX_SOURCE_PREFIXES = ("github_index:", "searxng", "unknown")
+_MONITORED_SOURCE_PREFIXES = (
+    "greenhouse",
+    "lever",
+    "ashby",
+    "workable",
+    "smartrecruiters",
+    "workday",
+    "rippling",
+    "ats:",
 )
 
 _GATE_ORDER: list[str] = [
@@ -313,16 +327,13 @@ def gate_source_freshness(
     """Assign freshness lane from evidence and observation history.
 
     URGENT when:
-      - Source provides a verified timestamp within 24 hours.
-      - First-seen from an already-monitored official source.
+      - Source provides a verified posting timestamp within the urgent window.
+      - First-seen from an already-monitored official source (ATS/career board).
 
-    REVIEW for strong roles with unknown posting date.
-    STALE for verified-old postings.
+    REVIEW for roles with unknown posting date.
+    STALE/rejected for verified-old postings.
+    GitHub/index sources are never URGENT on first-seen alone.
     """
-    import time
-
-    from src.configuration import get_config
-
     cfg = get_config().radar
 
     url_hash = obs.canonical_url_hash()
@@ -330,27 +341,85 @@ def gate_source_freshness(
     now = time.time()
     window_secs = cfg.urgent_window_hours * 3600
 
-    has_timestamp_evidence = bool(obs.source_freshness_evidence)
+    age_from_evidence = _parse_freshness_evidence(obs.source_freshness_evidence)
 
-    is_first_seen_from_monitored = prev_seen == 0 and obs.source not in (
-        "github_index",
-        "searxng",
-        "unknown",
-    )
+    is_monitored = any(obs.source.startswith(p) for p in _MONITORED_SOURCE_PREFIXES)
+    is_index = any(obs.source.startswith(p) for p in _INDEX_SOURCE_PREFIXES)
+    is_first_seen = prev_seen == 0
 
-    if has_timestamp_evidence or is_first_seen_from_monitored:
+    if age_from_evidence is not None:
+        candidate.posted_date = obs.source_freshness_evidence
+        if age_from_evidence <= window_secs:
+            candidate.freshness_lane = FreshnessLane.URGENT
+            return None
+        if age_from_evidence > cfg.stale_days * 86400:
+            candidate.freshness_lane = FreshnessLane.STALE
+            return RejectionReason.SOURCE_STALE
+
+    if is_first_seen and is_monitored and not is_index:
         candidate.freshness_lane = FreshnessLane.URGENT
         return None
 
-    if prev_seen > 0:
+    if not is_first_seen:
         age = now - prev_seen
         if age > cfg.stale_days * 86400:
             candidate.freshness_lane = FreshnessLane.STALE
             return RejectionReason.SOURCE_STALE
-        if age < window_secs:
-            candidate.freshness_lane = FreshnessLane.URGENT
 
-    candidate.freshness_lane = FreshnessLane.REVIEW
+    return None
+
+
+def _parse_freshness_evidence(evidence: str | None) -> float | None:
+    """Parse freshness evidence into age in seconds, or None if unparseable."""
+    if not evidence:
+        return None
+    import re as _re
+
+    t = _re.search(
+        r"posted\s+(\d+)\s*(hour|min|minute|second|day|week|month)s?\s+ago",
+        evidence,
+        _re.IGNORECASE,
+    )
+    if t:
+        num = int(t.group(1))
+        unit = t.group(2).lower()
+        multipliers = {
+            "second": 1,
+            "min": 60,
+            "minute": 60,
+            "hour": 3600,
+            "day": 86400,
+            "week": 604800,
+            "month": 2592000,
+        }
+        return num * multipliers.get(unit, 3600)
+
+    iso = _re.search(r"\d{4}-\d{2}-\d{2}", evidence)
+    if iso:
+        try:
+            from datetime import UTC
+            from datetime import datetime as _dt
+
+            posted = _dt.fromisoformat(iso.group(0)).replace(tzinfo=UTC)
+            age = (_dt.now(UTC) - posted).total_seconds()
+            return max(0, age)
+        except Exception:
+            return None
+
+    rel = _re.search(r"(\d+)\s*(hour|min|minute|day|week|month)s?\s+ago", evidence, _re.IGNORECASE)
+    if rel:
+        num = int(rel.group(1))
+        unit = rel.group(2).lower()
+        multipliers = {
+            "min": 60,
+            "minute": 60,
+            "hour": 3600,
+            "day": 86400,
+            "week": 604800,
+            "month": 2592000,
+        }
+        return num * multipliers.get(unit, 3600)
+
     return None
 
 

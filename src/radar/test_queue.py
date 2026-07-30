@@ -20,7 +20,7 @@ from src.radar.queue import (
 
 @pytest.fixture(autouse=True)
 def reset_queue_state() -> None:
-    from src.radar.queue import _seen_ids
+    from src.radar.queue import _ACTIVE_IDS, _CANDIDATE_VERSIONS
 
     _queue_state.pending.clear()
     _queue_state.in_flight = 0
@@ -32,9 +32,11 @@ def reset_queue_state() -> None:
     _queue_state.total_completed = 0
     _queue_state.total_failed = 0
     _queue_state.total_429s = 0
-    _seen_ids.clear()
+    _ACTIVE_IDS.clear()
+    _CANDIDATE_VERSIONS.clear()
     yield
-    _seen_ids.clear()
+    _ACTIVE_IDS.clear()
+    _CANDIDATE_VERSIONS.clear()
 
 
 class TestEnqueueCandidate:

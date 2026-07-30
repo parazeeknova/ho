@@ -96,7 +96,12 @@ class ContextManager:
     async def aclose(self) -> None:
         pass
 
-    async def chat(self, prompt: str, schema: dict[str, Any] | None = None) -> str:
+    async def chat(
+        self,
+        prompt: str,
+        schema: dict[str, Any] | None = None,
+        max_tokens: int | None = None,
+    ) -> str:
         current_prompt = prompt
         if len(current_prompt) > 120000:
             current_prompt = current_prompt[:120000]
@@ -106,11 +111,13 @@ class ContextManager:
                 schema
             )
 
+        _mt = max_tokens if max_tokens is not None else self._max_tokens
+
         def _call_llm() -> str:
             kwargs: dict[str, Any] = {
                 "model": self.model,
                 "messages": [{"role": "user", "content": current_prompt}],
-                "max_tokens": self._max_tokens,
+                "max_tokens": _mt,
             }
             if schema is not None:
                 kwargs["response_format"] = {"type": "json_object"}
@@ -168,13 +175,7 @@ class ContextManager:
         full = prompt
         if content:
             full = prompt + "\n\n" + content[:limit]
-        saved = self._max_tokens
-        if max_tokens is not None:
-            self._max_tokens = max_tokens
-        try:
-            raw = await self.chat(full, schema=schema)
-        finally:
-            self._max_tokens = saved
+        raw = await self.chat(full, schema=schema, max_tokens=max_tokens)
         raw = _strip_markdown(raw)
         try:
             return json.loads(raw)

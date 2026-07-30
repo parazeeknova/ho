@@ -78,7 +78,7 @@ class TestContextManager:
         schema = {"type": "object", "properties": {"name": {"type": "string"}}}
         result = await ctx.json_chat("prompt", schema=schema)
         assert result == {"name": "test"}
-        mock_chat.assert_awaited_once_with("prompt", schema=schema)
+        mock_chat.assert_awaited_once_with("prompt", schema=schema, max_tokens=None)
 
     @pytest.mark.asyncio
     async def test_maybe_flush(self) -> None:
