@@ -67,21 +67,19 @@ _COMPANY_SIGNALS = [
 
 
 def _build_query_templates() -> list[str]:
-    """Generate a diverse set of search queries rotated each sweep."""
+    """Generate bing-compatible search queries — plain words, OR operators."""
     templates: list[str] = []
-    for role in _ROLE_FAMILIES[:4]:  # rotate subset
-        for elig in _ELIGIBILITY[:2]:
-            templates.append(f'"{role}" "{elig}"')
+    for role in _ROLE_FAMILIES[:6]:
+        for elig in _ELIGIBILITY[:3]:
+            templates.append(f"{role} {elig} hiring")
         for fresh in _FRESHNESS[:2]:
-            templates.append(f'"{role}" "{fresh}"')
-        for sig in _COMPANY_SIGNALS[:2]:
-            templates.append(f'"{role}" "{sig}"')
-
-    for _ in range(3):
+            templates.append(f"{role} {fresh}")
+    for _ in range(5):
         r1, r2 = random.sample(_ROLE_FAMILIES[:6], 2)
-        e1 = random.choice(_ELIGIBILITY)
-        templates.append(f'"{r1}" OR "{r2}" "{e1}"')
-
+        e1 = random.choice(_ELIGIBILITY[:3])
+        templates.append(f"{r1} OR {r2} {e1}")
+    for role in _ROLE_FAMILIES[:4]:
+        templates.append(f"{role} remote hiring 2026")
     return templates
 
 
@@ -129,13 +127,13 @@ def _classify_result(url: str, title: str, snippet: str) -> str:
 
 
 async def run_search_discovery(
-    max_results_per_query: int = 10,
-    max_total_results: int = 80,
+    max_results_per_query: int = 15,
+    max_total_results: int = 150,
 ) -> list[dict[str, Any]]:
     """Run search discovery: generate queries, fetch, classify, deduplicate."""
     cfg = get_config().searxng
     templates = _build_query_templates()
-    queries = random.sample(templates, min(len(templates), 20))
+    queries = random.sample(templates, min(len(templates), 30))
 
     raw_results: list[dict[str, Any]] = []
     sem = asyncio.Semaphore(3)

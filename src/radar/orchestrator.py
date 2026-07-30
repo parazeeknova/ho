@@ -168,7 +168,7 @@ async def _discover_new_companies() -> list[dict[str, Any]]:
     from src.radar.crawler import run_search_discovery
 
     try:
-        search_results = await run_search_discovery(max_total_results=100)
+        search_results = await run_search_discovery(max_total_results=150)
         for c in search_results:
             c["discovered_from"] = c.get("source", "search")
         results.extend(search_results)
