@@ -53,27 +53,59 @@ _VC_PORTFOLIOS = [
 
 
 async def discover_from_yc(limit: int = 50) -> list[dict[str, str]]:
+    """Discover YC companies from the YC jobs page via Firecrawl scrape.
+
+    The YC pages are JS-rendered React SPAs; static HTTP won't work.
+    We use Firecrawl's /v1/scrape (which drives Playwright) to get
+    rendered HTML content.
+    """
     companies: list[dict[str, str]] = []
+    cfg = get_config().firecrawl
     try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            resp = await client.get("https://www.ycombinator.com/companies")
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # Scrape the YC companies directory via Firecrawl
+            resp = await client.post(
+                f"{cfg.url}/v1/scrape",
+                json={
+                    "url": "https://www.ycombinator.com/companies",
+                    "formats": ["html"],
+                    "onlyMainContent": False,
+                },
+            )
             if resp.status_code != 200:
                 return companies
-            links = re.findall(r'href="(/companies/[^"]+)"', resp.text)
-            seen = set()
+            html = (resp.json().get("data") or {}).get("html", "") or ""
+            if not html:
+                return companies
+
+            links = re.findall(r'href="(/companies/[^"]+)"', html)
+            seen: set[str] = set()
             for path in links[:limit]:
                 if path in seen:
                     continue
                 seen.add(path)
                 try:
-                    detail = await client.get(f"https://www.ycombinator.com{path}")
-                    if detail.status_code == 200:
-                        name = _extract_name(detail.text, path)
-                        site = _extract_website(detail.text)
-                        if name:
-                            companies.append(
-                                {"name": name, "website": site or "", "source": "yc_directory"}
-                            )
+                    detail_resp = await client.post(
+                        f"{cfg.url}/v1/scrape",
+                        json={
+                            "url": f"https://www.ycombinator.com{path}",
+                            "formats": ["html"],
+                            "onlyMainContent": True,
+                        },
+                    )
+                    if detail_resp.status_code == 200:
+                        detail_html = (detail_resp.json().get("data") or {}).get("html", "") or ""
+                        if detail_html:
+                            name = _extract_name(detail_html, path)
+                            site = _extract_website(detail_html)
+                            if name:
+                                companies.append(
+                                    {
+                                        "name": name,
+                                        "website": site or "",
+                                        "source": "yc_directory",
+                                    }
+                                )
                 except Exception:
                     pass
     except Exception as e:

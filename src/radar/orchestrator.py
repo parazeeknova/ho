@@ -46,9 +46,7 @@ from src.radar.discovery import (
     _resolve_company_domain,
     detect_ats_for_company,
     discover_from_hackernews,
-    discover_from_searxng,
     discover_from_vc_portfolios,
-    discover_from_wellfound,
     discover_from_yc,
     is_aggregator_domain,
 )
@@ -155,10 +153,8 @@ async def _discover_new_companies() -> list[dict[str, Any]]:
     adapters = [
         ("yc", discover_from_yc, 30),
         ("vc", discover_from_vc_portfolios, 40),
-        ("wellfound", discover_from_wellfound, 30),
         ("hn", discover_from_hackernews, 30),
     ]
-    searx_kinds = ["hiring", "funding", "launch"]
 
     # Search crawler for direct job + signal discovery
     from src.radar.crawler import run_search_discovery
@@ -182,16 +178,6 @@ async def _discover_new_companies() -> list[dict[str, Any]]:
         except Exception as e:
             logger.warning(f"Discovery adapter {adp_name} failed", exception=str(e))
             _DISCOVERY_METRICS[f"failed_{adp_name}"] += 1
-
-    for kind in searx_kinds:
-        try:
-            companies = await discover_from_searxng(kind)
-            for c in companies:
-                c["discovered_from"] = f"searxng_{kind}"
-            results.extend(companies)
-            logger.info(f"Discovery searxng/{kind}: {len(companies)} companies")
-        except Exception as e:
-            logger.warning(f"Discovery searxng/{kind} failed", exception=str(e))
 
     # Deduplicate by domain
     seen_domains: set[str] = set()
