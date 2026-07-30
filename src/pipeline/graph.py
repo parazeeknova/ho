@@ -302,6 +302,17 @@ async def node_matcher(
         state["match"] = None
         return state
 
+    if result.get("match_percent", 0) < 30 or result.get("verdict") == "NO_MATCH":
+        logger.info(
+            "Job disqualified by Matcher",
+            extra={
+                "role": result.get("role", "?"),
+                "company": result.get("company", "?"),
+                "missing_skills": ", ".join(result.get("missing_skills", [])),
+                "url": state["url"],
+            },
+        )
+
     raw_link = result.get("apply_link")
     if not raw_link or not str(raw_link).startswith("http"):
         result["apply_link"] = state["url"]
@@ -401,6 +412,16 @@ async def run_graph(
             break
 
         if not critique.requires_rescore or loop_count >= MAX_CORRECTION_LOOPS:
+            match_data = state.get("match") or {}
+            logger.info(
+                "Job rejected by Critic",
+                extra={
+                    "role": match_data.get("role", "?"),
+                    "company": match_data.get("company", "?"),
+                    "reason": critique.critique_reason,
+                    "url": state.get("url"),
+                },
+            )
             state["match"] = None
             return None
 
