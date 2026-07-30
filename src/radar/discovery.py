@@ -97,6 +97,7 @@ async def discover_from_yc(limit: int = 50) -> list[dict[str, str]]:
                 params={
                     "q": "YC W25 YC S25 YC-backed startup companies list 2026",
                     "format": "json",
+                    "engines": "bing,bing news,github",
                 },
             )
             if resp.status_code != 200:
@@ -492,6 +493,7 @@ async def _resolve_official_domain(name: str) -> str:
                 params={
                     "q": f'"{name}" official website OR careers',
                     "format": "json",
+                    "engines": "bing,bing news,github",
                 },
             )
             if resp.status_code == 200:

@@ -150,6 +150,7 @@ async def run_search_discovery(
                             "q": q,
                             "format": "json",
                             "time_range": "week",
+                            "engines": "bing,bing news,github",
                         },
                     )
                     if resp.status_code == 200:

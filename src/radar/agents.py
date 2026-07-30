@@ -290,7 +290,12 @@ async def founder_social_agent(entry: FrontierEntry) -> list[FrontierEntry]:
                 try:
                     resp = await client.get(
                         cfg.url,
-                        params={"q": query, "format": "json", "time_range": "month"},
+                        params={
+                            "q": query,
+                            "format": "json",
+                            "time_range": "month",
+                            "engines": "bing,bing news,github",
+                        },
                     )
                     if resp.status_code == 200:
                         results_list = resp.json().get("results", [])

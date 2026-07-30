@@ -45,7 +45,11 @@ _searxng_sem = asyncio.Semaphore(get_config().searxng.semaphore)
 
 async def _searxng_search(query: str, time_range: str | None = None) -> list[str]:
     """Execute search query against local SearXNG."""
-    params: dict[str, str] = {"q": query, "format": "json"}
+    params: dict[str, str] = {
+        "q": query,
+        "format": "json",
+        "engines": "bing,bing news,github",
+    }
     if time_range:
         params["time_range"] = time_range
     cfg = get_config().searxng
