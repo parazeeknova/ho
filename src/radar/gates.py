@@ -327,12 +327,13 @@ def gate_source_freshness(
     """Assign freshness lane from evidence and observation history.
 
     URGENT when:
-      - Source provides a verified posting timestamp within the urgent window.
-      - First-seen from an already-monitored official source (ATS/career board).
+      - Source provides a verified posting timestamp ≤24 hours old.
+      - The URL is a delta from a previously persisted official-source snapshot
+        (i.e. it already existed in the snapshot store before this poll).
 
-    REVIEW for roles with unknown posting date.
-    STALE/rejected for verified-old postings.
-    GitHub/index sources are never URGENT on first-seen alone.
+    REVIEW for unknown posting date or first-ever source crawl.
+    STALE for verified-old postings > stale_days.
+    GitHub/index sources are never URGENT on first-seen.
     """
     cfg = get_config().radar
 
@@ -345,7 +346,8 @@ def gate_source_freshness(
 
     is_monitored = any(obs.source.startswith(p) for p in _MONITORED_SOURCE_PREFIXES)
     is_index = any(obs.source.startswith(p) for p in _INDEX_SOURCE_PREFIXES)
-    is_first_seen = prev_seen == 0
+    is_baseline_crawl = prev_seen == 0
+    is_snapshot_delta = obs.extra.get("is_snapshot_delta", False)
 
     if age_from_evidence is not None:
         candidate.posted_date = obs.source_freshness_evidence
@@ -356,11 +358,11 @@ def gate_source_freshness(
             candidate.freshness_lane = FreshnessLane.STALE
             return RejectionReason.SOURCE_STALE
 
-    if is_first_seen and is_monitored and not is_index:
+    if is_snapshot_delta and is_monitored and not is_index:
         candidate.freshness_lane = FreshnessLane.URGENT
         return None
 
-    if not is_first_seen:
+    if not is_baseline_crawl:
         age = now - prev_seen
         if age > cfg.stale_days * 86400:
             candidate.freshness_lane = FreshnessLane.STALE

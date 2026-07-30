@@ -1,7 +1,4 @@
-"""RadarOrchestrator: source-first incremental job radar pipeline.
-
-Replaces the legacy orchestrator as the primary ingestion path.
-"""
+"""RadarOrchestrator: source-first incremental job radar pipeline."""
 
 from __future__ import annotations
 
@@ -42,6 +39,7 @@ from src.radar.agents import (
     employee_discovery_agent,
     founder_social_agent,
 )
+from src.radar.boards import get_company_boards
 from src.radar.extractors import extract_github_index_markdown
 from src.radar.gates import run_gates
 from src.radar.models import (
@@ -67,81 +65,18 @@ from src.search.searcher import GITHUB_INDEXES
 console = Console()
 logger = get_logger("radar_orchestrator")
 
-# ── Real source registry ────────────────────────────────────────────
-# Each entry produces direct job URLs via the named adapter.
-_SOURCE_REGISTRY: list[dict[str, Any]] = [
-    {
-        "id": "greenhouse:boards",
-        "type": "ats_board",
-        "url": "https://boards.greenhouse.io",
-        "adapter": "greenhouse",
-    },
-    {"id": "lever:jobs", "type": "ats_board", "url": "https://jobs.lever.co", "adapter": "lever"},
-    {
-        "id": "ashby:jobs",
-        "type": "ats_board",
-        "url": "https://jobs.ashbyhq.com",
-        "adapter": "ashby",
-    },
-    {
-        "id": "workable:apply",
-        "type": "ats_board",
-        "url": "https://apply.workable.com",
-        "adapter": "workable",
-    },
-    {
-        "id": "smartrecruiters:jobs",
-        "type": "ats_board",
-        "url": "https://jobs.smartrecruiters.com",
-        "adapter": "smartrecruiters",
-    },
-    {
-        "id": "rippling:careers",
-        "type": "ats_board",
-        "url": "https://app.rippling.com/careers",
-        "adapter": "rippling",
-    },
-    {
-        "id": "ycombinator:jobs",
-        "type": "careers_page",
-        "url": "https://www.ycombinator.com/jobs",
-        "adapter": "careers_page",
-    },
-    {
-        "id": "wellfound:jobs",
-        "type": "careers_page",
-        "url": "https://wellfound.com/jobs",
-        "adapter": "careers_page",
-    },
-    {
-        "id": "sequoia:jobs",
-        "type": "careers_page",
-        "url": "https://jobs.sequoiacap.com",
-        "adapter": "careers_page",
-    },
-    {
-        "id": "a16z:jobs",
-        "type": "careers_page",
-        "url": "https://jobs.a16z.com",
-        "adapter": "careers_page",
-    },
-    {
-        "id": "openai:careers",
-        "type": "careers_page",
-        "url": "https://openai.com/careers",
-        "adapter": "careers_page",
-    },
-    {
-        "id": "anthropic:jobs",
-        "type": "careers_page",
-        "url": "https://jobs.ashbyhq.com/anthropic",
-        "adapter": "ashby",
-    },
-]
+# ── Source registry (loaded from boards.py) ──────────────────────────
+_COMPANY_BOARDS = get_company_boards()
+
+
+def _make_posting_id(obs: JobObservation) -> str:
+    return obs.canonical_url_hash()
+
+
+# ── Source polling ───────────────────────────────────────────────────
 
 
 async def _scrape_indexes() -> list[JobObservation]:
-    """Fetch GitHub indexes, extract direct apply URLs locally."""
     import httpx
 
     all_obs: list[JobObservation] = []
@@ -156,7 +91,6 @@ async def _scrape_indexes() -> list[JobObservation]:
                     obs = extract_github_index_markdown(resp.text, idx_url)
                     for o in obs:
                         o.source = f"github_index:{idx_url.rsplit('/', 1)[-1]}"
-                        o.source_freshness_evidence = None
                     all_obs.extend(obs)
                     record_success(source_id, len(obs), len(obs))
                 else:
@@ -166,47 +100,29 @@ async def _scrape_indexes() -> list[JobObservation]:
     return all_obs
 
 
-async def _poll_source(source: dict[str, Any], app: FirecrawlApp) -> list[JobObservation]:
-    """Poll a single source, diff against its snapshot, return only new URLs."""
-    source_id = source["id"]
+async def _poll_company_board(
+    board: dict[str, str],
+    app: FirecrawlApp,
+) -> list[JobObservation]:
+    source_id = board["id"]
     if not should_poll(source_id):
         return []
 
-    source_url = source["url"]
-    adapter = source.get("adapter", "firecrawl")
-
-    observations: list[JobObservation] = []
     direct_urls: list[str] = []
-
     try:
-        if adapter in ("greenhouse", "lever", "ashby", "workable", "smartrecruiters", "rippling"):
-            resp = app.map_url(source_url)
-            if isinstance(resp, list):
-                for item in resp:
-                    url = item if isinstance(item, str) else item.get("url", "")
-                    if url and url.startswith("http"):
-                        direct_urls.append(url)
-            elif isinstance(resp, dict):
-                links = resp.get("links", []) or []
-                for link in links:
-                    if isinstance(link, str) and link.startswith("http"):
-                        direct_urls.append(link)
-        else:
-            import httpx
-
-            cfg = get_config().firecrawl
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                r = await client.post(
-                    f"{cfg.url}/v1/map",
-                    json={"url": source_url, "limit": cfg.map_limit},
-                )
-                if r.status_code == 200:
-                    for link in r.json().get("links", []) or []:
-                        if isinstance(link, str) and link.startswith("http"):
-                            direct_urls.append(link)
+        resp = app.map_url(board["url"])
+        if isinstance(resp, list):
+            for item in resp:
+                url = item if isinstance(item, str) else item.get("url", "")
+                if url and url.startswith("http"):
+                    direct_urls.append(url)
+        elif isinstance(resp, dict):
+            for link in resp.get("links", []) or []:
+                if isinstance(link, str) and link.startswith("http"):
+                    direct_urls.append(link)
     except Exception as e:
         record_failure(source_id)
-        logger.warning("Source poll failed", source=source_id, exception=str(e))
+        logger.warning("Board poll failed", source=source_id, exception=str(e))
         return []
 
     if not direct_urls:
@@ -216,26 +132,28 @@ async def _poll_source(source: dict[str, Any], app: FirecrawlApp) -> list[JobObs
     state = diff_snapshots(source_id, direct_urls)
     new_urls = state.new_urls
 
+    observations: list[JobObservation] = []
     for url in new_urls:
-        observations.append(
-            JobObservation(
-                url=url,
-                source=source_id,
-                title="",
-                snippet="",
-                raw_markdown="",
-            )
+        obs = JobObservation(
+            url=url,
+            source=source_id,
+            title="",
+            snippet="",
+            extra={"is_snapshot_delta": True},
         )
+        observations.append(obs)
 
     record_success(source_id, len(new_urls), len(new_urls))
     return observations
+
+
+# ── Posting fetch + gates ────────────────────────────────────────────
 
 
 async def _fetch_postings_and_gate(
     observations: list[JobObservation],
     store: MemoryStore,
 ) -> tuple[list[JobCandidate], dict[str, Any]]:
-    """Fetch posting content, persist observations, run gates, persist rejects."""
     import time as _time
 
     import httpx
@@ -245,7 +163,6 @@ async def _fetch_postings_and_gate(
     rejected_count = 0
     gate_stats: dict[str, int] = {}
 
-    # Load known hashes and last_seen from DB
     known_hashes: set[str] = set()
     last_seen: dict[str, float] = {}
     try:
@@ -264,12 +181,15 @@ async def _fetch_postings_and_gate(
         nonlocal rejected_count
         async with sem:
             try:
-                # Fetch posting content
                 if not obs.raw_markdown or len(obs.raw_markdown) < 100:
                     async with httpx.AsyncClient(timeout=15.0) as client:
                         resp = await client.post(
                             f"{cfg.url}/v1/scrape",
-                            json={"url": obs.url, "formats": ["markdown"], "onlyMainContent": True},
+                            json={
+                                "url": obs.url,
+                                "formats": ["markdown"],
+                                "onlyMainContent": True,
+                            },
                         )
                         if resp.status_code != 200:
                             return
@@ -281,22 +201,28 @@ async def _fetch_postings_and_gate(
                 now_ts = _time.time()
                 obs.observed_at = now_ts
 
-                # Persist observation
-                await _persist_observation(store, obs)
+                posting_id = _make_posting_id(obs)
+                await _persist_observation(store, obs, posting_id)
 
-                # Run gates
                 candidate, rejections = await run_gates(obs, known_hashes, last_seen)
 
                 if candidate is not None:
                     candidate.extra["raw_markdown"] = obs.raw_markdown
                     candidate.extra["version"] = 1
+                    candidate.extra["posting_id"] = posting_id
+                    candidate.canonical_id = posting_id
                     passed.append(candidate)
                 else:
                     rejected_count += 1
                     for _g, reason, _desc in rejections:
                         key = reason.value
                         gate_stats[key] = gate_stats.get(key, 0) + 1
-                    await _persist_rejected_observation(store, obs, rejections)
+                    await _persist_rejected_observation(
+                        store,
+                        obs,
+                        posting_id,
+                        rejections,
+                    )
 
             except Exception:
                 pass
@@ -306,7 +232,11 @@ async def _fetch_postings_and_gate(
     return passed, {"rejected": rejected_count, "gate_stats": gate_stats}
 
 
-async def _persist_observation(store: MemoryStore, obs: JobObservation) -> None:
+async def _persist_observation(
+    store: MemoryStore,
+    obs: JobObservation,
+    posting_id: str,
+) -> None:
     try:
         async with store._pool.acquire() as conn:
             await conn.execute(
@@ -317,7 +247,7 @@ async def _persist_observation(store: MemoryStore, obs: JobObservation) -> None:
                 ON CONFLICT (url_hash) DO UPDATE SET
                     last_seen = EXCLUDED.last_seen
                 """,
-                obs.canonical_url_hash(),
+                posting_id,
                 obs.url,
                 obs.source,
                 obs.title or "",
@@ -335,6 +265,7 @@ async def _persist_observation(store: MemoryStore, obs: JobObservation) -> None:
 async def _persist_rejected_observation(
     store: MemoryStore,
     obs: JobObservation,
+    posting_id: str,
     rejections: list[tuple[str, Any, str]],
 ) -> None:
     try:
@@ -351,7 +282,7 @@ async def _persist_rejected_observation(
                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12)
                 ON CONFLICT (canonical_id) DO NOTHING
                 """,
-                f"rejected:{obs.canonical_url_hash()}",
+                f"rejected:{posting_id}",
                 obs.source,
                 obs.url,
                 obs.title or "unknown",
@@ -368,40 +299,28 @@ async def _persist_rejected_observation(
         pass
 
 
-async def _dispatch_company_events(
-    candidates: list[JobCandidate],
-    graph: GraphStore,
-    bus: EventBus,
-) -> None:
-    """Dispatch company_discovered events for accepted/near-miss candidates."""
-    seen_companies: set[str] = set()
+# ── Queue ranking ────────────────────────────────────────────────────
+
+
+def _rank_for_queue(candidates: list[JobCandidate]) -> list[JobCandidate]:
+    urgent: list[JobCandidate] = []
+    high_fit: list[JobCandidate] = []
+    review: list[JobCandidate] = []
+
     for c in candidates:
-        if not c.is_accepted and not c.is_near_miss:
-            continue
-        company = c.normalized_company.lower().strip()
-        if not company or company in ("unknown", "n/a", ""):
-            continue
-        if company in seen_companies:
-            continue
-        seen_companies.add(company)
+        if c.is_urgent:
+            urgent.append(c)
+        elif c.role_family and c.role_family.value not in ("unknown",):
+            high_fit.append(c)
+        else:
+            review.append(c)
 
-        try:
-            node = await graph.get_node(company)
-            if node is None:
-                from src.graph.entity import company_node as _cn
+    urgent.sort(key=lambda c: c.source_confidence, reverse=True)
+    high_fit.sort(key=lambda c: c.source_confidence, reverse=True)
+    return urgent + high_fit + review
 
-                node = _cn(company, source="radar")
-                node, _ = await graph.upsert_node(node)
-            await bus.fire(
-                bus.new_event(
-                    "company_discovered",
-                    node.id,
-                    NodeType.COMPANY,
-                    {"name": c.normalized_company, "url": c.direct_apply_url},
-                )
-            )
-        except Exception:
-            pass
+
+# ── Post-LLM enrichment ──────────────────────────────────────────────
 
 
 async def _enrich_high_fit(
@@ -409,7 +328,6 @@ async def _enrich_high_fit(
     startup_agent: StartupAgent,
     store: MemoryStore,
 ) -> None:
-    """Run startup/funding/founder enrichment for urgent/high-fit candidates."""
     for c in candidates:
         if not c.is_accepted or not (c.is_urgent or c.match_percent >= 60):
             continue
@@ -433,7 +351,10 @@ async def _enrich_high_fit(
             pass
 
 
-async def _persist_candidate_full(store: MemoryStore, candidate: JobCandidate) -> None:
+async def _persist_candidate_full(
+    store: MemoryStore,
+    candidate: JobCandidate,
+) -> None:
     try:
         data: dict[str, Any] = {
             "canonical_id": candidate.canonical_id,
@@ -445,9 +366,9 @@ async def _persist_candidate_full(store: MemoryStore, candidate: JobCandidate) -
             "freshness_lane": candidate.freshness_lane.name.lower(),
             "source_confidence": candidate.source_confidence,
             "eligibility": candidate.eligibility.name.lower(),
-            "rejection_reason": candidate.rejection_reason.value
-            if candidate.rejection_reason
-            else "",
+            "rejection_reason": (
+                candidate.rejection_reason.value if candidate.rejection_reason else ""
+            ),
             "role_family": candidate.role_family.value,
             "salary_amount": candidate.salary.amount if candidate.salary else None,
             "salary_currency": candidate.salary.currency if candidate.salary else "",
@@ -478,17 +399,18 @@ async def _persist_candidate_full(store: MemoryStore, candidate: JobCandidate) -
         pass
 
 
+# ── Telegram notification ────────────────────────────────────────────
+
+
 async def _notify_telegram(
     telegram_agent: TelegramAgent,
     matched: list[JobCandidate],
     store: MemoryStore,
 ) -> None:
-    """Send categorized alerts, deduping against Postgres notification state."""
     if not telegram_agent.is_configured:
         return
 
     notified_keys: set[str] = set()
-
     try:
         async with store._pool.acquire() as conn:
             rows = await conn.fetch("SELECT dedup_key FROM telegram_notified_jobs")
@@ -496,47 +418,53 @@ async def _notify_telegram(
     except Exception:
         pass
 
+    def _mk_key(c: JobCandidate) -> str:
+        return c.extra.get("posting_id", c.canonical_id)
+
     urgent = [
-        c for c in matched if c.is_urgent and c.is_accepted and c.canonical_id not in notified_keys
+        c for c in matched if c.is_urgent and c.is_accepted and _mk_key(c) not in notified_keys
     ]
     startup_sig = [
         c
         for c in matched
-        if c.is_accepted
-        and c.funding_stage
-        and c.canonical_id not in notified_keys
-        and c not in urgent
+        if c.is_accepted and c.funding_stage and _mk_key(c) not in notified_keys and c not in urgent
     ]
     eligible = [
         c
         for c in matched
         if c.is_accepted
         and not c.is_urgent
-        and c.canonical_id not in notified_keys
+        and _mk_key(c) not in notified_keys
         and c not in startup_sig
     ]
     review = [
         c
         for c in matched
-        if c.freshness_lane == FreshnessLane.REVIEW and c.canonical_id not in notified_keys
+        if c.freshness_lane == FreshnessLane.REVIEW and _mk_key(c) not in notified_keys
     ]
 
-    async def _notify(category: str, candidates: list[JobCandidate]) -> None:
+    async def _notify(
+        category: str,
+        candidates: list[JobCandidate],
+    ) -> None:
         for c in candidates:
+            key = _mk_key(c)
             card = _candidate_to_job_card(c)
             try:
                 ok = await telegram_agent.send_categorized_alert(
                     category,
                     card,
-                    dedup_key=c.canonical_id,
+                    dedup_key=key,
                 )
                 if ok:
-                    notified_keys.add(c.canonical_id)
+                    notified_keys.add(key)
                     async with store._pool.acquire() as conn:
                         await conn.execute(
-                            "INSERT INTO telegram_notified_jobs (dedup_key, role, company) "
-                            "VALUES ($1,$2,$3) ON CONFLICT (dedup_key) DO NOTHING",
-                            c.canonical_id,
+                            "INSERT INTO telegram_notified_jobs "
+                            "(dedup_key, role, company) "
+                            "VALUES ($1,$2,$3) "
+                            "ON CONFLICT (dedup_key) DO NOTHING",
+                            key,
                             c.normalized_role,
                             c.normalized_company,
                         )
@@ -553,13 +481,27 @@ async def _notify_telegram(
         drv = [_candidate_to_job_card(c) for c in review[:5]]
         await telegram_agent.send_category_digest("review", drv)
 
+    # Startup-signal digest (funding, launch, hiring signals)
+    startup_digest = []
+    for c in matched:
+        if c.is_accepted and (c.funding_stage or c.extra.get("launch_signals")):
+            card = _candidate_to_job_card(c)
+            card["signal_type"] = "funding" if c.funding_stage else "launch"
+            startup_digest.append(card)
+    if startup_digest and not any(
+        s in notified_keys for s in [d["company"] for d in startup_digest]
+    ):
+        await telegram_agent.send_category_digest(
+            "startup_signal",
+            startup_digest[:5],
+        )
+
 
 async def _process_outreach_cards(
     candidates: list[JobCandidate],
     telegram_agent: TelegramAgent,
     store: MemoryStore,
 ) -> None:
-    """Generate and send outreach cards for enriched candidates."""
     if not telegram_agent.is_configured:
         return
 
@@ -572,9 +514,7 @@ async def _process_outreach_cards(
         pass
 
     for c in candidates:
-        if not c.is_accepted:
-            continue
-        if not c.founders and not c.funding_stage:
+        if not c.is_accepted or (not c.founders and not c.funding_stage):
             continue
         card = generate_outreach_card(c)
         if card is None or card.confidence < 0.4:
@@ -591,12 +531,51 @@ async def _process_outreach_cards(
             if ok:
                 async with store._pool.acquire() as conn:
                     await conn.execute(
-                        "INSERT INTO telegram_notified_jobs (dedup_key, role, company) "
-                        "VALUES ($1,$2,$3) ON CONFLICT (dedup_key) DO NOTHING",
+                        "INSERT INTO telegram_notified_jobs "
+                        "(dedup_key, role, company) "
+                        "VALUES ($1,$2,$3) "
+                        "ON CONFLICT (dedup_key) DO NOTHING",
                         dedup,
                         f"Outreach to {c.normalized_company}",
                         c.normalized_company,
                     )
+        except Exception:
+            pass
+
+
+# ── Company event dispatch for graph expansion ───────────────────────
+
+
+async def _dispatch_company_events(
+    candidates: list[JobCandidate],
+    graph: GraphStore,
+    bus: EventBus,
+) -> None:
+    from src.graph.entity import company_node as _cn
+
+    seen_companies: set[str] = set()
+    for c in candidates:
+        if not c.is_accepted and not c.is_near_miss:
+            continue
+        company = c.normalized_company.lower().strip()
+        if not company or company in ("unknown", "n/a", ""):
+            continue
+        if company in seen_companies:
+            continue
+        seen_companies.add(company)
+        try:
+            node = await graph.get_node(company)
+            if node is None:
+                node = _cn(company, source="radar")
+                node, _ = await graph.upsert_node(node)
+            await bus.fire(
+                bus.new_event(
+                    "company_discovered",
+                    node.id,
+                    NodeType.COMPANY,
+                    {"name": c.normalized_company, "url": c.direct_apply_url},
+                )
+            )
         except Exception:
             pass
 
@@ -636,7 +615,9 @@ async def _founder_miner(
                 data={**f, "company": cn},
             )
             f_node, _ = await graph.upsert_node(f_node)
-            _, _ = await graph.upsert_edge(edge(entry.node_id, EdgeType.FOUNDED_BY, f_node.id))
+            _, _ = await graph.upsert_edge(
+                edge(entry.node_id, EdgeType.FOUNDED_BY, f_node.id),
+            )
             await bus.fire(
                 bus.new_event(
                     "founder_discovered",
@@ -652,6 +633,10 @@ async def _outreach_handler(entry: FrontierEntry) -> list[FrontierEntry]:
     company = entry.payload.get("company", "")
     founder_name = entry.payload.get("founder_name", "")
     linkedin_url = entry.payload.get("linkedin", "")
+    verified_posts = entry.payload.get("verified_posts", [])
+
+    if not company or not (founder_name or linkedin_url):
+        return []
 
     candidate = JobCandidate(
         canonical_id=f"outreach:{company}:{founder_name}",
@@ -663,11 +648,10 @@ async def _outreach_handler(entry: FrontierEntry) -> list[FrontierEntry]:
         founders=[{"name": founder_name, "linkedin_url": linkedin_url}],
         funding_stage=entry.payload.get("funding_stage", ""),
         extra={
-            "verified_posts": entry.payload.get("verified_posts", []),
-            "hiring_signals": entry.payload.get("verified_posts", []),
+            "verified_posts": verified_posts,
+            "hiring_signals": verified_posts,
         },
     )
-
     card = generate_outreach_card(candidate)
     if card and card.confidence >= 0.4:
         telegram_agent = TelegramAgent()
@@ -744,13 +728,17 @@ async def _run_radar_pipeline() -> None:
     startup_agent = StartupAgent(ctx)
 
     # Register sources
-    for src in _SOURCE_REGISTRY:
-        register_source(src["id"], src["type"], initial_quality=0.6)
+    for board in _COMPANY_BOARDS:
+        register_source(board["id"], "ats_board", initial_quality=0.6)
     for idx_url in GITHUB_INDEXES:
-        register_source(f"github:{idx_url.rsplit('/', 1)[-1]}", "github_index", initial_quality=0.4)
+        register_source(
+            f"github:{idx_url.rsplit('/', 1)[-1]}",
+            "github_index",
+            initial_quality=0.3,
+        )
 
-    # Graph event handlers
-    async def _on_company_discovered(event):
+    # Graph event subscriptions
+    async def _sub_company(event):
         d = event.payload
         entries = [
             FrontierEntry(
@@ -761,7 +749,7 @@ async def _run_radar_pipeline() -> None:
                 priority=70,
                 depth=1,
                 payload={"company": d["name"]},
-            )
+            ),
         ]
         if d.get("url"):
             entries.append(
@@ -777,7 +765,7 @@ async def _run_radar_pipeline() -> None:
             )
         return entries
 
-    async def _on_founder_discovered(event):
+    async def _sub_founder(event):
         d = event.payload
         return [
             FrontierEntry(
@@ -787,7 +775,10 @@ async def _run_radar_pipeline() -> None:
                 node_type=NodeType.FOUNDER,
                 priority=50,
                 depth=2,
-                payload={"founder_name": d.get("name", ""), "company": d.get("company", "")},
+                payload={
+                    "founder_name": d.get("name", ""),
+                    "company": d.get("company", ""),
+                },
             ),
             FrontierEntry(
                 id=make_work_id("employee_discovery", event.node_id),
@@ -800,12 +791,16 @@ async def _run_radar_pipeline() -> None:
             ),
         ]
 
-    async def _on_career_site_discovered(event):
+    async def _sub_career(event):
         url = event.payload.get("url", "")
-        if any(
-            a in url.lower()
-            for a in ("greenhouse", "lever.co", "ashbyhq", "workable", "myworkdayjobs")
-        ):
+        ats_domains = (
+            "greenhouse",
+            "lever.co",
+            "ashbyhq",
+            "workable",
+            "myworkdayjobs",
+        )
+        if any(a in url.lower() for a in ats_domains):
             return [
                 FrontierEntry(
                     id=make_work_id("ats_crawler", event.node_id),
@@ -823,15 +818,18 @@ async def _run_radar_pipeline() -> None:
             ]
         return []
 
-    bus.subscribe("company_discovered", _on_company_discovered)
-    bus.subscribe("founder_discovered", _on_founder_discovered)
-    bus.subscribe("career_site_discovered", _on_career_site_discovered)
+    bus.subscribe("company_discovered", _sub_company)
+    bus.subscribe("founder_discovered", _sub_founder)
+    bus.subscribe("career_site_discovered", _sub_career)
 
-    engine.register_agent("founder_miner", lambda e: _founder_miner(e, graph, bus, startup_agent))
+    engine.register_agent(
+        "founder_miner",
+        lambda e: _founder_miner(e, graph, bus, startup_agent),
+    )
     engine.register_agent("career_site_detector", career_site_detector)
     engine.register_agent("founder_social_osint", founder_social_agent)
     engine.register_agent("employee_discovery", employee_discovery_agent)
-    engine.register_agent("ats_crawler", ats_crawler)
+    engine.register_agent("ats_crawler", _ats_crawler_ingest)
     engine.register_agent("outreach_generator", _outreach_handler)
 
     engine.start(worker_count=3)
@@ -876,7 +874,9 @@ async def _run_radar_pipeline() -> None:
         sweep += 1
         sweep_start = time.monotonic()
         set_pipeline_state(
-            sweep=sweep, phase=f"sweep {sweep}: scraping", sweep_started_at=time.time()
+            sweep=sweep,
+            phase=f"sweep {sweep}: scraping",
+            sweep_started_at=time.time(),
         )
 
         try:
@@ -886,32 +886,45 @@ async def _run_radar_pipeline() -> None:
 
             all_observations: list[JobObservation] = []
 
-            # GitHub indexes (discovery only, low priority)
+            # GitHub indexes (discovery only, labelled as index-derived)
             idx_obs = await _scrape_indexes()
             all_observations.extend(idx_obs)
             logger.info(f"GitHub indexes: {len(idx_obs)} observations")
 
-            # Real ATS/career sources
-            for src in _SOURCE_REGISTRY:
-                if not should_poll(src["id"]):
+            # Company-specific ATS boards
+            for board in _COMPANY_BOARDS:
+                if not should_poll(board["id"]):
                     continue
-                obs = await _poll_source(src, app)
-                all_observations.extend(obs)
-                if obs:
-                    logger.info(f"Source {src['id']}: {len(obs)} new URLs")
+                board_obs = await _poll_company_board(board, app)
+                all_observations.extend(board_obs)
+                if board_obs:
+                    logger.info(
+                        f"Board {board['id']}: {len(board_obs)} new URLs",
+                    )
 
-            # Fetch content + run gates
+            # Fetch + gate
             candidates, gate_stats = await _fetch_postings_and_gate(
                 all_observations,
                 store,
             )
-            logger.info(f"Gating: {len(candidates)} passed, {gate_stats['rejected']} rejected")
+            set_pipeline_state(
+                scraped=len(all_observations),
+                gated=len(candidates),
+            )
+            logger.info(
+                f"Gating: {len(candidates)} passed, {gate_stats['rejected']} rejected",
+            )
 
             # LLM matching
-            console.rule(f"[bold cyan]RADAR PHASE 3 (sweep {sweep}): LLM Matching[/bold cyan]")
+            console.rule(
+                f"[bold cyan]RADAR PHASE 3 (sweep {sweep}): LLM Matching[/bold cyan]",
+            )
             resume_ctx = full_text[:3000] if full_text else candidate_persona
-            for c in candidates:
-                await enqueue_candidate(c, priority=50)
+
+            ranked = _rank_for_queue(candidates)
+            for c in ranked:
+                prio = 80 if c.is_urgent else 60 if c.role_family.value != "unknown" else 40
+                await enqueue_candidate(c, priority=prio)
 
             matched = await process_queue(
                 ctx,
@@ -922,21 +935,20 @@ async def _run_radar_pipeline() -> None:
             )
             logger.info(f"LLM queue: {len(matched)} matched")
 
-            # Startup enrichment for high-fit
             await _enrich_high_fit(matched, startup_agent, store)
-
-            # Dispatch company events for accepted
             await _dispatch_company_events(matched, graph, bus)
-
-            # Telegram alerts
             await _notify_telegram(telegram_agent, matched, store)
             await _process_outreach_cards(matched, telegram_agent, store)
 
+            # Sweep counters
+            accepted = len([c for c in matched if c.is_accepted])
+            near_miss = len([c for c in matched if c.is_near_miss])
+            rejected_llm = len([c for c in matched if c.is_rejected])
             queue_s = get_queue_status()
+
             set_pipeline_state(
-                matched_total=len([c for c in matched if c.is_accepted]),
-                rejected_total=len([c for c in matched if c.is_rejected or c.is_near_miss])
-                + gate_stats["rejected"],
+                matched_total=accepted,
+                rejected_total=rejected_llm + near_miss + gate_stats["rejected"],
                 phase="idle",
                 llm_queue=queue_s,
                 source_health=get_source_health(),
@@ -947,7 +959,6 @@ async def _run_radar_pipeline() -> None:
 
             elapsed = time.monotonic() - sweep_start
             if telegram_agent.is_configured:
-                accepted = len([c for c in matched if c.is_accepted])
                 await telegram_agent.send_sweep_summary(
                     sweep,
                     accepted,
@@ -976,6 +987,13 @@ async def _run_radar_pipeline() -> None:
     await graph.close()
     await store.close()
     logger.info("Radar pipeline shutdown complete")
+
+
+# ── ATS crawler ingest: routes ats_crawler output to posting-ingestion ──
+
+
+async def _ats_crawler_ingest(entry: FrontierEntry) -> list[FrontierEntry]:
+    return await ats_crawler(entry)
 
 
 def run() -> None:

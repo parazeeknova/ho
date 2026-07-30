@@ -96,6 +96,7 @@ class JobObservation:
     snippet: str = ""
     observed_at: float = field(default_factory=time.time)
     source_freshness_evidence: str | None = None  # "posted <1h ago", etc.
+    extra: dict[str, Any] = field(default_factory=dict)
 
     def canonical_url_hash(self) -> str:
         return _canonical_url_hash(self.url)

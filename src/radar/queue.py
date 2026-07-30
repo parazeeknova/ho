@@ -135,63 +135,67 @@ async def process_queue(
 ) -> list[JobCandidate]:
     cfg = get_config().llm_queue
     results: list[JobCandidate] = []
+    sem = asyncio.Semaphore(cfg.max_in_flight)
 
     async def _worker(candidate: JobCandidate) -> None:
-        try:
-            await _acquire_budget(cfg)
-        except Exception:
-            _clear_queued(candidate)
-            return
+        async with sem:
+            try:
+                await _acquire_budget(cfg)
+            except Exception:
+                _clear_queued(candidate)
+                return
 
-        try:
-            prompt = MATCHER_PROMPT.replace("{candidate_persona}", candidate_persona)
-            prompt = prompt.replace("{resume_context}", resume_context[:3000])
-            jd = candidate.extra.get("raw_markdown", "")[:8000]
-            prompt = prompt.replace("{job_markdown}", jd)
+            try:
+                jd = candidate.extra.get("raw_markdown", "")[:8000]
+                output_budget = cfg.match_token_budget
 
-            result = await ctx.json_chat(
-                prompt,
-                schema=MATCHER_SCHEMA,
-                max_tokens=cfg.match_token_budget,
-            )
+                prompt = MATCHER_PROMPT.replace("{candidate_persona}", candidate_persona)
+                prompt = prompt.replace("{resume_context}", resume_context[:3000])
+                prompt = prompt.replace("{job_markdown}", jd)
 
-            if isinstance(result, dict) and "match_percent" in result:
-                _apply_llm_result(candidate, result)
-            else:
-                candidate.eligibility = EligibilityState.ERROR
-                candidate.rejection_reason = RejectionReason.MATCHER_LOW_SCORE
+                result = await ctx.json_chat(
+                    prompt,
+                    schema=MATCHER_SCHEMA,
+                    max_tokens=output_budget,
+                )
 
-            async with _queue_lock:
-                _queue_state.total_completed += 1
-            results.append(candidate)
-
-            if store is not None:
-                await _persist_candidate(store, candidate)
-
-        except Exception as e:
-            err_msg = str(e)
-            async with _queue_lock:
-                _queue_state.total_failed += 1
-            if _is_429(err_msg):
-                await _handle_429(cfg)
-                attempts = candidate.extra.get("queue_attempts", 0) + 1
-                candidate.extra["queue_attempts"] = attempts
-                if attempts <= 3:
-                    mark_retry(candidate)
-                    await enqueue_candidate(candidate, priority=30)
+                if isinstance(result, dict) and "match_percent" in result:
+                    _apply_llm_result(candidate, result)
                 else:
                     candidate.eligibility = EligibilityState.ERROR
-                    if store is not None:
-                        await _persist_candidate(store, candidate)
-            else:
-                candidate.eligibility = EligibilityState.ERROR
-                candidate.rejection_reason = RejectionReason.UNKNOWN
+                    candidate.rejection_reason = RejectionReason.MATCHER_LOW_SCORE
+
+                async with _queue_lock:
+                    _queue_state.total_completed += 1
+                results.append(candidate)
+
                 if store is not None:
                     await _persist_candidate(store, candidate)
-                logger.warning("LLM queue worker failed", exception=err_msg)
-        finally:
-            async with _queue_lock:
-                _queue_state.in_flight -= 1
+
+            except Exception as e:
+                err_msg = str(e)
+                async with _queue_lock:
+                    _queue_state.total_failed += 1
+                if _is_429(err_msg):
+                    await _handle_429(cfg)
+                    attempts = candidate.extra.get("queue_attempts", 0) + 1
+                    candidate.extra["queue_attempts"] = attempts
+                    if attempts <= 3:
+                        mark_retry(candidate)
+                        await enqueue_candidate(candidate, priority=30)
+                    else:
+                        candidate.eligibility = EligibilityState.ERROR
+                        if store is not None:
+                            await _persist_candidate(store, candidate)
+                else:
+                    candidate.eligibility = EligibilityState.ERROR
+                    candidate.rejection_reason = RejectionReason.UNKNOWN
+                    if store is not None:
+                        await _persist_candidate(store, candidate)
+                    logger.warning("LLM queue worker failed", exception=err_msg)
+            finally:
+                async with _queue_lock:
+                    _queue_state.in_flight -= 1
 
     tasks: list[asyncio.Task[None]] = []
     processed = 0
