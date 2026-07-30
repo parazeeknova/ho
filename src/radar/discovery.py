@@ -310,10 +310,11 @@ async def discover_from_dealroom(limit: int = 50) -> list[dict[str, str]]:
                     data = resp.json()
                     for m in data.get("results", []):
                         mid = m.get("id", "")
-                        if mid and mid not in all_map_ids:
+                        # Only landscape-* IDs have company data; skip others
+                        if mid and mid not in all_map_ids and mid.startswith("landscape-"):
                             all_map_ids.append(mid)
 
-            for map_id in all_map_ids[:6]:
+            for map_id in all_map_ids[:8]:
                 resp2 = await client.get(f"https://dealroom.co/api/marketmap?id={map_id}")
                 if resp2.status_code != 200:
                     continue
@@ -422,19 +423,29 @@ async def discover_from_remoteok(limit: int = 30) -> list[dict[str, str]]:
 
 
 async def discover_from_weworkremotely(limit: int = 30) -> list[dict[str, str]]:
-    """Discover companies from We Work Remotely's readable HTML listings.
+    """Discover companies from We Work Remotely via Firecrawl.
 
-    WWR is a plain-HTML remote job board — no JS rendering needed.
-    Each job card contains a company name and apply link.
+    WWR is Cloudflare-protected; direct httpx gets 403. Use Firecrawl's
+    Playwright-backed scrape to bypass the challenge and get rendered HTML.
     """
     companies: list[dict[str, str]] = []
     seen: set[str] = set()
+    cfg = get_config().firecrawl
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get("https://weworkremotely.com/")
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(
+                f"{cfg.url}/v1/scrape",
+                json={
+                    "url": "https://weworkremotely.com/",
+                    "formats": ["html"],
+                    "onlyMainContent": True,
+                },
+            )
             if resp.status_code != 200:
                 return companies
-            html = resp.text
+            html = (resp.json().get("data") or {}).get("html", "") or ""
+            if not html:
+                return companies
             for m in re.finditer(
                 r'<span class="company">([^<]+)</span>',
                 html,
@@ -459,8 +470,9 @@ async def discover_from_weworkremotely(limit: int = 30) -> list[dict[str, str]]:
 async def discover_from_betalist(limit: int = 30) -> list[dict[str, str]]:
     """Discover startups from BetaList's readable HTML listing.
 
-    BetaList showcases recently launched startups with company names,
-    descriptions, and website links.
+    BetaList uses <a href="/startups/{slug}"> overlay links with empty inner
+    text. Company names live in <div class="font-medium ...">Name</div> blocks.
+    We extract slugs from hrefs and derive names from them.
     """
     companies: list[dict[str, str]] = []
     seen: set[str] = set()
@@ -470,12 +482,22 @@ async def discover_from_betalist(limit: int = 30) -> list[dict[str, str]]:
             if resp.status_code != 200:
                 return companies
             html = resp.text
+            slugs: list[str] = []
             for m in re.finditer(
-                r'<a[^>]*href="(/startup/[^"]+)"[^>]*>([^<]+)</a>',
+                r'<a[^>]*href="/startups/([^/"]+)"',
                 html,
                 re.IGNORECASE,
             ):
-                name = m.group(2).strip()
+                slug = m.group(1).strip().lower()
+                if slug and slug not in ("follow", "edit", "stats", "new"):
+                    slugs.append(slug)
+
+            seen_slugs: set[str] = set()
+            for slug in slugs:
+                if slug in seen_slugs:
+                    continue
+                seen_slugs.add(slug)
+                name = slug.replace("-", " ").title()
                 if name and name not in seen and 2 < len(name) < 80:
                     seen.add(name)
                     companies.append({"name": name, "website": "", "source": "betalist"})

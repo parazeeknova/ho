@@ -14,7 +14,7 @@ serve:
 
 run: health
 	@mkdir -p logs
-	uv run python -m src.radar.orchestrator 2>&1 | tee logs/run.log
+	bash -c 'set -m; trap "kill 0 2>/dev/null" EXIT; uv run python -m src.radar.orchestrator 2>&1 | tee logs/run.log; wait'
 
 match: health
 	uv run python -m src.radar.orchestrator
@@ -31,7 +31,11 @@ fc-up:
 		--entrypoint /bin/bash \
 		rabbitmq:3-management \
 		-c "rm -f /var/lib/rabbitmq/.erlang.cookie; exec docker-entrypoint.sh rabbitmq-server"; \
-	echo "Waiting for rabbitmq..."; sleep 5; \
+	echo "Waiting for rabbitmq..."; \
+	for i in 1 2 3 4 5 6 7 8 9 10; do \
+		if podman exec firecrawl_rabbitmq_1 rabbitmqctl await_startup 2>/dev/null; then break; fi; \
+		sleep 2; \
+	done; \
 	docker compose -f docker-compose.yaml up -d api
 
 fc-down:

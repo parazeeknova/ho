@@ -10,10 +10,10 @@ x-common-env: &common-env
   POSTGRES_HOST: nuq-postgres
   POSTGRES_PORT: 5432
   USE_DB_AUTHENTICATION: false
-  NUM_WORKERS_PER_QUEUE: 12
-  CRAWL_CONCURRENT_REQUESTS: 20
-  MAX_CONCURRENT_JOBS: 10
-  BROWSER_POOL_SIZE: 10
+  NUM_WORKERS_PER_QUEUE: 32
+  CRAWL_CONCURRENT_REQUESTS: 50
+  MAX_CONCURRENT_JOBS: 20
+  BROWSER_POOL_SIZE: 20
   OPENAI_API_KEY: ${OPENAI_API_KEY:-}
   OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
   MODEL_NAME: ${MODEL_NAME:-}
@@ -41,9 +41,9 @@ services:
       nofile:
         soft: 65535
         hard: 65535
-    cpus: 4.0
-    mem_limit: 4G
-    memswap_limit: 4G
+    cpus: 12.0
+    mem_limit: 8G
+    memswap_limit: 8G
     logging:
       driver: "json-file"
       options:
@@ -55,10 +55,10 @@ services:
     image: ghcr.io/firecrawl/playwright-service:latest
     environment:
       PORT: 3000
-      CONCURRENT_WORKERS: 6
-    cpus: 4.0
-    mem_limit: 4G
-    memswap_limit: 4G
+      CONCURRENT_WORKERS: 20
+    cpus: 8.0
+    mem_limit: 8G
+    memswap_limit: 8G
     tmpfs:
       - /tmp/.cache:noexec,nosuid,size=1g
     logging:
@@ -137,8 +137,8 @@ services:
       - "7687:7687"
     environment:
       NEO4J_AUTH: neo4j/password
-      NEO4J_server_memory_heap_initial__size: 512m
-      NEO4J_server_memory_heap_max__size: 1g
+      NEO4J_server_memory_heap_initial__size: 1g
+      NEO4J_server_memory_heap_max__size: 2g
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs
