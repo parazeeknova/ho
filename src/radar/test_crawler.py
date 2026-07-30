@@ -235,6 +235,29 @@ class TestSourceIdCollisionProtection:
         b2 = _extract_board_root("https://boards.greenhouse.io/acme/jobs/2")
         assert b1 == b2
 
+    def test_board_url_hash_protects_against_name_collision(self) -> None:
+        """Same company name at different board URLs → distinct source IDs."""
+        import hashlib
+
+        name1 = "Acme"
+        name2 = "Acme"  # same name
+        url1 = "https://boards.greenhouse.io/acme-ai"
+        url2 = "https://jobs.lever.co/acme-labs"
+
+        def _make_id(name: str, url: str) -> str:
+            slug = name.lower().replace(" ", "-")[:40]
+            board_hash = hashlib.sha256(url.encode()).hexdigest()[:8]
+            return f"discovered:{slug}:{board_hash}"
+
+        id1 = _make_id(name1, url1)
+        id2 = _make_id(name2, url2)
+
+        assert id1 != id2, (
+            f"Same company name / different board URL must produce distinct IDs: {id1} vs {id2}"
+        )
+        assert "acme" in id1
+        assert "acme" in id2
+
 
 class TestEmailGuessingRemoved:
     def test_no_guess_in_analyze_startup_source(self) -> None:

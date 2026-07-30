@@ -106,6 +106,12 @@ def _posting_id(obs: JobObservation) -> str:
     return obs.canonical_url_hash()
 
 
+def _hash_board_url(board_url: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(board_url.encode()).hexdigest()[:8]
+
+
 # ── Source persistence ───────────────────────────────────────────────
 
 
@@ -123,7 +129,10 @@ async def _persist_discovered_sources(
     count = 0
     for c in discovered:
         website = c.get("website", "")
-        source_id = f"discovered:{c.get('name', '').lower().replace(' ', '-')[:60]}"
+        board_url = c.get("ats_url", website) or website
+        name_slug = c.get("name", "").lower().replace(" ", "-")[:40]
+        board_hash = _hash_board_url(board_url)
+        source_id = f"discovered:{name_slug}:{board_hash}"
         try:
             register_source(source_id, "ats_board", initial_quality=0.5)
             cp = get_checkpoint(source_id)
