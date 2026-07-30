@@ -102,12 +102,15 @@ async def persist_checkpoints(store) -> None:
                 await conn.execute(
                     """
                     INSERT INTO source_checkpoints
-                        (source_id, source_type, last_polled, last_snapshot_hash,
-                         last_snapshot_count, consecutive_failures, consecutive_empty,
-                         quality_score, active, backoff_until, total_jobs_produced,
-                         total_direct_url_rate)
-                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+                        (source_id, source_type, board_url, last_polled,
+                         last_snapshot_hash, last_snapshot_count,
+                         consecutive_failures, consecutive_empty,
+                         quality_score, active, backoff_until,
+                         total_jobs_produced, total_direct_url_rate,
+                         company_name, discovery_origin)
+                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
                     ON CONFLICT (source_id) DO UPDATE SET
+                        board_url = EXCLUDED.board_url,
                         last_polled = EXCLUDED.last_polled,
                         last_snapshot_hash = EXCLUDED.last_snapshot_hash,
                         last_snapshot_count = EXCLUDED.last_snapshot_count,
@@ -121,6 +124,7 @@ async def persist_checkpoints(store) -> None:
                     """,
                     source_id,
                     cp.source_type,
+                    getattr(cp, "board_url", ""),
                     cp.last_polled,
                     cp.last_snapshot_hash,
                     cp.last_snapshot_count,
@@ -131,6 +135,8 @@ async def persist_checkpoints(store) -> None:
                     cp.backoff_until,
                     cp.total_jobs_produced,
                     cp.total_direct_url_rate,
+                    getattr(cp, "company_name", ""),
+                    getattr(cp, "discovery_origin", ""),
                 )
         for source_id, urls in _LAST_SNAPSHOT_URLS.items():
             with contextlib.suppress(Exception):
@@ -140,8 +146,7 @@ async def persist_checkpoints(store) -> None:
                     INSERT INTO source_snapshots (source_id, snapshot_data)
                     VALUES ($1, $2)
                     ON CONFLICT (source_id) DO UPDATE SET
-                        snapshot_data = EXCLUDED.snapshot_data,
-                        updated_at = NOW()
+                        snapshot_data = EXCLUDED.snapshot_data, updated_at = NOW()
                     """,
                     source_id,
                     snapshot_json,
@@ -169,6 +174,9 @@ async def load_checkpoints(store) -> None:
                     backoff_until=row["backoff_until"] or 0.0,
                     total_jobs_produced=row["total_jobs_produced"] or 0,
                     total_direct_url_rate=row["total_direct_url_rate"] or 0.0,
+                    board_url=row.get("board_url", "") or "",
+                    company_name=row.get("company_name", "") or "",
+                    discovery_origin=row.get("discovery_origin", "") or "",
                 )
         with contextlib.suppress(Exception):
             snap_rows = await conn.fetch("SELECT source_id, snapshot_data FROM source_snapshots")
@@ -178,6 +186,25 @@ async def load_checkpoints(store) -> None:
                     _LAST_SNAPSHOT_URLS[sr["source_id"]] = urls
                 except Exception:
                     pass
+
+
+async def load_active_sources(store) -> list[dict[str, str]]:
+    """Return active board sources with their URLs for polling."""
+    if store is None:
+        return []
+    sources: list[dict[str, str]] = []
+    try:
+        async with store._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT source_id, board_url FROM source_checkpoints "
+                "WHERE source_type = 'ats_board' AND active = TRUE "
+                "AND board_url != ''"
+            )
+            for r in rows:
+                sources.append({"id": r["source_id"], "url": r["board_url"]})
+    except Exception:
+        pass
+    return sources
 
 
 def record_failure(source_id: str) -> None:

@@ -2,17 +2,18 @@
 
 Discovers companies from:
 - YC accelerator directories
-- VC portfolio pages
-- Public funding/launch announcements
-- SearXNG hiring/funding queries
-- Wellfound, HN "Who is Hiring"
+- VC portfolio pages (a16z, Sequoia, Benchmark, Accel)
+- Wellfound/startup-job pages
+- HN "Who is Hiring"
+- SearXNG hiring/funding/launch queries
 
-Every discovered company's website is probed for its specific ATS/career page.
+Every discovered company's website is probed for its ATS/career page.
 Generic vendor roots are never used.
 """
 
 from __future__ import annotations
 
+import re
 from urllib.parse import urljoin, urlparse
 
 import httpx
@@ -43,17 +44,21 @@ ATS_SIGNATURES = {
     "rippling": "app.rippling.com",
 }
 
+_VC_PORTFOLIOS = [
+    "https://a16z.com/portfolio/",
+    "https://www.sequoiacap.com/our-companies/",
+    "https://www.benchmark.com/portfolio/",
+    "https://www.accel.com/companies",
+]
+
 
 async def discover_from_yc(limit: int = 50) -> list[dict[str, str]]:
-    """Discover YC companies from YC directory pages."""
     companies: list[dict[str, str]] = []
     try:
         async with httpx.AsyncClient(timeout=20.0) as client:
             resp = await client.get("https://www.ycombinator.com/companies")
             if resp.status_code != 200:
                 return companies
-            import re
-
             links = re.findall(r'href="(/companies/[^"]+)"', resp.text)
             seen = set()
             for path in links[:limit]:
@@ -61,19 +66,13 @@ async def discover_from_yc(limit: int = 50) -> list[dict[str, str]]:
                     continue
                 seen.add(path)
                 try:
-                    detail_resp = await client.get(
-                        f"https://www.ycombinator.com{path}",
-                    )
-                    if detail_resp.status_code == 200:
-                        name = _extract_name(detail_resp.text, path)
-                        site = _extract_website(detail_resp.text)
+                    detail = await client.get(f"https://www.ycombinator.com{path}")
+                    if detail.status_code == 200:
+                        name = _extract_name(detail.text, path)
+                        site = _extract_website(detail.text)
                         if name:
                             companies.append(
-                                {
-                                    "name": name,
-                                    "website": site or "",
-                                    "source": "yc_directory",
-                                }
+                                {"name": name, "website": site or "", "source": "yc_directory"}
                             )
                 except Exception:
                     pass
@@ -82,24 +81,100 @@ async def discover_from_yc(limit: int = 50) -> list[dict[str, str]]:
     return companies
 
 
+async def discover_from_vc_portfolios(limit: int = 40) -> list[dict[str, str]]:
+    companies: list[dict[str, str]] = []
+    for portfolio_url in _VC_PORTFOLIOS:
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                resp = await client.get(portfolio_url)
+                if resp.status_code != 200:
+                    continue
+                text = resp.text
+                names = _extract_portfolio_company_names(text, portfolio_url)
+                for name in names[:limit]:
+                    if name:
+                        companies.append({"name": name, "website": "", "source": "vc_portfolio"})
+        except Exception:
+            continue
+    return companies
+
+
+def _extract_portfolio_company_names(html: str, url: str) -> list[str]:
+    names: list[str] = []
+    seen = set()
+    # Try common portfolio page patterns
+    for pat in (
+        r'"name"\s*:\s*"([^"]+)"',
+        r'alt="([^"]+)"[^>]*class="[^"]*logo',
+        r"<h3[^>]*>([^<]+)</h3>",
+    ):
+        for m in re.finditer(pat, html, re.IGNORECASE):
+            name = m.group(1).strip()
+            if (
+                2 < len(name) < 60
+                and name.lower() not in ("home", "about", "contact")
+                and name not in seen
+            ):
+                seen.add(name)
+                names.append(name)
+    return names[:30]
+
+
+async def discover_from_hackernews() -> list[dict[str, str]]:
+    companies: list[dict[str, str]] = []
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(
+                "https://hn.algolia.com/api/v1/search_by_date",
+                params={"query": "hiring engineer", "tags": "story", "hitsPerPage": 30},
+            )
+            if resp.status_code == 200:
+                for hit in resp.json().get("hits", []):
+                    title = hit.get("title", "")
+                    url_str = hit.get("url") or ""
+                    domain = _extract_domain(url_str)
+                    if domain and "hiring" in title.lower():
+                        companies.append(
+                            {
+                                "name": title[:80],
+                                "website": f"https://{domain}",
+                                "source": "hackernews",
+                            }
+                        )
+    except Exception:
+        pass
+    return companies
+
+
+async def discover_from_wellfound(limit: int = 30) -> list[dict[str, str]]:
+    companies: list[dict[str, str]] = []
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.get("https://wellfound.com/jobs")
+            if resp.status_code != 200:
+                return companies
+            # Extract company names from listing page
+            for m in re.finditer(r'href="/company/([^"]+)"', resp.text):
+                slug = m.group(1)
+                name = slug.replace("-", " ").title()
+                companies.append({"name": name, "website": "", "source": "wellfound"})
+    except Exception:
+        pass
+    return companies[:limit]
+
+
 async def discover_from_searxng(kind: str = "hiring") -> list[dict[str, str]]:
-    """Discover companies via SearXNG search."""
     companies: list[dict[str, str]] = []
     cfg = get_config().searxng
 
     queries = {
         "funding": (
             'site:techcrunch.com OR site:crunchbase.com "raised" '
-            '"seed" OR "series a" OR "series b" funding startup '
-            "engineering hiring"
+            '"seed" OR "series a" startup hiring'
         ),
-        "hiring": (
-            'site:linkedin.com/posts "hiring" "software engineer" '
-            '"YC" OR "backed by" OR "seed" OR "series a"'
-        ),
+        "hiring": ('site:linkedin.com/posts "hiring" "software engineer" "startup" "remote"'),
         "launch": (
-            "site:producthunt.com OR site:wellfound.com "
-            '"software engineer" "hiring" "remote" startup'
+            'site:producthunt.com OR site:wellfound.com "hiring" "software engineer" remote'
         ),
     }
 
@@ -107,31 +182,29 @@ async def discover_from_searxng(kind: str = "hiring") -> list[dict[str, str]]:
     try:
         async with httpx.AsyncClient(timeout=cfg.timeout) as client:
             resp = await client.get(
-                cfg.url,
-                params={"q": query, "format": "json", "time_range": "week"},
+                cfg.url, params={"q": query, "format": "json", "time_range": "week"}
             )
             if resp.status_code == 200:
                 for r in resp.json().get("results", [])[:20]:
                     title = r.get("title", "")
-                    url = r.get("url", "")
-                    if not title or not url:
+                    url_str = r.get("url", "")
+                    if not title or not url_str:
                         continue
-                    domain = _extract_domain(url)
+                    domain = _extract_domain(url_str)
                     if domain:
                         companies.append(
                             {
-                                "name": _clean_company_name(title),
+                                "name": _clean_name(title),
                                 "website": f"https://{domain}",
                                 "source": f"searxng_{kind}",
                             }
                         )
-    except Exception as e:
-        logger.debug("SearXNG discovery failed", kind=kind, exception=str(e))
+    except Exception:
+        pass
     return companies
 
 
 async def detect_ats_for_company(website: str) -> str | None:
-    """Probe a company's website for its specific ATS/career page."""
     if not website.startswith("http"):
         return None
     try:
@@ -142,22 +215,20 @@ async def detect_ats_for_company(website: str) -> str | None:
                     resp = await client.get(urljoin(base, path))
                     if resp.status_code == 200:
                         actual = str(resp.url)
-                        for _ats_name, sig in ATS_SIGNATURES.items():
+                        for _sig_name, sig in ATS_SIGNATURES.items():
                             if sig in actual.lower():
                                 return actual
                         return actual
                 except Exception:
                     continue
-
             domain = _extract_domain(website)
             base_name = domain.split(".")[0]
-            ats_guesses = [
+            for guess in (
                 f"https://boards.greenhouse.io/{base_name}",
                 f"https://jobs.lever.co/{base_name}",
                 f"https://jobs.ashbyhq.com/{base_name}",
                 f"https://apply.workable.com/{base_name}",
-            ]
-            for guess in ats_guesses:
+            ):
                 try:
                     resp = await client.get(guess)
                     if resp.status_code == 200:
@@ -170,30 +241,18 @@ async def detect_ats_for_company(website: str) -> str | None:
 
 
 def _extract_name(html: str, path: str) -> str:
-    import re
-
     m = re.search(r"<title>([^<]+)</title>", html)
     if m:
-        title = m.group(1)
-        for suffix in (" | Y Combinator", " | YC", " - Y Combinator"):
-            title = title.replace(suffix, "")
-        return title.strip()
+        return m.group(1).replace(" | Y Combinator", "").replace(" | YC", "").strip()
     return path.rsplit("/", 1)[-1].replace("-", " ").title()
 
 
 def _extract_website(html: str) -> str:
-    import re
-
-    m = re.search(r'href="(https?://[^"]+)"[^>]*>\s*website\s*<', html, re.IGNORECASE)
-    if m:
-        return m.group(1)
-    m = re.search(r'href="(https?://[^"]+)"[^>]*>\s*Visit\s*<', html, re.IGNORECASE)
-    if m:
-        return m.group(1)
-    return ""
+    m = re.search(r'href="(https?://[^"]+)"[^>]*>\s*(?:website|Visit)\s*<', html, re.IGNORECASE)
+    return m.group(1) if m else ""
 
 
-def _clean_company_name(title: str) -> str:
+def _clean_name(title: str) -> str:
     for sep in (" - ", " | ", " — ", " hiring", " raises"):
         idx = title.lower().find(sep)
         if idx > 0:
@@ -203,10 +262,7 @@ def _clean_company_name(title: str) -> str:
 
 def _extract_domain(url: str) -> str:
     try:
-        p = urlparse(url)
-        h = p.hostname or ""
-        if h.startswith("www."):
-            h = h[4:]
-        return h
+        host = urlparse(url).hostname or ""
+        return host[4:] if host.startswith("www.") else host
     except Exception:
         return ""

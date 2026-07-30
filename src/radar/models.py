@@ -179,6 +179,9 @@ class SourceCheckpoint:
     backoff_until: float = 0.0
     total_jobs_produced: int = 0
     total_direct_url_rate: float = 0.0
+    board_url: str = ""
+    company_name: str = ""
+    discovery_origin: str = ""
 
 
 @dataclass

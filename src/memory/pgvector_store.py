@@ -97,9 +97,19 @@ CREATE TABLE IF NOT EXISTS frontier_completed (
     work_id        TEXT PRIMARY KEY, completed_at TIMESTAMP DEFAULT NOW()
 );
 
+ALTER TABLE source_checkpoints
+ADD COLUMN IF NOT EXISTS board_url TEXT DEFAULT '';
+
+ALTER TABLE source_checkpoints
+ADD COLUMN IF NOT EXISTS company_name TEXT DEFAULT '';
+
+ALTER TABLE source_checkpoints
+ADD COLUMN IF NOT EXISTS discovery_origin TEXT DEFAULT '';
+
 CREATE TABLE IF NOT EXISTS source_checkpoints (
     source_id            TEXT PRIMARY KEY,
     source_type          TEXT NOT NULL DEFAULT 'unknown',
+    board_url            TEXT DEFAULT '',
     last_polled          DOUBLE PRECISION DEFAULT 0,
     last_snapshot_hash   TEXT DEFAULT '',
     last_snapshot_count  INT DEFAULT 0,
