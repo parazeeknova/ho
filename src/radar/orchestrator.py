@@ -45,6 +45,7 @@ from src.radar.discovery import (
 from src.radar.discovery import (
     _resolve_company_domain,
     detect_ats_for_company,
+    discover_from_dealroom,
     discover_from_hackernews,
     discover_from_remoteok,
     discover_from_vc_portfolios,
@@ -152,6 +153,7 @@ async def _discover_new_companies() -> list[dict[str, Any]]:
     _DISCOVERY_METRICS["sweeps"] = _DISCOVERY_METRICS.get("sweeps", 0) + 1
     results: list[dict[str, Any]] = []
     adapters = [
+        ("dealroom", discover_from_dealroom, 50),
         ("yc", discover_from_yc, 30),
         ("vc", discover_from_vc_portfolios, 40),
         ("hn", discover_from_hackernews, 30),

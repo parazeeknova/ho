@@ -259,6 +259,70 @@ async def discover_from_hackernews(limit: int = 30) -> list[dict[str, str]]:
     return companies
 
 
+async def discover_from_dealroom(limit: int = 50) -> list[dict[str, str]]:
+    """Discover funded startups from Dealroom.co's public API.
+
+    Dealroom provides free structured data: company names, websites,
+    funding rounds, HQ cities, and founder names from curated market maps.
+    """
+    companies: list[dict[str, str]] = []
+    seen: set[str] = set()
+    maps = [
+        "landscape-53885",  # AI Agents
+        "landscape-52820",  # AI x climate tech
+        "landscape-48993",  # sample landscape
+    ]
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            for map_id in maps:
+                resp = await client.get(f"https://dealroom.co/api/marketmap?id={map_id}")
+                if resp.status_code != 200:
+                    continue
+                data = resp.json()
+                for comp in data.get("companies", []):
+                    name = (comp.get("name") or "").strip()
+                    website = (comp.get("website") or "").strip()
+                    if not name or name in seen:
+                        continue
+                    seen.add(name)
+                    companies.append(
+                        {
+                            "name": name,
+                            "website": website,
+                            "source": "dealroom",
+                            "funding_amount": _extract_funding(comp),
+                            "hq_city": _extract_hq_city(comp),
+                        }
+                    )
+                    if len(companies) >= limit:
+                        return companies
+    except Exception:
+        pass
+
+    # Resolve domains for companies without websites
+    for c in companies:
+        if not c["website"] or not c["website"].startswith("http"):
+            domain = await _resolve_official_domain(c["name"])
+            if domain and not is_aggregator_domain(domain):
+                c["website"] = f"https://{domain}"
+    return companies
+
+
+def _extract_funding(comp: dict) -> float:
+    funding = comp.get("totalFunding")
+    if isinstance(funding, dict):
+        amt = funding.get("amount", 0)
+        return float(amt) if amt else 0.0
+    return 0.0
+
+
+def _extract_hq_city(comp: dict) -> str:
+    hq = comp.get("hq")
+    if isinstance(hq, dict):
+        return (hq.get("city") or "").strip()
+    return ""
+
+
 async def discover_from_remoteok(limit: int = 30) -> list[dict[str, str]]:
     """Discover company names from the RemoteOK public API.
 
