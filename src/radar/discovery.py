@@ -68,6 +68,15 @@ _VC_PORTFOLIOS = [
     "https://www.felicis.com/companies",
     "https://500.co/companies",
     "https://www.techstars.com/portfolio/",
+    "https://www.coatue.com/portfolio/",
+    "https://www.intelcapital.com/portfolio/",
+    "https://www.qualcommventures.com/portfolio/",
+    "https://visionfund.com/portfolio/",
+    "https://www.balderton.com/companies/",
+    "https://northzone.com/portfolio/",
+    "https://initialized.com/companies/",
+    "https://luxcapital.com/companies/",
+    "https://www.crv.com/companies/",
 ]
 
 
