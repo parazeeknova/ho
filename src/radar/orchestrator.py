@@ -346,7 +346,7 @@ async def _fetch_postings_and_gate(
     except Exception:
         pass
 
-    sem = asyncio.Semaphore(6)
+    sem = asyncio.Semaphore(3)
 
     async def _process_one(obs: JobObservation) -> None:
         nonlocal rejected_count
@@ -898,7 +898,7 @@ async def _run_radar_pipeline() -> None:
 
     ecfg = get_config().scheduler
     frontier = CrawlFrontier(max_size=ecfg.max_queue_size)
-    engine = WorkScheduler(frontier, worker_count=3)
+    engine = WorkScheduler(frontier, worker_count=2)
     bus.set_enqueue_callback(engine.enqueue_many)
     sa = StartupAgent(ctx)
     await load_checkpoints(store)
@@ -1006,7 +1006,7 @@ async def _run_radar_pipeline() -> None:
     engine.register_agent("ats_crawler", ats_crawler)
     engine.register_agent("job_processor", _job_processor)
     engine.register_agent("outreach_generator", _outreach_handler)
-    engine.start(worker_count=3)
+    engine.start(worker_count=2)
 
     console.rule("[bold cyan]RADAR PHASE 1: Load Resume[/bold cyan]")
     loop = asyncio.get_running_loop()
