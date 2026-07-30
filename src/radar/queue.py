@@ -1,23 +1,20 @@
-"""LLM work queue with process-wide rate limiting, budget tracking,
-and graceful 429 handling.
-
-Replaces the current 24-way matching burst with a single budget-controlled
-queue. Only candidates that survive deterministic filtering and rank near
-the top consume LLM budget.
+"""LLM matcher work queue. Budget control is handled by the shared
+radar.governor; this module just manages queue dedup, ordering, and
+worker dispatch.
 """
 
 from __future__ import annotations
 
 import asyncio
-import random
 import time
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
 
-from src.configuration import LlmQueueConfig, get_config
+from src.configuration import get_config
 from src.llm.context import ContextManager
 from src.logging import get_logger
+from src.radar.governor import _is_429, handle_429
 from src.radar.models import EligibilityState, JobCandidate, RejectionReason
 
 logger = get_logger("llm_queue")
@@ -26,11 +23,6 @@ logger = get_logger("llm_queue")
 @dataclass
 class QueueState:
     pending: deque = field(default_factory=deque)
-    in_flight: int = 0
-    requests_this_minute: int = 0
-    tokens_this_minute: int = 0
-    window_start: float = field(default_factory=time.monotonic)
-    cooldown_until: float = 0.0
     total_enqueued: int = 0
     total_completed: int = 0
     total_failed: int = 0
@@ -78,7 +70,7 @@ MATCHER_SCHEMA: dict[str, Any] = {
 }
 
 MATCHER_PROMPT = """\
-You are a job-resume matching engine. Evaluate this candidate against the job description.
+You are a job-resume matching engine.
 
 Candidate profile:
 {candidate_persona}
@@ -89,8 +81,8 @@ Resume skills context:
 Job listing:
 {job_markdown}
 
-If the text is a company homepage, job directory, error page, or lists multiple
-different jobs, set match_percent=0 and verdict=NO_MATCH.
+If this is a company homepage, job directory, error page, or lists
+multiple jobs, set match_percent=0 and verdict=NO_MATCH.
 
 Return valid JSON matching the required schema.
 """
@@ -111,17 +103,7 @@ async def enqueue_candidate(candidate: JobCandidate, priority: int = 50) -> bool
     return True
 
 
-def _clear_queued(candidate: JobCandidate) -> None:
-    key = f"{candidate.canonical_id}:v{candidate.extra.get('version', 1)}"
-    _ACTIVE_IDS.pop(key, None)
-    can_ver = _CANDIDATE_VERSIONS.get(candidate.canonical_id, 0)
-    candidate_ver = candidate.extra.get("version", 1)
-    if candidate_ver >= can_ver:
-        _CANDIDATE_VERSIONS.pop(candidate.canonical_id, None)
-
-
 def mark_retry(candidate: JobCandidate) -> None:
-    """Allow a 429-retry candidate to be requeued."""
     key = f"{candidate.canonical_id}:v{candidate.extra.get('version', 1)}"
     _ACTIVE_IDS.pop(key, None)
 
@@ -135,67 +117,57 @@ async def process_queue(
 ) -> list[JobCandidate]:
     cfg = get_config().llm_queue
     results: list[JobCandidate] = []
-    sem = asyncio.Semaphore(cfg.max_in_flight)
+    budget_per_call = cfg.match_token_budget
 
     async def _worker(candidate: JobCandidate) -> None:
-        async with sem:
-            try:
-                await _acquire_budget(cfg)
-            except Exception:
-                _clear_queued(candidate)
-                return
+        try:
+            jd = candidate.extra.get("raw_markdown", "")[:8000]
 
-            try:
-                jd = candidate.extra.get("raw_markdown", "")[:8000]
-                output_budget = cfg.match_token_budget
+            prompt = MATCHER_PROMPT.replace("{candidate_persona}", candidate_persona)
+            prompt = prompt.replace("{resume_context}", resume_context[:3000])
+            prompt = prompt.replace("{job_markdown}", jd)
 
-                prompt = MATCHER_PROMPT.replace("{candidate_persona}", candidate_persona)
-                prompt = prompt.replace("{resume_context}", resume_context[:3000])
-                prompt = prompt.replace("{job_markdown}", jd)
+            result = await ctx.json_chat(
+                prompt,
+                schema=MATCHER_SCHEMA,
+                max_tokens=budget_per_call,
+            )
 
-                result = await ctx.json_chat(
-                    prompt,
-                    schema=MATCHER_SCHEMA,
-                    max_tokens=output_budget,
-                )
+            if isinstance(result, dict) and "match_percent" in result:
+                _apply_llm_result(candidate, result)
+            else:
+                candidate.eligibility = EligibilityState.ERROR
+                candidate.rejection_reason = RejectionReason.MATCHER_LOW_SCORE
 
-                if isinstance(result, dict) and "match_percent" in result:
-                    _apply_llm_result(candidate, result)
+            async with _queue_lock:
+                _queue_state.total_completed += 1
+            results.append(candidate)
+
+            if store is not None:
+                await _persist_candidate(store, candidate)
+
+        except Exception as e:
+            err_msg = str(e)
+            async with _queue_lock:
+                _queue_state.total_failed += 1
+            if _is_429(err_msg):
+                await handle_429()
+                _queue_state.total_429s += 1
+                attempts = candidate.extra.get("queue_attempts", 0) + 1
+                candidate.extra["queue_attempts"] = attempts
+                if attempts <= 3:
+                    mark_retry(candidate)
+                    await enqueue_candidate(candidate, priority=30)
                 else:
                     candidate.eligibility = EligibilityState.ERROR
-                    candidate.rejection_reason = RejectionReason.MATCHER_LOW_SCORE
-
-                async with _queue_lock:
-                    _queue_state.total_completed += 1
-                results.append(candidate)
-
-                if store is not None:
-                    await _persist_candidate(store, candidate)
-
-            except Exception as e:
-                err_msg = str(e)
-                async with _queue_lock:
-                    _queue_state.total_failed += 1
-                if _is_429(err_msg):
-                    await _handle_429(cfg)
-                    attempts = candidate.extra.get("queue_attempts", 0) + 1
-                    candidate.extra["queue_attempts"] = attempts
-                    if attempts <= 3:
-                        mark_retry(candidate)
-                        await enqueue_candidate(candidate, priority=30)
-                    else:
-                        candidate.eligibility = EligibilityState.ERROR
-                        if store is not None:
-                            await _persist_candidate(store, candidate)
-                else:
-                    candidate.eligibility = EligibilityState.ERROR
-                    candidate.rejection_reason = RejectionReason.UNKNOWN
                     if store is not None:
                         await _persist_candidate(store, candidate)
-                    logger.warning("LLM queue worker failed", exception=err_msg)
-            finally:
-                async with _queue_lock:
-                    _queue_state.in_flight -= 1
+            else:
+                candidate.eligibility = EligibilityState.ERROR
+                candidate.rejection_reason = RejectionReason.UNKNOWN
+                if store is not None:
+                    await _persist_candidate(store, candidate)
+                logger.warning("LLM queue worker failed", exception=err_msg)
 
     tasks: list[asyncio.Task[None]] = []
     processed = 0
@@ -214,40 +186,11 @@ async def process_queue(
     return results
 
 
-async def _acquire_budget(cfg: LlmQueueConfig) -> None:
-    while True:
-        now = time.monotonic()
-        wait_secs: float | None = None
-
-        async with _queue_lock:
-            if _queue_state.cooldown_until > 0 and now < _queue_state.cooldown_until:
-                wait_secs = _queue_state.cooldown_until - now
-            elif now - _queue_state.window_start >= 60.0:
-                _queue_state.window_start = now
-                _queue_state.requests_this_minute = 0
-                _queue_state.tokens_this_minute = 0
-            elif (
-                _queue_state.requests_this_minute >= cfg.requests_per_minute
-                or _queue_state.tokens_this_minute + cfg.match_token_budget
-                > cfg.estimated_tokens_per_minute
-            ):
-                wait_secs = 60.0 - (now - _queue_state.window_start)
-            else:
-                _queue_state.requests_this_minute += 1
-                _queue_state.tokens_this_minute += cfg.match_token_budget
-                _queue_state.in_flight += 1
-                return
-
-        if wait_secs is not None:
-            await asyncio.sleep(wait_secs + 0.1)
-
-
 async def _dequeue() -> tuple[int, JobCandidate] | None:
     try:
         await asyncio.wait_for(_queue_not_empty.wait(), timeout=5.0)
     except TimeoutError:
         return None
-
     async with _queue_lock:
         if not _queue_state.pending:
             _queue_not_empty.clear()
@@ -256,25 +199,6 @@ async def _dequeue() -> tuple[int, JobCandidate] | None:
         if not _queue_state.pending:
             _queue_not_empty.clear()
         return entry
-
-
-async def _handle_429(cfg: LlmQueueConfig) -> None:
-    async with _queue_lock:
-        _queue_state.total_429s += 1
-        cooldown = cfg.cooldown_seconds + random.uniform(0, cfg.jitter_seconds)
-        _queue_state.cooldown_until = max(
-            _queue_state.cooldown_until,
-            time.monotonic() + cooldown,
-        )
-        logger.warning("LLM queue: 429 received, cooldown", seconds=cooldown)
-
-
-def _is_429(err_msg: str) -> bool:
-    return (
-        "429" in err_msg
-        or "rate limit" in err_msg.lower()
-        or "too many requests" in err_msg.lower()
-    )
 
 
 def _apply_llm_result(candidate: JobCandidate, result: dict[str, Any]) -> None:
@@ -297,8 +221,6 @@ def _apply_llm_result(candidate: JobCandidate, result: dict[str, Any]) -> None:
     if raw_salary:
         candidate.salary = normalize_salary(str(raw_salary))
 
-    # Keep posting_id as immutable canonical ID; store group key separately.
-    # canonical_id is the URL hash, never overwritten by company/role/location.
     candidate.extra["group_key"] = _build_group_key(candidate)
 
     verdict = candidate.verdict
@@ -318,19 +240,6 @@ def _build_group_key(candidate: JobCandidate) -> str:
         candidate.normalized_company,
         candidate.normalized_role,
         candidate.normalized_location,
-    )
-
-
-def _build_canonical_from_result(
-    candidate: JobCandidate,
-    result: dict[str, Any],
-) -> str:
-    from src.radar.models import make_canonical_id
-
-    return make_canonical_id(
-        str(result.get("company", candidate.normalized_company)),
-        str(result.get("role", candidate.normalized_role)),
-        str(result.get("location", candidate.normalized_location)),
     )
 
 
@@ -384,14 +293,19 @@ async def _persist_candidate(store, candidate: JobCandidate) -> None:
 
 
 def get_queue_status() -> dict[str, Any]:
+    from src.radar.governor import get_governor_status as _gs
+
+    gs = _gs()
     return {
         "pending": len(_queue_state.pending),
-        "in_flight": _queue_state.in_flight,
-        "requests_this_minute": _queue_state.requests_this_minute,
-        "tokens_this_minute": _queue_state.tokens_this_minute,
-        "cooldown_active": _queue_state.cooldown_until > time.monotonic(),
+        "in_flight": gs["in_flight"],
+        "requests_this_minute": gs["requests_this_minute"],
+        "rpm_limit": gs["rpm_limit"],
+        "tokens_this_minute": gs["tokens_this_minute"],
+        "tpm_limit": gs["tpm_limit"],
+        "cooldown_active": gs["cooldown_active"],
         "total_enqueued": _queue_state.total_enqueued,
         "total_completed": _queue_state.total_completed,
         "total_failed": _queue_state.total_failed,
-        "total_429s": _queue_state.total_429s,
+        "total_429s": gs["total_429s"] + _queue_state.total_429s,
     }

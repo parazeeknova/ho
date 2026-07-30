@@ -1,82 +1,31 @@
 import asyncio
 import json
 import re
-import time
 from typing import Any
 
 from generalcompute import GeneralCompute
 
 from src.configuration import LLMConfig, get_config
 from src.logging import get_logger
+from src.radar.governor import (
+    _is_429,
+    acquire_budget,
+    handle_429,
+    init_governor,
+    release_budget,
+)
 from src.retry import _is_transient
 
 logger = get_logger("llm")
 
-
-# Token bucket gating ALL LLM calls across every agent.
-def _llm_state():
-    cfg = get_config().llm
-    return {
-        "rate": cfg.token_rate,
-        "max": cfg.token_max,
-        "count": cfg.token_max,
-        "last": time.monotonic(),
-    }
+_initialized = False
 
 
-_token_lock = asyncio.Lock()
-_token_state = _llm_state()
-_rate_limit_hit_at = 0.0
-
-
-def _rate_penalty_secs() -> float:
-    return get_config().llm.rate_penalty_secs
-
-
-async def _acquire_llm_token() -> None:
-    """Wait until a rate-limit token is available (token bucket)."""
-    global _rate_limit_hit_at
-    while True:
-        remaining = _rate_penalty_secs() - (time.monotonic() - _rate_limit_hit_at)
-        if remaining > 0:
-            await asyncio.sleep(remaining)
-            continue
-
-        async with _token_lock:
-            cfg = get_config().llm
-            now = time.monotonic()
-            elapsed = now - _token_state["last"]
-            _token_state["last"] = now
-            _token_state["count"] = min(
-                cfg.token_max, _token_state["count"] + elapsed * cfg.token_rate
-            )
-            if _token_state["count"] >= 1.0:
-                _token_state["count"] -= 1.0
-                return
-            wait = (1.0 - _token_state["count"]) / cfg.token_rate
-        await asyncio.sleep(wait)
-
-
-async def _mark_rate_limited() -> None:
-    """Called when the LLM returns a 429 or rate-limit error."""
-    global _rate_limit_hit_at
-    async with _token_lock:
-        _rate_limit_hit_at = time.monotonic()
-        _token_state["count"] = 0.0
-
-
-DIM = "\033[2m"
-ITALIC = "\033[3m"
-RESET = "\033[0m"
-
-VERIFY_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "same_job": {"type": "boolean"},
-        "confidence": {"type": "integer", "minimum": 0, "maximum": 100},
-    },
-    "required": ["same_job", "confidence"],
-}
+def _ensure_governor() -> None:
+    global _initialized
+    if not _initialized:
+        init_governor()
+        _initialized = True
 
 
 class ContextManager:
@@ -92,6 +41,7 @@ class ContextManager:
             self._client = GeneralCompute(api_key=cfg.api_key)
         except ValueError:
             self._client = None
+        _ensure_governor()
 
     async def aclose(self) -> None:
         pass
@@ -101,6 +51,7 @@ class ContextManager:
         prompt: str,
         schema: dict[str, Any] | None = None,
         max_tokens: int | None = None,
+        interactive: bool = False,
     ) -> str:
         current_prompt = prompt
         if len(current_prompt) > 120000:
@@ -112,6 +63,7 @@ class ContextManager:
             )
 
         _mt = max_tokens if max_tokens is not None else self._max_tokens
+        est_tokens = len(current_prompt) // 3 + _mt
 
         def _call_llm() -> str:
             kwargs: dict[str, Any] = {
@@ -131,16 +83,19 @@ class ContextManager:
         last_error: Exception | None = None
         backoff = self._retry_delay
         for attempt in range(1, self._max_retries + 1):
-            await _acquire_llm_token()
+            await acquire_budget(est_tokens, interactive=interactive)
             try:
                 output = await asyncio.to_thread(_call_llm)
+                release_budget()
                 return output
             except asyncio.CancelledError:
+                release_budget()
                 raise
             except Exception as e:
+                release_budget()
                 last_error = e
-                if _is_transient(e):
-                    await _mark_rate_limited()
+                if _is_429(str(e)) or _is_transient(e):
+                    await handle_429()
                     wait = max(5.0, backoff * 3)
                 else:
                     wait = backoff
@@ -152,7 +107,10 @@ class ContextManager:
             if attempt < self._max_retries:
                 await asyncio.sleep(wait)
                 backoff *= 2
-        logger.error(f"LLM failed after {self._max_retries} retries", exception=str(last_error))
+        logger.error(
+            f"LLM failed after {self._max_retries} retries",
+            exception=str(last_error),
+        )
         raise RuntimeError(f"LLM failed after {self._max_retries} retries: {last_error}")
 
     async def maybe_flush(self) -> None:
@@ -171,11 +129,17 @@ class ContextManager:
         content: str = "",
         limit: int = 16000,
         max_tokens: int | None = None,
+        interactive: bool = False,
     ) -> dict[str, Any] | list[Any]:
         full = prompt
         if content:
             full = prompt + "\n\n" + content[:limit]
-        raw = await self.chat(full, schema=schema, max_tokens=max_tokens)
+        raw = await self.chat(
+            full,
+            schema=schema,
+            max_tokens=max_tokens,
+            interactive=interactive,
+        )
         raw = _strip_markdown(raw)
         try:
             return json.loads(raw)

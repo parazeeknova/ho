@@ -1,39 +1,40 @@
-"""Tests for LLM work queue: budget enforcement, 429 handling, delayed resume."""
+"""Tests for LLM work queue: dedup, ordering, 429 retry, status."""
 
 from __future__ import annotations
 
-import asyncio
 import time
 
 import pytest
 
-from src.configuration import LlmQueueConfig
 from src.radar.models import JobCandidate
 from src.radar.queue import (
-    _acquire_budget,
-    _handle_429,
     _queue_state,
     enqueue_candidate,
     get_queue_status,
+    mark_retry,
 )
 
 
 @pytest.fixture(autouse=True)
 def reset_queue_state() -> None:
+    from src.radar.governor import _state as _gs
     from src.radar.queue import _ACTIVE_IDS, _CANDIDATE_VERSIONS
 
     _queue_state.pending.clear()
-    _queue_state.in_flight = 0
-    _queue_state.requests_this_minute = 0
-    _queue_state.tokens_this_minute = 0
-    _queue_state.window_start = time.monotonic()
-    _queue_state.cooldown_until = 0.0
     _queue_state.total_enqueued = 0
     _queue_state.total_completed = 0
     _queue_state.total_failed = 0
     _queue_state.total_429s = 0
     _ACTIVE_IDS.clear()
     _CANDIDATE_VERSIONS.clear()
+    # Reset governor state
+    _gs.in_flight = 0
+    _gs.requests_this_minute = 0
+    _gs.tokens_this_minute = 0
+    _gs.window_start = time.monotonic()
+    _gs.cooldown_until = 0.0
+    _gs.total_requests = 0
+    _gs.total_429s = 0
     yield
     _ACTIVE_IDS.clear()
     _CANDIDATE_VERSIONS.clear()
@@ -81,74 +82,23 @@ class TestEnqueueCandidate:
             )
             await enqueue_candidate(candidate, priority=i * 10)
 
-        from src.radar.queue import _queue_lock
-
-        async with _queue_lock:
-            entries = list(_queue_state.pending)
-            priorities = [e[0] for e in entries]
-            assert priorities == sorted(priorities, reverse=True)
-
-
-class TestBudgetAcquisition:
-    @pytest.mark.asyncio
-    async def test_acquire_budget_increments_counters(self) -> None:
-        cfg = LlmQueueConfig(
-            requests_per_minute=100,
-            estimated_tokens_per_minute=100000,
-            max_in_flight=5,
-            match_token_budget=600,
-        )
-        initial_requests = _queue_state.requests_this_minute
-        initial_tokens = _queue_state.tokens_this_minute
-
-        await _acquire_budget(cfg)
-
-        assert _queue_state.requests_this_minute == initial_requests + 1
-        assert _queue_state.tokens_this_minute == initial_tokens + cfg.match_token_budget
+        entries = list(_queue_state.pending)
+        priorities = [e[0] for e in entries]
+        assert priorities == sorted(priorities, reverse=True)
 
     @pytest.mark.asyncio
-    async def test_acquire_budget_respects_rpm_limit(self) -> None:
-        cfg = LlmQueueConfig(
-            requests_per_minute=1,
-            estimated_tokens_per_minute=100000,
-            max_in_flight=5,
-            match_token_budget=600,
+    async def test_mark_retry_allows_reenqueue(self) -> None:
+        candidate = JobCandidate(
+            canonical_id="test:retry:remote",
+            source="greenhouse",
+            direct_apply_url="https://example.com/retry",
+            normalized_company="Test",
+            normalized_role="Retry",
+            normalized_location="Remote",
         )
-        _queue_state.requests_this_minute = 1
-
-        async def _acquire_with_timeout() -> None:
-            await asyncio.wait_for(_acquire_budget(cfg), timeout=2.0)
-
-        with pytest.raises(TimeoutError):
-            await _acquire_with_timeout()
-
-
-class Test429Handling:
-    @pytest.mark.asyncio
-    async def test_429_increments_counter(self) -> None:
-        cfg = LlmQueueConfig(
-            requests_per_minute=20,
-            estimated_tokens_per_minute=30000,
-            max_in_flight=2,
-            cooldown_seconds=1.0,
-            jitter_seconds=0.0,
-        )
-        initial_429s = _queue_state.total_429s
-        await _handle_429(cfg)
-        assert _queue_state.total_429s == initial_429s + 1
-        assert _queue_state.cooldown_until > 0
-
-    @pytest.mark.asyncio
-    async def test_429_sets_cooldown(self) -> None:
-        cfg = LlmQueueConfig(
-            requests_per_minute=20,
-            estimated_tokens_per_minute=30000,
-            max_in_flight=2,
-            cooldown_seconds=30.0,
-            jitter_seconds=0.0,
-        )
-        await _handle_429(cfg)
-        assert _queue_state.cooldown_until > time.monotonic()
+        assert await enqueue_candidate(candidate)
+        mark_retry(candidate)
+        assert await enqueue_candidate(candidate)
 
 
 class TestQueueStatus:
@@ -158,3 +108,5 @@ class TestQueueStatus:
         assert "cooldown_active" in status
         assert "total_429s" in status
         assert "total_completed" in status
+        assert "total_enqueued" in status
+        assert "in_flight" in status

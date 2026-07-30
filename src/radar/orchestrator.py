@@ -50,6 +50,7 @@ from src.radar.discovery import (
     discover_from_vc_portfolios,
     discover_from_wellfound,
     discover_from_yc,
+    is_aggregator_domain,
 )
 from src.radar.extractors import extract_github_index_markdown
 from src.radar.gates import run_gates
@@ -193,6 +194,14 @@ async def _discover_new_companies() -> list[dict[str, Any]]:
             c["website"] = website
         if not website or not website.startswith("http"):
             _DISCOVERY_METRICS["no_domain"] = _DISCOVERY_METRICS.get("no_domain", 0) + 1
+            continue
+        # Validate: reject aggregator/news/social/VC domains
+        if is_aggregator_domain(
+            website.replace("https://", "").replace("http://", "").split("/")[0]
+        ):
+            _DISCOVERY_METRICS["aggregator_rejected"] = (
+                _DISCOVERY_METRICS.get("aggregator_rejected", 0) + 1
+            )
             continue
         ats_url = await detect_ats_for_company(website)
         if ats_url:

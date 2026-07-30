@@ -249,26 +249,68 @@ async def discover_from_searxng(kind: str = "hiring") -> list[dict[str, str]]:
     try:
         async with httpx.AsyncClient(timeout=cfg.timeout) as client:
             resp = await client.get(
-                cfg.url, params={"q": query, "format": "json", "time_range": "week"}
+                cfg.url,
+                params={"q": query, "format": "json", "time_range": "week"},
             )
             if resp.status_code == 200:
                 for r in resp.json().get("results", [])[:20]:
                     title = r.get("title", "")
-                    url_str = r.get("url", "")
-                    if not title or not url_str:
+                    snippet = r.get("content", "")
+                    source_url = r.get("url", "")
+                    if not title and not snippet:
                         continue
-                    domain = _extract_domain(url_str)
-                    if domain:
-                        companies.append(
-                            {
-                                "name": _clean_name(title),
-                                "website": f"https://{domain}",
-                                "source": f"searxng_{kind}",
-                            }
-                        )
+                    name = _clean_name(title[:120] or snippet[:120])
+                    if not name or len(name) < 3:
+                        continue
+                    # Store as evidence only; resolve official domain separately
+                    companies.append(
+                        {
+                            "name": name,
+                            "website": "",
+                            "source": f"searxng_{kind}",
+                            "provenance_url": source_url,
+                            "provenance_snippet": snippet[:200],
+                        }
+                    )
     except Exception:
         pass
+
+    # Resolve official domains for SearXNG-discovered companies
+    for c in companies:
+        domain = await _resolve_official_domain(c["name"])
+        if domain and not is_aggregator_domain(domain):
+            c["website"] = f"https://{domain}"
     return companies
+
+
+async def _resolve_official_domain(name: str) -> str:
+    """Resolve a company name to its official domain via SearXNG."""
+    cfg = get_config().searxng
+    try:
+        async with httpx.AsyncClient(timeout=cfg.timeout) as client:
+            resp = await client.get(
+                cfg.url,
+                params={
+                    "q": f'"{name}" official website OR careers',
+                    "format": "json",
+                },
+            )
+            if resp.status_code == 200:
+                for r in resp.json().get("results", [])[:5]:
+                    url_str = r.get("url", "")
+                    domain = _extract_domain(url_str)
+                    if domain and not is_aggregator_domain(domain):
+                        return domain
+    except Exception:
+        pass
+    # Fallback: direct HTTP probe
+    return await _resolve_company_domain(name)
+
+
+def is_aggregator_domain(domain: str) -> bool:
+    from src.radar.governor import is_aggregator_domain as _check
+
+    return _check(domain)
 
 
 async def detect_ats_for_company(website: str) -> str | None:

@@ -184,27 +184,31 @@ class TestOvernightAcceptance:
 
     @pytest.mark.asyncio
     async def test_llm_queue_respects_budget(self) -> None:
-        """LLM queue must never exceed the configured request/token budget."""
-        from src.configuration import LlmQueueConfig
-        from src.radar.queue import _acquire_budget, _queue_state
+        """Governor must never exceed the configured request/token budget."""
+        from src.radar.governor import _state as _gs
+        from src.radar.governor import acquire_budget
 
-        cfg = LlmQueueConfig(
-            requests_per_minute=3,
-            estimated_tokens_per_minute=5000,
-            max_in_flight=1,
-            match_token_budget=600,
-        )
+        # Set strict limits
+        _gs.rpm_limit = 3
+        _gs.tpm_limit = 5000
+        _gs.max_in_flight = 1
+        _gs.window_start = time.monotonic()
 
         start = time.monotonic()
         acquired = 0
         while time.monotonic() - start < 2.0:
             try:
-                await asyncio.wait_for(_acquire_budget(cfg), timeout=0.5)
+                await asyncio.wait_for(acquire_budget(600), timeout=0.5)
                 acquired += 1
             except TimeoutError:
                 break
 
-        assert _queue_state.requests_this_minute <= cfg.requests_per_minute * 2
+        assert _gs.requests_this_minute <= 6  # max ~3/sec, 2 sec → ~6
+        # Reset
+        _gs.rpm_limit = 70
+        _gs.tpm_limit = 50000
+        _gs.max_in_flight = 2
+        _gs.window_start = time.monotonic()
 
     def test_scheduler_registered_agent_types(self) -> None:
         """All registered agents must have corresponding handler functions."""
