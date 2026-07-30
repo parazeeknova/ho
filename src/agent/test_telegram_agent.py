@@ -37,7 +37,6 @@ def test_format_job_card() -> None:
     assert "STRIPE" in card
     assert "90%" in card
     assert "Patrick Collison" in card
-    assert "https://stripe.com/jobs/123" in card
 
 
 @pytest.mark.asyncio

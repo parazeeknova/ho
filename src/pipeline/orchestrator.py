@@ -817,6 +817,11 @@ async def _run_pipeline() -> None:
                                     },
                                 )
                             )
+
+                    if telegram_agent.is_configured:
+                        stealth = await graph.detect_stealth_hiring_signals(limit=8)
+                        if stealth:
+                            await telegram_agent.push_stealth_and_warm_intro_batch(stealth)
                 except Exception as ge:
                     logger.exception("Graph maintenance skipped", exc=ge)
 
