@@ -9,6 +9,7 @@ Usage:
 import argparse
 import contextlib
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -225,11 +226,71 @@ def format_stats(info: dict[str, Any]) -> str:
     return "[infra] " + " | ".join(parts) if parts else ""
 
 
-def firecrawl_logger(log_path: Path, stop_event: threading.Event) -> None:
-    """Tail Firecrawl API container logs into the log file in real-time."""
-    import re
+def _strip_ansi(text: str) -> str:
+    return re.sub(r"\x1b\[[0-9;]*m", "", text)
 
-    time.sleep(3)  # let container start
+
+_FC_KEEP = [
+    "Worker taking job",
+    "Job done",
+    "Scraping URL",
+    "deemed successful",
+    "deemed failed",
+    "map_url",
+    "error",
+    "Error",
+    "failed",
+]
+_FC_DROP = [
+    "bypassing authentication",
+    "USE_DB_AUTHENTICATION",
+    "robustInsert",
+    "runWebScraper called",
+    "running scrapeURL",
+    "scrapeURL entered",
+    "Selected engines",
+    "Scraping via playwright",
+    "Scraping via fetch",
+    "Done with waitForJob",
+    "Removed job from queue",
+    "Request metrics",
+    "request completed",
+    "scrapeController",
+    "log_job",
+    "Connected to Redis",
+    "Redis connected",
+    "NUQ",
+    "AUTUMN_SECRET_KEY",
+    "Worker 10 listening",
+    "WebSocket proxy",
+    "Network info dump",
+    "Number of CPUs",
+    "Worker 10 started",
+    "Attaching WebSocket",
+    "NuQ reconciler",
+    "NuQ prefetch",
+    "Concurrency queue",
+    "All services running",
+    "All processes terminated",
+    "Starting services",
+    "Waiting for API",
+    "Skipping container",
+    "playwright-service",
+    "nuq-postgres",
+    "postgres",
+    "Started consuming",
+]
+
+
+def _fc_should_show(line: str) -> bool:
+    if any(d in line for d in _FC_DROP):
+        return False
+    return any(k in line for k in _FC_KEEP)
+
+
+def firecrawl_logger(log_path: Path, stop_event: threading.Event) -> None:
+    """Tail Firecrawl API container logs, showing only scrape activity."""
+    time.sleep(3)
     while not stop_event.is_set():
         try:
             proc = subprocess.Popen(
@@ -239,25 +300,25 @@ def firecrawl_logger(log_path: Path, stop_event: threading.Event) -> None:
                 stderr=subprocess.DEVNULL,
                 text=True,
             )
-            ansi = re.compile(r"\x1b\[[0-9;]*m")
             for line in proc.stdout:  # type: ignore[union-attr]
                 if stop_event.is_set():
                     proc.terminate()
                     break
-                clean = ansi.sub("", line).strip()
-                if not clean:
+                clean = _strip_ansi(line).strip()
+                if not clean or not _fc_should_show(clean):
                     continue
                 ts = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
+                msg = f"[fc] {clean}"
                 try:
                     with open(log_path, "a") as f:
                         f.write(
                             f'{{"timestamp": "{ts}", "level": "INFO", '
-                            f'"message": "[firecrawl] {clean}", '
+                            f'"message": "{msg}", '
                             f'"logger": "firecrawl_tail"}}\n'
                         )
                         f.flush()
-                        sys.stdout.write(f"[firecrawl] {clean}\n")
-                        sys.stdout.flush()
+                    sys.stdout.write(f"{msg}\n")
+                    sys.stdout.flush()
                 except Exception:
                     pass
         except Exception:
