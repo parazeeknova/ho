@@ -210,7 +210,9 @@ async def _discover_new_companies() -> list[dict[str, Any]]:
             if len(parts) >= 2:
                 known_slugs.add(parts[1])
     if known_slugs:
-        logger.info(f"Discovery cache: {len(known_slugs)} companies from prior sweeps")
+        logger.info(
+            f"Discovery cache: {len(known_slugs)} companies already registered as active sources"
+        )
 
     new_sources = 0
     skipped_known = 0
@@ -220,7 +222,7 @@ async def _discover_new_companies() -> list[dict[str, Any]]:
         if idx > 0 and idx % 20 == 0:
             logger.info(
                 f"Domain/ATS progress: {idx}/{total} "
-                f"(ATS found: {new_sources}, skipped known: {skipped_known})"
+                f"(ATS found: {new_sources}, reused cached: {skipped_known})"
             )
 
         # Skip companies already persisted as sources in a prior sweep
@@ -228,9 +230,11 @@ async def _discover_new_companies() -> list[dict[str, Any]]:
         if name_slug in known_slugs:
             skipped_known += 1
             if skipped_known <= 3:
-                logger.info(f"Cache hit, skipping: {c.get('name', name_slug)}")
+                logger.info(
+                    f"Already registered, reusing cached source: {c.get('name', name_slug)}"
+                )
             elif skipped_known == 4:
-                logger.info("Cache hit, skipping: ... (suppressing further cache hit logs)")
+                logger.info("Reusing cached sources: ... (suppressing further logs)")
             continue
 
         website = c.get("website", "")
