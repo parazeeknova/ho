@@ -191,6 +191,7 @@ def main() -> None:
                     "podman rm -f firecrawl_rabbitmq_1 2>/dev/null; "
                     "podman run -d --name firecrawl_rabbitmq_1 "
                     "--network firecrawl_default --network-alias rabbitmq "
+                    "--restart unless-stopped "
                     "--entrypoint /bin/bash rabbitmq:3-management "
                     '-c "rm -f /var/lib/rabbitmq/.erlang.cookie; '
                     'exec docker-entrypoint.sh rabbitmq-server"',

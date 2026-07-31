@@ -14,6 +14,29 @@ serve:
 
 run: health
 	@mkdir -p logs
+	@echo "Starting all services..."
+	@docker compose -f docker-compose.yaml up -d redis playwright-service nuq-postgres searxng neo4j agent-memory-db
+	@sleep 2
+	@podman rm -f firecrawl_rabbitmq_1 2>/dev/null; \
+	podman run -d --name firecrawl_rabbitmq_1 \
+		--network firecrawl_default \
+		--network-alias rabbitmq \
+		--restart unless-stopped \
+		--entrypoint /bin/bash \
+		rabbitmq:3-management \
+		-c "rm -f /var/lib/rabbitmq/.erlang.cookie; exec docker-entrypoint.sh rabbitmq-server"
+	@echo "Waiting for rabbitmq..."
+	@for i in 1 2 3 4 5 6 7 8 9 10; do \
+		if podman exec firecrawl_rabbitmq_1 rabbitmqctl await_startup 2>/dev/null; then break; fi; \
+		sleep 2; \
+	done
+	@docker compose -f docker-compose.yaml up -d api
+	@echo "Waiting for Firecrawl API..."
+	@for i in 1 2 3 4 5 6 7 8 9 10; do \
+		if curl -sf http://localhost:3002/health >/dev/null 2>&1; then break; fi; \
+		sleep 2; \
+	done
+	@echo "All services healthy. Starting pipeline..."
 	bash -c 'set -m; trap "kill 0 2>/dev/null" EXIT; uv run python -m src.radar.orchestrator 2>&1 | tee logs/run.log; wait'
 
 match: health
