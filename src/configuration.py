@@ -247,7 +247,7 @@ class RadarConfig:
         default_factory=lambda: _env_int("RADAR_MAX_CANDIDATES", 300)
     )
     urgent_window_hours: int = field(
-        default_factory=lambda: _env_int("RADAR_URGENT_WINDOW_HOURS", 24)
+        default_factory=lambda: _env_int("RADAR_URGENT_WINDOW_HOURS", 48)
     )
     stale_days: int = field(default_factory=lambda: _env_int("RADAR_STALE_DAYS", 14))
     source_min_confidence: float = field(
