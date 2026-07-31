@@ -225,6 +225,46 @@ def format_stats(info: dict[str, Any]) -> str:
     return "[infra] " + " | ".join(parts) if parts else ""
 
 
+def firecrawl_logger(log_path: Path, stop_event: threading.Event) -> None:
+    """Tail Firecrawl API container logs into the log file in real-time."""
+    import re
+
+    time.sleep(3)  # let container start
+    while not stop_event.is_set():
+        try:
+            proc = subprocess.Popen(
+                "podman logs --since 2s -f firecrawl_api_1 2>/dev/null",
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+            )
+            ansi = re.compile(r"\x1b\[[0-9;]*m")
+            for line in proc.stdout:  # type: ignore[union-attr]
+                if stop_event.is_set():
+                    proc.terminate()
+                    break
+                clean = ansi.sub("", line).strip()
+                if not clean:
+                    continue
+                ts = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
+                try:
+                    with open(log_path, "a") as f:
+                        f.write(
+                            f'{{"timestamp": "{ts}", "level": "INFO", '
+                            f'"message": "[firecrawl] {clean}", '
+                            f'"logger": "firecrawl_tail"}}\n'
+                        )
+                        f.flush()
+                        sys.stdout.write(f"[firecrawl] {clean}\n")
+                        sys.stdout.flush()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        stop_event.wait(5)
+
+
 def stats_logger(log_path: Path, stop_event: threading.Event, interval: float = 30.0) -> None:
     """Background daemon: periodically snapshot deep infra stats to log file."""
     time.sleep(interval)
@@ -398,6 +438,14 @@ def main() -> None:
         daemon=True,
     )
     stats_thread.start()
+
+    # Background Firecrawl log tail
+    fc_thread = threading.Thread(
+        target=firecrawl_logger,
+        args=(log_path, stop_stats),
+        daemon=True,
+    )
+    fc_thread.start()
 
     _proc = subprocess.Popen(
         [sys.executable, "-m", "src.radar.orchestrator"],
