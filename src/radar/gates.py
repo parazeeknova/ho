@@ -162,7 +162,7 @@ _NON_TECH_TITLE_PATTERNS = [
     r"\bhost\s+live\b",
     r"\bsales\s+(provider|executive|representative|manager|director)\b",
     r"\bproperty\s+development\b",
-    r"\baccount\s+executive\b",
+    r"\baccount\s+(?:executive|manager)\b",
     r"\bmarketing\b",
     r"\brecruiter\b",
     r"\bcustomer\s+(service|support)\b",
@@ -186,11 +186,19 @@ def gate_title_seniority(
 ) -> RejectionReason | None:
     title = obs.title.lower()
     snippet = obs.snippet.lower()
-    combined = f"{title} {snippet}"
+    combined = f"{title} {snippet} {obs.raw_markdown[:1000]}".lower()
 
     for pat in _NON_TECH_TITLE_PATTERNS:
         if re.search(pat, combined):
             return RejectionReason.TITLE_NON_TECHNICAL
+
+    # Semantic Override: Early-career / junior indicators override senior keyword drops
+    early_career_override = re.search(
+        r"\b(?:intern|internship|co-?op|coop|new\s*grad|entry.level|junior|early.career|graduate|0-1|0-2|0-3|1-2|1-3|associate)\b",
+        combined,
+    )
+    if early_career_override:
+        return None
 
     for pat, _label in _SENIOR_TITLE_PATTERNS:
         if re.search(pat, title):
@@ -201,11 +209,6 @@ def gate_title_seniority(
                 if _label != "manager"
                 else RejectionReason.TITLE_MANAGER
             )
-
-    internship_kw = re.search(r"\b(?:intern|internship|co-?op|coop)\b", combined)
-    newgrad_kw = re.search(r"\b(?:new\s*grad|entry.level|junior|early.career|graduate)\b", combined)
-    if internship_kw or newgrad_kw:
-        return None
 
     return None
 
@@ -262,19 +265,17 @@ def gate_role_family(
     for pat, family in _TECH_ROLE_MAP:
         if re.search(pat, combined):
             candidate.role_family = family
-            candidate.normalized_role = obs.title
+            candidate.normalized_role = obs.title or "Software Engineer"
             return None
 
-    internship_newgrad = re.search(
-        r"\b(?:intern|internship|co-?op|coop|new\s*grad|entry.level|junior|early.career|graduate)\b",
-        combined,
-    )
-    if internship_newgrad:
-        candidate.role_family = RoleFamily.GENERAL_SWE
-        candidate.normalized_role = obs.title
-        return None
+    for pat in _NON_TECH_TITLE_PATTERNS:
+        if re.search(pat, combined):
+            return RejectionReason.ROLE_FAMILY_MISMATCH
 
-    return RejectionReason.ROLE_FAMILY_MISMATCH
+    # Resilient Fallback: Any technical posting defaults to GENERAL_SWE instead of dropping
+    candidate.role_family = RoleFamily.GENERAL_SWE
+    candidate.normalized_role = obs.title or "Software Engineer"
+    return None
 
 
 _EXPLICIT_EXPERIENCE_PATTERNS = [
@@ -296,6 +297,14 @@ def gate_explicit_experience(
     last_seen: dict[str, float],
 ) -> RejectionReason | None:
     text = f"{obs.title} {obs.snippet} {obs.raw_markdown[:5000]}".lower()
+
+    # Negation & Early-Career Override: "0-2 years", "don't need 5 years", "not required"
+    negation_or_junior = re.search(
+        r"\b(?:0-1|0-2|0-3|1-2|1-3|0\s+to\s+[23]|don'?t\s+need|no\s+experience|not\s+required|entry\s+level)\b",
+        text,
+    )
+    if negation_or_junior:
+        return None
 
     for pat, label in _EXPLICIT_EXPERIENCE_PATTERNS:
         if pat.search(text):

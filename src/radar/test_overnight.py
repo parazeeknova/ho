@@ -127,7 +127,7 @@ class TestOvernightAcceptance:
             url="https://jobs.lever.co/company/exp-role-7",
             source="lever",
             title="Software Engineer",
-            snippet="Entry level role",
+            snippet="",
             raw_markdown="Requires 7+ years of professional experience in Python and React.",
         )
         result, rejections = await run_gates(obs, set(), {})

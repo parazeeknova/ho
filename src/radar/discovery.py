@@ -91,12 +91,19 @@ async def discover_from_yc(limit: int = 50) -> list[dict[str, str]]:
     companies: list[dict[str, str]] = []
     seen: set[str] = set()
     cfg = get_config().searxng
+    import datetime
+
+    now = datetime.datetime.now()
+    yr = str(now.year)[-2:]
+    next_yr = str(now.year + 1)[-2:]
+    query = f"YC W{yr} YC S{yr} YC W{next_yr} YC-backed startup companies list {now.year}"
+
     try:
         async with httpx.AsyncClient(timeout=cfg.timeout) as client:
             resp = await client.get(
                 cfg.url,
                 params={
-                    "q": "YC W25 YC S25 YC-backed startup companies list 2026",
+                    "q": query,
                     "format": "json",
                     "engines": "bing,bing news,github",
                 },
