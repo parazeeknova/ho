@@ -38,10 +38,11 @@ class TestTelegramCategorizedAlerts:
             "company_description": "A test company.",
         }
         card = agent.format_job_card(job)
-        assert "BACKEND ENGINEER" in card
-        assert "TESTCO" in card
+        assert "Backend Engineer" in card
+        assert "TestCo" in card
         assert "85%" in card
         assert "Remote" in card
+        assert "est." not in card
 
     def test_unconfigured_agent_noop(self) -> None:
         agent = TelegramAgent(bot_token="", chat_id="")

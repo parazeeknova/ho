@@ -213,50 +213,63 @@ async def _discover_new_companies() -> list[dict[str, Any]]:
     skipped_known = 0
     total = len(deduped)
     logger.info(f"Resolving domains and detecting ATS for {total} companies...")
-    for idx, c in enumerate(deduped):
-        if idx > 0 and idx % 5 == 0:
+
+    sem = asyncio.Semaphore(10)
+
+    async def _probe_company(c: dict[str, Any]) -> None:
+        nonlocal new_sources, skipped_known
+        async with sem:
+            # Skip companies already persisted as sources in a prior sweep
+            name_slug = c.get("name", "").lower().replace(" ", "-")[:40]
+            if name_slug in known_slugs:
+                skipped_known += 1
+                if skipped_known <= 3:
+                    logger.info(
+                        f"Already registered, reusing cached source: {c.get('name', name_slug)}"
+                    )
+                elif skipped_known == 4:
+                    logger.info("Reusing cached sources: ... (suppressing further logs)")
+                return
+
+            website = c.get("website", "")
+            if (
+                (not website or not website.startswith("http"))
+                and c.get("name")
+                and (domain := await _resolve_company_domain(c["name"]))
+            ):
+                website = f"https://{domain}"
+                c["website"] = website
+            if not website or not website.startswith("http"):
+                _DISCOVERY_METRICS["no_domain"] = _DISCOVERY_METRICS.get("no_domain", 0) + 1
+                return
+            # Validate: reject aggregator/news/social/VC domains
+            if is_aggregator_domain(
+                website.replace("https://", "").replace("http://", "").split("/")[0]
+            ):
+                _DISCOVERY_METRICS["aggregator_rejected"] = (
+                    _DISCOVERY_METRICS.get("aggregator_rejected", 0) + 1
+                )
+                return
+            ats_url = await detect_ats_for_company(website)
+            if ats_url:
+                c["ats_url"] = ats_url
+                new_sources += 1
+                _DISCOVERY_METRICS["ats_verified"] = _DISCOVERY_METRICS.get("ats_verified", 0) + 1
+                logger.info(f"ATS detected for {c.get('name', website)}: {ats_url}")
+
+    done = 0
+
+    async def _tracked(c: dict[str, Any]) -> None:
+        nonlocal done
+        await _probe_company(c)
+        done += 1
+        if done % 5 == 0:
             logger.info(
-                f"Domain/ATS progress: {idx}/{total} "
+                f"Domain/ATS progress: {done}/{total} "
                 f"(ATS found: {new_sources}, reused cached: {skipped_known})"
             )
 
-        # Skip companies already persisted as sources in a prior sweep
-        name_slug = c.get("name", "").lower().replace(" ", "-")[:40]
-        if name_slug in known_slugs:
-            skipped_known += 1
-            if skipped_known <= 3:
-                logger.info(
-                    f"Already registered, reusing cached source: {c.get('name', name_slug)}"
-                )
-            elif skipped_known == 4:
-                logger.info("Reusing cached sources: ... (suppressing further logs)")
-            continue
-
-        website = c.get("website", "")
-        if (
-            (not website or not website.startswith("http"))
-            and c.get("name")
-            and (domain := await _resolve_company_domain(c["name"]))
-        ):
-            website = f"https://{domain}"
-            c["website"] = website
-        if not website or not website.startswith("http"):
-            _DISCOVERY_METRICS["no_domain"] = _DISCOVERY_METRICS.get("no_domain", 0) + 1
-            continue
-        # Validate: reject aggregator/news/social/VC domains
-        if is_aggregator_domain(
-            website.replace("https://", "").replace("http://", "").split("/")[0]
-        ):
-            _DISCOVERY_METRICS["aggregator_rejected"] = (
-                _DISCOVERY_METRICS.get("aggregator_rejected", 0) + 1
-            )
-            continue
-        ats_url = await detect_ats_for_company(website)
-        if ats_url:
-            c["ats_url"] = ats_url
-            new_sources += 1
-            _DISCOVERY_METRICS["ats_verified"] = _DISCOVERY_METRICS.get("ats_verified", 0) + 1
-            logger.info(f"ATS detected for {c.get('name', website)}: {ats_url}")
+    await asyncio.gather(*[_tracked(c) for c in deduped])
 
     _DISCOVERY_METRICS["companies_found"] = _DISCOVERY_METRICS.get("companies_found", 0) + len(
         deduped
@@ -774,6 +787,18 @@ async def _notify_telegram(
                 continue
             key = _pid(c)
             try:
+                if c.salary is None and not c.salary_annual_usd:
+                    from src.radar.sources.salary_lookup import estimate_salary
+
+                    est, est_source = await estimate_salary(
+                        c.normalized_company, c.normalized_role, store
+                    )
+                    if est is not None:
+                        c.salary = est
+                        c.salary_annual_usd = est.annual_usd_equivalent
+                        c.extra["salary_estimated"] = True
+                        if est_source:
+                            c.extra["salary_source"] = est_source
                 ok = await ta.send_categorized_alert(cat, _card(c), dedup_key=key)
                 if ok:
                     count += 1
@@ -855,16 +880,21 @@ def _card(c: JobCandidate) -> dict[str, Any]:
         "shortlist_probability": c.shortlist_probability,
         "salary": c.salary.raw if c.salary else None,
         "salary_annual_usd": c.salary_annual_usd,
+        "salary_estimated": bool(c.extra.get("salary_estimated")),
+        "salary_source": c.extra.get("salary_source", ""),
         "location": c.normalized_location,
         "apply_link": link,
         "jd_summary": c.jd_summary,
         "company_description": c.company_description,
+        "role_summary": c.role_summary,
         "founders": c.founders,
         "funding_stage": c.funding_stage,
         "funding_info": c.funding_info,
         "osint_signals": c.osint_signals,
         "sponsors_visa": c.sponsors_visa,
+        "is_remote": c.is_remote,
         "underdog_score": round(c.underdog_score, 2),
+        "matching_skills": c.matching_skills,
     }
 
 
@@ -1243,14 +1273,18 @@ async def _run_radar_pipeline() -> None:
             async with store._pool.acquire() as conn:
                 rows = await conn.fetch(
                     "SELECT canonical_id, normalized_role, normalized_company, "
-                    "direct_apply_url, match_percent, verdict, funding_stage, extra "
+                    "direct_apply_url, normalized_location, match_percent, shortlist_probability, "
+                    "verdict, funding_stage, salary_amount, salary_currency, salary_period, "
+                    "salary_raw, salary_annual_usd, jd_summary, company_description, role_summary, "
+                    "is_remote, sponsors_visa, underdog_score, founders, funding_info, "
+                    "founder_socials, company_news, osint_signals, extra "
                     "FROM radar_candidates "
                     "WHERE eligibility = 'accepted' "
                     "AND canonical_id NOT IN (SELECT dedup_key FROM telegram_notified_jobs) "
                     "LIMIT 50",
                 )
             if rows:
-                from src.radar.core.queue import JobCandidate
+                from src.radar.core.models import JobCandidate, NormalizedSalary
 
                 pending: list[JobCandidate] = []
                 for r in rows:
@@ -1258,13 +1292,41 @@ async def _run_radar_pipeline() -> None:
                         canonical_id=r["canonical_id"],
                         normalized_role=r["normalized_role"],
                         normalized_company=r["normalized_company"],
-                        normalized_location="Remote",
+                        normalized_location=r.get("normalized_location") or "Remote",
                         source="radar",
                         direct_apply_url=r.get("direct_apply_url", "") or "",
                         match_percent=r["match_percent"],
+                        shortlist_probability=r.get("shortlist_probability") or 0,
                         verdict=r["verdict"],
                         funding_stage=r.get("funding_stage", ""),
                     )
+                    salary_amount = r.get("salary_amount")
+                    salary_raw = r.get("salary_raw") or ""
+                    if salary_amount or salary_raw:
+                        c.salary = NormalizedSalary(
+                            amount=salary_amount or 0,
+                            currency=r.get("salary_currency") or "USD",
+                            period=r.get("salary_period") or "year",
+                            raw=salary_raw,
+                        )
+                    if r.get("salary_annual_usd"):
+                        c.salary_annual_usd = r["salary_annual_usd"]
+                    for field in (
+                        "jd_summary",
+                        "company_description",
+                        "role_summary",
+                        "founders",
+                        "funding_info",
+                        "founder_socials",
+                        "company_news",
+                        "osint_signals",
+                    ):
+                        val = r.get(field)
+                        if val:
+                            setattr(c, field, val)
+                    c.is_remote = bool(r.get("is_remote"))
+                    c.sponsors_visa = bool(r.get("sponsors_visa"))
+                    c.underdog_score = float(r.get("underdog_score") or 0)
                     extra_raw = r.get("extra")
                     if isinstance(extra_raw, dict):
                         c.extra = extra_raw

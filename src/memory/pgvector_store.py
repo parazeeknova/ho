@@ -193,6 +193,18 @@ CREATE TABLE IF NOT EXISTS source_snapshots (
     updated_at    TIMESTAMP DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS salary_estimates (
+    lookup_key    TEXT PRIMARY KEY,
+    company       TEXT NOT NULL DEFAULT '',
+    role          TEXT NOT NULL DEFAULT '',
+    amount_usd    DOUBLE PRECISION,
+    currency      TEXT NOT NULL DEFAULT 'USD',
+    period        TEXT NOT NULL DEFAULT 'year',
+    raw           TEXT NOT NULL DEFAULT '',
+    source        TEXT NOT NULL DEFAULT 'searxng',
+    searched_at   DOUBLE PRECISION NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS llm_queue (
     id            BIGSERIAL PRIMARY KEY,
     canonical_id  TEXT NOT NULL,

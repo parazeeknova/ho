@@ -797,19 +797,26 @@ class TelegramAgent:
     # ── job card + inline keyboards ─────────────────────────────────
 
     def format_job_card(self, job: dict[str, Any]) -> str:
-        role = html.escape(str(job.get("role") or "Software Engineer").strip())
+        role_raw = str(job.get("role") or "Software Engineer").strip()
+        role = html.escape(" ".join(w[:1].upper() + w[1:] for w in role_raw.split()))
         company = html.escape(str(job.get("company") or "Company").strip())
         match_pct = job.get("match_percent", 0)
         shortlist_pct = job.get("shortlist_probability", 0)
 
         raw_sal = str(job.get("salary") or "").strip()
         salary_annual = job.get("salary_annual_usd")
-        if raw_sal and raw_sal not in ("-", "Not specified", "N/A"):
+        salary_estimated = bool(job.get("salary_estimated"))
+        if raw_sal and raw_sal not in ("-", "Not specified", "N/A", "Flexible", "Competitive"):
             salary_str = html.escape(raw_sal)
+            salary_estimated = salary_estimated and "est" not in raw_sal.lower()
         elif salary_annual:
             salary_str = f"${salary_annual:,.0f}/yr"
+            salary_estimated = True
         else:
-            salary_str = "Flexible / Competitive"
+            salary_str = ""
+        if salary_str and salary_estimated:
+            src = str(job.get("salary_source") or "").strip()
+            salary_str += f"  <i>(est. {html.escape(src)})</i>" if src else "  <i>(est.)</i>"
 
         location = html.escape(str(job.get("location") or "Remote").strip())
         raw_link = job.get("apply_link") or job.get("direct_apply_url") or job.get("url") or ""
@@ -826,17 +833,32 @@ class TelegramAgent:
         if len(comp_desc) > 200:
             comp_desc = comp_desc[:197] + "..."
 
+        badges: list[str] = []
+        if job.get("sponsors_visa"):
+            badges.append("visa sponsor")
+        if job.get("is_remote") or "remote" in location.lower():
+            badges.append("remote")
+        if job.get("underdog_score") and float(job.get("underdog_score", 0)) > 0:
+            badges.append("underdog")
+        badges_str = f" · {' · '.join(badges)}" if badges else ""
+
         lines = [
-            f"<b>{role.upper()}</b> — <b>{company.upper()}</b>",
+            f"<b>{role}</b>",
+            f"<b>{company}</b>",
             "<code>───────────────────────────</code>",
-            f"<b>JD Match:</b> {match_pct}%  |  <b>Shortlist:</b> {shortlist_pct}%",
-            f"<b>Location:</b> {location}",
-            f"<b>Salary:</b> {salary_str}",
+            f"Match <b>{match_pct}%</b> · Shortlist <b>{shortlist_pct}%</b>{badges_str}",
+            f"📍 {location}",
         ]
+        if salary_str:
+            lines.append(f"💰 {salary_str}")
 
         if apply_link and apply_link.startswith("http"):
             esc_link = html.escape(apply_link)
-            lines.append(f'🔗 <b>Apply Direct:</b> <a href="{esc_link}">Click Here to Apply →</a>')
+            lines.append(f'🔗 <a href="{esc_link}"><b>Apply →</b></a>')
+
+        skills = job.get("matching_skills")
+        if skills and isinstance(skills, list) and skills:
+            lines.append(f"<b>Skills:</b> {html.escape(', '.join(str(s) for s in skills[:6]))}")
 
         if comp_desc:
             lines.extend(["", f"<blockquote>{comp_desc}</blockquote>"])

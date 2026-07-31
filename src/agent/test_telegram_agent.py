@@ -33,10 +33,11 @@ def test_format_job_card() -> None:
     }
 
     card = agent.format_job_card(job)
-    assert "BACKEND ENGINEER" in card
-    assert "STRIPE" in card
+    assert "Backend Engineer" in card
+    assert "Stripe" in card
     assert "90%" in card
     assert "Patrick Collison" in card
+    assert "Flexible / Competitive" not in card
 
 
 @pytest.mark.asyncio
