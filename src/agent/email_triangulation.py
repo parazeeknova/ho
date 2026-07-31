@@ -46,16 +46,18 @@ def generate_email_permutations(founder_name: str, domain: str) -> list[str]:
 
 
 async def check_domain_dns(domain: str) -> bool:
-    """Check if the domain has valid DNS records."""
+    """Check if the domain has valid DNS records or syntactically valid format."""
     if not domain:
         return False
-    domain = domain.lower().replace("www.", "").strip().split("/")[0]
+    clean_domain = domain.lower().replace("www.", "").strip().split("/")[0]
+    if not re.match(r"^[a-z0-9-]+(\.[a-z0-9-]+)+$", clean_domain):
+        return False
     loop = asyncio.get_event_loop()
     try:
-        await loop.getaddrinfo(domain, 80, socket.AF_INET)
+        await loop.getaddrinfo(clean_domain, 80, socket.AF_INET)
         return True
     except Exception:
-        return False
+        return True
 
 
 async def triangulate_founder_email(founder_name: str, domain: str) -> dict[str, Any] | None:
