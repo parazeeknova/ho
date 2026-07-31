@@ -255,6 +255,7 @@ async def _scrape_indexes() -> list[JobObservation]:
             source_id = f"github:{idx_url.rsplit('/', 1)[-1]}"
             if not should_poll(source_id):
                 continue
+            logger.info(f"Scraping GitHub index: {source_id}")
             try:
                 resp = await client.get(idx_url)
                 if resp.status_code == 200:
@@ -280,6 +281,7 @@ async def _poll_board(board: dict[str, str], app: FirecrawlApp) -> list[JobObser
     if not board_url or not board_url.startswith("http"):
         return []
 
+    logger.info(f"Polling board: {source_id}")
     t0 = time.monotonic()
 
     direct_urls: list[str] = []
@@ -301,6 +303,10 @@ async def _poll_board(board: dict[str, str], app: FirecrawlApp) -> list[JobObser
         logger.warning(f"Firecrawl map_url failed for {board_url}: {exc}")
         record_failure(source_id)
         return []
+
+    map_elapsed = time.monotonic() - t0
+    if map_elapsed > 5.0:
+        logger.info(f"Board {source_id} map took {map_elapsed:.1f}s")
 
     if not direct_urls:
         record_success(source_id, 0, 0)
@@ -349,6 +355,7 @@ async def _fetch_postings_and_gate(
     passed: list[JobCandidate] = []
     rejected_count = 0
     gate_stats: dict[str, int] = {}
+    gate_start = _time.monotonic()
 
     known_hashes: set[str] = set()
     last_seen: dict[str, float] = {}
@@ -422,7 +429,7 @@ async def _fetch_postings_and_gate(
                     await _persist_rejected(store, obs, pid, rejections)
 
                 processed_count += 1
-                if processed_count % 25 == 0:
+                if processed_count % 10 == 0:
                     logger.info(
                         f"Posting fetch/gate: {processed_count}/{total} (passed: {len(passed)})",
                     )
@@ -432,6 +439,10 @@ async def _fetch_postings_and_gate(
 
     tasks = [asyncio.create_task(_process_one(o)) for o in observations]
     await asyncio.gather(*tasks, return_exceptions=True)
+    elapsed = _time.monotonic() - gate_start
+    logger.info(
+        f"Gating complete: {len(passed)} passed, {rejected_count} rejected in {elapsed:.1f}s"
+    )
     return passed, {"rejected": rejected_count, "gate_stats": gate_stats}
 
 
@@ -558,8 +569,7 @@ async def _enrich_high_fit(
             c.osint_signals = enriched.get("osint_signals", [])
             c.underdog_score = compute_underdog_score(c)
             await _persist_full(store, c)
-            if (idx + 1) % 5 == 0:
-                logger.debug(f"Enrichment: {idx + 1}/{len(high_fit)} complete")
+            logger.info(f"Enriching {c.normalized_company}: {idx + 1}/{len(high_fit)}")
         except Exception:
             pass
 
@@ -1130,7 +1140,9 @@ async def _run_radar_pipeline() -> None:
             # GitHub indexes: low-freq supplementary source
             if time.monotonic() - last_index_scrape > _index_interval:
                 last_index_scrape = time.monotonic()
-                all_obs.extend(await _scrape_indexes())
+                index_obs = await _scrape_indexes()
+                all_obs.extend(index_obs)
+                logger.info(f"Sweep {sweep}: {len(index_obs)} observations from GitHub indexes")
 
             # Load active sources (seeds + dynamically discovered, all with URLs)
             active_sources = await load_active_sources(store)
@@ -1168,6 +1180,7 @@ async def _run_radar_pipeline() -> None:
             resume_ctx = full_text[:3000] if full_text else candidate_persona
 
             ranked = _rank_for_queue(candidates)
+            logger.info(f"Sweep {sweep}: enqueuing {len(ranked)} candidates for LLM matching...")
             for c in ranked:
                 sal = c.salary_annual_usd or 0
                 if c.is_urgent and sal >= 60000:
@@ -1192,8 +1205,14 @@ async def _run_radar_pipeline() -> None:
             logger.info(f"LLM queue: {len(matched)} total matched, {accepted} accepted")
 
             await _enrich_high_fit(matched, sa, store)
+            enriched_count = len(
+                [c for c in matched if c.is_accepted and (c.is_urgent or c.match_percent >= 60)]
+            )
+            logger.info(f"Sweep {sweep}: enriched {enriched_count} high-fit candidates")
             await _dispatch_company_events(matched, graph, bus)
             await _notify_telegram(ta, matched, store)
+            notified_count = len([c for c in matched if c.is_accepted])
+            logger.info(f"Sweep {sweep}: {notified_count} Telegram alerts sent")
 
             accepted = len([c for c in matched if c.is_accepted])
             rejected_llm = len([c for c in matched if c.is_rejected])

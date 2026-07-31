@@ -86,7 +86,7 @@ def row(t: Table, name: str, status: str, port: str = "") -> None:
 def stop_all() -> None:
     console.print("\n[yellow]Stopping all services...[/yellow]")
     run("killall llama-server 2>/dev/null", silent=True)
-    run(f"{DOCKER_COMPOSE} down 2>/dev/null", silent=True)
+    run(f"{DOCKER_COMPOSE} stop 2>/dev/null", silent=True)
     run("podman rm -f firecrawl_rabbitmq_1 2>/dev/null", silent=True)
     console.print("[green]All services stopped.[/green]")
 
@@ -431,9 +431,17 @@ def main() -> None:
 
     # ── Live status table while containers come up ──
     failed: list[str] = []
+    wait_start = time.monotonic()
     with Live(Table(), refresh_per_second=3, console=console) as live:
         for _ in range(90):
-            t = Table(box=box.SIMPLE, show_header=False, padding=(0, 2), expand=False)
+            elapsed = int(time.monotonic() - wait_start)
+            t = Table(
+                title=f"Waiting for services... {elapsed}s",
+                box=box.SIMPLE,
+                show_header=False,
+                padding=(0, 2),
+                expand=False,
+            )
             t.add_column("")
 
             all_up = True
@@ -460,13 +468,6 @@ def main() -> None:
             console.print(f"  [red]✗[/red] {f_name}")
         stop_all()
         sys.exit(1)
-
-    # Show initial DB state below the live table
-    snapshot = deep_stats()
-    console.print("[dim]Infra snapshot:[/dim]")
-    for k, v in sorted(snapshot.items()):
-        if not k.startswith("cpu_") and not k.startswith("mem_"):
-            console.print(f"  [dim]{k}: {v}[/dim]")
 
     console.print("\n[dim]All systems ready.[/dim]")
 

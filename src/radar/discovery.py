@@ -132,7 +132,10 @@ async def discover_from_yc(limit: int = 50) -> list[dict[str, str]]:
     except Exception:
         pass
 
-    for c in companies:
+    logger.info(f"YC discovery: resolving domains for {len(companies)} companies...")
+    for i, c in enumerate(companies):
+        if i > 0 and i % 10 == 0:
+            logger.info(f"YC domain resolution: {i}/{len(companies)}")
         domain = await _resolve_official_domain(c["name"])
         if domain and not is_aggregator_domain(domain):
             c["website"] = f"https://{domain}"
@@ -311,6 +314,7 @@ async def discover_from_hackernews(limit: int = 30) -> list[dict[str, str]]:
                                                 }
                                             )
         companies = companies[:limit]
+        logger.info(f"HN discovery: {len(companies)} companies from stories")
     except Exception:
         pass
     return companies
@@ -437,7 +441,9 @@ async def discover_from_remoteok(limit: int = 30) -> list[dict[str, str]]:
     except Exception:
         pass
 
+    logger.info(f"RemoteOK: {len(companies)} companies with tech roles")
     # Resolve official domains for discovered companies
+    logger.info(f"RemoteOK: resolving domains for {len(companies)} companies...")
     for c in companies:
         domain = await _resolve_official_domain(c["name"])
         if domain and not is_aggregator_domain(domain):
@@ -499,13 +505,13 @@ async def discover_from_betalist(limit: int = 30) -> list[dict[str, str]]:
     """
     companies: list[dict[str, str]] = []
     seen: set[str] = set()
+    slugs: list[str] = []
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.get("https://betalist.com/")
             if resp.status_code != 200:
                 return companies
             html = resp.text
-            slugs: list[str] = []
             for m in re.finditer(
                 r'<a[^>]*href="/startups/([^/"]+)"',
                 html,
@@ -529,6 +535,7 @@ async def discover_from_betalist(limit: int = 30) -> list[dict[str, str]]:
     except Exception:
         pass
 
+    logger.info(f"BetaList: {len(companies)} startups from {len(slugs)} slugs")
     for c in companies:
         domain = await _resolve_official_domain(c["name"])
         if domain and not is_aggregator_domain(domain):
