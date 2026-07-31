@@ -209,7 +209,8 @@ CREATE TABLE IF NOT EXISTS salary_estimates (
 CREATE TABLE IF NOT EXISTS company_osint (
     company      TEXT PRIMARY KEY,
     data         JSONB NOT NULL DEFAULT '{{}}'::jsonb,
-    cached_at    DOUBLE PRECISION NOT NULL DEFAULT 0
+    cached_at    DOUBLE PRECISION NOT NULL DEFAULT 0,
+    expires_at   DOUBLE PRECISION NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS llm_queue (
@@ -1048,38 +1049,49 @@ class MemoryStore:
             )
 
     _OSINT_CACHE_TTL_SECONDS = 7 * 86400
+    _OSINT_DEGRADED_TTL_SECONDS = 6 * 3600
 
     async def get_company_osint(self, company: str) -> dict[str, Any] | None:
         """Return cached company OSINT enrichment if fresh, else None."""
         async with self._pool.acquire() as conn:
             try:
                 row = await conn.fetchrow(
-                    "SELECT data, cached_at FROM company_osint WHERE company = $1",
+                    "SELECT data, expires_at FROM company_osint WHERE company = $1",
                     company,
                 )
             except Exception:
                 return None
         if row is None:
             return None
-        cached_at = row.get("cached_at") or 0
-        if time.time() - cached_at >= self._OSINT_CACHE_TTL_SECONDS:
+        if time.time() >= (row.get("expires_at") or 0):
             return None
         try:
             return json.loads(row.get("data") or "{}")
         except Exception:
             return None
 
-    async def put_company_osint(self, company: str, data: dict[str, Any]) -> None:
-        """Insert or refresh the cached OSINT payload for a company."""
+    async def put_company_osint(
+        self, company: str, data: dict[str, Any], degraded: bool = False
+    ) -> None:
+        """Insert or refresh the cached OSINT payload for a company.
+
+        A "degraded" payload (rate-limited sources, no enrichment produced)
+        gets a short TTL so the next sweep retries instead of serving the
+        empty result for the full week.
+        """
+        ttl = self._OSINT_DEGRADED_TTL_SECONDS if degraded else self._OSINT_CACHE_TTL_SECONDS
+        now = time.time()
         async with self._pool.acquire() as conn:
             await conn.execute(
-                "INSERT INTO company_osint (company, data, cached_at) "
-                "VALUES ($1, $2::jsonb, $3) "
+                "INSERT INTO company_osint (company, data, cached_at, expires_at) "
+                "VALUES ($1, $2::jsonb, $3, $4) "
                 "ON CONFLICT (company) DO UPDATE SET "
-                "data = EXCLUDED.data, cached_at = EXCLUDED.cached_at",
+                "data = EXCLUDED.data, cached_at = EXCLUDED.cached_at, "
+                "expires_at = EXCLUDED.expires_at",
                 company,
                 json.dumps(data),
-                time.time(),
+                now,
+                now + ttl,
             )
 
     async def get_salary_stats(self) -> dict[str, Any]:

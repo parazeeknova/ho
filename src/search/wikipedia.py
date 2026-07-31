@@ -25,7 +25,7 @@ _UA = "Mozilla/5.0 (X11; Linux x86_64) ho-radar/1.0"
 _WIKI_SEM = asyncio.Semaphore(2)
 _WIKI_PACE = asyncio.Lock()
 _WIKI_LAST_REQ = 0.0
-_WIKI_MIN_INTERVAL = 1.1
+_WIKI_MIN_INTERVAL = 3.0
 
 
 async def _wiki_get(client, **params) -> dict[str, Any] | None:
@@ -61,7 +61,14 @@ _INFOBOX_RE = re.compile(
     r"\|\s*founders?\s*=\s*(.+?)(?=\n\s*\||\n\s*\}\})",
     re.IGNORECASE | re.S,
 )
+# Split on line breaks, semicolons, template pipes and list bullets.
+# Link pipes ([[A|B]]) are normalized away first, so they never split.
 _TEMPLATE_SPLIT_RE = re.compile(r"<br\s*/?>|\n|;|{{[^}]*}}|\*\s*|\|")
+
+# [[Display|target]] -> target text, [[Page]] -> Page (link pipes are not
+# separators; display text and parenthetical roles are stripped later).
+_LINK_DISPLAY_RE = re.compile(r"\[\[([^|\]]+)\|([^\]]+)\]\]")
+_LINK_PLAIN_RE = re.compile(r"\[\[([^\]]+)\]\]")
 _NAME_CLEAN_RE = re.compile(r"[\[\]{}|]")
 
 
@@ -77,6 +84,9 @@ def _parse_founders(wikitext: str) -> list[str]:
     if not m:
         return []
     body = m.group(1)
+    # Collapse links to their display text first so [[A|B]] never splits.
+    body = _LINK_DISPLAY_RE.sub(r"\2", body)
+    body = _LINK_PLAIN_RE.sub(r"\1", body)
     body = re.sub(r"{{plainlist\|", "", body, flags=re.IGNORECASE)
     body = re.sub(r"{{unbulleted list\|", "", body, flags=re.IGNORECASE)
     parts = [p for p in _TEMPLATE_SPLIT_RE.split(body) if p.strip()]
@@ -122,7 +132,15 @@ async def _resolve_title(company: str) -> str | None:
     """Find the Wikipedia page title for a company."""
     try:
         client = await get_client("wikipedia", timeout=15.0)
-        for candidate in (company, f"{company} (company)", f"{company} (software)"):
+        # Company-suffixed titles first: the bare name can be a different
+        # article ("Ramp" redirects to the physics page) or a stripped
+        # variant ("MongoDB" vs the fuller "MongoDB Inc." infobox).
+        for candidate in (
+            f"{company} (company)",
+            f"{company} (software)",
+            f"{company} Inc.",
+            company,
+        ):
             data = await _wiki_get(
                 client,
                 action="query",
@@ -137,22 +155,48 @@ async def _resolve_title(company: str) -> str | None:
             pages = data.get("query", {}).get("pages", [])
             if pages and "missing" not in pages[0]:
                 return pages[0]["title"]
-        # Search fallback: prefer an exact-ish title mentioning the company.
+        # Search fallback: prefer an exact-ish corporate title mentioning
+        # the company.
         data = await _wiki_get(
             client,
             action="query",
             list="search",
             srsearch=f'"{company}" company',
-            srlimit="5",
+            srlimit="8",
             format="json",
             formatversion="2",
         )
         if data is not None:
             hits = data.get("query", {}).get("search", [])
+            first_word = company.lower().split()[0]
+
+            def _corporate(title: str) -> bool:
+                return any(
+                    token in title
+                    for token in (
+                        "inc.",
+                        "ltd",
+                        "llc",
+                        "technologies",
+                        "labs",
+                        "corp",
+                        "(company)",
+                        "(software)",
+                        "(startup)",
+                        "(service)",
+                    )
+                )
+
+            fallback: str | None = None
             for h in hits:
                 title = h.get("title", "")
-                if title.lower().startswith(company.lower().split()[0]):
+                if not title.lower().startswith(first_word):
+                    continue
+                if _corporate(title):
                     return title
+                fallback = fallback or title
+            if fallback:
+                return fallback
     except Exception as e:
         logger.warning("Wikipedia title resolution failed", company=company, exception=str(e))
     return None

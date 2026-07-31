@@ -308,8 +308,22 @@ class StartupAgent:
         payload = {k: job.get(k) for k in self._OSINT_CACHE_KEYS if job.get(k) is not None}
         if not payload:
             return
+        # A result with no founders, funding or news is a degraded run
+        # (e.g. rate-limited sources); cache it briefly so the next sweep
+        # retries rather than serving emptiness for the full week.
+        substance = any(
+            payload.get(k)
+            for k in (
+                "founders",
+                "funding_info",
+                "funding_stage",
+                "founder_socials",
+                "company_news",
+                "osint_signals",
+            )
+        )
         with contextlib.suppress(Exception):
-            await self.store.put_company_osint(company, payload)
+            await self.store.put_company_osint(company, payload, degraded=not substance)
 
     async def _analyze_startup_uncached(self, job: dict[str, Any]) -> dict[str, Any]:
         """The uncached search + extraction pipeline."""
