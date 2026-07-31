@@ -23,6 +23,7 @@ from src.graph.entity import (
     GraphNode,
     NodeType,
     edge,
+    make_company_id,
     make_founder_id,
     make_work_id,
 )
@@ -568,7 +569,7 @@ def _group_key(c: JobCandidate) -> str:
 
 
 async def _enrich_high_fit(
-    candidates: list[JobCandidate], sa: StartupAgent, store: MemoryStore
+    candidates: list[JobCandidate], sa: StartupAgent, store: MemoryStore, graph: GraphStore
 ) -> None:
     accepted = [c for c in candidates if c.is_accepted]
     if not accepted:
@@ -593,6 +594,20 @@ async def _enrich_high_fit(
             c.company_news = enriched.get("company_news", "")
             c.osint_signals = enriched.get("osint_signals", [])
             c.underdog_score = compute_underdog_score(c)
+
+            # Inject graph structural insights (predictive link prediction)
+            if c.funding_stage or enriched.get("founders"):
+                try:
+                    graph_insights = await graph.generate_graph_insights_for_llm(
+                        make_company_id(c.normalized_company)
+                    )
+                    if graph_insights:
+                        existing = list(c.osint_signals or [])
+                        existing.append(graph_insights)
+                        c.osint_signals = existing
+                except Exception:
+                    pass
+
             await _persist_full(store, c)
             logger.info(f"Enriching {c.normalized_company}: {idx + 1}/{len(accepted)}")
         except Exception:
@@ -1243,7 +1258,9 @@ async def _run_radar_pipeline() -> None:
     sweep = 0
     last_discovery = 0.0
     last_index_scrape = -9999.0
+    last_graph_metrics = 0.0
     _index_interval = 1800.0  # 30 min between GitHub index scrapes
+    _graph_metrics_interval = 7200.0  # 2 hours between graph metric recomputes
 
     if is_worker:
         logger.info("Worker process listening for queued candidate matching tasks...")
@@ -1279,14 +1296,25 @@ async def _run_radar_pipeline() -> None:
 
             all_obs: list[JobObservation] = []
 
-            # 1. GitHub Indexes (400+ jobs) - High speed instant scraping
+            # 1. Mass ATS Poller: 10,000+ slugs every 4 hours
+            if not is_worker and time.monotonic() - last_index_scrape > _index_interval * 8:
+                try:
+                    from src.radar.ats_mass_poller import poll_all_mass_slugs
+
+                    mass_obs = await poll_all_mass_slugs()
+                    all_obs.extend(mass_obs)
+                    logger.info(f"Sweep {sweep}: {len(mass_obs)} from mass ATS poller")
+                except Exception as mass_err:
+                    logger.debug(f"Mass ATS poller sweep: {mass_err}")
+
+            # 2. GitHub Indexes (400+ jobs) - High speed instant scraping
             if time.monotonic() - last_index_scrape > _index_interval:
                 last_index_scrape = time.monotonic()
                 index_obs = await _scrape_indexes()
                 all_obs.extend(index_obs)
                 logger.info(f"Sweep {sweep}: {len(index_obs)} observations from GitHub indexes")
 
-            # 2. Pillar 2 SearXNG Dorking (Junior/New Grad/Entry Level queries)
+            # 3. Pillar 2 SearXNG Dorking (Junior/New Grad/Entry Level queries)
             try:
                 from src.radar.dorking import DorkingEngine
 
@@ -1297,7 +1325,7 @@ async def _run_radar_pipeline() -> None:
             except Exception as dork_err:
                 logger.warning(f"SearXNG dorking sweep warning: {dork_err}")
 
-            # 3. Load 110+ verified seed boards + active sources
+            # 4. Load 110+ verified seed boards + active sources
             active_sources = await load_active_sources(store)
             for id_, url, source_type in _SEED_BOARDS:
                 if should_poll(id_) and not any(s["id"] == id_ for s in active_sources):
@@ -1339,6 +1367,15 @@ async def _run_radar_pipeline() -> None:
                         f"Sweep {sweep}: Company Discovery",
                         f"Surfaced {len(discovered)} potential company sources.",
                     )
+
+            # 5. Periodic graph metrics (embeddings, PageRank, WCC, betweenness)
+            if not is_worker and time.monotonic() - last_graph_metrics > _graph_metrics_interval:
+                last_graph_metrics = time.monotonic()
+                try:
+                    scores = await graph.update_all_graph_metrics()
+                    logger.info(f"Graph metrics: {scores}")
+                except Exception as gerr:
+                    logger.debug(f"Graph metrics update failed: {gerr}")
 
             candidates, gate_stats = await _fetch_postings_and_gate(all_obs, store)
             set_pipeline_state(scraped=len(all_obs), gated=len(candidates))
@@ -1383,7 +1420,7 @@ async def _run_radar_pipeline() -> None:
             accepted = len([c for c in matched if c.is_accepted])
             logger.info(f"LLM queue: {len(matched)} total matched, {accepted} accepted")
 
-            await _enrich_high_fit(matched, sa, store)
+            await _enrich_high_fit(matched, sa, store, graph)
             enriched_count = len([c for c in matched if c.is_accepted])
             logger.info(f"Sweep {sweep}: enriched {enriched_count} accepted candidates")
             await _dispatch_company_events(matched, graph, bus)

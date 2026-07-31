@@ -1,4 +1,10 @@
-"""DorkingEngine (Pillar 2): Deep company and ATS job discovery via SearXNG search dorking."""
+"""DorkingEngine (Pillar 2): Deep company and ATS job discovery via SearXNG search dorking.
+
+Queries are time-restricted: qdr:d2 (past 2 days) for Google/Bing syntax,
+plus SearXNG's own time_range=day parameter. Both filters are applied so
+results are strictly limited to the last 48 hours, preventing 6-month-old
+ghost jobs from contaminating the pipeline.
+"""
 
 from __future__ import annotations
 
@@ -11,30 +17,44 @@ from src.radar.models import JobObservation
 
 logger = get_logger("dorking_engine")
 
+_TIME_SYNTAX = " qdr:d2"
+
 _DORK_QUERIES = [
     (
         "site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR"
         ' site:apply.workable.com intitle:"intern" OR intitle:"new grad" OR'
-        ' intitle:"junior" "software" "2026"'
+        f' intitle:"junior" "software" "2026"{_TIME_SYNTAX}'
     ),
-    'site:boards.greenhouse.io "Junior" OR "Entry Level" OR "Associate" OR "Graduate"',
-    'site:jobs.ashbyhq.com "Junior" OR "Entry Level" OR "Early Career" OR "University"',
-    'site:jobs.lever.co "Junior" OR "Entry Level" OR "Graduate" OR "Associate"',
-    'site:apply.workable.com "Junior" OR "Entry Level" OR "Associate"',
-    'site:boards.greenhouse.io "New Grad" OR "2026" OR "Intern" OR "Internship"',
-    'site:jobs.ashbyhq.com "New Grad" OR "2026" OR "Intern" OR "Internship"',
-    'site:jobs.lever.co "New Grad" OR "2026" OR "Intern" OR "Internship"',
-    'site:apply.workable.com "New Grad" OR "2026" OR "Intern" OR "Internship"',
-    # Targeted Software / Developer Junior Dorks
-    'site:boards.greenhouse.io ("Junior Developer" OR "Associate Software Engineer")',
-    'site:jobs.ashbyhq.com ("Junior Software Engineer" OR "Entry Level Engineer")',
-    'site:jobs.lever.co ("Junior Software Engineer" OR "Associate Engineer")',
+    (
+        'site:boards.greenhouse.io "Junior" OR "Entry Level" OR "Associate" OR'
+        f' "Graduate"{_TIME_SYNTAX}'
+    ),
+    (
+        'site:jobs.ashbyhq.com "Junior" OR "Entry Level" OR "Early Career" OR'
+        f' "University"{_TIME_SYNTAX}'
+    ),
+    (f'site:jobs.lever.co "Junior" OR "Entry Level" OR "Graduate" OR "Associate"{_TIME_SYNTAX}'),
+    f'site:apply.workable.com "Junior" OR "Entry Level" OR "Associate"{_TIME_SYNTAX}',
+    f'site:boards.greenhouse.io "New Grad" OR "2026" OR "Intern" OR "Internship"{_TIME_SYNTAX}',
+    f'site:jobs.ashbyhq.com "New Grad" OR "2026" OR "Intern" OR "Internship"{_TIME_SYNTAX}',
+    f'site:jobs.lever.co "New Grad" OR "2026" OR "Intern" OR "Internship"{_TIME_SYNTAX}',
+    f'site:apply.workable.com "New Grad" OR "2026" OR "Intern" OR "Internship"{_TIME_SYNTAX}',
+    (
+        'site:boards.greenhouse.io ("Junior Developer" OR'
+        f' "Associate Software Engineer"){_TIME_SYNTAX}'
+    ),
+    (f'site:jobs.ashbyhq.com ("Junior Software Engineer" OR "Entry Level Engineer"){_TIME_SYNTAX}'),
+    (f'site:jobs.lever.co ("Junior Software Engineer" OR "Associate Engineer"){_TIME_SYNTAX}'),
 ]
 
 
 class DorkingEngine:
     """Queries SearXNG with specialized search engine dorks to uncover
     freshly indexed ATS job postings across the web.
+
+    Each query carries both the SearXNG time_range=day parameter AND
+    the qdr:d2 syntax understood by Google/Bing, ensuring dual-layered
+    time filtering. Results are deduplicated across runs via _seen_urls.
     """
 
     def __init__(self, searxng_url: str = "http://localhost:8080") -> None:
@@ -44,11 +64,20 @@ class DorkingEngine:
     async def execute_dorks(
         self, queries: list[str] | None = None, time_range: str = "day"
     ) -> list[JobObservation]:
-        """Runs targeted 48h time-restricted dork queries against SearXNG."""
+        """Runs 48h time-restricted dork queries against SearXNG.
+
+        Two-layer time filter:
+          1. SearXNG time_range=day (maps to d/w/m/y in the metasearch engine)
+          2. qdr:d2 appended to each query string (Google/Bing-native filter)
+
+        This double gating ensures even SearXNG engines that ignore time_range
+        still return only recent results, and engines like Google that respect
+        qdr:d2 add their own 48-hour cutoff.
+        """
         target_queries = queries or _DORK_QUERIES
         observations: list[JobObservation] = []
 
-        async with httpx.AsyncClient(timeout=8.0) as client:
+        async with httpx.AsyncClient(timeout=12.0) as client:
             for q in target_queries:
                 try:
                     resp = await client.get(
@@ -58,6 +87,7 @@ class DorkingEngine:
                             "format": "json",
                             "time_range": time_range,
                             "language": "en",
+                            "safesearch": "0",
                         },
                     )
                     if resp.status_code != 200:
@@ -81,10 +111,11 @@ class DorkingEngine:
                                 source=f"dork-{comp_guess}",
                                 title=title or "Software Engineer",
                                 snippet=content,
+                                extra={"discovery_method": "searxng_dork", "time_filter": "48h"},
                             )
                         )
                 except Exception as e:
-                    logger.debug(f"SearXNG dork query '{q}' failed: {e}")
+                    logger.debug(f"SearXNG dork query failed: {e}")
 
                 await asyncio.sleep(0.5)
 

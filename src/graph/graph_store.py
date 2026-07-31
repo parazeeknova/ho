@@ -515,6 +515,307 @@ class GraphStore:
                 )
         return {"nodes": nodes, "edges": edges}
 
+    # ── Node Embeddings (Predictive Link Prediction) ──
+
+    async def compute_fastrp_embeddings(self, embedding_dim: int = 64) -> dict[str, list[float]]:
+        """Compute Fast Random Projection (FastRP) node embeddings via Neo4j GDS.
+
+        Produces structural embeddings that encode the graph topology. Nodes with
+        similar roles in the graph get similar vectors, enabling:
+          - Link prediction (which company will hire next?)
+          - Similarity search (find companies structurally like Stripe)
+          - Feeding structural patterns to LLM for pattern inference.
+
+        Falls back to adjacency-based embeddings (spectral approximation) if
+        GDS library is not installed.
+        """
+        try:
+            rows = await self._run(
+                """
+                CALL gds.fastRP.stream('graph_view', {
+                    embeddingDimension: $dim,
+                    iterationWeights: [0.0, 1.0, 1.0, 0.5],
+                    nodeSelfInfluence: 0.1,
+                    randomSeed: 42
+                })
+                YIELD nodeId, embedding
+                RETURN gds.util.asNode(nodeId).id AS node_id, embedding
+                LIMIT 2000
+                """,
+                {"dim": embedding_dim},
+            )
+            if rows:
+                embeddings: dict[str, list[float]] = {}
+                for r in rows:
+                    nid = r["node_id"]
+                    emb = r.get("embedding", [])
+                    if emb:
+                        embeddings[nid] = list(emb)
+                if embeddings:
+                    logger.info(
+                        f"FastRP: {len(embeddings)} node embeddings computed (dim={embedding_dim})"
+                    )
+                    return embeddings
+        except Exception:
+            logger.debug("Neo4j GDS FastRP not available, using fallback embeddings")
+
+        return await self._compute_fallback_embeddings(embedding_dim)
+
+    async def _compute_fallback_embeddings(self, embedding_dim: int = 64) -> dict[str, list[float]]:
+        """Compute adjacency-based structural embeddings using numpy.
+
+        Uses a lightweight spectral approximation: constructs the adjacency matrix
+        and applies power iteration to produce low-dimensional embeddings that
+        capture 2-hop neighborhood structure.
+        """
+        try:
+            import numpy as np
+        except ImportError:
+            return {}
+
+        nodes = await self.get_nodes_by_type(NodeType.COMPANY, limit=500)
+        if not nodes:
+            return {}
+
+        node_ids = [n.id for n in nodes]
+        n = len(node_ids)
+        idx_map = {nid: i for i, nid in enumerate(node_ids)}
+
+        adj_matrix = np.zeros((n, n))
+        for node in nodes:
+            edges = await self.get_edges_from(node.id)
+            for e in edges:
+                tgt = e.target_id
+                if tgt in idx_map:
+                    adj_matrix[idx_map[node.id], idx_map[tgt]] = 1.0
+                    adj_matrix[idx_map[tgt], idx_map[node.id]] = 1.0
+
+        row_sums = adj_matrix.sum(axis=1, keepdims=True)
+        row_sums[row_sums == 0] = 1.0
+        degrees = adj_matrix.sum(axis=0) + 1e-8
+        adj_normalized = adj_matrix / np.sqrt(degrees)[:, None] / np.sqrt(degrees)
+
+        rng = np.random.default_rng(42)
+        proj_matrix = rng.normal(0, 1 / np.sqrt(embedding_dim), (n, embedding_dim))
+
+        for _ in range(4):
+            proj_matrix = adj_normalized @ proj_matrix
+            norms = np.linalg.norm(proj_matrix, axis=1, keepdims=True) + 1e-8
+            proj_matrix = proj_matrix / norms
+            proj_matrix += 0.5 * rng.normal(0, 0.01, proj_matrix.shape)
+
+        embeddings: dict[str, list[float]] = {}
+        for i, nid in enumerate(node_ids):
+            embeddings[nid] = [float(v) for v in proj_matrix[i]]
+
+        await self._store_embeddings(embeddings)
+        logger.info(f"Fallback embeddings: {len(embeddings)} nodes (dim={embedding_dim})")
+        return embeddings
+
+    async def _store_embeddings(self, embeddings: dict[str, list[float]]) -> None:
+        import json
+
+        for node_id, emb in embeddings.items():
+            await self._run(
+                "MATCH (n:GraphNode {id: $id}) SET n.embedding = $emb, n.updated_at = $now",
+                {
+                    "id": node_id,
+                    "emb": json.dumps(emb),
+                    "now": datetime.now(UTC).isoformat(),
+                },
+            )
+
+    async def find_structurally_similar(
+        self, node_id: str, limit: int = 10
+    ) -> list[dict[str, Any]]:
+        """Find companies with similar structural roles in the graph.
+
+        Uses cosine similarity over stored node embeddings. Returns companies
+        that occupy similar positions in the hiring/funding/talent graph,
+        enabling predictive discovery of likely next-hires.
+
+        If no embeddings are stored, returns empty list.
+        """
+        node = await self.get_node(node_id)
+        if node is None:
+            return []
+
+        node_emb = node.data.get("embedding")
+        if not node_emb:
+            return []
+
+        try:
+            import json
+
+            if isinstance(node_emb, str):
+                node_emb = json.loads(node_emb)
+        except Exception:
+            return []
+
+        try:
+            rows = await self._run(
+                "MATCH (n:GraphNode {node_type: 'company', active: true}) "
+                "WHERE n.id <> $id AND n.embedding IS NOT NULL "
+                "RETURN n.id, n.data, n.embedding LIMIT 2000",
+                {"id": node_id},
+            )
+        except Exception:
+            return []
+
+        import numpy as np
+
+        query_vec = np.array(node_emb, dtype=np.float64)
+        candidates: list[tuple[float, dict[str, Any]]] = []
+
+        for r in rows:
+            emb_str = r.get("n.embedding")
+            if not emb_str:
+                continue
+            try:
+                emb = json.loads(emb_str) if isinstance(emb_str, str) else emb_str
+            except Exception:
+                continue
+            cand_vec = np.array(emb, dtype=np.float64)
+            sim = float(
+                np.dot(query_vec, cand_vec)
+                / (np.linalg.norm(query_vec) * np.linalg.norm(cand_vec) + 1e-8)
+            )
+            data_raw = r.get("n.data", {})
+            if isinstance(data_raw, str):
+                data_raw = json.loads(data_raw) if data_raw else {}
+            candidates.append(
+                (
+                    sim,
+                    {
+                        "node_id": r.get("n.id", ""),
+                        "company_name": data_raw.get("name", "Unknown"),
+                        "similarity": round(sim, 4),
+                        "pagerank": float(data_raw.get("pagerank", 0)),
+                        "funding_stage": str(data_raw.get("funding_stage", "")),
+                    },
+                )
+            )
+
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        return [c[1] for c in candidates[:limit]]
+
+    async def predict_hiring_likelihood(self, company_node_id: str) -> dict[str, Any]:
+        """Predict whether a company is likely to be hiring juniors/interns soon.
+
+        Combines structural signals (graph metrics, embeddings, neighborhood)
+        to estimate the probability that the company has or will have entry-level
+        openings. Returns a scored prediction with explainable signals.
+
+        The prediction feeds into the LLM for contextual pattern inference
+        (e.g., 'Companies funded by Sequoia using Ashby usually hire 3 engineers
+        within 45 days of a TechCrunch article').
+        """
+
+        node = await self.get_node(company_node_id)
+        if node is None:
+            return {"node_id": company_node_id, "score": 0.0, "signals": []}
+
+        signals: list[dict[str, Any]] = []
+
+        pr = float(node.data.get("pagerank", 0))
+        if pr > 0.05:
+            signals.append(
+                {
+                    "type": "high_pagerank",
+                    "weight": min(1.0, pr * 10),
+                    "description": f"High graph centrality (PageRank: {pr:.4f})",
+                }
+            )
+
+        bw = float(node.data.get("betweenness", 0))
+        if bw > 10:
+            signals.append(
+                {
+                    "type": "high_betweenness",
+                    "weight": min(1.0, bw / 100),
+                    "description": f"Bridge node in the graph (betweenness: {bw:.1f})",
+                }
+            )
+
+        edges = await self.get_edges_from(company_node_id)
+        edge_types = {e.edge_type.value for e in edges}
+        if "has_funding" in edge_types:
+            signals.append(
+                {
+                    "type": "has_funding",
+                    "weight": 0.15,
+                    "description": "Has received venture funding",
+                }
+            )
+        if "posted_job" in edge_types:
+            signals.append(
+                {
+                    "type": "has_posted_job",
+                    "weight": 0.20,
+                    "description": "Already has job postings on ATS boards",
+                }
+            )
+        if "uses_ats" in edge_types:
+            signals.append(
+                {
+                    "type": "uses_ats",
+                    "weight": 0.10,
+                    "description": "Uses an ATS for hiring (active recruiting)",
+                }
+            )
+
+        similar = await self.find_structurally_similar(company_node_id, limit=5)
+        if similar:
+            hiring_similar = [s for s in similar if s.get("pagerank", 0) > 0.01]
+            if hiring_similar:
+                signals.append(
+                    {
+                        "type": "similar_to_hiring_companies",
+                        "weight": 0.12,
+                        "description": f"Structurally similar to {len(hiring_similar)} active hiring companies",
+                        "similar_companies": [s["company_name"] for s in hiring_similar[:3]],
+                    }
+                )
+
+        score = sum(s["weight"] for s in signals) if signals else 0.0
+        score = min(1.0, score)
+
+        logger.info(f"Hiring prediction for {node.name}: score={score:.2f}, {len(signals)} signals")
+        return {
+            "node_id": company_node_id,
+            "company_name": node.name,
+            "score": round(score, 4),
+            "signals": signals,
+            "confidence": node.confidence.score,
+        }
+
+    async def generate_graph_insights_for_llm(self, company_node_id: str) -> str:
+        """Generate a natural-language summary of structural graph insights
+        for feeding into LLM context so it can infer non-obvious patterns.
+
+        Example output:
+        'Acme Corp (PageRank 0.087, Seed funded) is structurally similar to
+        Stripe, Notion, and Figma based on its hiring/funding graph neighborhood.
+        It has ATS integration but no junior postings yet. Prediction: high
+        likelihood of junior openings within 30-45 days based on patterns of
+        similar companies.'
+        """
+        pred = await self.predict_hiring_likelihood(company_node_id)
+        similar = await self.find_structurally_similar(company_node_id, limit=5)
+
+        parts: list[str] = []
+        parts.append(f"Graph insights for {pred['company_name']}:")
+        parts.append(f"  Hiring likelihood score: {pred['score']:.2f}")
+
+        for sig in pred.get("signals", []):
+            parts.append(f"  Signal: {sig['description']}")
+
+        if similar:
+            sim_names = [s.get("company_name", "?") for s in similar]
+            parts.append(f"  Structurally similar companies: {', '.join(sim_names)}")
+
+        return "\n".join(parts)
+
     # Neo4j Graph Data Science (GDS)
 
     async def compute_pagerank(self) -> dict[str, float]:
@@ -595,11 +896,13 @@ class GraphStore:
         """Periodically execute all graph algorithms and store results
         in node data properties for use in priority scoring.
 
+        Now includes FastRP node embeddings for predictive link prediction.
         Returns dict with counts of updated nodes per metric.
         """
         pagerank = await self.compute_pagerank()
         components = await self.compute_connected_components()
         betweenness = await self.compute_betweenness_centrality()
+        embeddings = await self.compute_fastrp_embeddings()
 
         for node_id, score in pagerank.items():
             await self._run(
@@ -625,12 +928,14 @@ class GraphStore:
                 "pagerank_nodes": len(pagerank),
                 "wcc_components": len(set(components.values())),
                 "betweenness_nodes": len(betweenness),
+                "embedding_nodes": len(embeddings),
             },
         )
         return {
             "pagerank_nodes": len(pagerank),
             "wcc_components": len(set(components.values())),
             "betweenness_nodes": len(betweenness),
+            "embedding_nodes": len(embeddings),
         }
 
     async def get_graph_metrics_for_node(self, node_id: str) -> dict[str, float]:
