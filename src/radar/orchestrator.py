@@ -178,11 +178,13 @@ async def _discover_new_companies() -> list[dict[str, Any]]:
 
     for adp_name, func, limit in adapters:
         try:
+            t0 = time.monotonic()
             companies = await func(limit)
+            elapsed = time.monotonic() - t0
             for c in companies:
                 c["discovered_from"] = adp_name
             results.extend(companies)
-            logger.info(f"Discovery {adp_name}: {len(companies)} companies")
+            logger.info(f"Discovery {adp_name}: {len(companies)} companies ({elapsed:.1f}s)")
         except Exception as e:
             logger.warning(f"Discovery adapter {adp_name} failed", exception=str(e))
             _DISCOVERY_METRICS[f"failed_{adp_name}"] += 1

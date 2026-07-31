@@ -145,9 +145,13 @@ def deep_stats() -> dict[str, Any]:
 
             r = urllib.request.urlopen("http://localhost:8900/v1/models", timeout=5)
             data = _json.loads(r.read())
-            models_list = data.get("models", data.get("data", []))
+            # llama.cpp returns {"data": [...]} or {"models": [...]} depending on version
+            models_list = data.get("data", data.get("models", []))
             if models_list and isinstance(models_list, list):
-                info["embed_model"] = models_list[0].get("name", models_list[0].get("id", "?"))
+                first = models_list[0]
+                name = first.get("name", first.get("id", "?"))
+                if name:
+                    info["embed_model"] = name
                 info["embed_slots"] = len(models_list)
         except Exception:
             pass

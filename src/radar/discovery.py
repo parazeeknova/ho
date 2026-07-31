@@ -170,12 +170,17 @@ async def discover_from_vc_portfolios(limit: int = 40) -> list[dict[str, str]]:
         htmls = await asyncio.gather(*tasks)
         done = sum(1 for h in htmls if h)
         logger.info(f"VC portfolios: {done}/{total_vc} scraped successfully")
+        total_names = 0
+        resolved = 0
         for html in htmls:
             if not html:
                 continue
             names = _extract_portfolio_company_names(html, limit)
+            total_names += len(names)
             for name in names:
                 domain = await _resolve_company_domain(name)
+                if domain:
+                    resolved += 1
                 companies.append(
                     {
                         "name": name,
@@ -183,6 +188,9 @@ async def discover_from_vc_portfolios(limit: int = 40) -> list[dict[str, str]]:
                         "source": "vc_portfolio",
                     }
                 )
+        logger.info(
+            f"VC portfolios: {total_names} companies extracted, {resolved} domains resolved",
+        )
     return companies[:limit]
 
 
