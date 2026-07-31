@@ -1084,6 +1084,11 @@ async def _run_radar_pipeline() -> None:
             ]
         return []
 
+    is_worker = bool(os.getenv("HO_WORKER_ONLY"))
+
+    if not is_worker and ta.is_configured:
+        asyncio.create_task(ta.start_polling())
+
     bus.subscribe("company_discovered", _sub_company)
     bus.subscribe("founder_discovered", _sub_founder)
     bus.subscribe("career_site_discovered", _sub_career)
@@ -1097,84 +1102,99 @@ async def _run_radar_pipeline() -> None:
     engine.register_agent("outreach_generator", _outreach_handler)
     engine.start(worker_count=8)
 
-    console.rule("[bold cyan]RADAR PHASE 1: Load Resume[/bold cyan]")
     loop = asyncio.get_running_loop()
     existing_count = await store.chunk_count()
     full_text = ""
     if existing_count > 0:
-        logger.info(f"Reusing {existing_count} existing resume chunks")
+        if not is_worker:
+            logger.info(f"Reusing {existing_count} existing resume chunks")
     else:
         full_text, chunks = await loop.run_in_executor(None, load_resume)
         await index_resume_in_pgvector(chunks, store)
 
     candidate_persona = cfg.candidate.persona
-    set_pipeline_state(
-        running=True,
-        started_at=time.time(),
-        phase="starting",
-        sweep=0,
-        rejected_total=0,
-        matched_total=0,
-    )
-    if ta.is_configured:
-        await ta.send_startup(existing_count)
 
-    # Re-deliver any previously accepted candidates that were never
-    # notified to Telegram (e.g., if DNS was down during the first sweep)
-    try:
-        async with store._pool.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT canonical_id, normalized_role, normalized_company, "
-                "match_percent, verdict, funding_stage, extra "
-                "FROM radar_candidates "
-                "WHERE eligibility = 'accepted' "
-                "AND canonical_id NOT IN (SELECT dedup_key FROM telegram_notified_jobs) "
-                "LIMIT 50",
-            )
-        if rows:
-            from src.radar.queue import JobCandidate
+    if not is_worker:
+        console.rule("[bold cyan]RADAR PHASE 1: Load Resume[/bold cyan]")
+        set_pipeline_state(
+            running=True,
+            started_at=time.time(),
+            phase="starting",
+            sweep=0,
+            rejected_total=0,
+            matched_total=0,
+        )
+        if ta.is_configured:
+            await ta.send_startup(existing_count)
 
-            pending: list[JobCandidate] = []
-            for r in rows:
-                c = JobCandidate(
-                    canonical_id=r["canonical_id"],
-                    normalized_role=r["normalized_role"],
-                    normalized_company=r["normalized_company"],
-                    normalized_location="Remote",
-                    source="radar",
-                    direct_apply_url="",
-                    match_percent=r["match_percent"],
-                    verdict=r["verdict"],
-                    funding_stage=r.get("funding_stage", ""),
+        # Re-deliver any previously accepted candidates that were never
+        # notified to Telegram (e.g., if DNS was down during the first sweep)
+        try:
+            async with store._pool.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT canonical_id, normalized_role, normalized_company, "
+                    "match_percent, verdict, funding_stage, extra "
+                    "FROM radar_candidates "
+                    "WHERE eligibility = 'accepted' "
+                    "AND canonical_id NOT IN (SELECT dedup_key FROM telegram_notified_jobs) "
+                    "LIMIT 50",
                 )
-                extra_raw = r.get("extra")
-                if isinstance(extra_raw, dict):
-                    c.extra = extra_raw
-                elif isinstance(extra_raw, str) and extra_raw.strip():
-                    try:
-                        import json
+            if rows:
+                from src.radar.queue import JobCandidate
 
-                        parsed = json.loads(extra_raw)
-                        c.extra = parsed if isinstance(parsed, dict) else {}
-                    except Exception:
+                pending: list[JobCandidate] = []
+                for r in rows:
+                    c = JobCandidate(
+                        canonical_id=r["canonical_id"],
+                        normalized_role=r["normalized_role"],
+                        normalized_company=r["normalized_company"],
+                        normalized_location="Remote",
+                        source="radar",
+                        direct_apply_url="",
+                        match_percent=r["match_percent"],
+                        verdict=r["verdict"],
+                        funding_stage=r.get("funding_stage", ""),
+                    )
+                    extra_raw = r.get("extra")
+                    if isinstance(extra_raw, dict):
+                        c.extra = extra_raw
+                    elif isinstance(extra_raw, str) and extra_raw.strip():
+                        try:
+                            import json
+
+                            parsed = json.loads(extra_raw)
+                            c.extra = parsed if isinstance(parsed, dict) else {}
+                        except Exception:
+                            c.extra = {}
+                    else:
                         c.extra = {}
-                else:
-                    c.extra = {}
-                c.eligibility = EligibilityState.ACCEPTED
-                pending.append(c)
-            if pending:
-                logger.info(f"Re-delivering {len(pending)} unnotified candidates to Telegram")
-                await _notify_telegram(ta, pending, store)
-    except Exception as e:
-        logger.warning(f"Startup re-delivery failed: {e}")
+                    c.eligibility = EligibilityState.ACCEPTED
+                    pending.append(c)
+                if pending:
+                    logger.info(f"Re-delivering {len(pending)} unnotified candidates to Telegram")
+                    await _notify_telegram(ta, pending, store)
+        except Exception as e:
+            logger.warning(f"Startup re-delivery failed: {e}")
 
     sweep = 0
     last_discovery = 0.0
     last_index_scrape = 0.0
     _index_interval = 1800.0  # 30 min between GitHub index scrapes
-    is_worker = bool(os.getenv("HO_WORKER_ONLY"))
+
     if is_worker:
-        logger.info("Worker process running in dedicated queue worker mode")
+        logger.info("Worker process listening for queued candidate matching tasks...")
+        while not shutdown_requested.is_set():
+            resume_ctx = full_text[:3000] if full_text else candidate_persona
+            matched = await process_queue(
+                ctx,
+                resume_ctx,
+                candidate_persona,
+                store,
+                max_candidates=10,
+            )
+            if not matched:
+                await asyncio.sleep(2.0)
+        return
 
     while True:
         if shutdown_requested.is_set():
