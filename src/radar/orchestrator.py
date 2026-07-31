@@ -287,7 +287,9 @@ async def _scrape_indexes() -> list[JobObservation]:
     all_obs: list[JobObservation] = []
     async with httpx.AsyncClient(timeout=15.0) as client:
         for idx_url in GITHUB_INDEXES:
-            source_id = f"github:{idx_url.rsplit('/', 1)[-1]}"
+            repo_path = idx_url.split("githubusercontent.com/")[-1].rsplit("/", 1)[0]
+            repo_name = repo_path.replace("/", "_")
+            source_id = f"github:{repo_name}"
             if not should_poll(source_id):
                 continue
             logger.info(f"Scraping GitHub index: {source_id}")
@@ -296,7 +298,7 @@ async def _scrape_indexes() -> list[JobObservation]:
                 if resp.status_code == 200:
                     obs = extract_github_index_markdown(resp.text, idx_url)
                     for o in obs:
-                        o.source = f"github_index:{idx_url.rsplit('/', 1)[-1]}"
+                        o.source = f"github_index:{repo_name}"
                     all_obs.extend(obs)
                     record_success(source_id, len(obs), len(obs))
                 else:
@@ -1178,7 +1180,7 @@ async def _run_radar_pipeline() -> None:
 
     sweep = 0
     last_discovery = 0.0
-    last_index_scrape = 0.0
+    last_index_scrape = -9999.0
     _index_interval = 1800.0  # 30 min between GitHub index scrapes
 
     if is_worker:
