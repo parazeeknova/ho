@@ -73,23 +73,32 @@ async def _check_http(url: str, timeout: float = 3.0) -> bool:
 
 
 async def run_health_checks() -> str:
-    results: list[tuple[str, bool]] = []
-    results.append(("llama-server :8900", await _check_http("http://localhost:8900/health")))
-    results.append(("Firecrawl :3002", await _check_http("http://localhost:3002")))
-    results.append(("SearXNG :8080", await _check_http("http://localhost:8080")))
-    results.append(("pgvector :5433", await _check_port("localhost", 5433)))
+    checks = [
+        ("llama-server (Embed)", _check_http("http://localhost:8900/health")),
+        ("Firecrawl API", _check_port("localhost", 3002)),
+        ("SearXNG", _check_http("http://localhost:8080")),
+        ("agent-memory-db (pgvector)", _check_port("localhost", 5433)),
+        ("Neo4j Graph Store", _check_port("localhost", 7687)),
+        ("Redis", _check_port("localhost", 6379)),
+        ("RabbitMQ", _check_port("localhost", 5672)),
+        ("Playwright Service", _check_port("localhost", 3000)),
+        ("NuQ Postgres", _check_port("localhost", 5432)),
+    ]
 
-    lines = ["<b>Health Check</b>", ""]
+    results = await asyncio.gather(*[coro for _, coro in checks])
+
+    lines = ["<b>System Health Check</b>", ""]
     all_ok = True
-    for name, ok in results:
+    for (name, _), ok in zip(checks, results, strict=True):
         icon = "✅" if ok else "❌"
         lines.append(f"{icon} {name}")
         if not ok:
             all_ok = False
+
     if all_ok:
-        lines.extend(["", "All services healthy."])
+        lines.extend(["", "All 9 infrastructure services are healthy."])
     else:
-        lines.extend(["", "One or more services are DOWN."])
+        lines.extend(["", "⚠️ One or more services are DOWN."])
     return "\n".join(lines)
 
 
@@ -319,9 +328,68 @@ class TelegramAgent:
             "<b>Pipeline Status</b>",
             "",
             f"State: {status}",
-            f"Phase: <code>{s['phase']}</code>",
+            f"Phase: <code>{html.escape(str(s['phase']))}</code>",
             f"Sweep: #{s['sweep']}",
         ]
+        if uptime:
+            lines.append(f"Uptime: {uptime}")
+
+        # Search Persona
+        try:
+            from src.configuration import get_config
+
+            cfg_persona = get_config().candidate.persona.strip()
+            if cfg_persona:
+                short_persona = cfg_persona.split("\n")[0][:100]
+                lines.extend(
+                    [
+                        "",
+                        "<b>🎯 Search Persona Focus</b>",
+                        f"<code>{html.escape(short_persona)}</code>",
+                    ]
+                )
+        except Exception:
+            pass
+
+        # Data & Volume Stats
+        try:
+            from src.graph.graph_store import GraphStore
+            from src.memory.pgvector_store import MemoryStore
+
+            store = await MemoryStore.create()
+            graph = await GraphStore.create()
+            try:
+                resume_chunks = await store.chunk_count()
+                async with store._pool.acquire() as conn:
+                    obs_cnt = await conn.fetchval("SELECT COUNT(*) FROM job_observations") or 0
+                    cand_cnt = await conn.fetchval("SELECT COUNT(*) FROM radar_candidates") or 0
+                    src_cnt = await conn.fetchval("SELECT COUNT(*) FROM source_checkpoints") or 0
+                    accepted_cnt = (
+                        await conn.fetchval(
+                            "SELECT COUNT(*) FROM radar_candidates WHERE eligibility = 'accepted'"
+                        )
+                        or 0
+                    )
+
+                node_rows = await graph._run("MATCH (n:GraphNode) RETURN count(n) AS cnt")
+                graph_nodes = node_rows[0]["cnt"] if node_rows else 0
+
+                lines.extend(
+                    [
+                        "",
+                        "<b>💾 Storage & Volume Stats</b>",
+                        f"📄 Resume Chunks: <b>{resume_chunks}</b>",
+                        f"🌐 Active Sources: <b>{src_cnt}</b>",
+                        f"👁️ Job Observations: <b>{obs_cnt}</b>",
+                        f"🎯 Saved Candidates: <b>{cand_cnt}</b> (<b>{accepted_cnt}</b> accepted)",
+                        f"🕸️ Neo4j Graph Nodes: <b>{graph_nodes}</b>",
+                    ]
+                )
+            finally:
+                await graph.close()
+                await store.close()
+        except Exception as e:
+            logger.debug("Failed fetching storage stats for status", exc=e)
 
         queue_status = s.get("llm_queue", {})
         if queue_status:
@@ -361,6 +429,36 @@ class TelegramAgent:
             ]
         )
 
+        # Recent Logs (Last 4 log entries)
+        try:
+            from pathlib import Path
+
+            log_path = Path("logs/run.log")
+            if log_path.exists():
+                recent_logs: list[str] = []
+                with open(log_path, encoding="utf-8", errors="ignore") as f:
+                    all_lines = [line.strip() for line in f if line.strip()]
+                    for line_str in all_lines[-4:]:
+                        if line_str.startswith("{") and "message" in line_str:
+                            try:
+                                import json
+
+                                d = json.loads(line_str)
+                                logger_n = d.get("logger", "app")
+                                msg = d.get("message", line_str)
+                                recent_logs.append(
+                                    f"• <code>[{html.escape(logger_n)}]</code> "
+                                    f"{html.escape(msg[:70])}"
+                                )
+                            except Exception:
+                                recent_logs.append(f"• {html.escape(line_str[:70])}")
+                        else:
+                            recent_logs.append(f"• {html.escape(line_str[:70])}")
+                if recent_logs:
+                    lines.extend(["", "<b>📜 Recent Logs</b>"] + recent_logs)
+        except Exception:
+            pass
+
         sweep_start = s.get("sweep_started_at", 0)
         if sweep_start:
             interval = s.get("sweep_interval", 300)
@@ -368,12 +466,12 @@ class TelegramAgent:
             if s["phase"].startswith("idle") and s["running"]:
                 remaining = max(0, interval - elapsed)
                 m, sec = divmod(int(remaining), 60)
-                lines.append(f"⏳ Next sweep in: <b>{m}m {sec}s</b>")
+                lines.append(f"\n⏳ Next sweep in: <b>{m}m {sec}s</b>")
 
-        if uptime:
-            lines.append(f"Uptime: {uptime}")
         if s.get("last_error"):
-            lines.extend(["", "<b>Last error:</b>", f"<code>{s['last_error'][:200]}</code>"])
+            lines.extend(
+                ["", "<b>Last error:</b>", f"<code>{html.escape(s['last_error'][:200])}</code>"]
+            )
         lines.extend(["", "Send /health to check services."])
         await self._send_raw("\n".join(lines))
 
