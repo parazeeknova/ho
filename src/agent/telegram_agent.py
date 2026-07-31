@@ -904,7 +904,7 @@ class TelegramAgent:
                     buttons.append([{"text": f"👤 {name} LinkedIn", "url": f["linkedin_url"]}])
 
         reply_markup = {"inline_keyboard": buttons} if buttons else None
-        return await self._send_to_chat(self._primary_chat_id, text, "HTML", reply_markup)
+        return await self._send_raw(text, "HTML", reply_markup)
 
     async def notify_verified_jobs(
         self,
@@ -1005,7 +1005,7 @@ class TelegramAgent:
                     buttons.append([{"text": f"LinkedIn: {name}", "url": f["linkedin_url"]}])
 
         reply_markup = {"inline_keyboard": buttons} if buttons else None
-        success = await self._send_to_chat(self._primary_chat_id, text, "HTML", reply_markup)
+        success = await self._send_raw(text, "HTML", reply_markup)
 
         if success and dedup_key:
             self._notified_keys.add(dedup_key)
@@ -1080,8 +1080,7 @@ class TelegramAgent:
             ]
         )
 
-        await self._send_to_chat(
-            self._primary_chat_id,
+        await self._send_raw(
             text,
             "HTML",
             {"inline_keyboard": buttons},
@@ -1124,8 +1123,7 @@ class TelegramAgent:
         if draft:
             lines.extend(["", f"<blockquote expandable>{html.escape(draft)}</blockquote>"])
 
-        await self._send_to_chat(
-            self._primary_chat_id,
+        await self._send_raw(
             "\n".join(lines),
             "HTML",
             {"inline_keyboard": buttons} if buttons else None,
