@@ -12,10 +12,24 @@ from src.radar.models import JobObservation
 logger = get_logger("dorking_engine")
 
 _DORK_QUERIES = [
+    # Top Priority: Junior, Entry-Level, Graduate & Introductory Roles
+    'site:boards.greenhouse.io "Junior" OR "Entry Level" OR "Associate" OR "Graduate"',
+    'site:jobs.ashbyhq.com "Junior" OR "Entry Level" OR "Early Career" OR "University"',
+    'site:jobs.lever.co "Junior" OR "Entry Level" OR "Graduate" OR "Associate"',
+    'site:apply.workable.com "Junior" OR "Entry Level" OR "Associate"',
+    'site:boards.greenhouse.io "New Grad" OR "2026" OR "Intern" OR "Internship"',
+    'site:jobs.ashbyhq.com "New Grad" OR "2026" OR "Intern" OR "Internship"',
+    'site:jobs.lever.co "New Grad" OR "2026" OR "Intern" OR "Internship"',
+    'site:apply.workable.com "New Grad" OR "2026" OR "Intern" OR "Internship"',
+    # Targeted Software / Developer Junior Dorks
+    'site:boards.greenhouse.io ("Junior Developer" OR "Associate Software Engineer")',
+    'site:jobs.ashbyhq.com ("Junior Software Engineer" OR "Entry Level Engineer")',
+    'site:jobs.lever.co ("Junior Software Engineer" OR "Associate Engineer")',
+    # Core Engineering & Infrastructure Dorks
     'site:boards.greenhouse.io "Engineer" OR "Developer" OR "Infrastructure"',
-    'site:ashbyhq.com "Engineer" OR "Staff" OR "Founding"',
+    'site:jobs.ashbyhq.com "Engineer" OR "Software" OR "Full Stack"',
     'site:jobs.lever.co "Engineer" OR "Backend" OR "AI"',
-    'site:apply.workable.com "Engineer" OR "Senior"',
+    'site:apply.workable.com "Engineer" OR "Developer"',
 ]
 
 
