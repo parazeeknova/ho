@@ -84,9 +84,10 @@ class TestEnqueueCandidate:
             )
             await enqueue_candidate(candidate, priority=i * 10)
 
-        entries = list(_queue_state.pending)
-        priorities = [e[0] for e in entries]
-        assert priorities == sorted(priorities, reverse=True)
+        import heapq
+
+        popped = [heapq.heappop(_queue_state.pending)[0] for _ in range(5)]
+        assert popped == [-40, -30, -20, -10, 0]
 
     @pytest.mark.asyncio
     async def test_mark_retry_allows_reenqueue(self) -> None:

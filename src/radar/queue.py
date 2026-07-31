@@ -19,8 +19,8 @@ drop candidates.
 from __future__ import annotations
 
 import asyncio
+import heapq
 import time
-from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -35,7 +35,7 @@ logger = get_logger("llm_queue")
 
 @dataclass
 class QueueState:
-    pending: deque = field(default_factory=deque)
+    pending: list[tuple[int, int, JobCandidate]] = field(default_factory=list)
     total_enqueued: int = 0
     total_completed: int = 0
     total_failed: int = 0
@@ -110,9 +110,9 @@ async def enqueue_candidate(candidate: JobCandidate, priority: int = 50) -> bool
         _ACTIVE_IDS[key] = time.monotonic()
         _CANDIDATE_VERSIONS[candidate.canonical_id] = candidate.extra.get("version", 1)
     async with _queue_lock:
-        _queue_state.pending.append((priority, candidate))
+        seq = _queue_state.total_enqueued
+        heapq.heappush(_queue_state.pending, (-priority, seq, candidate))
         _queue_state.total_enqueued += 1
-        _queue_state.pending = deque(sorted(_queue_state.pending, key=lambda x: x[0], reverse=True))
         _queue_not_empty.set()
     return True
 
@@ -216,7 +216,7 @@ async def process_queue(
         entry = await _dequeue()
         if entry is None:
             break
-        _, candidate = entry
+        _, _, candidate = entry
         candidate.eligibility = EligibilityState.QUEUED
         tasks.append(asyncio.create_task(_worker(candidate)))
         processed += 1
@@ -264,7 +264,7 @@ async def _vector_gate_similarity(candidate: JobCandidate, store: Any) -> float 
     return sum(similarities) / len(similarities)
 
 
-async def _dequeue() -> tuple[int, JobCandidate] | None:
+async def _dequeue() -> tuple[int, int, JobCandidate] | None:
     loop = asyncio.get_running_loop()
     if getattr(_queue_not_empty, "_loop", None) is not loop:
         _queue_not_empty._loop = loop
@@ -276,7 +276,7 @@ async def _dequeue() -> tuple[int, JobCandidate] | None:
         if not _queue_state.pending:
             _queue_not_empty.clear()
             return None
-        entry = _queue_state.pending.popleft()
+        entry = heapq.heappop(_queue_state.pending)
         if not _queue_state.pending:
             _queue_not_empty.clear()
         return entry

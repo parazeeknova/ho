@@ -777,7 +777,7 @@ async def _check_and_notify_stealth_signals(
     """Detect and notify high-centrality stealth startups before public job postings exist."""
     if not ta.is_configured:
         return 0
-    signals = await graph.get_stealth_hiring_signals(limit=5)
+    signals = await graph.detect_stealth_hiring_signals(limit=5)
     if not signals:
         return 0
     sent = 0
@@ -1259,8 +1259,16 @@ async def _run_radar_pipeline() -> None:
     last_discovery = 0.0
     last_index_scrape = -9999.0
     last_graph_metrics = 0.0
+    last_mass_poll = -9999.0
+    last_dorks = -9999.0
     _index_interval = 1800.0  # 30 min between GitHub index scrapes
     _graph_metrics_interval = 7200.0  # 2 hours between graph metric recomputes
+    _mass_poll_interval = 14400.0  # 4 hours between mass ATS slug polls
+    _dork_interval = 1800.0  # 30 min between SearXNG dork runs
+
+    from src.radar.dorking import DorkingEngine
+
+    dork_engine = DorkingEngine()
 
     if is_worker:
         logger.info("Worker process listening for queued candidate matching tasks...")
@@ -1297,10 +1305,11 @@ async def _run_radar_pipeline() -> None:
             all_obs: list[JobObservation] = []
 
             # 1. Mass ATS Poller: 10,000+ slugs every 4 hours
-            if not is_worker and time.monotonic() - last_index_scrape > _index_interval * 8:
+            if not is_worker and time.monotonic() - last_mass_poll > _mass_poll_interval:
                 try:
                     from src.radar.ats_mass_poller import poll_all_mass_slugs
 
+                    last_mass_poll = time.monotonic()
                     mass_obs = await poll_all_mass_slugs()
                     all_obs.extend(mass_obs)
                     logger.info(f"Sweep {sweep}: {len(mass_obs)} from mass ATS poller")
@@ -1316,12 +1325,11 @@ async def _run_radar_pipeline() -> None:
 
             # 3. Pillar 2 SearXNG Dorking (Junior/New Grad/Entry Level queries)
             try:
-                from src.radar.dorking import DorkingEngine
-
-                dork_engine = DorkingEngine()
-                dork_obs = await dork_engine.execute_dorks()
-                all_obs.extend(dork_obs)
-                logger.info(f"Sweep {sweep}: {len(dork_obs)} observations from SearXNG dorks")
+                if time.monotonic() - last_dorks > _dork_interval:
+                    last_dorks = time.monotonic()
+                    dork_obs = await dork_engine.execute_dorks()
+                    all_obs.extend(dork_obs)
+                    logger.info(f"Sweep {sweep}: {len(dork_obs)} observations from SearXNG dorks")
             except Exception as dork_err:
                 logger.warning(f"SearXNG dorking sweep warning: {dork_err}")
 
