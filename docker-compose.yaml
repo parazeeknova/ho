@@ -125,7 +125,7 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: agent_memory
     volumes:
-      - agent_memory_data:/var/lib/postgresql/data
+      - agent_memory_data:/var/lib/postgresql
       - ./scripts/init-pgvector.sql:/docker-entrypoint-initdb.d/init.sql
     logging:
       driver: "json-file"
