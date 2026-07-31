@@ -725,7 +725,15 @@ class TelegramAgent:
         try:
             from src.configuration import get_config
 
-            short_persona = get_config().candidate.persona.strip().split("\n")[0][:100]
+            cfg_persona = get_config().candidate.persona.strip()
+            if cfg_persona:
+                persona_lines = [
+                    line_str.strip()
+                    for line_str in cfg_persona.split("\n")
+                    if line_str.strip()
+                    and not line_str.strip().lower().startswith("candidate profile")
+                ]
+                short_persona = "\n".join(persona_lines[:3]) if persona_lines else cfg_persona[:200]
         except Exception:
             pass
 
