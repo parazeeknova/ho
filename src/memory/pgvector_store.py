@@ -6,6 +6,7 @@ No dependency on Firebase or any other persistence layer.
 
 from __future__ import annotations
 
+import contextlib
 import json
 from typing import Any
 
@@ -208,6 +209,9 @@ CREATE TABLE IF NOT EXISTS llm_queue (
 
 CREATE INDEX IF NOT EXISTS idx_llm_queue_claim ON llm_queue(status, priority DESC, id);
 
+ALTER TABLE jobs_ledger
+ADD COLUMN IF NOT EXISTS embedding vector({VECTOR_DIM});
+
 CREATE INDEX IF NOT EXISTS idx_radar_candidates_eligibility ON radar_candidates(eligibility);
 CREATE INDEX IF NOT EXISTS idx_radar_candidates_freshness ON radar_candidates(freshness_lane);
 CREATE INDEX IF NOT EXISTS idx_radar_candidates_rejection ON radar_candidates(rejection_reason);
@@ -216,6 +220,12 @@ CREATE INDEX IF NOT EXISTS idx_radar_candidates_created ON radar_candidates(crea
 CREATE INDEX IF NOT EXISTS idx_job_observations_source ON job_observations(source);
 CREATE INDEX IF NOT EXISTS idx_job_observations_first_seen ON job_observations(first_seen);
 CREATE INDEX IF NOT EXISTS idx_source_checkpoints_active ON source_checkpoints(active);
+CREATE INDEX IF NOT EXISTS idx_radar_candidates_elig_created
+    ON radar_candidates(eligibility, created_at);
+CREATE INDEX IF NOT EXISTS idx_job_observations_source_seen
+    ON job_observations(source, last_seen);
+CREATE INDEX IF NOT EXISTS idx_jobs_ledger_match
+    ON jobs_ledger(match_percent DESC);
 """
 
 
@@ -233,8 +243,46 @@ class MemoryStore:
         async with pool.acquire() as conn:
             await register_vector(conn)
             await conn.execute(CREATE_TABLES_SQL)
+            await cls._create_hnsw_indexes(conn)
+            await cls._prune_llm_queue(conn)
         logger.info("MemoryStore initialized", dsn=cfg.dsn.split("@")[-1])
         return cls(pool)
+
+    @staticmethod
+    async def _create_hnsw_indexes(conn) -> None:
+        """Build ANN indexes on the hot vector-search columns.
+
+        Wrapped in suppress: HNSW needs pgvector >= 0.5.0, and a missing
+        index must never block store startup (searches just degrade to
+        exact scans).
+        """
+        with contextlib.suppress(Exception):
+            await conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_resume_embeddings_hnsw
+                ON resume_embeddings USING hnsw (embedding vector_cosine_ops)
+                WITH (m = 16, ef_construction = 64)
+                """
+            )
+        with contextlib.suppress(Exception):
+            await conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_jobs_ledger_embedding_hnsw
+                ON jobs_ledger USING hnsw (embedding vector_cosine_ops)
+                WITH (m = 16, ef_construction = 64)
+                """
+            )
+
+    @staticmethod
+    async def _prune_llm_queue(conn, older_than_days: int = 7) -> None:
+        """Drop settled queue rows so llm_queue never grows unbounded."""
+        with contextlib.suppress(Exception):
+            await conn.execute(
+                "DELETE FROM llm_queue "
+                "WHERE status IN ('done', 'error') "
+                "AND completed_at < NOW() - ($1::int * INTERVAL '1 day')",
+                older_than_days,
+            )
 
     async def close(self) -> None:
         await self._pool.close()
@@ -842,13 +890,37 @@ class MemoryStore:
                 )
                 ON CONFLICT (canonical_id) DO UPDATE SET
                     last_seen = EXCLUDED.last_seen,
+                    first_seen = LEAST(
+                        radar_candidates.first_seen, EXCLUDED.first_seen
+                    ),
                     match_percent = GREATEST(
                         radar_candidates.match_percent, EXCLUDED.match_percent
                     ),
+                    shortlist_probability = GREATEST(
+                        radar_candidates.shortlist_probability,
+                        EXCLUDED.shortlist_probability
+                    ),
                     eligibility = EXCLUDED.eligibility,
+                    rejection_reason = COALESCE(
+                        NULLIF(EXCLUDED.rejection_reason, ''),
+                        radar_candidates.rejection_reason
+                    ),
                     matching_skills = EXCLUDED.matching_skills,
                     missing_skills = EXCLUDED.missing_skills,
                     verdict = EXCLUDED.verdict,
+                    jd_summary = COALESCE(
+                        NULLIF(EXCLUDED.jd_summary, ''),
+                        radar_candidates.jd_summary
+                    ),
+                    company_description = COALESCE(
+                        NULLIF(EXCLUDED.company_description, ''),
+                        radar_candidates.company_description
+                    ),
+                    role_summary = COALESCE(
+                        NULLIF(EXCLUDED.role_summary, ''),
+                        radar_candidates.role_summary
+                    ),
+                    extra = radar_candidates.extra || EXCLUDED.extra,
                     updated_at = NOW()
                 """,
                 data.get("canonical_id", ""),
