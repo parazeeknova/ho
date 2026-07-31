@@ -575,43 +575,54 @@ async def _enrich_high_fit(
     if not accepted:
         return
     logger.info(f"Enriching {len(accepted)} accepted candidates with OSINT & founder details...")
-    for idx, c in enumerate(candidates):
-        if not c.is_accepted:
-            continue
-        try:
-            enriched = await sa.analyze_startup(
-                {
-                    "role": c.normalized_role,
-                    "company": c.normalized_company,
-                    "match_percent": c.match_percent,
-                    "verdict": c.verdict,
-                }
-            )
-            c.founders = enriched.get("founders", [])
-            c.funding_stage = enriched.get("funding_stage", "")
-            c.funding_info = enriched.get("funding_info", {})
-            c.founder_socials = enriched.get("founder_socials", [])
-            c.company_news = enriched.get("company_news", "")
-            c.osint_signals = enriched.get("osint_signals", [])
-            c.underdog_score = compute_underdog_score(c)
 
-            # Inject graph structural insights (predictive link prediction)
-            if c.funding_stage or enriched.get("founders"):
-                try:
-                    graph_insights = await graph.generate_graph_insights_for_llm(
-                        make_company_id(c.normalized_company)
-                    )
-                    if graph_insights:
-                        existing = list(c.osint_signals or [])
-                        existing.append(graph_insights)
-                        c.osint_signals = existing
-                except Exception:
-                    pass
+    jobs: list[dict[str, Any]] = []
+    by_candidate: dict[int, JobCandidate] = {}
+    for c in accepted:
+        by_candidate[len(jobs)] = c
+        jobs.append(
+            {
+                "role": c.normalized_role,
+                "company": c.normalized_company,
+                "match_percent": c.match_percent,
+                "verdict": c.verdict,
+                "source": c.source,
+                "apply_link": c.direct_apply_url,
+                "jd_summary": c.jd_summary,
+                "company_description": c.company_description,
+                "role_summary": c.role_summary,
+            }
+        )
 
-            await _persist_full(store, c)
-            logger.info(f"Enriching {c.normalized_company}: {idx + 1}/{len(accepted)}")
-        except Exception:
-            pass
+    enriched_all = await sa.batch_analyze_startups(jobs, concurrency=8)
+
+    for idx, c in by_candidate.items():
+        enriched = enriched_all[idx] if idx < len(enriched_all) else {}
+        c.founders = enriched.get("founders", [])
+        c.funding_stage = enriched.get("funding_stage", "")
+        c.funding_info = enriched.get("funding_info", {})
+        c.founder_socials = enriched.get("founder_socials", [])
+        c.company_news = enriched.get("company_news", "")
+        c.osint_signals = enriched.get("osint_signals", [])
+        c.underdog_score = compute_underdog_score(c)
+
+        # Inject graph structural insights (predictive link prediction)
+        if c.funding_stage or enriched.get("founders"):
+            try:
+                graph_insights = await graph.generate_graph_insights_for_llm(
+                    make_company_id(c.normalized_company)
+                )
+                if graph_insights:
+                    existing = list(c.osint_signals or [])
+                    existing.append(graph_insights)
+                    c.osint_signals = existing
+            except Exception:
+                pass
+
+        await _persist_full(store, c)
+
+    for idx, c in by_candidate.items():
+        logger.info(f"Enriching {c.normalized_company}: {idx + 1}/{len(accepted)}")
 
 
 async def _persist_full(store: MemoryStore, c: JobCandidate) -> None:

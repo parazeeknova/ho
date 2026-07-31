@@ -135,32 +135,39 @@ async def process_queue(
 
     async def _worker(candidate: JobCandidate) -> None:
         try:
-            if cfg.vector_gate_enabled:
-                similarity = await _vector_gate_similarity(candidate, store)
-                if similarity is not None:
-                    candidate.extra["vector_similarity"] = round(similarity, 4)
-                    if similarity < cfg.vector_gate_threshold:
-                        candidate.match_percent = 0
-                        candidate.verdict = "NO_MATCH"
-                        candidate.eligibility = EligibilityState.REJECTED
-                        candidate.rejection_reason = RejectionReason.VECTOR_GATE
-                        logger.info(
-                            f"Vector gate: {candidate.normalized_role} at "
-                            f"{candidate.normalized_company} -> {similarity:.3f} "
-                            f"(below {cfg.vector_gate_threshold}), skipped LLM",
-                        )
-                        async with _queue_lock:
-                            _queue_state.total_completed += 1
-                            _queue_state.total_vector_rejects += 1
-                        results.append(candidate)
-                        if store is not None:
-                            await _persist_candidate(store, candidate)
-                        return
+            resume_chunks: list[dict[str, Any]] | None = None
+            if cfg.vector_gate_enabled or resume_context:
+                retrieved = await _resume_chunks_for(candidate, store)
+                if retrieved is not None:
+                    chunks, similarity = retrieved
+                    resume_chunks = chunks
+                    if cfg.vector_gate_enabled and similarity is not None:
+                        candidate.extra["vector_similarity"] = round(similarity, 4)
+                        if similarity < cfg.vector_gate_threshold:
+                            candidate.match_percent = 0
+                            candidate.verdict = "NO_MATCH"
+                            candidate.eligibility = EligibilityState.REJECTED
+                            candidate.rejection_reason = RejectionReason.VECTOR_GATE
+                            logger.info(
+                                f"Vector gate: {candidate.normalized_role} at "
+                                f"{candidate.normalized_company} -> {similarity:.3f} "
+                                f"(below {cfg.vector_gate_threshold}), skipped LLM",
+                            )
+                            async with _queue_lock:
+                                _queue_state.total_completed += 1
+                                _queue_state.total_vector_rejects += 1
+                            results.append(candidate)
+                            if store is not None:
+                                await _persist_candidate(store, candidate)
+                            return
 
-            jd = candidate.extra.get("raw_markdown", "")[:8000]
+            jd = candidate.extra.get("raw_markdown", "")[:12000]
+
+            digest = _digest_from_chunks(resume_chunks) if resume_chunks else ""
+            resume_block = digest if digest else resume_context[:3000]
 
             prompt = MATCHER_PROMPT.replace("{candidate_persona}", candidate_persona)
-            prompt = prompt.replace("{resume_context}", resume_context[:3000])
+            prompt = prompt.replace("{resume_context}", resume_block)
             prompt = prompt.replace("{job_markdown}", jd)
 
             result = await ctx.json_chat(
@@ -233,12 +240,17 @@ async def process_queue(
     return results
 
 
-async def _vector_gate_similarity(candidate: JobCandidate, store: Any) -> float | None:
-    """Pass 1: cheap pgvector gate against the resume chunk store.
+async def _resume_chunks_for(
+    candidate: JobCandidate, store: Any, top_k: int = 8
+) -> tuple[list[dict[str, Any]], float | None] | None:
+    """Pass 1: cheap pgvector retrieval against the resume chunk store.
 
-    Returns the JD's average cosine similarity to the top resume chunks,
-    or ``None`` when the gate cannot run (no store, no chunk index, embed
-    server down). Callers must pass ``None`` through to the LLM.
+    Embeds the JD once and returns (chunks, avg_cosine_similarity). The
+    chunks feed both the vector gate (threshold reject) and the matcher
+    prompt's resume digest, so a single embed + search serves both.
+
+    Returns ``None`` when the gate cannot run (no store, no chunk index,
+    embed server down). Callers must pass ``None`` through to the LLM.
     """
     if store is None or not hasattr(store, "search_similar_chunks"):
         return None
@@ -247,21 +259,39 @@ async def _vector_gate_similarity(candidate: JobCandidate, store: Any) -> float 
     if not jd.strip():
         return None
 
-    from src.agent.enrichment_agent import _get_embedding
+    try:
+        from src.agent.enrichment_agent import _get_embedding
 
-    jd_vector = await _get_embedding(jd)
-    if jd_vector is None:
+        jd_vector = await _get_embedding(jd)
+        if jd_vector is None:
+            return None
+
+        chunks = await store.search_similar_chunks(jd_vector, top_k=top_k)
+        if not chunks:
+            return None
+
+        similarities = [1.0 - ch.get("distance", 1.0) for ch in chunks]
+        similarities = [s for s in similarities if s >= 0.0]
+        similarity = sum(similarities) / len(similarities) if similarities else None
+        return chunks, similarity
+    except Exception:
         return None
 
-    chunks = await store.search_similar_chunks(jd_vector, top_k=5)
-    if not chunks:
-        return None
 
-    similarities = [1.0 - ch.get("distance", 1.0) for ch in chunks]
-    similarities = [s for s in similarities if s >= 0.0]
-    if not similarities:
-        return None
-    return sum(similarities) / len(similarities)
+def _digest_from_chunks(chunks: list[dict[str, Any]], max_chars: int = 2000) -> str:
+    """Compress retrieved resume chunks into a tight prompt block."""
+    parts: list[str] = []
+    total = 0
+    for c in chunks:
+        text = (c.get("content") or "").strip()
+        if not text:
+            continue
+        piece = text[:900]
+        parts.append(piece)
+        total += len(piece)
+        if total >= max_chars:
+            break
+    return "\n".join(parts)
 
 
 async def _dequeue() -> tuple[int, int, JobCandidate] | None:

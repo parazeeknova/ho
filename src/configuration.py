@@ -181,7 +181,7 @@ class LLMConfig:
     context_length: int = field(default_factory=lambda: _env_int("LLM_CONTEXT_LENGTH", 32768))
     token_rate: float = field(default_factory=lambda: _env_float("LLM_TOKEN_RATE", 1.4))
     token_max: int = field(default_factory=lambda: _env_int("LLM_TOKEN_MAX", 30))
-    max_retries: int = field(default_factory=lambda: _env_int("LLM_MAX_RETRIES", 5))
+    max_retries: int = field(default_factory=lambda: _env_int("LLM_MAX_RETRIES", 3))
     retry_delay: float = field(default_factory=lambda: _env_float("LLM_RETRY_DELAY", 2.0))
     rate_penalty_secs: float = field(
         default_factory=lambda: _env_float("LLM_RATE_PENALTY_SECS", 60.0)
@@ -225,7 +225,7 @@ class LlmQueueConfig:
     estimated_tokens_per_minute: int = field(
         default_factory=lambda: _env_int("LLM_QUEUE_TPM", 180000)
     )
-    max_in_flight: int = field(default_factory=lambda: _env_int("LLM_QUEUE_MAX_IN_FLIGHT", 5))
+    max_in_flight: int = field(default_factory=lambda: _env_int("LLM_QUEUE_MAX_IN_FLIGHT", 15))
     match_token_budget: int = field(
         default_factory=lambda: _env_int("LLM_QUEUE_MATCH_TOKENS", 2000)
     )
@@ -237,6 +237,17 @@ class LlmQueueConfig:
     )
     cooldown_seconds: float = field(default_factory=lambda: _env_float("LLM_QUEUE_COOLDOWN", 30.0))
     jitter_seconds: float = field(default_factory=lambda: _env_float("LLM_QUEUE_JITTER", 5.0))
+    # Shared provider budget: the provider (and Firecrawl's LLM calls) share one
+    # per-minute quota. Radar reserves this fraction of it; Redis makes the
+    # budget hold across radar processes (master + workers) atomically.
+    budget_radar_rpm: int = field(default_factory=lambda: _env_int("LLM_BUDGET_RADAR_RPM", 70))
+    budget_radar_tpm: int = field(default_factory=lambda: _env_int("LLM_BUDGET_RADAR_TPM", 140000))
+    budget_redis_url: str = field(
+        default_factory=lambda: _env_str("LLM_BUDGET_REDIS_URL", "redis://127.0.0.1:6379/1")
+    )
+    budget_redis_enabled: bool = field(
+        default_factory=lambda: _env_bool("LLM_BUDGET_REDIS_ENABLED", True)
+    )
 
 
 @dataclass

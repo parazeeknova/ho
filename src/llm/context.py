@@ -94,11 +94,14 @@ class ContextManager:
             except Exception as e:
                 release_budget()
                 last_error = e
-                if _is_429(str(e)) or _is_transient(e):
+                # 429 means the provider itself is throttled: the governor's
+                # shared cooldown already paces the whole fleet, so retrying
+                # here just multiplies sends against a closed door. Surface it
+                # to the caller (the queue requeues such candidates once).
+                if _is_429(str(e)):
                     await handle_429()
-                    wait = max(5.0, backoff * 3)
-                else:
-                    wait = backoff
+                    raise
+                wait = max(5.0, backoff * 3) if _is_transient(e) else backoff
                 logger.warning(
                     f"LLM retry {attempt}/{self._max_retries}",
                     retry_count=attempt,
