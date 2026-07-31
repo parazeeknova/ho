@@ -652,9 +652,10 @@ async def _persist_full(store: MemoryStore, c: JobCandidate) -> None:
 
 async def _notify_telegram(
     ta: TelegramAgent, matched: list[JobCandidate], store: MemoryStore
-) -> None:
+) -> int:
+    """Send Telegram alerts for accepted candidates. Returns actual send count."""
     if not ta.is_configured:
-        return
+        return 0
     notified: set[str] = set()
     try:
         async with store._pool.acquire() as conn:
@@ -665,6 +666,8 @@ async def _notify_telegram(
 
     def _pid(c: JobCandidate) -> str:
         return c.extra.get("posting_id", c.canonical_id)
+
+    sent_count = 0
 
     urgent = [
         c
@@ -696,6 +699,7 @@ async def _notify_telegram(
         and _pid(c) not in urgent_pids
         and _pid(c) not in underdog_pids
     ]
+    sponsor_pids = {_pid(c) for c in sponsor}
 
     startup = [
         c
@@ -705,17 +709,32 @@ async def _notify_telegram(
         and _pid(c) not in notified
         and _pid(c) not in urgent_pids
         and _pid(c) not in underdog_pids
+        and _pid(c) not in sponsor_pids
+    ]
+    startup_pids = {_pid(c) for c in startup}
+
+    # Catch-all: any accepted candidate not in specialized buckets
+    categorized_pids = urgent_pids | underdog_pids | sponsor_pids | startup_pids
+    general = [
+        c
+        for c in matched
+        if c.is_accepted and _pid(c) not in notified and _pid(c) not in categorized_pids
     ]
 
-    async def _notify(cat: str, candidates: list[JobCandidate]) -> None:
+    async def _notify(cat: str, candidates: list[JobCandidate]) -> int:
+        count = 0
         for c in candidates:
             link = c.direct_apply_url or c.extra.get("source_url") or c.extra.get("ats_url") or ""
             if not link or not str(link).startswith("http"):
+                logger.warning(
+                    f"Telegram skip (no valid link): {c.normalized_company} / {c.normalized_role}"
+                )
                 continue
             key = _pid(c)
             try:
                 ok = await ta.send_categorized_alert(cat, _card(c), dedup_key=key)
                 if ok:
+                    count += 1
                     notified.add(key)
                     async with store._pool.acquire() as conn:
                         await conn.execute(
@@ -727,11 +746,19 @@ async def _notify_telegram(
                         )
             except Exception:
                 pass
+        return count
 
-    await _notify("urgent", urgent)
-    await _notify("outreach", underdog[:15])
-    await _notify("eligible", sponsor[:10])
-    await _notify("startup_signal", startup[:10])
+    sent_count += await _notify("urgent", urgent)
+    sent_count += await _notify("outreach", underdog[:15])
+    sent_count += await _notify("eligible", sponsor[:10])
+    sent_count += await _notify("startup_signal", startup[:10])
+    sent_count += await _notify("general_accepted", general[:20])
+    logger.info(
+        f"Telegram delivery: {sent_count} sent "
+        f"(urgent={len(urgent)}, underdog={len(underdog)}, "
+        f"sponsor={len(sponsor)}, startup={len(startup)}, general={len(general)})"
+    )
+    return sent_count
 
 
 def _card(c: JobCandidate) -> dict[str, Any]:
@@ -1278,6 +1305,9 @@ async def _run_radar_pipeline() -> None:
             candidates, gate_stats = await _fetch_postings_and_gate(all_obs, store)
             set_pipeline_state(scraped=len(all_obs), gated=len(candidates))
             logger.info(f"Gating: {len(candidates)} passed, {gate_stats['rejected']} rejected")
+            gs = gate_stats.get("gate_stats", {})
+            if gs:
+                logger.info(f"Gate rejection breakdown: {gs}")
             if ta.is_configured:
                 await ta.send_stage_progress(
                     f"Sweep {sweep}: Source Polling & Gating",
@@ -1321,9 +1351,12 @@ async def _run_radar_pipeline() -> None:
             )
             logger.info(f"Sweep {sweep}: enriched {enriched_count} high-fit candidates")
             await _dispatch_company_events(matched, graph, bus)
-            await _notify_telegram(ta, matched, store)
-            notified_count = len([c for c in matched if c.is_accepted])
-            logger.info(f"Sweep {sweep}: {notified_count} Telegram alerts sent")
+            actual_sent = await _notify_telegram(ta, matched, store)
+            accepted_count = len([c for c in matched if c.is_accepted])
+            logger.info(
+                f"Sweep {sweep}: {actual_sent} Telegram alerts actually sent"
+                f" ({accepted_count} accepted)"
+            )
 
             accepted = len([c for c in matched if c.is_accepted])
             rejected_llm = len([c for c in matched if c.is_rejected])

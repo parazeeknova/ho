@@ -997,6 +997,7 @@ class TelegramAgent:
         "outreach": "[OUTREACH]",
         "eligible": "[ELIGIBLE]",
         "review": "[REVIEW]",
+        "general_accepted": "[MATCH]",
     }
 
     _CATEGORY_LABELS: dict[str, str] = {
@@ -1005,6 +1006,7 @@ class TelegramAgent:
         "outreach": "Cold Outreach Opportunity",
         "eligible": "Eligible Role",
         "review": "Freshness Review Role",
+        "general_accepted": "Matched Role",
     }
 
     async def send_categorized_alert(

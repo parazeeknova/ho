@@ -455,7 +455,8 @@ class TestGatesExplicitExperience:
             raw_markdown=raw,
         )
 
-    def test_5_years(self) -> None:
+    def test_5_years_passes(self) -> None:
+        """5+ years should no longer be a hard reject (threshold is 7+)."""
         result = gate_explicit_experience(
             self.make_obs("Requires 5+ years of experience"),
             JobCandidate(
@@ -469,7 +470,7 @@ class TestGatesExplicitExperience:
             set(),
             {},
         )
-        assert result == RejectionReason.EXPERIENCE_HIGH
+        assert result is None
 
     def test_10_years(self) -> None:
         result = gate_explicit_experience(

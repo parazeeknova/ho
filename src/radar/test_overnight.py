@@ -108,14 +108,27 @@ class TestOvernightAcceptance:
         assert any(r[1] == RejectionReason.URL_DUPLICATE for r in rejections2)
 
     @pytest.mark.asyncio
-    async def test_experience_5plus_rejected(self) -> None:
-        """JDs requiring 5+ years must be rejected."""
+    async def test_experience_5plus_passes(self) -> None:
+        """JDs mentioning 5+ years should pass — threshold raised to 7+."""
         obs = JobObservation(
             url="https://jobs.lever.co/company/exp-role",
             source="lever",
             title="Software Engineer",
             snippet="Entry level role",
             raw_markdown="Requires 5+ years of professional experience in Python and React.",
+        )
+        result, rejections = await run_gates(obs, set(), {})
+        assert result is not None, "5+ years should no longer be a hard rejection"
+
+    @pytest.mark.asyncio
+    async def test_experience_7plus_rejected(self) -> None:
+        """JDs requiring 7+ years must be rejected."""
+        obs = JobObservation(
+            url="https://jobs.lever.co/company/exp-role-7",
+            source="lever",
+            title="Software Engineer",
+            snippet="Entry level role",
+            raw_markdown="Requires 7+ years of professional experience in Python and React.",
         )
         result, rejections = await run_gates(obs, set(), {})
         assert result is None

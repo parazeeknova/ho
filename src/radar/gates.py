@@ -278,7 +278,6 @@ def gate_role_family(
 
 
 _EXPLICIT_EXPERIENCE_PATTERNS = [
-    (re.compile(r"\b5\+?\s*years?\b", re.IGNORECASE), "5_years"),
     (re.compile(r"\b7\+?\s*years?\b", re.IGNORECASE), "7_years"),
     (re.compile(r"\b10\+?\s*years?\b", re.IGNORECASE), "10_years"),
     (re.compile(r"\b\d{2,}\s*\+\s*years?\b", re.IGNORECASE), "many_years"),
