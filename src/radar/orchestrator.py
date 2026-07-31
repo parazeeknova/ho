@@ -219,7 +219,7 @@ async def _discover_new_companies() -> list[dict[str, Any]]:
     total = len(deduped)
     logger.info(f"Resolving domains and detecting ATS for {total} companies...")
     for idx, c in enumerate(deduped):
-        if idx > 0 and idx % 20 == 0:
+        if idx > 0 and idx % 5 == 0:
             logger.info(
                 f"Domain/ATS progress: {idx}/{total} "
                 f"(ATS found: {new_sources}, reused cached: {skipped_known})"
@@ -261,6 +261,7 @@ async def _discover_new_companies() -> list[dict[str, Any]]:
             c["ats_url"] = ats_url
             new_sources += 1
             _DISCOVERY_METRICS["ats_verified"] = _DISCOVERY_METRICS.get("ats_verified", 0) + 1
+            logger.info(f"ATS detected for {c.get('name', website)}: {ats_url}")
 
     _DISCOVERY_METRICS["companies_found"] = _DISCOVERY_METRICS.get("companies_found", 0) + len(
         deduped

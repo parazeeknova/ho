@@ -603,9 +603,9 @@ async def detect_ats_for_company(website: str) -> str | None:
                         actual = str(resp.url)
                         for _sig_name, sig in ATS_SIGNATURES.items():
                             if sig in actual.lower():
-                                logger.debug(f"ATS found: {website} -> {actual} ({_sig_name})")
+                                logger.info(f"ATS found: {website} -> {actual} ({_sig_name})")
                                 return actual
-                        logger.debug(f"Careers page found: {website} -> {actual} (no known ATS)")
+                        logger.info(f"Careers page found: {website} -> {actual} (no known ATS)")
                         return actual
                 except Exception:
                     continue
