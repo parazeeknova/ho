@@ -274,18 +274,30 @@ def main() -> None:
         )
     )
 
-    # ── Cleanup + start ──
+    # ── Cleanup ──
     stop_all()
     time.sleep(1)
 
-    # llama-server (embedding)
+    # Define services
+    services: list[tuple[str, Any, str]] = [
+        ("llama-server (Embed)", lambda: check_http("http://localhost:8900/health"), ":8900"),
+        ("redis", lambda: container_running("firecrawl_redis"), ":6379"),
+        ("nuq-postgres", lambda: container_running("firecrawl_nuq-postgres"), ":5432"),
+        ("searxng", lambda: check_http("http://localhost:8080"), ":8080"),
+        ("neo4j", lambda: check_port("localhost", 7687), ":7687"),
+        ("agent-memory-db", lambda: check_port("localhost", 5433), ":5433"),
+        ("rabbitmq", lambda: container_running("firecrawl_rabbitmq"), ":5672"),
+        ("playwright", lambda: container_running("firecrawl_playwright"), ":3000"),
+        ("firecrawl api", lambda: check_port("localhost", 3002), ":3002"),
+    ]
+
+    # Kick off startup in background
     subprocess.Popen(
         [sys.executable, f"{PROJECT}/scripts/serve.py"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
 
-    # Containers
     run(
         f"{DOCKER_COMPOSE} up -d redis playwright-service "
         "nuq-postgres searxng neo4j agent-memory-db api",
@@ -302,41 +314,12 @@ def main() -> None:
         silent=True,
     )
 
-    # Wait for rabbitmq
-    for _ in range(20):
-        time.sleep(2)
-        if container_running("firecrawl_rabbitmq"):
-            code, _ = run(
-                "podman exec firecrawl_rabbitmq_1 rabbitmqctl await_startup 2>/dev/null",
-                silent=True,
-            )
-            if code == 0:
-                break
-
-    # ── Live status table ──
-    embed_ok = False
+    # ── Live status table while containers come up ──
     failed: list[str] = []
-
     with Live(Table(), refresh_per_second=3, console=console) as live:
         for _ in range(90):
             t = Table(box=box.SIMPLE, show_header=False, padding=(0, 2), expand=False)
             t.add_column("")
-
-            services = [
-                (
-                    "llama-server (Embed)",
-                    lambda: check_http("http://localhost:8900/health"),
-                    ":8900",
-                ),
-                ("redis", lambda: container_running("firecrawl_redis"), ":6379"),
-                ("nuq-postgres", lambda: container_running("firecrawl_nuq-postgres"), ":5432"),
-                ("searxng", lambda: check_http("http://localhost:8080"), ":8080"),
-                ("neo4j", lambda: check_port("localhost", 7687), ":7687"),
-                ("agent-memory-db", lambda: check_port("localhost", 5433), ":5433"),
-                ("rabbitmq", lambda: container_running("firecrawl_rabbitmq"), ":5672"),
-                ("playwright", lambda: container_running("firecrawl_playwright"), ":3000"),
-                ("firecrawl api", lambda: check_port("localhost", 3002), ":3002"),
-            ]
 
             all_up = True
             for name, check_fn, port in services:
@@ -348,19 +331,18 @@ def main() -> None:
                     all_up = False
                 row(t, name, status, port)
 
-            embed_ok = check_http("http://localhost:8900/health")
             live.update(t)
 
-            if all_up and embed_ok:
+            if all_up:
                 break
             time.sleep(1)
         else:
             failed = [name for name, check_fn, _ in services if not check_fn()]
-            console.print("\n[red]Some services failed to start:[/red]")
-            for f_name in failed:
-                console.print(f"  [red]✗[/red] {f_name}")
 
     if failed:
+        console.print("\n[red]Some services failed to start:[/red]")
+        for f_name in failed:
+            console.print(f"  [red]✗[/red] {f_name}")
         stop_all()
         sys.exit(1)
 
