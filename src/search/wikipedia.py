@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from typing import Any
 
 from src.http_client import get_client
 from src.logging import get_logger
@@ -27,7 +28,7 @@ _WIKI_LAST_REQ = 0.0
 _WIKI_MIN_INTERVAL = 1.1
 
 
-async def _wiki_get(client, **params) -> object | None:
+async def _wiki_get(client, **params) -> dict[str, Any] | None:
     """One paced Wikipedia API request; returns the JSON or None on 429."""
     global _WIKI_LAST_REQ
     async with _WIKI_SEM:
@@ -49,7 +50,8 @@ async def _wiki_get(client, **params) -> object | None:
         if resp.status_code != 200:
             return None
         try:
-            return resp.json()
+            data = resp.json()
+            return data if isinstance(data, dict) else None
         except Exception:
             return None
 
@@ -156,7 +158,7 @@ async def _resolve_title(company: str) -> str | None:
     return None
 
 
-async def get_wikipedia_founders(company: str) -> list[dict[str, str]]:
+async def get_wikipedia_founders(company: str) -> list[dict[str, Any]]:
     """Return founder dicts (name, title, linkedin_url/github_url/email None).
 
     Empty list when Wikipedia has no page or no founders field.
@@ -171,6 +173,12 @@ async def get_wikipedia_founders(company: str) -> list[dict[str, str]]:
         return []
     names = _parse_founders(wikitext)
     return [
-        {"name": n, "title": "Founder", "linkedin_url": None, "github_url": None, "email": None}
+        {
+            "name": n,
+            "title": "Founder",
+            "linkedin_url": None,
+            "github_url": None,
+            "email": None,
+        }
         for n in names
     ]
