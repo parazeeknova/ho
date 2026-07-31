@@ -13,6 +13,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -73,6 +74,54 @@ def stop_all() -> None:
     run(f"{DOCKER_COMPOSE} down 2>/dev/null", silent=True)
     run("podman rm -f firecrawl_rabbitmq_1 2>/dev/null", silent=True)
     run("killall llama-server 2>/dev/null", silent=True)
+
+
+def container_stats() -> str:
+    """Collect snapshot of key container resource usage. Non-blocking."""
+    try:
+        r = subprocess.run(
+            "podman stats --no-stream "
+            "--format '{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}' "
+            "firecrawl_api_1 firecrawl_playwright-service_1 "
+            "firecrawl_rabbitmq_1 firecrawl_redis_1 "
+            "firecrawl_neo4j_1 2>/dev/null",
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            lines = r.stdout.strip().split("\n")
+            stats = []
+            for line in lines:
+                parts = line.split("\t")
+                if len(parts) >= 4:
+                    name = parts[0].replace("firecrawl_", "")
+                    stats.append(f"{name} cpu={parts[1]} mem={parts[2]}")
+            if stats:
+                return "[infra] " + " | ".join(stats)
+    except Exception:
+        pass
+    return ""
+
+
+def stats_logger(log_path: Path, stop_event: threading.Event, interval: float = 30.0) -> None:
+    """Background daemon: periodically write container stats to log file."""
+    time.sleep(interval)
+    while not stop_event.is_set():
+        line = container_stats()
+        if line:
+            ts = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
+            try:
+                with open(log_path, "a") as f:
+                    f.write(
+                        f'{{"timestamp": "{ts}", "level": "INFO", '
+                        f'"message": "{line}", "logger": "infra_monitor"}}\n'
+                    )
+                    f.flush()
+            except Exception:
+                pass
+        stop_event.wait(interval)
 
 
 def main() -> None:
@@ -211,6 +260,15 @@ def main() -> None:
     env = os.environ.copy()
     env.setdefault("OVERNIGHT_LOOP", "true")
 
+    # Background container stats logger
+    stop_stats = threading.Event()
+    stats_thread = threading.Thread(
+        target=stats_logger,
+        args=(log_path, stop_stats),
+        daemon=True,
+    )
+    stats_thread.start()
+
     proc = subprocess.Popen(
         [sys.executable, "-m", "src.radar.orchestrator"],
         cwd=str(PROJECT),
@@ -239,6 +297,7 @@ def main() -> None:
         pass
 
     proc.wait()
+    stop_stats.set()
     if proc.returncode != 0:
         console.print(f"\n[red]Pipeline exited with code {proc.returncode}[/red]")
         stop_all()
