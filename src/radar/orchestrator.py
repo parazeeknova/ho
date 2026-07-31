@@ -209,6 +209,8 @@ async def _discover_new_companies() -> list[dict[str, Any]]:
             parts = sid.split(":", 2)
             if len(parts) >= 2:
                 known_slugs.add(parts[1])
+    if known_slugs:
+        logger.info(f"Discovery cache: {len(known_slugs)} companies from prior sweeps")
 
     new_sources = 0
     skipped_known = 0
@@ -225,6 +227,10 @@ async def _discover_new_companies() -> list[dict[str, Any]]:
         name_slug = c.get("name", "").lower().replace(" ", "-")[:40]
         if name_slug in known_slugs:
             skipped_known += 1
+            if skipped_known <= 3:
+                logger.info(f"Cache hit, skipping: {c.get('name', name_slug)}")
+            elif skipped_known == 4:
+                logger.info("Cache hit, skipping: ... (suppressing further cache hit logs)")
             continue
 
         website = c.get("website", "")
