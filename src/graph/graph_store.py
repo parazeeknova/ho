@@ -43,12 +43,13 @@ class GraphStore:
     async def create(cls, config: Neo4jConfig | None = None) -> GraphStore:
         cfg = config or get_config().neo4j
         store = cls(cfg)
-        from neo4j import AsyncGraphDatabase
+        from neo4j import AsyncGraphDatabase, NotificationMinimumSeverity
 
         store._driver = AsyncGraphDatabase.driver(
             store._uri,
             auth=(store._user, store._pwd),
             max_connection_lifetime=store._max_conn_lifetime,
+            notifications_min_severity=NotificationMinimumSeverity.OFF,
         )
         await store._ensure_indexes()
         logger.info("Neo4j graph store initialized")
