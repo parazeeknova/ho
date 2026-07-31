@@ -15,6 +15,9 @@ serve:
 run:
 	uv run python scripts/run.py
 
+worker:
+	uv run python scripts/run.py --worker-only
+
 match: health
 	uv run python -m src.radar.orchestrator
 

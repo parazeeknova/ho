@@ -468,16 +468,16 @@ class WorkScheduler:
     # Adaptive concurrency
 
     async def _adapt_concurrency(self) -> None:
-        pending = self.frontier.pending
         if self._consecutive_failures >= self._consecutive_failure_threshold:
             for sem in self._agent_sems.values():
                 await sem.set_limit(max(1, sem.limit // 2))
             self._consecutive_failures = 0
             logger.warning("Adaptive concurrency: halved limits due to consecutive failures")
-        elif pending > 50:
-            for sem in self._agent_sems.values():
-                new_limit = min(sem.limit + 2, sem.limit * 2)
-                await sem.set_limit(new_limit)
+        else:
+            for agent_id, sem in self._agent_sems.items():
+                target = self.agent_caps.get(agent_id, self.config.max_concurrency)
+                if sem.limit < target:
+                    await sem.set_limit(min(target, sem.limit + 1))
 
     async def _maybe_scale_down(self) -> None:
         if self._consecutive_empty <= self._consecutive_empty_threshold:

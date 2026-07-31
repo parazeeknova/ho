@@ -377,6 +377,9 @@ def main() -> None:
     parser.add_argument(
         "--no-pipeline", action="store_true", help="Start infra only, don't run pipeline"
     )
+    parser.add_argument(
+        "--worker-only", action="store_true", help="Start as a dedicated queue worker process"
+    )
     args = parser.parse_args()
 
     console.clear()
@@ -491,6 +494,8 @@ def main() -> None:
 
     env = os.environ.copy()
     env.setdefault("OVERNIGHT_LOOP", "true")
+    if args.worker_only:
+        env["HO_WORKER_ONLY"] = "1"
 
     # Background container stats logger
     stop_stats = threading.Event()

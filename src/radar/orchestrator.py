@@ -969,7 +969,8 @@ async def _run_radar_pipeline() -> None:
 
     await ctx.flush()
     app = FirecrawlApp(api_key="sk-no-auth", api_url=cfg.firecrawl.url)
-    await ta.start_polling()
+    if not os.getenv("HO_WORKER_ONLY"):
+        await ta.start_polling()
 
     store = await MemoryStore.create()
     await store.purge_fake_job_keys(["techco:backendengineer"])
