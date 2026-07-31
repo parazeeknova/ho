@@ -15,14 +15,14 @@ load_dotenv()
 
 async def run_apply(url: str, mode: str = "review"):
     """Phase 1 direct execution mode."""
-    profile = Profile.load_default()
+    profile = Profile()
     job_id = f"job-{uuid.uuid4().hex[:8]}"
 
     payload = {
         "jobId": job_id,
-        "applyLink": url,
-        "profile": profile.model_dump(by_alias=True),
-        "applyMode": mode,
+        "url": url,
+        "mode": mode,
+        "profile": profile.model_dump(by_alias=False),
     }
 
     payload_json = json.dumps(payload)

@@ -6,11 +6,12 @@ import asyncio
 import json
 import os
 import sys
-from typing import Any, Optional
+from typing import Any, Optional, Set
 
 from src.logging import get_logger
 from autofill.db import AutofillDB
 from autofill.profile import Profile
+from autofill.rag import ScreenerRAG
 
 logger = get_logger("autofill.worker")
 
@@ -21,7 +22,9 @@ class AutofillWorker:
     def __init__(self, db: AutofillDB, max_concurrent: int = 2) -> None:
         self.db = db
         self.semaphore = asyncio.Semaphore(max_concurrent)
+        self.rag = ScreenerRAG()
         self._running = False
+        self._running_tasks: Set[asyncio.Task] = set()
 
     async def start(self) -> None:
         """Start the worker polling loop."""
@@ -36,32 +39,36 @@ class AutofillWorker:
                         continue
 
                     logger.info("Claimed job for processing", job_id=job["job_id"], link=job["apply_link"])
-                    asyncio.create_task(self._process_job(job))
+                    task = asyncio.create_task(self._process_job(job))
+                    self._running_tasks.add(task)
+                    task.add_done_callback(self._running_tasks.discard)
         except asyncio.CancelledError:
             logger.info("AutofillWorker loop cancelled.")
         finally:
-            self._running = False
+            self.stop()
 
     def stop(self) -> None:
-        """Stop the worker loop."""
+        """Stop the worker loop and cancel active tasks."""
         self._running = False
+        for task in list(self._running_tasks):
+            if not task.done():
+                task.cancel()
+        logger.info("AutofillWorker stopped and active tasks cancelled.")
 
     async def _process_job(self, job: dict[str, Any]) -> None:
         job_id = job["job_id"]
         apply_link = job["apply_link"]
         apply_mode = job.get("apply_mode", "review")
 
-        # Load profile
-        profile = Profile.load_default()
+        profile = Profile()
         job_payload = {
             "jobId": job_id,
-            "applyLink": apply_link,
-            "applyMode": apply_mode,
-            "profile": profile.model_dump(by_alias=True),
+            "url": apply_link,
+            "mode": apply_mode,
+            "profile": profile.model_dump(by_alias=False),
         }
         payload_str = json.dumps(job_payload)
 
-        # Node runner path
         node_dir = os.path.join(os.path.dirname(__file__), "node")
 
         try:
@@ -81,14 +88,36 @@ class AutofillWorker:
 
             stderr_task = asyncio.create_task(self._read_stderr(process.stderr, job_id))
 
-            # Monitor stdout for status events
+            # Monitor stdout for status events and RPC requests
             while True:
                 line = await process.stdout.readline() if process.stdout else b""
                 if not line:
                     break
 
                 line_str = line.decode("utf-8").strip()
-                if line_str.startswith("STATUS_EVENT:"):
+                if line_str.startswith("RPC_REQUEST:"):
+                    raw_rpc = line_str[len("RPC_REQUEST:") :]
+                    try:
+                        rpc_req = json.loads(raw_rpc)
+                        req_id = rpc_req.get("id")
+                        method = rpc_req.get("method")
+                        args = rpc_req.get("args", {})
+
+                        logger.info("Received RPC request from Node runner", job_id=job_id, method=method, req_id=req_id)
+
+                        if method == "answer_questions":
+                            questions = args.get("questions", [])
+                            answers = await self.rag.answer_questions(questions)
+
+                            if process.stdin and not process.stdin.is_closing():
+                                rpc_resp = json.dumps({"type": "RPC_RESPONSE", "id": req_id, "result": answers})
+                                process.stdin.write(f"{rpc_resp}\n".encode("utf-8"))
+                                await process.stdin.drain()
+
+                    except Exception as rpc_err:
+                        logger.error("Error handling RPC request", error=str(rpc_err))
+
+                elif line_str.startswith("STATUS_EVENT:"):
                     event_raw = line_str[len("STATUS_EVENT:") :]
                     try:
                         event = json.loads(event_raw)
@@ -105,7 +134,6 @@ class AutofillWorker:
                                 filled_payload=filled_fields,
                                 screenshot_path=screenshot_path,
                             )
-                            # Suspend and wait for human decision in DB ('approved' or 'skipped')
                             decision = await self._wait_for_human_decision(job_id)
 
                             if process.stdin and not process.stdin.is_closing():

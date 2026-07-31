@@ -86,7 +86,7 @@ class AutofillDB:
         query = """
         UPDATE autofill_queue
         SET status = 'filling',
-            lease_expires = NOW() + ($1 || ' seconds')::INTERVAL,
+            lease_expires = NOW() + ($1::int * INTERVAL '1 second'),
             retries = retries + 1,
             updated_at = NOW()
         WHERE job_id = (
@@ -100,7 +100,7 @@ class AutofillDB:
         RETURNING job_id, apply_link, role, company, ats_platform, apply_mode, status, retries, filled_payload, screenshot_path;
         """
         async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(query, str(lease_seconds))
+            row = await conn.fetchrow(query, lease_seconds)
             if not row:
                 return None
             result = dict(row)
@@ -136,7 +136,7 @@ class AutofillDB:
 
         async with self._pool.acquire() as conn:
             result = await conn.execute(query, *args)
-            updated = result.endswith("1")
+            updated = "UPDATE 1" in result
             if updated:
                 logger.info("Job status updated", job_id=job_id, status=status)
             return updated
