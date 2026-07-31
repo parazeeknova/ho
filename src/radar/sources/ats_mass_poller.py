@@ -22,7 +22,7 @@ from src.radar.core.models import JobObservation
 
 logger = get_logger("ats_mass_poller")
 
-GREENHOUSE_API = "https://boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=true"
+GREENHOUSE_API = "https://boards-api.greenhouse.io/v1/boards/{slug}/jobs"
 LEVER_API = "https://api.lever.co/v0/postings/{slug}"
 ASHBY_API = "https://api.ashbyhq.com/posting-api/job-board/{slug}"
 

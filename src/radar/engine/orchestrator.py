@@ -311,6 +311,19 @@ async def _poll_board(board: dict[str, str], app: FirecrawlApp) -> list[JobObser
     except Exception as e:
         logger.debug(f"ATS interceptor fallback for {board_url}: {e}")
 
+    # Tier 2: expensive full-board map. Only re-map when the last snapshot is
+    # stale (snapshot_ttl_hours) or no snapshot exists yet (first discovery).
+    ats_cfg = get_config().ats
+    cp = get_checkpoint(source_id)
+    if cp.last_snapshot_hash and cp.last_polled:
+        snapshot_age_hours = (time.time() - cp.last_polled) / 3600.0
+        if snapshot_age_hours < ats_cfg.snapshot_ttl_hours:
+            logger.debug(
+                f"Board {source_id} snapshot {snapshot_age_hours:.1f}h old "
+                f"(TTL {ats_cfg.snapshot_ttl_hours}h), skipping re-map"
+            )
+            return []
+
     direct_urls: list[str] = []
     try:
         resp = await asyncio.wait_for(
@@ -404,6 +417,16 @@ async def _fetch_postings_and_gate(
         nonlocal rejected_count, processed_count
         async with sem:
             try:
+                pid = _posting_id(obs)
+                if pid in known_hashes:
+                    # Already indexed before: URL_DUPLICATE gate would reject this
+                    # regardless, so skip the expensive scrape entirely and just
+                    # refresh last_seen.
+                    obs.observed_at = _time.time()
+                    await _persist_observation(store, obs, pid)
+                    processed_count += 1
+                    return
+
                 if not obs.raw_markdown or len(obs.raw_markdown) < 100:
                     client = await get_client("orchestrator", timeout=15.0)
                     resp = await client.post(
@@ -421,7 +444,6 @@ async def _fetch_postings_and_gate(
 
                 now_ts = _time.time()
                 obs.observed_at = now_ts
-                pid = _posting_id(obs)
 
                 candidate, rejections = await run_gates(obs, known_hashes, last_seen)
                 if candidate is not None:
