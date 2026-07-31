@@ -232,7 +232,9 @@ def main() -> None:
             assert proc.stdout is not None
             for line in proc.stdout:
                 sys.stdout.write(line)
+                sys.stdout.flush()
                 log_file.write(line)
+                log_file.flush()
     except KeyboardInterrupt:
         pass
 

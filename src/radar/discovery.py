@@ -148,7 +148,7 @@ async def discover_from_vc_portfolios(limit: int = 40) -> list[dict[str, str]]:
     """
     companies: list[dict[str, str]] = []
     cfg = get_config().firecrawl
-    sem = asyncio.Semaphore(2)
+    sem = asyncio.Semaphore(6)
     async with httpx.AsyncClient(timeout=60.0) as client:
 
         async def _scrape_one(p_url):
@@ -165,7 +165,11 @@ async def discover_from_vc_portfolios(limit: int = 40) -> list[dict[str, str]]:
                     return ""
 
         tasks = [_scrape_one(url) for url in _VC_PORTFOLIOS]
+        total_vc = len(_VC_PORTFOLIOS)
+        logger.info(f"Scraping {total_vc} VC portfolio pages via Firecrawl...")
         htmls = await asyncio.gather(*tasks)
+        done = sum(1 for h in htmls if h)
+        logger.info(f"VC portfolios: {done}/{total_vc} scraped successfully")
         for html in htmls:
             if not html:
                 continue

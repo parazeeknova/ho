@@ -10,6 +10,7 @@ Levels: DEBUG < INFO < WARNING < ERROR
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 import traceback
@@ -120,4 +121,5 @@ _root = StructuredLogger(name="ho")
 
 
 def get_logger(name: str) -> StructuredLogger:
-    return StructuredLogger(name=name)
+    min_level = LogLevel(os.environ.get("LOG_LEVEL", "INFO").upper())
+    return StructuredLogger(name=name, min_level=min_level)
