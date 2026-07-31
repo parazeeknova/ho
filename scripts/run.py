@@ -346,9 +346,12 @@ def stats_logger(log_path: Path, stop_event: threading.Event, interval: float = 
         stop_event.wait(interval)
 
 
+_procs: list[subprocess.Popen] = []
+
+
 def shutdown_handler(sig: int, _frame: object) -> None:
     """Intercept Ctrl+C: ask user, then stop everything."""
-    console.print("\n\n[bold yellow]Stop ho service? [y/N][/bold yellow] ", end="")
+    console.print("\n\n[bold yellow]Stop ho pipeline and workers? [y/N][/bold yellow] ", end="")
     try:
         # Read from tty directly since stdin may be consumed by subprocess
         with open("/dev/tty") as tty:
@@ -357,13 +360,16 @@ def shutdown_handler(sig: int, _frame: object) -> None:
         answer = ""
 
     if answer in ("y", "yes"):
-        console.print("[red]Shutting down...[/red]")
-        if _proc is not None and _proc.poll() is None:
-            _proc.terminate()
-            try:
-                _proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                _proc.kill()
+        console.print("[red]Shutting down master and workers...[/red]")
+        for p in _procs:
+            if p.poll() is None:
+                p.terminate()
+        for p in _procs:
+            if p.poll() is None:
+                try:
+                    p.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    p.kill()
         stop_all()
         sys.exit(0)
     else:
@@ -371,7 +377,7 @@ def shutdown_handler(sig: int, _frame: object) -> None:
 
 
 def main() -> None:
-    global _proc
+    global _procs
 
     parser = argparse.ArgumentParser(description="ho pipeline launcher")
     parser.add_argument(
@@ -379,6 +385,12 @@ def main() -> None:
     )
     parser.add_argument(
         "--worker-only", action="store_true", help="Start as a dedicated queue worker process"
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=4,
+        help="Number of local parallel worker processes (default: 4)",
     )
     args = parser.parse_args()
 
@@ -482,20 +494,24 @@ def main() -> None:
         except KeyboardInterrupt:
             console.print("\n[yellow]Shutting down...[/yellow]")
             stop_all()
-        return
+            sys.exit(0)
 
     # ── Pipeline ──
     log_dir = PROJECT / "logs"
     log_dir.mkdir(exist_ok=True)
     log_path = log_dir / "run.log"
 
-    console.print("\n[bold cyan]Pipeline starting...[/bold cyan]")
+    num_workers = max(1, args.workers)
+    if args.worker_only:
+        num_workers = 1
+
+    console.print(
+        f"\n[bold cyan]Pipeline starting with {num_workers} parallel process workers...[/bold cyan]"
+    )
     console.print("[dim]Ctrl+C → stop prompt | All logs in logs/run.log[/dim]\n")
 
     env = os.environ.copy()
     env.setdefault("OVERNIGHT_LOOP", "true")
-    if args.worker_only:
-        env["HO_WORKER_ONLY"] = "1"
 
     # Background container stats logger
     stop_stats = threading.Event()
@@ -514,38 +530,78 @@ def main() -> None:
     )
     fc_thread.start()
 
-    _proc = subprocess.Popen(
-        [sys.executable, "-m", "src.radar.orchestrator"],
-        cwd=str(PROJECT),
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-    )
+    _procs = []
+    if args.worker_only:
+        w_env = env.copy()
+        w_env["HO_WORKER_ONLY"] = "1"
+        p = subprocess.Popen(
+            [sys.executable, "-m", "src.radar.orchestrator"],
+            cwd=str(PROJECT),
+            env=w_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        _procs.append(p)
+    else:
+        # Master orchestrator
+        p_main = subprocess.Popen(
+            [sys.executable, "-m", "src.radar.orchestrator"],
+            cwd=str(PROJECT),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        _procs.append(p_main)
 
-    # Install our shutdown handler
+        # Worker processes
+        w_env = env.copy()
+        w_env["HO_WORKER_ONLY"] = "1"
+        for _w_idx in range(1, num_workers):
+            p_w = subprocess.Popen(
+                [sys.executable, "-m", "src.radar.orchestrator"],
+                cwd=str(PROJECT),
+                env=w_env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+            _procs.append(p_w)
+
+    # Install shutdown handler
     signal.signal(signal.SIGINT, shutdown_handler)
     signal.signal(signal.SIGTERM, shutdown_handler)
 
-    try:
-        with open(log_path, "a") as log_file:
-            assert _proc.stdout is not None
-            for line in _proc.stdout:
-                sys.stdout.write(line)
-                sys.stdout.flush()
-                log_file.write(line)
-                log_file.flush()
-    except Exception:
-        pass
+    def _stream_proc(p: subprocess.Popen, name: str) -> None:
+        try:
+            with open(log_path, "a") as log_file:
+                assert p.stdout is not None
+                for line in p.stdout:
+                    sys.stdout.write(line)
+                    sys.stdout.flush()
+                    log_file.write(line)
+                    log_file.flush()
+        except Exception:
+            pass
 
-    _proc.wait()
+    threads: list[threading.Thread] = []
+    for idx, p in enumerate(_procs):
+        label = f"Worker-{idx}" if idx > 0 else "Master"
+        t = threading.Thread(target=_stream_proc, args=(p, label), daemon=True)
+        t.start()
+        threads.append(t)
+
+    _procs[0].wait()
     stop_stats.set()
 
-    if _proc.returncode != 0 and _proc.returncode != -15:  # -15 = SIGTERM
-        console.print(f"\n[red]Pipeline exited with code {_proc.returncode}[/red]")
+    if _procs[0].returncode != 0 and _procs[0].returncode != -15:
+        console.print(f"\n[red]Pipeline exited with code {_procs[0].returncode}[/red]")
         stop_all()
-        sys.exit(_proc.returncode)
+        sys.exit(_procs[0].returncode)
 
 
 if __name__ == "__main__":
