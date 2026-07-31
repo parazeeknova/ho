@@ -949,6 +949,35 @@ class MemoryStore:
                         NULLIF(EXCLUDED.role_summary, ''),
                         radar_candidates.role_summary
                     ),
+                    founders = CASE
+                        WHEN jsonb_array_length(EXCLUDED.founders) > 0
+                        THEN EXCLUDED.founders
+                        ELSE radar_candidates.founders
+                    END,
+                    funding_stage = COALESCE(
+                        NULLIF(EXCLUDED.funding_stage, ''),
+                        radar_candidates.funding_stage
+                    ),
+                    funding_info = CASE
+                        WHEN jsonb_typeof(EXCLUDED.funding_info) = 'object'
+                             AND (EXCLUDED.funding_info <> '{}'::jsonb)
+                        THEN EXCLUDED.funding_info
+                        ELSE radar_candidates.funding_info
+                    END,
+                    founder_socials = CASE
+                        WHEN jsonb_array_length(EXCLUDED.founder_socials) > 0
+                        THEN EXCLUDED.founder_socials
+                        ELSE radar_candidates.founder_socials
+                    END,
+                    company_news = COALESCE(
+                        NULLIF(EXCLUDED.company_news, ''),
+                        radar_candidates.company_news
+                    ),
+                    osint_signals = CASE
+                        WHEN jsonb_array_length(EXCLUDED.osint_signals) > 0
+                        THEN EXCLUDED.osint_signals
+                        ELSE radar_candidates.osint_signals
+                    END,
                     extra = radar_candidates.extra || EXCLUDED.extra,
                     updated_at = NOW()
                 """,
