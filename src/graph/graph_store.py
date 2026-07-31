@@ -615,15 +615,15 @@ class GraphStore:
     async def _store_embeddings(self, embeddings: dict[str, list[float]]) -> None:
         import json
 
-        for node_id, emb in embeddings.items():
-            await self._run(
-                "MATCH (n:GraphNode {id: $id}) SET n.embedding = $emb, n.updated_at = $now",
-                {
-                    "id": node_id,
-                    "emb": json.dumps(emb),
-                    "now": datetime.now(UTC).isoformat(),
-                },
-            )
+        if not embeddings:
+            return
+        rows = [{"id": node_id, "emb": json.dumps(emb)} for node_id, emb in embeddings.items()]
+        await self._run(
+            "UNWIND $rows AS r "
+            "MATCH (n:GraphNode {id: r.id}) "
+            "SET n.embedding = r.emb, n.updated_at = $now",
+            {"rows": rows, "now": datetime.now(UTC).isoformat()},
+        )
 
     async def find_structurally_similar(
         self, node_id: str, limit: int = 10
@@ -636,11 +636,16 @@ class GraphStore:
 
         If no embeddings are stored, returns empty list.
         """
-        node = await self.get_node(node_id)
-        if node is None:
+        try:
+            node_row = await self._run(
+                "MATCH (n:GraphNode {id: $id}) RETURN n.embedding AS emb",
+                {"id": node_id},
+            )
+        except Exception:
             return []
-
-        node_emb = node.data.get("embedding")
+        if not node_row:
+            return []
+        node_emb = node_row[0].get("emb")
         if not node_emb:
             return []
 
@@ -676,6 +681,10 @@ class GraphStore:
             except Exception:
                 continue
             cand_vec = np.array(emb, dtype=np.float64)
+            if cand_vec.shape != query_vec.shape:
+                # Stale embedding from a different dimensionality: skip rather
+                # than crash the whole similarity search.
+                continue
             sim = float(
                 np.dot(query_vec, cand_vec)
                 / (np.linalg.norm(query_vec) * np.linalg.norm(cand_vec) + 1e-8)
