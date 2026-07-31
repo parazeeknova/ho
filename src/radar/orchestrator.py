@@ -55,7 +55,7 @@ from src.radar.discovery import (
     discover_from_yc,
     is_aggregator_domain,
 )
-from src.radar.extractors import GITHUB_INDEXES, extract_github_index_markdown
+from src.radar.extractors import GITHUB_INDEXES
 from src.radar.gates import run_gates
 from src.radar.models import EligibilityState, JobCandidate, JobObservation
 from src.radar.outreach import generate_outreach_card
@@ -275,30 +275,13 @@ async def _discover_new_companies() -> list[dict[str, Any]]:
 
 
 async def _scrape_indexes() -> list[JobObservation]:
-    import httpx
+    try:
+        from src.radar.github_poller import poll_all_github_indexes_etag
 
-    all_obs: list[JobObservation] = []
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        for idx_url in GITHUB_INDEXES:
-            repo_path = idx_url.split("githubusercontent.com/")[-1].rsplit("/", 1)[0]
-            repo_name = repo_path.replace("/", "_")
-            source_id = f"github:{repo_name}"
-            if not should_poll(source_id):
-                continue
-            logger.info(f"Scraping GitHub index: {source_id}")
-            try:
-                resp = await client.get(idx_url)
-                if resp.status_code == 200:
-                    obs = extract_github_index_markdown(resp.text, idx_url)
-                    for o in obs:
-                        o.source = f"github_index:{repo_name}"
-                    all_obs.extend(obs)
-                    record_success(source_id, len(obs), len(obs))
-                else:
-                    record_failure(source_id)
-            except Exception:
-                record_failure(source_id)
-    return all_obs
+        return await poll_all_github_indexes_etag()
+    except Exception as e:
+        logger.warning(f"GitHub ETag index poller fallback failed: {e}")
+        return []
 
 
 async def _poll_board(board: dict[str, str], app: FirecrawlApp) -> list[JobObservation]:
@@ -313,6 +296,18 @@ async def _poll_board(board: dict[str, str], app: FirecrawlApp) -> list[JobObser
 
     logger.info(f"Polling board: {source_id}")
     t0 = time.monotonic()
+
+    # Layer 1: High-Speed Direct ATS API Interceptor
+    # (Greenhouse, Lever, Ashby, Workable, SmartRecruiters)
+    try:
+        from src.radar.ats_interceptor import intercept_ats_board
+
+        ats_obs = await intercept_ats_board(board_url, source_id)
+        if ats_obs is not None:
+            record_success(source_id, len(ats_obs), len(ats_obs))
+            return ats_obs
+    except Exception as e:
+        logger.debug(f"ATS interceptor fallback for {board_url}: {e}")
 
     direct_urls: list[str] = []
     try:

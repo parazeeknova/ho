@@ -12,7 +12,11 @@ from src.radar.models import JobObservation
 logger = get_logger("dorking_engine")
 
 _DORK_QUERIES = [
-    # Top Priority: Junior, Entry-Level, Graduate & Introductory Roles
+    (
+        "site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR"
+        ' site:apply.workable.com intitle:"intern" OR intitle:"new grad" OR'
+        ' intitle:"junior" "software" "2026"'
+    ),
     'site:boards.greenhouse.io "Junior" OR "Entry Level" OR "Associate" OR "Graduate"',
     'site:jobs.ashbyhq.com "Junior" OR "Entry Level" OR "Early Career" OR "University"',
     'site:jobs.lever.co "Junior" OR "Entry Level" OR "Graduate" OR "Associate"',
@@ -25,11 +29,6 @@ _DORK_QUERIES = [
     'site:boards.greenhouse.io ("Junior Developer" OR "Associate Software Engineer")',
     'site:jobs.ashbyhq.com ("Junior Software Engineer" OR "Entry Level Engineer")',
     'site:jobs.lever.co ("Junior Software Engineer" OR "Associate Engineer")',
-    # Core Engineering & Infrastructure Dorks
-    'site:boards.greenhouse.io "Engineer" OR "Developer" OR "Infrastructure"',
-    'site:jobs.ashbyhq.com "Engineer" OR "Software" OR "Full Stack"',
-    'site:jobs.lever.co "Engineer" OR "Backend" OR "AI"',
-    'site:apply.workable.com "Engineer" OR "Developer"',
 ]
 
 
@@ -42,8 +41,10 @@ class DorkingEngine:
         self.searxng_url = searxng_url.rstrip("/")
         self._seen_urls: set[str] = set()
 
-    async def execute_dorks(self, queries: list[str] | None = None) -> list[JobObservation]:
-        """Runs targeted dork queries against SearXNG and returns job observations."""
+    async def execute_dorks(
+        self, queries: list[str] | None = None, time_range: str = "day"
+    ) -> list[JobObservation]:
+        """Runs targeted 48h time-restricted dork queries against SearXNG."""
         target_queries = queries or _DORK_QUERIES
         observations: list[JobObservation] = []
 
@@ -52,7 +53,12 @@ class DorkingEngine:
                 try:
                     resp = await client.get(
                         f"{self.searxng_url}/search",
-                        params={"q": q, "format": "json", "language": "en"},
+                        params={
+                            "q": q,
+                            "format": "json",
+                            "time_range": time_range,
+                            "language": "en",
+                        },
                     )
                     if resp.status_code != 200:
                         continue
