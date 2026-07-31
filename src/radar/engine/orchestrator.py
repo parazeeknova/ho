@@ -1275,8 +1275,8 @@ async def _run_radar_pipeline() -> None:
                     "SELECT canonical_id, normalized_role, normalized_company, "
                     "direct_apply_url, normalized_location, match_percent, shortlist_probability, "
                     "verdict, funding_stage, salary_amount, salary_currency, salary_period, "
-                    "salary_raw, salary_annual_usd, jd_summary, company_description, role_summary, "
-                    "is_remote, sponsors_visa, underdog_score, founders, funding_info, "
+                    "salary_raw, jd_summary, company_description, role_summary, "
+                    "is_remote, founders, funding_info, "
                     "founder_socials, company_news, osint_signals, extra "
                     "FROM radar_candidates "
                     "WHERE eligibility = 'accepted' "
@@ -1309,8 +1309,10 @@ async def _run_radar_pipeline() -> None:
                             period=r.get("salary_period") or "year",
                             raw=salary_raw,
                         )
-                    if r.get("salary_annual_usd"):
-                        c.salary_annual_usd = r["salary_annual_usd"]
+                    if c.salary and c.salary_annual_usd is None:
+                        annual = c.salary.annual_usd_equivalent
+                        if annual:
+                            c.salary_annual_usd = annual
                     for field in (
                         "jd_summary",
                         "company_description",
@@ -1325,8 +1327,6 @@ async def _run_radar_pipeline() -> None:
                         if val:
                             setattr(c, field, val)
                     c.is_remote = bool(r.get("is_remote"))
-                    c.sponsors_visa = bool(r.get("sponsors_visa"))
-                    c.underdog_score = float(r.get("underdog_score") or 0)
                     extra_raw = r.get("extra")
                     if isinstance(extra_raw, dict):
                         c.extra = extra_raw
@@ -1340,6 +1340,8 @@ async def _run_radar_pipeline() -> None:
                             c.extra = {}
                     else:
                         c.extra = {}
+                    c.sponsors_visa = bool(c.extra.get("sponsors_visa"))
+                    c.underdog_score = float(c.extra.get("underdog_score") or 0)
                     c.eligibility = EligibilityState.ACCEPTED
                     pending.append(c)
                 if pending:

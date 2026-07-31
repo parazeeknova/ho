@@ -76,17 +76,14 @@ class NormalizedSalary:
 
     @property
     def annual_usd_equivalent(self) -> float | None:
-        monthly = self.to_monthly(self.currency)
-        if monthly is None:
+        rate = {"hour": 2000, "month": 12, "year": 1}.get(self.period)
+        if rate is None:
             return None
-        return monthly * 12
-
-    @staticmethod
-    def to_monthly(currency: str) -> float | None:
-        return _ANNUAL_TO_MONTHLY_FACTOR.get(currency.upper())
-
-
-_ANNUAL_TO_MONTHLY_FACTOR: dict[str, float] = {}
+        fx = {"USD": 1.0, "INR": 1.0 / 86, "EUR": 1.1, "GBP": 1.25}.get(
+            self.currency.upper(),
+            1.0,
+        )
+        return self.amount * rate * fx
 
 
 @dataclass
