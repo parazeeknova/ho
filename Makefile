@@ -12,7 +12,7 @@ test:
 serve:
 	uv run python scripts/serve.py
 
-run: health
+run:
 	uv run python scripts/run.py
 
 match: health
