@@ -276,7 +276,10 @@ async def _poll_board(board: dict[str, str], app: FirecrawlApp) -> list[JobObser
 
     direct_urls: list[str] = []
     try:
-        resp = app.map_url(board_url)
+        resp = await asyncio.wait_for(
+            asyncio.to_thread(app.map_url, board_url),
+            timeout=120.0,
+        )
         if isinstance(resp, list):
             for item in resp:
                 url = item if isinstance(item, str) else item.get("url", "")
@@ -286,7 +289,8 @@ async def _poll_board(board: dict[str, str], app: FirecrawlApp) -> list[JobObser
             for link in resp.get("links", []) or []:
                 if isinstance(link, str) and link.startswith("http"):
                     direct_urls.append(link)
-    except Exception:
+    except Exception as exc:
+        logger.warning("Firecrawl map_url failed for %s: %s", board_url, exc)
         record_failure(source_id)
         return []
 

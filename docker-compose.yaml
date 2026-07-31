@@ -37,6 +37,7 @@ services:
     ports:
       - "3002:3002"
     command: node dist/src/harness.js --start-docker
+    restart: unless-stopped
     ulimits:
       nofile:
         soft: 65535
@@ -59,6 +60,7 @@ services:
     cpus: 8.0
     mem_limit: 8G
     memswap_limit: 8G
+    restart: unless-stopped
     tmpfs:
       - /tmp/.cache:noexec,nosuid,size=1g
     logging:
