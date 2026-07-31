@@ -47,6 +47,15 @@ def run(cmd: str, silent: bool = True, timeout: int = 30) -> tuple[int, str]:
         return -1, str(e)
 
 
+def check_neo4j_ready() -> bool:
+    """Verify Neo4j is actually serving queries, not just TCP accepting."""
+    raw = _podman_exec(
+        "firecrawl_neo4j_1",
+        "cypher-shell -u neo4j -p password 'RETURN 1 AS ready' 2>/dev/null",
+    )
+    return "ready" in raw.lower() and "1" in raw
+
+
 def check_http(url: str) -> bool:
     with contextlib.suppress(Exception):
         import urllib.request
@@ -284,7 +293,7 @@ def main() -> None:
         ("redis", lambda: container_running("firecrawl_redis"), ":6379"),
         ("nuq-postgres", lambda: container_running("firecrawl_nuq-postgres"), ":5432"),
         ("searxng", lambda: check_http("http://localhost:8080"), ":8080"),
-        ("neo4j", lambda: check_port("localhost", 7687), ":7687"),
+        ("neo4j", check_neo4j_ready, ":7687"),
         ("agent-memory-db", lambda: check_port("localhost", 5433), ":5433"),
         ("rabbitmq", lambda: container_running("firecrawl_rabbitmq"), ":5672"),
         ("playwright", lambda: container_running("firecrawl_playwright"), ":3000"),
@@ -346,15 +355,7 @@ def main() -> None:
         stop_all()
         sys.exit(1)
 
-    # ── Final status + initial deep stats ──
-    console.print()
-    t = Table(box=box.SIMPLE, show_header=False, padding=(0, 2))
-    t.add_column("")
-    for name, _fn, port in services:
-        row(t, name, STATUS_UP, port)
-    console.print(t)
-
-    # Show initial DB state
+    # Show initial DB state below the live table
     snapshot = deep_stats()
     console.print("[dim]Infra snapshot:[/dim]")
     for k, v in sorted(snapshot.items()):
