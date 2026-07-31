@@ -896,11 +896,18 @@ class TelegramAgent:
                     title_str = f" ({title})" if title else ""
                     badges = []
                     if f.get("email"):
-                        badges.append(f'<a href="mailto:{html.escape(f["email"])}">Email</a>')
+                        email = str(f["email"])
+                        badges.append(
+                            f'<a href="mailto:{html.escape(email)}">✉️ {html.escape(email)}</a>'
+                        )
                     if f.get("linkedin_url"):
-                        badges.append(f'<a href="{html.escape(f["linkedin_url"])}">LinkedIn</a>')
+                        url = str(f["linkedin_url"])
+                        handle = url.rstrip("/").rsplit("/", 1)[-1] or "LinkedIn"
+                        badges.append(f'<a href="{html.escape(url)}">in/{html.escape(handle)}</a>')
                     if f.get("github_url"):
-                        badges.append(f'<a href="{html.escape(f["github_url"])}">GitHub</a>')
+                        url = str(f["github_url"])
+                        handle = url.rstrip("/").rsplit("/", 1)[-1] or "GitHub"
+                        badges.append(f'<a href="{html.escape(url)}">{html.escape(handle)}</a>')
                     badge_str = f" — {' | '.join(badges)}" if badges else ""
                     lines.append(f"▪ Founder: {name}{title_str}{badge_str}")
             else:

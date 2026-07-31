@@ -125,6 +125,9 @@ FOUNDER_SCHEMA = {
 }
 
 
+_LINKEDIN_RE = re.compile(r"https?://(?:[\w-]+\.)*linkedin\.com/in/[A-Za-z0-9_\-%]+")
+
+
 class StartupAgent:
     """Agent that researches startup founders, funding, and outreach info."""
 
@@ -325,6 +328,52 @@ class StartupAgent:
         with contextlib.suppress(Exception):
             await self.store.put_company_osint(company, payload, degraded=not substance)
 
+    async def _finalize_founders(self, job: dict[str, Any], company: str, domain: str) -> None:
+        """Email triangulation + real LinkedIn profile search for founders.
+
+        Both run only when search sources genuinely return data; nothing
+        is fabricated (a guessed URL is worse than a missing one).
+        """
+        founders = job.get("founders") or []
+        if not founders or not isinstance(founders[0], dict):
+            return
+        resolved_linkedin = 0
+        for f in founders:
+            if not isinstance(f, dict) or not f.get("name"):
+                continue
+            if not f.get("email"):
+                tri = await triangulate_founder_email(f["name"], domain)
+                if tri:
+                    f["email"] = tri["email"]
+                    f["email_triangulated"] = True
+            if not f.get("linkedin_url") and resolved_linkedin < 3:
+                url = await self._resolve_linkedin(str(f["name"]), company)
+                if url:
+                    f["linkedin_url"] = url
+                    resolved_linkedin += 1
+                    socials = job.get("founder_socials") or []
+                    if url not in socials:
+                        socials.append(url)
+                        job["founder_socials"] = socials
+
+    async def _resolve_linkedin(self, name: str, company: str) -> str | None:
+        """Find a founder's real LinkedIn profile URL via search.
+
+        Wikipedia only yields names; SearXNG/Bing rarely surfaces
+        linkedin.com pages in the generic company query, so search for
+        the person explicitly. Never fabricates a URL.
+        """
+        for q in (f'"{name}" "{company}" linkedin', f'"{name}" linkedin'):
+            snippets = await _searxng_search(q)
+            for snippet in snippets:
+                for match in _LINKEDIN_RE.finditer(snippet):
+                    url = match.group(0)
+                    if url.endswith((".", ",", ")")):
+                        url = url[:-1]
+                    if url:
+                        return url
+        return None
+
     async def _analyze_startup_uncached(self, job: dict[str, Any]) -> dict[str, Any]:
         """The uncached search + extraction pipeline."""
         company = str(job.get("company") or "").strip()
@@ -348,6 +397,9 @@ class StartupAgent:
         if not combined_snippets:
             if wiki_founders:
                 job["founders"] = wiki_founders
+            if job.get("founders"):
+                domain = company.lower().replace(" ", "").strip() + ".com"
+                await self._finalize_founders(job, company, domain)
             return job
 
         prompt = (
@@ -413,14 +465,10 @@ class StartupAgent:
         if not job.get("founders") and wiki_founders:
             job["founders"] = wiki_founders
 
-        # Email triangulation fallback for founders missing direct email
+        # Email triangulation fallback + LinkedIn profile resolution for
+        # founders missing direct contact data.
         domain = company.lower().replace(" ", "").strip() + ".com"
-        for f in job.get("founders", []):
-            if isinstance(f, dict) and f.get("name") and not f.get("email"):
-                tri = await triangulate_founder_email(f["name"], domain)
-                if tri:
-                    f["email"] = tri["email"]
-                    f["email_triangulated"] = True
+        await self._finalize_founders(job, company, domain)
 
         fi = extracted.get("funding_info")
         if isinstance(fi, dict) and any(fi.values()):
