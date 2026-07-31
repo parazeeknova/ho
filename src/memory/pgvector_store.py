@@ -192,6 +192,22 @@ CREATE TABLE IF NOT EXISTS source_snapshots (
     updated_at    TIMESTAMP DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS llm_queue (
+    id            BIGSERIAL PRIMARY KEY,
+    canonical_id  TEXT NOT NULL,
+    version       INT NOT NULL DEFAULT 1,
+    priority      INT NOT NULL DEFAULT 50,
+    payload       JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+    status        TEXT NOT NULL DEFAULT 'pending',
+    attempts      INT NOT NULL DEFAULT 0,
+    enqueued_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    lease_until   TIMESTAMPTZ,
+    completed_at  TIMESTAMPTZ,
+    UNIQUE (canonical_id, version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_llm_queue_claim ON llm_queue(status, priority DESC, id);
+
 CREATE INDEX IF NOT EXISTS idx_radar_candidates_eligibility ON radar_candidates(eligibility);
 CREATE INDEX IF NOT EXISTS idx_radar_candidates_freshness ON radar_candidates(freshness_lane);
 CREATE INDEX IF NOT EXISTS idx_radar_candidates_rejection ON radar_candidates(rejection_reason);

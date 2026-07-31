@@ -1057,7 +1057,7 @@ async def _job_processor(entry: FrontierEntry) -> list[FrontierEntry]:
             candidate.is_remote = sigs["is_remote"]
 
             await _persist_observation(store, obs, pid)
-            await enqueue_candidate(candidate, priority=40)
+            await enqueue_candidate(candidate, priority=40, store=store)
             _PIPELINE_METRICS["job_processor_success"] += 1
         else:
             await _persist_observation(store, obs, pid)
@@ -1446,7 +1446,7 @@ async def _run_radar_pipeline() -> None:
                     prio = 70
                 else:
                     prio = 50
-                await enqueue_candidate(c, priority=prio)
+                await enqueue_candidate(c, priority=prio, store=store)
 
             matched = await process_queue(
                 ctx,
