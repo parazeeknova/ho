@@ -11,7 +11,7 @@ import re
 from urllib.parse import urlparse
 
 from src.logging import get_logger
-from src.radar.models import JobObservation
+from src.radar.core.models import JobObservation
 
 logger = get_logger("index_extractor")
 

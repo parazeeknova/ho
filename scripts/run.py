@@ -539,7 +539,7 @@ def main() -> None:
         w_env = env.copy()
         w_env["HO_WORKER_ONLY"] = "1"
         p = subprocess.Popen(
-            [sys.executable, "-m", "src.radar.orchestrator"],
+            [sys.executable, "-m", "src.radar.engine.orchestrator"],
             cwd=str(PROJECT),
             env=w_env,
             stdout=subprocess.PIPE,
@@ -551,7 +551,7 @@ def main() -> None:
     else:
         # Master orchestrator
         p_main = subprocess.Popen(
-            [sys.executable, "-m", "src.radar.orchestrator"],
+            [sys.executable, "-m", "src.radar.engine.orchestrator"],
             cwd=str(PROJECT),
             env=env,
             stdout=subprocess.PIPE,
@@ -566,7 +566,7 @@ def main() -> None:
         w_env["HO_WORKER_ONLY"] = "1"
         for _w_idx in range(1, num_workers):
             p_w = subprocess.Popen(
-                [sys.executable, "-m", "src.radar.orchestrator"],
+                [sys.executable, "-m", "src.radar.engine.orchestrator"],
                 cwd=str(PROJECT),
                 env=w_env,
                 stdout=subprocess.PIPE,

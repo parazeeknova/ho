@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 
-from src.radar.models import NormalizedSalary
+from src.radar.core.models import NormalizedSalary
 
 _SALARY_PATTERNS: list[tuple[re.Pattern[str], str, str]] = [
     (

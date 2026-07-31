@@ -13,7 +13,7 @@ import asyncio
 import httpx
 
 from src.logging import get_logger
-from src.radar.models import JobObservation
+from src.radar.core.models import JobObservation
 
 logger = get_logger("dorking_engine")
 

@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import re
 
-from src.radar.models import NormalizedSalary
-from src.radar.salary import normalize_salary
+from src.radar.core.models import NormalizedSalary
+from src.radar.core.salary import normalize_salary
 
 _SPONSOR_PATTERNS = [
     r"\bsponsor\b",

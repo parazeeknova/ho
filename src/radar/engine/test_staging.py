@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from src.radar.discovery import is_aggregator_domain
-from src.radar.governor import (
+from src.radar.core.governor import (
     _state as _gs,
 )
-from src.radar.models import JobObservation
+from src.radar.core.models import JobObservation
+from src.radar.sources.discovery import is_aggregator_domain
 
 
 class TestDomainNormalization:

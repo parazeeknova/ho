@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from src.radar.dorking import DorkingEngine
-from src.radar.instant_poller import InstantPoller
+from src.radar.sources.dorking import DorkingEngine
+from src.radar.sources.instant_poller import InstantPoller
 
 
 class TestPillar1InstantPoller:

@@ -14,7 +14,7 @@ from typing import Any
 
 from src.configuration import get_config
 from src.logging import get_logger
-from src.radar.models import SourceCheckpoint, SourceState
+from src.radar.core.models import SourceCheckpoint, SourceState
 
 logger = get_logger("radar_sources")
 

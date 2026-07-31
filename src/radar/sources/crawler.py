@@ -19,7 +19,7 @@ import httpx
 
 from src.configuration import get_config
 from src.logging import get_logger
-from src.radar.discovery import (
+from src.radar.sources.discovery import (
     is_aggregator_domain,
 )
 
@@ -53,16 +53,6 @@ _FRESHNESS = [
     "join our team",
     "we're hiring",
     "new role",
-]
-
-_COMPANY_SIGNALS = [
-    "seed stage",
-    "Series A",
-    "YC backed",
-    "backed by",
-    "recently raised",
-    "launched",
-    "startup hiring",
 ]
 
 
@@ -245,7 +235,7 @@ async def run_search_discovery(
             )
 
     # Resolve domains for name-only discoveries
-    from src.radar.discovery import _resolve_official_domain
+    from src.radar.sources.discovery import _resolve_official_domain
 
     for d in discoveries:
         if not d.get("website") or not d["website"].startswith("http"):

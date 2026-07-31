@@ -27,10 +27,6 @@ def _default_lease_ttl() -> float:
     return get_config().scheduler.lease_ttl
 
 
-def _default_heartbeat_interval() -> float:
-    return get_config().scheduler.heartbeat_interval
-
-
 class NodeType(StrEnum):
     COMPANY = "company"
     FOUNDER = "founder"

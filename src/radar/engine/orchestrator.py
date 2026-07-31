@@ -34,17 +34,24 @@ from src.http_client import close_all as _close_http_clients
 from src.llm.context import ContextManager
 from src.logging import get_logger
 from src.memory.pgvector_store import MemoryStore
-from src.radar.agents import (
+from src.radar.core.extractors import GITHUB_INDEXES
+from src.radar.core.gates import run_gates
+from src.radar.core.models import EligibilityState, JobCandidate, JobObservation
+from src.radar.core.queue import enqueue_candidate, get_queue_status, process_queue
+from src.radar.core.scoring import compute_underdog_score, rank_score
+from src.radar.core.signals import extract_signals
+from src.radar.engine.outreach import generate_outreach_card
+from src.radar.sources.agents import (
     ats_crawler,
     career_site_detector,
     employee_discovery_agent,
     founder_social_agent,
 )
-from src.radar.board_registry import REGISTERED_BOARDS, get_discovery_index_sources
-from src.radar.discovery import (
+from src.radar.sources.board_registry import REGISTERED_BOARDS, get_discovery_index_sources
+from src.radar.sources.discovery import (
     _extract_domain as _discovery_domain,
 )
-from src.radar.discovery import (
+from src.radar.sources.discovery import (
     _resolve_company_domain,
     detect_ats_for_company,
     discover_from_betalist,
@@ -56,14 +63,7 @@ from src.radar.discovery import (
     discover_from_yc,
     is_aggregator_domain,
 )
-from src.radar.extractors import GITHUB_INDEXES
-from src.radar.gates import run_gates
-from src.radar.models import EligibilityState, JobCandidate, JobObservation
-from src.radar.outreach import generate_outreach_card
-from src.radar.queue import enqueue_candidate, get_queue_status, process_queue
-from src.radar.scoring import compute_underdog_score, rank_score
-from src.radar.signals import extract_signals
-from src.radar.sources import (
+from src.radar.sources.sources import (
     diff_snapshots,
     get_all_checkpoints,
     get_checkpoint,
@@ -160,7 +160,7 @@ async def _discover_new_companies() -> list[dict[str, Any]]:
     ]
 
     # Search crawler for direct job + signal discovery
-    from src.radar.crawler import run_search_discovery
+    from src.radar.sources.crawler import run_search_discovery
 
     try:
         search_results = await run_search_discovery(max_total_results=150)
@@ -277,7 +277,7 @@ async def _discover_new_companies() -> list[dict[str, Any]]:
 
 async def _scrape_indexes() -> list[JobObservation]:
     try:
-        from src.radar.github_poller import poll_all_github_indexes_etag
+        from src.radar.sources.github_poller import poll_all_github_indexes_etag
 
         return await poll_all_github_indexes_etag()
     except Exception as e:
@@ -301,7 +301,7 @@ async def _poll_board(board: dict[str, str], app: FirecrawlApp) -> list[JobObser
     # Layer 1: High-Speed Direct ATS API Interceptor
     # (Greenhouse, Lever, Ashby, Workable, SmartRecruiters)
     try:
-        from src.radar.ats_interceptor import intercept_ats_board
+        from src.radar.sources.ats_interceptor import intercept_ats_board
 
         ats_obs = await intercept_ats_board(board_url, source_id)
         if ats_obs is not None:
@@ -560,7 +560,7 @@ def _rank_for_queue(candidates: list[JobCandidate]) -> list[JobCandidate]:
 
 
 def _group_key(c: JobCandidate) -> str:
-    from src.radar.models import make_canonical_id
+    from src.radar.core.models import make_canonical_id
 
     return make_canonical_id(c.normalized_company, c.normalized_role, c.normalized_location)
 
@@ -1219,7 +1219,7 @@ async def _run_radar_pipeline() -> None:
                     "LIMIT 50",
                 )
             if rows:
-                from src.radar.queue import JobCandidate
+                from src.radar.core.queue import JobCandidate
 
                 pending: list[JobCandidate] = []
                 for r in rows:
@@ -1266,7 +1266,7 @@ async def _run_radar_pipeline() -> None:
     _mass_poll_interval = 14400.0  # 4 hours between mass ATS slug polls
     _dork_interval = 1800.0  # 30 min between SearXNG dork runs
 
-    from src.radar.dorking import DorkingEngine
+    from src.radar.sources.dorking import DorkingEngine
 
     dork_engine = DorkingEngine()
 
@@ -1307,7 +1307,7 @@ async def _run_radar_pipeline() -> None:
             # 1. Mass ATS Poller: 10,000+ slugs every 4 hours
             if not is_worker and time.monotonic() - last_mass_poll > _mass_poll_interval:
                 try:
-                    from src.radar.ats_mass_poller import poll_all_mass_slugs
+                    from src.radar.sources.ats_mass_poller import poll_all_mass_slugs
 
                     last_mass_poll = time.monotonic()
                     mass_obs = await poll_all_mass_slugs()

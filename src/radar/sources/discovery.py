@@ -592,7 +592,7 @@ async def _resolve_official_domain(name: str) -> str:
 
 
 def is_aggregator_domain(domain: str) -> bool:
-    from src.radar.governor import is_aggregator_domain as _check
+    from src.radar.core.governor import is_aggregator_domain as _check
 
     return _check(domain)
 

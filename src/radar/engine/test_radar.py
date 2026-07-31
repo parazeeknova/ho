@@ -6,11 +6,11 @@ from __future__ import annotations
 
 import pytest
 
-from src.radar.extractors import (
+from src.radar.core.extractors import (
     _extract_link,
     extract_github_index_markdown,
 )
-from src.radar.gates import (
+from src.radar.core.gates import (
     gate_explicit_experience,
     gate_role_family,
     gate_title_seniority,
@@ -18,7 +18,7 @@ from src.radar.gates import (
     gate_url_quality,
     run_gates,
 )
-from src.radar.models import (
+from src.radar.core.models import (
     EligibilityState,
     JobCandidate,
     JobObservation,
@@ -26,7 +26,7 @@ from src.radar.models import (
     RoleFamily,
     make_canonical_id,
 )
-from src.radar.salary import normalize_salary
+from src.radar.core.salary import normalize_salary
 
 
 class TestSalaryNormalizer:

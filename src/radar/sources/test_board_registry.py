@@ -2,7 +2,7 @@
 
 import pytest
 
-from src.radar.board_registry import (
+from src.radar.sources.board_registry import (
     REGISTERED_BOARDS,
     get_all_registered_boards,
     get_discovery_index_sources,

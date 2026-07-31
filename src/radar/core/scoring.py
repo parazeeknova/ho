@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from src.radar.models import FreshnessLane, JobCandidate
+from src.radar.core.models import FreshnessLane, JobCandidate
 
 _MAJOR_TECH = frozenset(
     {

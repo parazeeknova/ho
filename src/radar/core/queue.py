@@ -27,8 +27,8 @@ from typing import Any
 from src.configuration import get_config
 from src.llm.context import ContextManager
 from src.logging import get_logger
-from src.radar.governor import _is_429, handle_429
-from src.radar.models import EligibilityState, JobCandidate, RejectionReason
+from src.radar.core.governor import _is_429, handle_429
+from src.radar.core.models import EligibilityState, JobCandidate, RejectionReason
 
 logger = get_logger("llm_queue")
 
@@ -296,7 +296,7 @@ def _apply_llm_result(candidate: JobCandidate, result: dict[str, Any]) -> None:
     candidate.is_remote = bool(result.get("is_remote", False))
     candidate.normalized_location = str(result.get("location", "Remote"))
 
-    from src.radar.salary import normalize_salary
+    from src.radar.core.salary import normalize_salary
 
     raw_salary = result.get("salary")
     if raw_salary:
@@ -315,7 +315,7 @@ def _apply_llm_result(candidate: JobCandidate, result: dict[str, Any]) -> None:
 
 
 def _build_group_key(candidate: JobCandidate) -> str:
-    from src.radar.models import make_canonical_id
+    from src.radar.core.models import make_canonical_id
 
     return make_canonical_id(
         candidate.normalized_company,
@@ -374,7 +374,7 @@ async def _persist_candidate(store, candidate: JobCandidate) -> None:
 
 
 def get_queue_status() -> dict[str, Any]:
-    from src.radar.governor import get_governor_status as _gs
+    from src.radar.core.governor import get_governor_status as _gs
 
     gs = _gs()
     return {

@@ -6,7 +6,7 @@ import pytest
 
 from src.agent.telegram_agent import TelegramAgent
 from src.graph.entity import FrontierEntry, NodeType
-from src.radar.models import EligibilityState, JobCandidate
+from src.radar.core.models import EligibilityState, JobCandidate
 
 
 class TestTelegramCategorizedAlerts:
@@ -67,7 +67,7 @@ class TestDedupNotification:
 class TestAgentHandlers:
     @pytest.mark.asyncio
     async def test_career_site_detector_no_url(self) -> None:
-        from src.radar.agents import career_site_detector
+        from src.radar.sources.agents import career_site_detector
 
         entry = FrontierEntry(
             id="test",
@@ -83,7 +83,7 @@ class TestAgentHandlers:
 
     @pytest.mark.asyncio
     async def test_ats_crawler_no_url(self) -> None:
-        from src.radar.agents import ats_crawler
+        from src.radar.sources.agents import ats_crawler
 
         entry = FrontierEntry(
             id="test",
@@ -100,7 +100,7 @@ class TestAgentHandlers:
 
     @pytest.mark.asyncio
     async def test_founder_social_agent_no_name(self) -> None:
-        from src.radar.agents import founder_social_agent
+        from src.radar.sources.agents import founder_social_agent
 
         entry = FrontierEntry(
             id="test",
@@ -117,7 +117,7 @@ class TestAgentHandlers:
 
     @pytest.mark.asyncio
     async def test_employee_discovery_no_company(self) -> None:
-        from src.radar.agents import employee_discovery_agent
+        from src.radar.sources.agents import employee_discovery_agent
 
         entry = FrontierEntry(
             id="test",
@@ -135,40 +135,40 @@ class TestAgentHandlers:
 
 class TestATSIdentification:
     def test_identify_greenhouse(self) -> None:
-        from src.radar.agents import _identify_ats
+        from src.radar.sources.agents import _identify_ats
 
         assert _identify_ats("https://boards.greenhouse.io/company") == "greenhouse"
 
     def test_identify_lever(self) -> None:
-        from src.radar.agents import _identify_ats
+        from src.radar.sources.agents import _identify_ats
 
         assert _identify_ats("https://jobs.lever.co/company/123") == "lever"
 
     def test_identify_ashby(self) -> None:
-        from src.radar.agents import _identify_ats
+        from src.radar.sources.agents import _identify_ats
 
         assert _identify_ats("https://jobs.ashbyhq.com/company/123") == "ashby"
 
     def test_identify_workable(self) -> None:
-        from src.radar.agents import _identify_ats
+        from src.radar.sources.agents import _identify_ats
 
         assert _identify_ats("https://apply.workable.com/company") == "workable"
 
     def test_identify_workday(self) -> None:
-        from src.radar.agents import _identify_ats
+        from src.radar.sources.agents import _identify_ats
 
         assert _identify_ats("https://company.myworkdayjobs.com/careers") == "workday"
 
     def test_identify_unknown(self) -> None:
-        from src.radar.agents import _identify_ats
+        from src.radar.sources.agents import _identify_ats
 
         assert _identify_ats("https://company.com/careers") == "careers_page"
 
 
 class TestColdOutreach:
     def test_generate_outreach_for_urgent_accepted(self) -> None:
-        from src.radar.models import FreshnessLane
-        from src.radar.outreach import generate_outreach_card
+        from src.radar.core.models import FreshnessLane
+        from src.radar.engine.outreach import generate_outreach_card
 
         candidate = JobCandidate(
             canonical_id="test:role:remote",
@@ -187,7 +187,7 @@ class TestColdOutreach:
         assert card.hiring_signal == "open_role"
 
     def test_generate_outreach_for_funding(self) -> None:
-        from src.radar.outreach import generate_outreach_card
+        from src.radar.engine.outreach import generate_outreach_card
 
         candidate = JobCandidate(
             canonical_id="test:role:remote",
@@ -204,7 +204,7 @@ class TestColdOutreach:
         assert "Series A" in card.why_now
 
     def test_no_outreach_without_signal(self) -> None:
-        from src.radar.outreach import generate_outreach_card
+        from src.radar.engine.outreach import generate_outreach_card
 
         candidate = JobCandidate(
             canonical_id="test:role:remote",
@@ -220,7 +220,7 @@ class TestColdOutreach:
 
 class TestSourceModules:
     def test_register_and_get_checkpoint(self) -> None:
-        from src.radar.sources import get_checkpoint, register_source
+        from src.radar.sources.sources import get_checkpoint, register_source
 
         register_source("greenhouse:acme", "ats_board")
         cp = get_checkpoint("greenhouse:acme")
@@ -228,7 +228,7 @@ class TestSourceModules:
         assert cp.source_type == "ats_board"
 
     def test_compute_snapshot_hash(self) -> None:
-        from src.radar.sources import compute_url_snapshot_hash
+        from src.radar.sources.sources import compute_url_snapshot_hash
 
         urls = ["https://a.com/1", "https://a.com/2", "https://a.com/3"]
         h1 = compute_url_snapshot_hash(urls)
@@ -238,7 +238,7 @@ class TestSourceModules:
     def test_should_poll_inactive_source(self) -> None:
         import time
 
-        from src.radar.sources import get_checkpoint, register_source, should_poll
+        from src.radar.sources.sources import get_checkpoint, register_source, should_poll
 
         register_source("test:inactive", "ats_board", initial_quality=0.5)
         cp = get_checkpoint("test:inactive")
@@ -247,13 +247,13 @@ class TestSourceModules:
         assert not should_poll("test:inactive")
 
     def test_should_poll_active_source(self) -> None:
-        from src.radar.sources import register_source, should_poll
+        from src.radar.sources.sources import register_source, should_poll
 
         register_source("test:active", "ats_board", initial_quality=0.8)
         assert should_poll("test:active")
 
     def test_record_failure_decreases_quality(self) -> None:
-        from src.radar.sources import get_checkpoint, record_failure, register_source
+        from src.radar.sources.sources import get_checkpoint, record_failure, register_source
 
         register_source("test:failing", "ats_board", initial_quality=0.8)
         initial_score = get_checkpoint("test:failing").quality_score
@@ -261,7 +261,7 @@ class TestSourceModules:
         assert get_checkpoint("test:failing").quality_score < initial_score
 
     def test_record_success_increases_quality(self) -> None:
-        from src.radar.sources import get_checkpoint, record_success, register_source
+        from src.radar.sources.sources import get_checkpoint, record_success, register_source
 
         register_source("test:succeeding", "ats_board", initial_quality=0.5)
         initial_score = get_checkpoint("test:succeeding").quality_score
@@ -269,7 +269,7 @@ class TestSourceModules:
         assert get_checkpoint("test:succeeding").quality_score > initial_score
 
     def test_get_source_health(self) -> None:
-        from src.radar.sources import get_source_health, register_source
+        from src.radar.sources.sources import get_source_health, register_source
 
         register_source("test:health", "ats_board")
         health = get_source_health()

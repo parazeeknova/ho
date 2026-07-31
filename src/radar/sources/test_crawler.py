@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 
-from src.radar.crawler import (
+from src.radar.sources.crawler import (
     _canonical_url,
     _classify_result,
     _extract_board_root,

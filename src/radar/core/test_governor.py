@@ -7,18 +7,18 @@ import time
 
 import pytest
 
-from src.radar.discovery import is_aggregator_domain
-from src.radar.governor import (
+from src.radar.core.governor import (
     _state as _gs,
 )
-from src.radar.governor import (
+from src.radar.core.governor import (
     acquire_budget,
     get_governor_status,
     release_budget,
 )
-from src.radar.governor import (
+from src.radar.core.governor import (
     is_aggregator_domain as _gov_is_agg,
 )
+from src.radar.sources.discovery import is_aggregator_domain
 
 
 @pytest.fixture(autouse=True)

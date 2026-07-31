@@ -11,7 +11,7 @@ import time
 from typing import Any
 
 from src.configuration import get_config
-from src.radar.models import (
+from src.radar.core.models import (
     EligibilityState,
     FreshnessLane,
     JobCandidate,

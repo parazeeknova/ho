@@ -17,7 +17,7 @@ import httpx
 from src.configuration import get_config
 from src.graph.entity import FrontierEntry, NodeType
 from src.logging import get_logger
-from src.radar.models import JobObservation
+from src.radar.core.models import JobObservation
 
 logger = get_logger("radar_agents")
 

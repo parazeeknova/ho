@@ -6,8 +6,8 @@ import time
 
 import pytest
 
-from src.radar.models import EligibilityState, JobCandidate, RejectionReason
-from src.radar.queue import (
+from src.radar.core.models import EligibilityState, JobCandidate, RejectionReason
+from src.radar.core.queue import (
     _queue_state,
     enqueue_candidate,
     get_queue_status,
@@ -18,8 +18,8 @@ from src.radar.queue import (
 
 @pytest.fixture(autouse=True)
 def reset_queue_state() -> None:
-    from src.radar.governor import _state as _gs
-    from src.radar.queue import _ACTIVE_IDS, _CANDIDATE_VERSIONS
+    from src.radar.core.governor import _state as _gs
+    from src.radar.core.queue import _ACTIVE_IDS, _CANDIDATE_VERSIONS
 
     _queue_state.pending.clear()
     _queue_state.total_enqueued = 0

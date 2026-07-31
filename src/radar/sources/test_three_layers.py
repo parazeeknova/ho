@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import pytest
 
-from src.radar.ats_interceptor import intercept_ats_board, parse_ats_slug
-from src.radar.dorking import DorkingEngine
-from src.radar.github_poller import poll_github_index_etag
+from src.radar.sources.ats_interceptor import intercept_ats_board, parse_ats_slug
+from src.radar.sources.dorking import DorkingEngine
+from src.radar.sources.github_poller import poll_github_index_etag
 
 
 class TestLayer1ATSInterceptor:

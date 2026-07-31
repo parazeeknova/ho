@@ -19,7 +19,7 @@ from typing import Any
 import httpx
 
 from src.logging import get_logger
-from src.radar.models import JobObservation
+from src.radar.core.models import JobObservation
 
 logger = get_logger("ats_mass_poller")
 

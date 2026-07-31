@@ -7,7 +7,7 @@ from generalcompute import GeneralCompute
 
 from src.configuration import LLMConfig, get_config
 from src.logging import get_logger
-from src.radar.governor import (
+from src.radar.core.governor import (
     _is_429,
     acquire_budget,
     handle_429,

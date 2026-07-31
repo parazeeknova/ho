@@ -12,8 +12,8 @@ import asyncio
 import httpx
 
 from src.logging import get_logger
-from src.radar.extractors import extract_github_index_markdown
-from src.radar.models import JobObservation
+from src.radar.core.extractors import extract_github_index_markdown
+from src.radar.core.models import JobObservation
 
 logger = get_logger("github_poller")
 

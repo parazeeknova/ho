@@ -15,8 +15,8 @@ import time
 
 import pytest
 
-from src.radar.gates import run_gates
-from src.radar.models import (
+from src.radar.core.gates import run_gates
+from src.radar.core.models import (
     EligibilityState,
     JobObservation,
     RejectionReason,
@@ -152,7 +152,7 @@ class TestOvernightAcceptance:
     async def test_gate_order_is_cheapest_first(self) -> None:
         """Gates must execute in cheapest-to-most-expensive order.
         URL quality (fastest) must run before role family (which scans text)."""
-        from src.radar.gates import _GATE_ORDER
+        from src.radar.core.gates import _GATE_ORDER
 
         assert _GATE_ORDER[0] == "url_quality"
         assert _GATE_ORDER[1] == "url_duplicate"
@@ -160,7 +160,7 @@ class TestOvernightAcceptance:
 
     def test_salary_not_crashed_by_malformed_data(self) -> None:
         """Malformed salary strings must not crash the normalizer."""
-        from src.radar.salary import normalize_salary
+        from src.radar.core.salary import normalize_salary
 
         malformed_cases = [
             "$-",
@@ -198,8 +198,8 @@ class TestOvernightAcceptance:
     @pytest.mark.asyncio
     async def test_llm_queue_respects_budget(self) -> None:
         """Governor must never exceed the configured request/token budget."""
-        from src.radar.governor import _state as _gs
-        from src.radar.governor import acquire_budget
+        from src.radar.core.governor import _state as _gs
+        from src.radar.core.governor import acquire_budget
 
         # Set strict limits
         _gs.rpm_limit = 3

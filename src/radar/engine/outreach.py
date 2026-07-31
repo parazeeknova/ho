@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from src.logging import get_logger
-from src.radar.models import ColdOutreachCard, JobCandidate
+from src.radar.core.models import ColdOutreachCard, JobCandidate
 
 logger = get_logger("outreach")
 
