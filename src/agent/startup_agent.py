@@ -7,6 +7,7 @@ Extracts founder details (name, title, LinkedIn, GitHub, email), funding rounds
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import re
 from typing import Any
 
@@ -166,8 +167,9 @@ class StartupAgent:
         r"raised\s+\$?\d)"
     )
 
-    def __init__(self, ctx: ContextManager) -> None:
+    def __init__(self, ctx: ContextManager, store: Any = None) -> None:
         self.ctx = ctx
+        self.store = store
 
     @staticmethod
     def _should_skip_llm(job: dict[str, Any]) -> str | None:
@@ -258,8 +260,59 @@ class StartupAgent:
 
         return min(100, score)
 
+    _OSINT_CACHE_KEYS = (
+        "is_startup",
+        "founders",
+        "funding_info",
+        "funding_stage",
+        "founder_socials",
+        "company_news",
+        "osint_signals",
+    )
+
     async def analyze_startup(self, job: dict[str, Any]) -> dict[str, Any]:
-        """Research company founders, funding stage, socials, and recent news."""
+        """Research company founders, funding stage, socials, and recent news.
+
+        Wrapper with a per-company OSINT cache: the same company is
+        analyzed again whenever another of its roles gets accepted, so
+        this avoids repeated SearXNG/Wikipedia/LLM work and source
+        hammering.
+        """
+        company = str(job.get("company") or "").strip()
+        if not company or company in ("N/A", "Unknown", "Company"):
+            return job
+        if self.store is not None:
+            cached = await self._get_cached_osint(company)
+            if cached:
+                job.update(cached)
+                return job
+        result = await self._analyze_startup_uncached(job)
+        if self.store is not None:
+            await self._put_cached_osint(company, result)
+        return result
+
+    async def _get_cached_osint(self, company: str) -> dict[str, Any] | None:
+        if self.store is None:
+            return None
+        try:
+            data = await self.store.get_company_osint(company)
+        except Exception:
+            return None
+        if not data:
+            return None
+        return {k: data.get(k) for k in self._OSINT_CACHE_KEYS if k in data}
+
+    async def _put_cached_osint(self, company: str, job: dict[str, Any]) -> None:
+        if self.store is None:
+            return
+        payload = {k: job.get(k) for k in self._OSINT_CACHE_KEYS if job.get(k) is not None}
+        if not payload:
+            return
+        with contextlib.suppress(Exception):
+            await self.store.put_company_osint(company, payload)
+
+    async def _analyze_startup_uncached(self, job: dict[str, Any]) -> dict[str, Any]:
+        """The uncached search + extraction pipeline."""
         company = str(job.get("company") or "").strip()
         if not company or company in ("N/A", "Unknown", "Company"):
             return job
@@ -272,7 +325,15 @@ class StartupAgent:
         results_list = await asyncio.gather(*(_searxng_search(q) for q in queries))
         combined_snippets = "\n".join(snippet for sublist in results_list for snippet in sublist)
 
+        # Founder names straight from the Wikipedia infobox; SearXNG/Bing
+        # rarely surfaces founder pages, so this is the primary founder source.
+        from src.search.wikipedia import get_wikipedia_founders
+
+        wiki_founders = await get_wikipedia_founders(company)
+
         if not combined_snippets:
+            if wiki_founders:
+                job["founders"] = wiki_founders
             return job
 
         prompt = (
@@ -334,6 +395,9 @@ class StartupAgent:
         else:
             if extracted.get("founder_socials"):
                 job["founder_socials"] = extracted["founder_socials"]
+
+        if not job.get("founders") and wiki_founders:
+            job["founders"] = wiki_founders
 
         # Email triangulation fallback for founders missing direct email
         domain = company.lower().replace(" ", "").strip() + ".com"

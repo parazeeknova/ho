@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import time
 from typing import Any
 
 import asyncpg
@@ -203,6 +204,12 @@ CREATE TABLE IF NOT EXISTS salary_estimates (
     raw           TEXT NOT NULL DEFAULT '',
     source        TEXT NOT NULL DEFAULT 'searxng',
     searched_at   DOUBLE PRECISION NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS company_osint (
+    company      TEXT PRIMARY KEY,
+    data         JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+    cached_at    DOUBLE PRECISION NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS llm_queue (
@@ -1038,6 +1045,41 @@ class MemoryStore:
                 "INSERT INTO radar_analytics (event_type, event_data) VALUES ($1, $2)",
                 event_type,
                 json.dumps(event_data),
+            )
+
+    _OSINT_CACHE_TTL_SECONDS = 7 * 86400
+
+    async def get_company_osint(self, company: str) -> dict[str, Any] | None:
+        """Return cached company OSINT enrichment if fresh, else None."""
+        async with self._pool.acquire() as conn:
+            try:
+                row = await conn.fetchrow(
+                    "SELECT data, cached_at FROM company_osint WHERE company = $1",
+                    company,
+                )
+            except Exception:
+                return None
+        if row is None:
+            return None
+        cached_at = row.get("cached_at") or 0
+        if time.time() - cached_at >= self._OSINT_CACHE_TTL_SECONDS:
+            return None
+        try:
+            return json.loads(row.get("data") or "{}")
+        except Exception:
+            return None
+
+    async def put_company_osint(self, company: str, data: dict[str, Any]) -> None:
+        """Insert or refresh the cached OSINT payload for a company."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO company_osint (company, data, cached_at) "
+                "VALUES ($1, $2::jsonb, $3) "
+                "ON CONFLICT (company) DO UPDATE SET "
+                "data = EXCLUDED.data, cached_at = EXCLUDED.cached_at",
+                company,
+                json.dumps(data),
+                time.time(),
             )
 
     async def get_salary_stats(self) -> dict[str, Any]:

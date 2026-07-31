@@ -1129,7 +1129,7 @@ async def _run_radar_pipeline() -> None:
     frontier = CrawlFrontier(max_size=ecfg.max_queue_size)
     engine = WorkScheduler(frontier, worker_count=8)
     bus.set_enqueue_callback(engine.enqueue_many)
-    sa = StartupAgent(ctx)
+    sa = StartupAgent(ctx, store=store)
     await load_checkpoints(store)
 
     for id_, _url, _source_type in _SEED_BOARDS:

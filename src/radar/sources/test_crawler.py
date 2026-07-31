@@ -263,7 +263,7 @@ class TestEmailGuessingRemoved:
     def test_no_guess_in_analyze_startup_source(self) -> None:
         from src.agent.startup_agent import StartupAgent
 
-        source = inspect.getsource(StartupAgent.analyze_startup).lower()
+        source = inspect.getsource(StartupAgent._analyze_startup_uncached).lower()
         assert "aggressively guess" not in source
         assert "may be guessed" not in source
         assert "never guess" in source
