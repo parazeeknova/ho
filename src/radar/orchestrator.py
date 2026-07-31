@@ -199,7 +199,11 @@ async def _discover_new_companies() -> list[dict[str, Any]]:
             deduped.append(c)
 
     new_sources = 0
-    for c in deduped:
+    total = len(deduped)
+    logger.info("Resolving domains and detecting ATS for %d companies...", total)
+    for idx, c in enumerate(deduped):
+        if idx > 0 and idx % 20 == 0:
+            logger.debug("Domain/ATS progress: %d/%d (ATS found: %d)", idx, total, new_sources)
         website = c.get("website", "")
         if (
             (not website or not website.startswith("http"))
@@ -274,6 +278,10 @@ async def _poll_board(board: dict[str, str], app: FirecrawlApp) -> list[JobObser
     if not board_url or not board_url.startswith("http"):
         return []
 
+    board_short = board_url[:80]
+    logger.debug("Polling board: %s (%s)", source_id, board_short)
+    t0 = time.monotonic()
+
     direct_urls: list[str] = []
     try:
         resp = await asyncio.wait_for(
@@ -301,6 +309,14 @@ async def _poll_board(board: dict[str, str], app: FirecrawlApp) -> list[JobObser
     had_prior = bool(get_checkpoint(source_id).last_snapshot_hash)
     state = diff_snapshots(source_id, direct_urls)
     new_urls = state.new_urls
+    elapsed = time.monotonic() - t0
+    logger.info(
+        "Board %s: %d URLs mapped, %d new (%.1fs)",
+        source_id,
+        len(direct_urls),
+        len(new_urls),
+        elapsed,
+    )
 
     observations: list[JobObservation] = []
     for url in new_urls:
@@ -351,9 +367,13 @@ async def _fetch_postings_and_gate(
         pass
 
     sem = asyncio.Semaphore(8)
+    processed_count = 0
+    total = len(observations)
+    if total > 0:
+        logger.info("Fetching and gating %d postings...", total)
 
     async def _process_one(obs: JobObservation) -> None:
-        nonlocal rejected_count
+        nonlocal rejected_count, processed_count
         async with sem:
             try:
                 if not obs.raw_markdown or len(obs.raw_markdown) < 100:
@@ -404,6 +424,15 @@ async def _fetch_postings_and_gate(
                 # Persist rejected observations too
                 if candidate is None:
                     await _persist_rejected(store, obs, pid, rejections)
+
+                processed_count += 1
+                if processed_count % 25 == 0:
+                    logger.info(
+                        "Posting fetch/gate: %d/%d (passed: %d)",
+                        processed_count,
+                        total,
+                        len(passed),
+                    )
 
             except Exception:
                 _PIPELINE_METRICS["failed_fetches"] += 1
@@ -512,7 +541,11 @@ def _group_key(c: JobCandidate) -> str:
 async def _enrich_high_fit(
     candidates: list[JobCandidate], sa: StartupAgent, store: MemoryStore
 ) -> None:
-    for c in candidates:
+    high_fit = [c for c in candidates if c.is_accepted and (c.is_urgent or c.match_percent >= 60)]
+    if not high_fit:
+        return
+    logger.info("Enriching %d high-fit candidates...", len(high_fit))
+    for idx, c in enumerate(candidates):
         if not c.is_accepted or not (c.is_urgent or c.match_percent >= 60):
             continue
         try:
@@ -532,6 +565,8 @@ async def _enrich_high_fit(
             c.osint_signals = enriched.get("osint_signals", [])
             c.underdog_score = compute_underdog_score(c)
             await _persist_full(store, c)
+            if (idx + 1) % 5 == 0:
+                logger.debug("Enrichment: %d/%d complete", idx + 1, len(high_fit))
         except Exception:
             pass
 
@@ -1043,6 +1078,7 @@ async def _run_radar_pipeline() -> None:
             break
         sweep += 1
         sweep_start = time.monotonic()
+        logger.info("=== Sweep %d starting ===", sweep)
         set_pipeline_state(
             sweep=sweep, phase=f"sweep {sweep}: scraping", sweep_started_at=time.time()
         )
@@ -1067,6 +1103,7 @@ async def _run_radar_pipeline() -> None:
 
             # Load active sources (seeds + dynamically discovered, all with URLs)
             active_sources = await load_active_sources(store)
+            logger.info("Sweep %d: %d active sources to poll", sweep, len(active_sources))
             # Also poll seed boards
             for id_, url, source_type in _SEED_BOARDS:
                 if should_poll(id_) and not any(s["id"] == id_ for s in active_sources):
@@ -1081,8 +1118,14 @@ async def _run_radar_pipeline() -> None:
                     return await _poll_board(board, app)
 
             tasks = [asyncio.create_task(_poll_one(b, poll_sem)) for b in active_sources]
-            for task in asyncio.as_completed(tasks):
+            for board_done, task in enumerate(asyncio.as_completed(tasks), start=1):
                 board_results.append(await task)
+                if board_done % 10 == 0:
+                    logger.debug(
+                        "Board polling: %d/%d complete",
+                        board_done,
+                        len(active_sources),
+                    )
             for obs_list in board_results:
                 all_obs.extend(obs_list)
 
@@ -1118,6 +1161,8 @@ async def _run_radar_pipeline() -> None:
                 max_candidates=cfg.radar.max_candidates_per_sweep,
             )
             logger.info(f"LLM queue: {len(matched)} matched")
+            accepted = len([c for c in matched if c.is_accepted])
+            logger.info("LLM queue: %d total matched, %d accepted", len(matched), accepted)
 
             await _enrich_high_fit(matched, sa, store)
             await _dispatch_company_events(matched, graph, bus)
@@ -1141,13 +1186,22 @@ async def _run_radar_pipeline() -> None:
 
             await persist_checkpoints(store)
             elapsed = time.monotonic() - sweep_start
+            logger.info(
+                "=== Sweep %d complete in %.1fs: %d accepted, %d observations ===",
+                sweep,
+                elapsed,
+                accepted,
+                len(all_obs),
+            )
             if ta.is_configured:
                 await ta.send_sweep_summary(sweep, accepted, len(all_obs), elapsed)
 
             gc.collect()
             if os.environ.get("OVERNIGHT_LOOP", "true").lower() != "true":
                 break
-            await asyncio.sleep(cfg.pipeline.sweep_interval)
+            interval = cfg.pipeline.sweep_interval
+            logger.info("Sweep %d: sleeping for %ds before next sweep", sweep, interval)
+            await asyncio.sleep(interval)
         except asyncio.CancelledError:
             break
         except Exception as e:

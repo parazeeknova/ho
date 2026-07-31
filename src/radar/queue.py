@@ -135,6 +135,13 @@ async def process_queue(
 
             if isinstance(result, dict) and "match_percent" in result:
                 _apply_llm_result(candidate, result)
+                logger.info(
+                    "LLM match: %s at %s -> %d%% (%s)",
+                    candidate.normalized_role,
+                    candidate.normalized_company,
+                    candidate.match_percent,
+                    candidate.verdict,
+                )
             else:
                 candidate.eligibility = EligibilityState.ERROR
                 candidate.rejection_reason = RejectionReason.MATCHER_LOW_SCORE
@@ -181,7 +188,14 @@ async def process_queue(
         processed += 1
 
     if tasks:
+        logger.info("LLM queue: dispatching %d candidates for matching...", len(tasks))
         await asyncio.gather(*tasks, return_exceptions=True)
+        logger.info(
+            "LLM queue: %d candidates matched (%d accepted, %d rejected)",
+            len(tasks),
+            len([r for r in results if r.is_accepted]),
+            len([r for r in results if r.is_rejected]),
+        )
 
     return results
 

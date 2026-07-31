@@ -240,11 +240,14 @@ async def _resolve_company_domain(name: str) -> str:
                 try:
                     resp = await client.head(url)
                     if resp.status_code < 400:
-                        return urlparse(url).hostname or slug
+                        host = urlparse(url).hostname or slug
+                        logger.debug("Domain resolved: '%s' → %s", name, host)
+                        return host
                 except Exception:
                     continue
     except Exception:
         pass
+    logger.debug("Domain resolution failed for '%s'", name)
     return ""
 
 
@@ -557,7 +560,9 @@ async def detect_ats_for_company(website: str) -> str | None:
                         actual = str(resp.url)
                         for _sig_name, sig in ATS_SIGNATURES.items():
                             if sig in actual.lower():
+                                logger.debug("ATS found: %s → %s (%s)", website, actual, _sig_name)
                                 return actual
+                        logger.debug("Careers page found: %s → %s (no known ATS)", website, actual)
                         return actual
                 except Exception:
                     continue
@@ -572,6 +577,7 @@ async def detect_ats_for_company(website: str) -> str | None:
                 try:
                     resp = await client.get(guess)
                     if resp.status_code == 200:
+                        logger.debug("ATS vendor match: %s", str(resp.url))
                         return str(resp.url)
                 except Exception:
                     continue
