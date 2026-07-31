@@ -52,3 +52,5 @@ async def test_handle_resend_unconfigured() -> None:
     agent = TelegramAgent(bot_token="", chat_id="")
     # Should safely return without sending if unconfigured
     await agent._handle_resend("/resend 5")
+    await agent._handle_resend("/resend --dry")
+    await agent._handle_resend("/resend --dry 5")

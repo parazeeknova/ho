@@ -383,19 +383,27 @@ class TelegramAgent:
 
     async def _handle_resend(self, text: str) -> None:
         parts = text.split()
-        limit = 10
-        if len(parts) > 1 and parts[1].isdigit():
-            limit = min(50, max(1, int(parts[1])))
+        args = [p.lower() for p in parts[1:]]
+        is_dry = "--dry" in args or "dry" in args
 
-        await self._send_raw(f"⏳ <i>Resending top {limit} accepted job matches...</i>")
+        limit = 10
+        for p in parts[1:]:
+            if p.isdigit():
+                limit = min(50, max(1, int(p)))
+                break
 
         from src.memory.pgvector_store import MemoryStore
 
-        count = 0
         try:
             store = await MemoryStore.create()
             try:
                 async with store._pool.acquire() as conn:
+                    total_row = await conn.fetchrow(
+                        "SELECT COUNT(*) as cnt FROM radar_candidates "
+                        "WHERE eligibility = 'accepted'"
+                    )
+                    total_count = total_row["cnt"] if total_row else 0
+
                     rows = await conn.fetch(
                         """
                         SELECT canonical_id, normalized_role, normalized_company,
@@ -410,10 +418,41 @@ class TelegramAgent:
                         """,
                         limit,
                     )
+
                 if not rows:
                     await self._send_raw("ℹ️ No accepted job matches found in database to resend.")
                     return
 
+                if is_dry:
+                    lines = [
+                        "📋 <b>Dry Run: Available Accepted Jobs</b>",
+                        f"<i>Total in DB: {total_count} accepted | Showing top {len(rows)}:</i>",
+                        "",
+                    ]
+                    for idx, r in enumerate(rows, 1):
+                        role = html.escape(str(r["normalized_role"] or "Position"))
+                        company = html.escape(str(r["normalized_company"] or "Company"))
+                        match_pct = r["match_percent"] or 0
+                        loc = html.escape(str(r["normalized_location"] or "Remote"))
+                        link = r["direct_apply_url"] or ""
+                        line = f"<b>{idx}. {company}</b> — {role} ({match_pct}% match, {loc})"
+                        if link and link.startswith("http"):
+                            line += f' | <a href="{html.escape(link)}">Apply →</a>'
+                        lines.append(line)
+
+                    lines.extend(
+                        [
+                            "",
+                            "💡 <i>Run <code>/resend</code> to send cards for top 10, "
+                            "or <code>/resend N</code> for top N.</i>",
+                        ]
+                    )
+                    await self._send_raw("\n".join(lines))
+                    return
+
+                await self._send_raw(f"⏳ <i>Resending top {len(rows)} accepted job matches...</i>")
+
+                count = 0
                 for r in rows:
                     import json
 
