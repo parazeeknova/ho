@@ -120,7 +120,7 @@ class PipelineConfig:
 class Neo4jConfig:
     """Neo4j graph database settings."""
 
-    uri: str = field(default_factory=lambda: _env_str("NEO4J_URI", "bolt://localhost:7687"))
+    uri: str = field(default_factory=lambda: _env_str("NEO4J_URI", "bolt://127.0.0.1:7687"))
     username: str = field(default_factory=lambda: _env_str("NEO4J_USERNAME", "neo4j"))
     password: str = field(default_factory=lambda: _env_str("NEO4J_PASSWORD", "password"))
     max_connection_lifetime: int = field(
