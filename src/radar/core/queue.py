@@ -129,7 +129,7 @@ async def enqueue_candidate(candidate: JobCandidate, priority: int = 50, store: 
                     priority,
                     json.dumps(_candidate_to_payload(candidate)),
                 )
-            if res.status == "INSERT 0 1":
+            if res == "INSERT 0 1":
                 return True
             # Already queued in the DB: do not also push to memory
             _ACTIVE_IDS.pop(key, None)
@@ -159,7 +159,12 @@ def _candidate_to_payload(c: JobCandidate) -> dict[str, Any]:
     }
 
 
-def _candidate_from_payload(payload: dict[str, Any]) -> JobCandidate:
+def _candidate_from_payload(payload: dict[str, Any] | str) -> JobCandidate:
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except Exception:
+            payload = {}
     return JobCandidate(
         canonical_id=payload.get("canonical_id", ""),
         source=payload.get("source", ""),
@@ -200,6 +205,18 @@ async def _db_claim(store: Any, limit: int) -> list[tuple[int, int, JobCandidate
             for r in rows:
                 claimed.append((r["id"], r["priority"], _candidate_from_payload(r["payload"])))
     except Exception as e:
+        # The UPDATE already flipped the claimed rows to 'processing' with a
+        # lease; if parsing/decoding fails, put them back so nothing strands
+        # for the full lease duration.
+        try:
+            async with store._pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE llm_queue SET status = 'pending', lease_until = NULL "
+                    "WHERE id = ANY($1::bigint[])",
+                    [r["id"] for r in rows],
+                )
+        except Exception:
+            pass
         logger.warning("DB queue claim failed", exception=str(e))
     return claimed
 

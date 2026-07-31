@@ -34,6 +34,8 @@ services:
         condition: service_started
       playwright-service:
         condition: service_started
+      rabbitmq:
+        condition: service_started
     ports:
       - "3002:3002"
     command: node dist/src/harness.js --start-docker
@@ -93,6 +95,18 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+        compress: "true"
+
+  rabbitmq:
+    image: rabbitmq:3-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
         compress: "true"
 
   searxng:

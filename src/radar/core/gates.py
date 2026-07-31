@@ -45,6 +45,47 @@ _GATE_ORDER: list[str] = [
 ]
 
 
+_META_SOURCE_PREFIXES = (
+    "ats:",
+    "mass_poller",
+    "github_index",
+    "searxng",
+    "unknown",
+    "discovered",
+    "blog",
+    "news",
+)
+
+
+def _extract_company(observation: JobObservation) -> str:
+    """Best-effort company name from the observation's ATS slug, source id,
+    or URL hostname - never from the job title."""
+    slug = observation.extra.get("company_slug")
+    if slug:
+        return str(slug).replace("-", " ").title()
+
+    src = observation.source or ""
+    if ":" in src:
+        maybe = src.split(":", 1)[0].strip()
+        if maybe and maybe not in _META_SOURCE_PREFIXES:
+            return maybe.replace("-", " ").title()
+    elif src and src not in _META_SOURCE_PREFIXES:
+        return src.replace("-", " ").title()
+
+    from urllib.parse import urlparse
+
+    try:
+        host = urlparse(observation.url).netloc.lower()
+        if host.startswith("www."):
+            host = host[4:]
+        parts = host.split(".")
+        if len(parts) >= 2:
+            return parts[-2].replace("-", " ").title()
+    except Exception:
+        pass
+    return "Unknown"
+
+
 async def run_gates(
     observation: JobObservation,
     known_hashes: set[str],
@@ -52,11 +93,12 @@ async def run_gates(
 ) -> tuple[JobCandidate | None, list[tuple[str, RejectionReason, str]]]:
     rejection_log: list[tuple[str, RejectionReason, str]] = []
 
+    company = _extract_company(observation)
     candidate = JobCandidate(
-        canonical_id=make_canonical_id(observation.title or "unknown", "", "Remote"),
+        canonical_id=make_canonical_id(observation.title or "unknown", company, "Remote"),
         source=observation.source,
         direct_apply_url=observation.url,
-        normalized_company=observation.title or "unknown",
+        normalized_company=company,
         normalized_role="",
         normalized_location="Remote",
     )

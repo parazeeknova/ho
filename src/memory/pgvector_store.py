@@ -242,6 +242,9 @@ class MemoryStore:
         pool = await asyncpg.create_pool(cfg.dsn, min_size=cfg.min_pool, max_size=cfg.max_pool)
         async with pool.acquire() as conn:
             await register_vector(conn)
+            await conn.set_type_codec(
+                "jsonb", encoder=json.dumps, decoder=json.loads, schema="pg_catalog"
+            )
             await conn.execute(CREATE_TABLES_SQL)
             await cls._create_hnsw_indexes(conn)
             await cls._prune_llm_queue(conn)

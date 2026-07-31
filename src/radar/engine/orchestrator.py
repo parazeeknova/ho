@@ -1243,7 +1243,7 @@ async def _run_radar_pipeline() -> None:
             async with store._pool.acquire() as conn:
                 rows = await conn.fetch(
                     "SELECT canonical_id, normalized_role, normalized_company, "
-                    "match_percent, verdict, funding_stage, extra "
+                    "direct_apply_url, match_percent, verdict, funding_stage, extra "
                     "FROM radar_candidates "
                     "WHERE eligibility = 'accepted' "
                     "AND canonical_id NOT IN (SELECT dedup_key FROM telegram_notified_jobs) "
@@ -1260,7 +1260,7 @@ async def _run_radar_pipeline() -> None:
                         normalized_company=r["normalized_company"],
                         normalized_location="Remote",
                         source="radar",
-                        direct_apply_url="",
+                        direct_apply_url=r.get("direct_apply_url", "") or "",
                         match_percent=r["match_percent"],
                         verdict=r["verdict"],
                         funding_stage=r.get("funding_stage", ""),

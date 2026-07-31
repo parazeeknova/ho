@@ -82,90 +82,87 @@ async def fetch_ats_jobs(platform: str, slug: str) -> list[dict[str, Any]]:
                         }
                     )
 
-            elif platform == "lever":
-                # GET https://api.lever.co/v0/postings/{slug}
-                api_url = f"https://api.lever.co/v0/postings/{slug}"
-                resp = await client.get(api_url, headers=headers)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if isinstance(data, list):
-                        for item in data:
-                            categories = item.get("categories") or {}
-                            jobs.append(
-                                {
-                                    "url": item.get("hostedUrl") or item.get("applyUrl", ""),
-                                    "title": item.get("text", ""),
-                                    "location": categories.get("location", ""),
-                                    "updated_at": item.get("createdAt", ""),
-                                    "raw_markdown": (
-                                        item.get("descriptionPlain", "")
-                                        or item.get("description", "")
-                                    ),
-                                }
-                            )
-
-            elif platform == "ashby":
-                # POST https://api.ashbyhq.com/posting-api/job-board/{slug}
-                api_url = f"https://api.ashbyhq.com/posting-api/job-board/{slug}"
-                resp = await client.post(
-                    api_url, json={"includeCompensation": True}, headers=headers
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    for item in data.get("jobs", []):
-                        job_id = item.get("id", "")
-                        job_url = f"https://jobs.ashbyhq.com/{slug}/{job_id}" if job_id else ""
+        elif platform == "lever":
+            # GET https://api.lever.co/v0/postings/{slug}
+            api_url = f"https://api.lever.co/v0/postings/{slug}"
+            resp = await client.get(api_url, headers=headers)
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, list):
+                    for item in data:
+                        categories = item.get("categories") or {}
                         jobs.append(
                             {
-                                "url": job_url,
-                                "title": item.get("title", ""),
-                                "location": item.get("locationName", ""),
-                                "updated_at": item.get("publishedAt", ""),
-                                "raw_markdown": item.get("descriptionHtml", ""),
+                                "url": item.get("hostedUrl") or item.get("applyUrl", ""),
+                                "title": item.get("text", ""),
+                                "location": categories.get("location", ""),
+                                "updated_at": item.get("createdAt", ""),
+                                "raw_markdown": (
+                                    item.get("descriptionPlain", "") or item.get("description", "")
+                                ),
                             }
                         )
 
-            elif platform == "workable":
-                # GET https://apply.workable.com/api/v1/widget/accounts/{slug}
-                api_url = f"https://apply.workable.com/api/v1/widget/accounts/{slug}"
-                resp = await client.get(api_url, headers=headers)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    for item in data.get("jobs", []):
-                        shortcode = item.get("shortcode", "")
-                        job_url = (
-                            f"https://apply.workable.com/{slug}/j/{shortcode}/" if shortcode else ""
-                        )
-                        jobs.append(
-                            {
-                                "url": job_url,
-                                "title": item.get("title", ""),
-                                "location": (item.get("location") or {}).get("city", ""),
-                                "updated_at": item.get("published", ""),
-                                "raw_markdown": item.get("description", ""),
-                            }
-                        )
+        elif platform == "ashby":
+            # GET https://api.ashbyhq.com/posting-api/job-board/{slug}?includeCompensation=true
+            api_url = (
+                f"https://api.ashbyhq.com/posting-api/job-board/{slug}?includeCompensation=true"
+            )
+            resp = await client.get(api_url, headers=headers)
+            if resp.status_code == 200:
+                data = resp.json()
+                for item in data.get("jobs", []):
+                    job_id = item.get("id", "")
+                    job_url = f"https://jobs.ashbyhq.com/{slug}/{job_id}" if job_id else ""
+                    jobs.append(
+                        {
+                            "url": job_url,
+                            "title": item.get("title", ""),
+                            "location": item.get("locationName", ""),
+                            "updated_at": item.get("publishedAt", ""),
+                            "raw_markdown": item.get("descriptionHtml", ""),
+                        }
+                    )
 
-            elif platform == "smartrecruiters":
-                # GET https://api.smartrecruiters.com/v1/companies/{slug}/postings
-                api_url = f"https://api.smartrecruiters.com/v1/companies/{slug}/postings"
-                resp = await client.get(api_url, headers=headers)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    for item in data.get("content", []):
-                        job_id = item.get("id", "")
-                        job_url = (
-                            f"https://jobs.smartrecruiters.com/{slug}/{job_id}" if job_id else ""
-                        )
-                        jobs.append(
-                            {
-                                "url": job_url,
-                                "title": item.get("name", ""),
-                                "location": (item.get("location") or {}).get("city", ""),
-                                "updated_at": item.get("releasedDate", ""),
-                                "raw_markdown": "",
-                            }
-                        )
+        elif platform == "workable":
+            # GET https://apply.workable.com/api/v1/widget/accounts/{slug}
+            api_url = f"https://apply.workable.com/api/v1/widget/accounts/{slug}"
+            resp = await client.get(api_url, headers=headers)
+            if resp.status_code == 200:
+                data = resp.json()
+                for item in data.get("jobs", []):
+                    shortcode = item.get("shortcode", "")
+                    job_url = (
+                        f"https://apply.workable.com/{slug}/j/{shortcode}/" if shortcode else ""
+                    )
+                    jobs.append(
+                        {
+                            "url": job_url,
+                            "title": item.get("title", ""),
+                            "location": (item.get("location") or {}).get("city", ""),
+                            "updated_at": item.get("published", ""),
+                            "raw_markdown": item.get("description", ""),
+                        }
+                    )
+
+        elif platform == "smartrecruiters":
+            # GET https://api.smartrecruiters.com/v1/companies/{slug}/postings
+            api_url = f"https://api.smartrecruiters.com/v1/companies/{slug}/postings"
+            resp = await client.get(api_url, headers=headers)
+            if resp.status_code == 200:
+                data = resp.json()
+                for item in data.get("content", []):
+                    job_id = item.get("id", "")
+                    job_url = f"https://jobs.smartrecruiters.com/{slug}/{job_id}" if job_id else ""
+                    jobs.append(
+                        {
+                            "url": job_url,
+                            "title": item.get("name", ""),
+                            "location": (item.get("location") or {}).get("city", ""),
+                            "updated_at": item.get("releasedDate", ""),
+                            "raw_markdown": "",
+                        }
+                    )
 
     except Exception as exc:
         logger.debug(f"ATS API fetch failed for {platform}:{slug}: {exc}")
