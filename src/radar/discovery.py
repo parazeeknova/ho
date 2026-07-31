@@ -172,6 +172,7 @@ async def discover_from_vc_portfolios(limit: int = 40) -> list[dict[str, str]]:
         logger.info(f"VC portfolios: {done}/{total_vc} scraped successfully")
         total_names = 0
         resolved = 0
+        processed = 0
         for html in htmls:
             if not html:
                 continue
@@ -179,6 +180,7 @@ async def discover_from_vc_portfolios(limit: int = 40) -> list[dict[str, str]]:
             total_names += len(names)
             for name in names:
                 domain = await _resolve_company_domain(name)
+                processed += 1
                 if domain:
                     resolved += 1
                 companies.append(
@@ -188,6 +190,12 @@ async def discover_from_vc_portfolios(limit: int = 40) -> list[dict[str, str]]:
                         "source": "vc_portfolio",
                     }
                 )
+                if processed % 50 == 0:
+                    logger.info(
+                        f"VC domain resolution: "
+                        f"{processed}/{total_names} companies, "
+                        f"{resolved} resolved",
+                    )
         logger.info(
             f"VC portfolios: {total_names} companies extracted, {resolved} domains resolved",
         )
