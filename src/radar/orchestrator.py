@@ -770,6 +770,7 @@ async def _dispatch_company_events(
             if node is None:
                 node = _cn(company, source="radar")
                 node, _ = await graph.upsert_node(node)
+            logger.info(f"Dispatched company '{c.normalized_company}' to graph event bus")
             await bus.fire(
                 bus.new_event(
                     "company_discovered",
@@ -778,8 +779,8 @@ async def _dispatch_company_events(
                     {"name": c.normalized_company, "url": c.direct_apply_url},
                 )
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Failed dispatching company event for {company}: {e}")
 
 
 async def _founder_miner(
@@ -797,6 +798,7 @@ async def _founder_miner(
         node.data["founders"] = founders
         node.data["funding_stage"] = enriched.get("funding_stage", "")
         node, _ = await graph.upsert_node(node)
+    logger.info(f"Founder miner: resolved {len(founders)} founders for '{cn}'")
     results: list[FrontierEntry] = []
     for f in founders[:3]:
         if isinstance(f, dict) and f.get("name"):
@@ -807,6 +809,7 @@ async def _founder_miner(
             )
             fn, _ = await graph.upsert_node(fn)
             _, _ = await graph.upsert_edge(edge(entry.node_id, EdgeType.FOUNDED_BY, fn.id))
+            logger.info(f"Graph edge: founder '{f['name']}' -FOUNDED_BY-> company '{cn}'")
             await bus.fire(
                 bus.new_event(
                     "founder_discovered",

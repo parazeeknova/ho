@@ -185,6 +185,7 @@ class GraphStore:
         """,
             self._node_params(node),
         )
+        logger.info(f"Graph node upserted: [{node.node_type.value}] {node.id}")
         return node, events
 
     async def upsert_node_canonical(
@@ -415,6 +416,9 @@ class GraphStore:
                 "cs": edge.confidence.score,
                 "m": json.dumps(edge.metadata),
             },
+        )
+        logger.info(
+            f"Graph edge created: ({edge.source_id}) -[:{edge.edge_type.value}]-> ({edge.target_id})"
         )
         return edge, events
 
