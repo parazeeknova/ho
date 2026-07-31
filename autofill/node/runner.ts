@@ -3,10 +3,9 @@ import * as fs from "fs";
 import * as path from "path";
 import * as readline from "readline";
 import { JobPayloadSchema, ActionCallbackSchema, StatusEvent } from "./types.js";
-import { ATSAdapter } from "./ats/base.js";
+import { ATSAdapter, RpcHelper } from "./ats/base.js";
 import { GreenhouseAdapter } from "./ats/greenhouse.js";
 
-// Extensible ATS Adapter Registry Pattern
 interface AdapterRegistration {
   pattern: RegExp;
   factory: (stagehand: Stagehand) => ATSAdapter;
@@ -25,37 +24,29 @@ function getAdapterForUrl(url: string, stagehand: Stagehand): ATSAdapter {
 }
 
 function emitStatus(statusEvent: StatusEvent) {
-  // Output JSON status message on stdout for Python to parse
   console.log(`STATUS_EVENT:${JSON.stringify(statusEvent)}`);
 }
 
-async function readInitialPayload(): Promise<any> {
-  return new Promise((resolve, reject) => {
-    const rl = readline.createInterface({
-      input: process.stdin,
-      terminal: false
-    });
+async function main() {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+    terminal: false
+  });
+
+  // Read initial payload line
+  const payloadRaw = await new Promise<any>((resolve, reject) => {
     rl.once("line", (line) => {
       try {
-        const parsed = JSON.parse(line.trim());
-        rl.close();
-        resolve(parsed);
+        resolve(JSON.parse(line.trim()));
       } catch (err) {
-        rl.close();
         reject(err);
       }
     });
-  });
-}
-
-async function main() {
-  let payloadRaw;
-  try {
-    payloadRaw = await readInitialPayload();
-  } catch (err) {
-    console.error("[Runner] Error reading or parsing initial JSON payload from stdin:", err);
+  }).catch((err) => {
+    console.error("[Runner] Error reading initial JSON payload from stdin:", err);
     process.exit(1);
-  }
+  });
 
   const parseResult = JobPayloadSchema.safeParse(payloadRaw);
   if (!parseResult.success) {
@@ -79,13 +70,13 @@ async function main() {
 
   process.env.OPENAI_API_KEY = apiKey;
   process.env.OPENAI_BASE_URL = "https://api.generalcompute.com/v1";
-  
+
   const modelName = process.env.GENERALCOMPUTE_MODEL || "deepseek-v3.2";
   const stagehandModel = modelName.includes("/") ? modelName : `openai/${modelName}`;
 
   console.log(`[Runner] Initializing Stagehand LOCAL environment with model ${stagehandModel}...`);
 
-  const stagehand = new Stagehand({
+  const stagehandConfig: any = {
     env: "LOCAL",
     model: stagehandModel,
     modelClientOptions: {
@@ -96,7 +87,57 @@ async function main() {
       headless: false,
       args: ["--disable-blink-features=AutomationControlled"]
     }
-  } as any);
+  };
+  const stagehand = new Stagehand(stagehandConfig);
+
+  // Unified Single Readline Dispatcher for RPC responses and Action Callbacks
+  const pendingRpcPromises = new Map<string, { resolve: (val: any) => void; reject: (err: any) => void; timer: NodeJS.Timeout }>();
+  let actionCallbackResolver: ((action: "submit" | "skip") => void) | null = null;
+
+  rl.on("line", (line) => {
+    const lineStr = line.trim();
+    if (!lineStr.startsWith("{")) return;
+
+    try {
+      const parsed = JSON.parse(lineStr);
+
+      // Handle RPC Responses
+      if (parsed.type === "RPC_RESPONSE" && parsed.id) {
+        const pending = pendingRpcPromises.get(parsed.id);
+        if (pending) {
+          clearTimeout(pending.timer);
+          pendingRpcPromises.delete(parsed.id);
+          if (parsed.error) {
+            pending.reject(new Error(parsed.error));
+          } else {
+            pending.resolve(parsed.result);
+          }
+        }
+      }
+      // Handle Action Callbacks (Submit / Skip)
+      else if (parsed.action && actionCallbackResolver) {
+        const callbackParse = ActionCallbackSchema.safeParse(parsed);
+        if (callbackParse.success) {
+          actionCallbackResolver(callbackParse.data.action);
+          actionCallbackResolver = null;
+        }
+      }
+    } catch (_) {}
+  });
+
+  const askPythonRpc: RpcHelper = (method: string, args: Record<string, any>): Promise<any> => {
+    return new Promise((resolve, reject) => {
+      const id = `rpc-${Math.random().toString(36).substring(2, 9)}`;
+      
+      const timer = setTimeout(() => {
+        pendingRpcPromises.delete(id);
+        reject(new Error(`RPC timeout for method "${method}" after 30 seconds`));
+      }, 30000);
+
+      pendingRpcPromises.set(id, { resolve, reject, timer });
+      console.log(`RPC_REQUEST:${JSON.stringify({ id, method, args })}`);
+    });
+  };
 
   try {
     await stagehand.init();
@@ -104,8 +145,8 @@ async function main() {
 
     const adapter = getAdapterForUrl(payload.url, stagehand);
 
-    // Execute filling process
-    await adapter.fill(payload);
+    // Execute filling process with RPC helper
+    await adapter.fill(payload, askPythonRpc);
 
     // Save screenshot safely
     const screenshotDir = path.resolve("./artifacts/screenshots");
@@ -131,10 +172,11 @@ async function main() {
         screenshotPath: screenshotPath,
         message: "Application filled and submitted automatically."
       });
+      rl.close();
       await stagehand.close();
       process.exit(0);
     } else {
-      // Review mode: Emit awaiting_review and listen on stdin for submit/skip command
+      // Review mode: Emit awaiting_review and await action from single dispatcher
       emitStatus({
         jobId: payload.jobId,
         status: "awaiting_review",
@@ -143,46 +185,33 @@ async function main() {
       });
 
       console.log("[Runner] Browser window remaining open for review. Waiting for callback on stdin...");
-      
-      const rl = readline.createInterface({
-        input: process.stdin,
-        output: process.stdout,
-        terminal: false
+
+      const action = await new Promise<"submit" | "skip">((resolve) => {
+        actionCallbackResolver = resolve;
       });
 
-      rl.on("line", async (line) => {
-        try {
-          const callbackRaw = JSON.parse(line.trim());
-          const callbackParse = ActionCallbackSchema.safeParse(callbackRaw);
-          if (callbackParse.success) {
-            const { action } = callbackParse.data;
-            if (action === "submit") {
-              console.log("[Runner] Callback 'submit' received. Submitting...");
-              await adapter.submit();
-              emitStatus({
-                jobId: payload.jobId,
-                status: "submitted",
-                screenshotPath: screenshotPath,
-                message: "Application submitted after user review."
-              });
-            } else {
-              console.log("[Runner] Callback 'skip' received. Skipping submission...");
-              emitStatus({
-                jobId: payload.jobId,
-                status: "skipped",
-                screenshotPath: screenshotPath,
-                message: "Application skipped by user."
-              });
-            }
-          }
-        } catch (e) {
-          console.error("[Runner] Error processing stdin callback:", e);
-        } finally {
-          rl.close();
-          await stagehand.close();
-          process.exit(0);
-        }
-      });
+      if (action === "submit") {
+        console.log("[Runner] Callback 'submit' received. Submitting...");
+        await adapter.submit();
+        emitStatus({
+          jobId: payload.jobId,
+          status: "submitted",
+          screenshotPath: screenshotPath,
+          message: "Application submitted after user review."
+        });
+      } else {
+        console.log("[Runner] Callback 'skip' received. Skipping submission...");
+        emitStatus({
+          jobId: payload.jobId,
+          status: "skipped",
+          screenshotPath: screenshotPath,
+          message: "Application skipped by user."
+        });
+      }
+
+      rl.close();
+      await stagehand.close();
+      process.exit(0);
     }
   } catch (err: any) {
     console.error("[Runner] Execution error:", err);
@@ -192,6 +221,7 @@ async function main() {
       error: err?.message || String(err)
     });
     try {
+      rl.close();
       await stagehand.close();
     } catch (_) {}
     process.exit(1);

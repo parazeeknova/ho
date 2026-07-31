@@ -12,12 +12,25 @@ export const ProfileSchema = z.object({
   customAnswers: z.record(z.string(), z.string()).default({})
 });
 
-export const JobPayloadSchema = z.object({
-  jobId: z.string(),
-  url: z.string().url(),
-  profile: ProfileSchema,
-  mode: z.enum(["auto", "review"]).default("review")
-});
+export const JobPayloadSchema = z.preprocess(
+  (data: any) => {
+    if (data && typeof data === "object") {
+      return {
+        jobId: data.jobId,
+        url: data.url || data.applyLink,
+        mode: data.mode || data.applyMode || "review",
+        profile: data.profile
+      };
+    }
+    return data;
+  },
+  z.object({
+    jobId: z.string(),
+    url: z.string().url(),
+    profile: ProfileSchema,
+    mode: z.enum(["auto", "review"]).default("review")
+  })
+);
 
 export const StatusEventSchema = z.object({
   jobId: z.string(),

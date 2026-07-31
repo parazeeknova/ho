@@ -1,19 +1,18 @@
-import { ATSAdapter } from "./base.js";
+import { Stagehand } from "@browserbasehq/stagehand";
+import { z } from "zod";
+import * as fs from "fs";
+import { ATSAdapter, RpcHelper } from "./base.js";
 import { JobPayload } from "../types.js";
 import { randomSleep } from "../utils/evasion.js";
-import * as fs from "fs";
 
-/**
- * Escapes strings safely for Stagehand act() prompts to prevent prompt injection.
- */
-function escapePromptValue(value: string): string {
-  return value.replace(/["`\\]/g, "\\$&");
+function escapePromptValue(val: string): string {
+  return val.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
 export class GreenhouseAdapter extends ATSAdapter {
-  async fill(payload: JobPayload): Promise<void> {
-    const { profile, url } = payload;
-    
+  async fill(payload: JobPayload, rpc?: RpcHelper): Promise<void> {
+    const { url, profile } = payload;
+
     console.log(`[GreenhouseAdapter] Navigating to ${url}...`);
     const page = this.stagehand.context.pages()[0];
     await page.goto(url);
@@ -21,9 +20,6 @@ export class GreenhouseAdapter extends ATSAdapter {
 
     console.log("[GreenhouseAdapter] Filling deterministic profile fields...");
 
-    // Hybrid approach: Use direct Playwright locators for deterministic standard fields
-    // This is 100% immune to prompt injection, instant, and consumes 0 LLM tokens.
-    
     // First Name
     const firstNameInput = page.locator('#first_name, input[name="job_application[first_name]"]').first();
     if (await firstNameInput.isVisible().catch(() => false)) {
@@ -105,13 +101,43 @@ export class GreenhouseAdapter extends ATSAdapter {
       }
     }
 
-    // Fill custom screener answers safely using Stagehand
+    // Fill explicit customAnswers from profile
     for (const [questionKeyword, answer] of Object.entries(profile.customAnswers)) {
       const safeKeyword = escapePromptValue(questionKeyword);
       const safeAnswer = escapePromptValue(answer);
-      console.log(`[GreenhouseAdapter] Answering custom question matching "${safeKeyword}"...`);
+      console.log(`[GreenhouseAdapter] Answering explicit custom question matching "${safeKeyword}"...`);
       await this.stagehand.act(`Type "${safeAnswer}" into the field asking about "${safeKeyword}"`);
       await randomSleep(200, 500);
+    }
+
+    // RAG Dynamic Screener Extraction & Phase 3 RPC Fill
+    if (rpc) {
+      console.log("[GreenhouseAdapter] Extracting remaining unanswered custom screener questions...");
+      try {
+        const extractionResult: any = await (this.stagehand as any).extract(
+          "Extract all open-ended questions or dropdown questions that are currently unanswered on this page. Do not include basic fields like Name, Email, Phone, LinkedIn, GitHub, or Resume.",
+          z.object({
+            unansweredQuestions: z.array(z.string())
+          })
+        );
+
+        const questions = extractionResult?.unansweredQuestions || [];
+        if (questions.length > 0) {
+          console.log(`[GreenhouseAdapter] Found ${questions.length} unanswered custom questions. Requesting RAG answers from Python...`, questions);
+          const ragAnswers: Record<string, string> = await rpc("answer_questions", { questions });
+
+          for (const [questionText, answerText] of Object.entries(ragAnswers)) {
+            if (!answerText || answerText === "N/A") continue;
+            const safeQ = escapePromptValue(questionText);
+            const safeA = escapePromptValue(answerText);
+            console.log(`[GreenhouseAdapter] RAG Filling question "${safeQ}"...`);
+            await this.stagehand.act(`Type or select "${safeA}" for the question asking "${safeQ}"`);
+            await randomSleep(200, 500);
+          }
+        }
+      } catch (extractErr) {
+        console.warn("[GreenhouseAdapter] Dynamic screener extraction warning:", extractErr);
+      }
     }
 
     console.log("[GreenhouseAdapter] Form filling completed.");
