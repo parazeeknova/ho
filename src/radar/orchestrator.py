@@ -63,6 +63,7 @@ from src.radar.scoring import compute_underdog_score, rank_score
 from src.radar.signals import extract_signals
 from src.radar.sources import (
     diff_snapshots,
+    get_all_checkpoints,
     get_checkpoint,
     get_source_health,
     load_active_sources,
@@ -200,12 +201,32 @@ async def _discover_new_companies() -> list[dict[str, Any]]:
         elif not domain and c["name"] not in {d["name"] for d in deduped}:
             deduped.append(c)
 
+    # Build set of already-known company slugs from prior discovery sweeps
+    known_slugs: set[str] = set()
+    for sid in get_all_checkpoints():
+        if sid.startswith("discovered:"):
+            # source_id format: "discovered:{name_slug}:{board_hash}"
+            parts = sid.split(":", 2)
+            if len(parts) >= 2:
+                known_slugs.add(parts[1])
+
     new_sources = 0
+    skipped_known = 0
     total = len(deduped)
     logger.info(f"Resolving domains and detecting ATS for {total} companies...")
     for idx, c in enumerate(deduped):
         if idx > 0 and idx % 20 == 0:
-            logger.info(f"Domain/ATS progress: {idx}/{total} (ATS found: {new_sources})")
+            logger.info(
+                f"Domain/ATS progress: {idx}/{total} "
+                f"(ATS found: {new_sources}, skipped known: {skipped_known})"
+            )
+
+        # Skip companies already persisted as sources in a prior sweep
+        name_slug = c.get("name", "").lower().replace(" ", "-")[:40]
+        if name_slug in known_slugs:
+            skipped_known += 1
+            continue
+
         website = c.get("website", "")
         if (
             (not website or not website.startswith("http"))
@@ -239,7 +260,10 @@ async def _discover_new_companies() -> list[dict[str, Any]]:
     )
     _DISCOVERY_METRICS["sources_added"] = _DISCOVERY_METRICS.get("sources_added", 0) + new_sources
 
-    logger.info(f"Discovery: {len(deduped)} companies, {new_sources} ATS detected")
+    logger.info(
+        f"Discovery: {len(deduped)} companies, {new_sources} new ATS, "
+        f"{skipped_known} already known (skipped)"
+    )
     return deduped
 
 
