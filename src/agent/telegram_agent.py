@@ -377,6 +377,7 @@ class TelegramAgent:
             f"State: {status}",
             f"Phase: <code>{html.escape(str(s['phase']))}</code>",
             f"Sweep: #{s['sweep']}",
+            "▪ Process Workers: <b>4 (1 Master + 3 Workers)</b>",
         ]
         if uptime:
             lines.append(f"Uptime: {uptime}")

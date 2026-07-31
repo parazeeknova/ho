@@ -1139,8 +1139,19 @@ async def _run_radar_pipeline() -> None:
                     verdict=r["verdict"],
                     funding_stage=r.get("funding_stage", ""),
                 )
-                extra = r.get("extra") or {}
-                c.extra = dict(extra) if extra else {}
+                extra_raw = r.get("extra")
+                if isinstance(extra_raw, dict):
+                    c.extra = extra_raw
+                elif isinstance(extra_raw, str) and extra_raw.strip():
+                    try:
+                        import json
+
+                        parsed = json.loads(extra_raw)
+                        c.extra = parsed if isinstance(parsed, dict) else {}
+                    except Exception:
+                        c.extra = {}
+                else:
+                    c.extra = {}
                 c.eligibility = EligibilityState.ACCEPTED
                 pending.append(c)
             if pending:
@@ -1153,23 +1164,31 @@ async def _run_radar_pipeline() -> None:
     last_discovery = 0.0
     last_index_scrape = 0.0
     _index_interval = 1800.0  # 30 min between GitHub index scrapes
+    is_worker = bool(os.getenv("HO_WORKER_ONLY"))
+    if is_worker:
+        logger.info("Worker process running in dedicated queue worker mode")
+
     while True:
         if shutdown_requested.is_set():
             break
         sweep += 1
         sweep_start = time.monotonic()
-        logger.info(f"=== Sweep {sweep} starting ===")
+        if not is_worker:
+            logger.info(f"=== Sweep {sweep} starting ===")
         set_pipeline_state(
             sweep=sweep, phase=f"sweep {sweep}: scraping", sweep_started_at=time.time()
         )
 
         try:
-            console.rule(
-                f"[bold cyan]RADAR PHASE 2 (sweep {sweep}): Source Polling + Gating[/bold cyan]"
-            )
+            if not is_worker:
+                console.rule(
+                    f"[bold cyan]RADAR PHASE 2 (sweep {sweep}): Source Polling + Gating[/bold cyan]"
+                )
 
-            # Dynamic discovery + ATS detection
-            if sweep == 1 or time.monotonic() - last_discovery > cfg.radar.poll_low_freq_seconds:
+            # Dynamic discovery + ATS detection (Master process only)
+            if not is_worker and (
+                sweep == 1 or time.monotonic() - last_discovery > cfg.radar.poll_low_freq_seconds
+            ):
                 last_discovery = time.monotonic()
                 discovered = await _discover_new_companies()
                 await _persist_discovered_sources(store, discovered)
@@ -1227,7 +1246,8 @@ async def _run_radar_pipeline() -> None:
                     f"({gate_stats.get('rejected', 0)} rejected).",
                 )
 
-            console.rule(f"[bold cyan]RADAR PHASE 3 (sweep {sweep}): LLM Matching[/bold cyan]")
+            if not is_worker:
+                console.rule(f"[bold cyan]RADAR PHASE 3 (sweep {sweep}): LLM Matching[/bold cyan]")
             resume_ctx = full_text[:3000] if full_text else candidate_persona
 
             ranked = _rank_for_queue(candidates)
