@@ -12,10 +12,9 @@ import re
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
-import httpx
-
 from src.configuration import get_config
 from src.graph.entity import FrontierEntry, NodeType
+from src.http_client import get_client
 from src.logging import get_logger
 from src.radar.core.models import JobObservation
 
@@ -61,92 +60,91 @@ async def career_site_detector(entry: FrontierEntry) -> list[FrontierEntry]:
 
     results: list[FrontierEntry] = []
 
-    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-        base = url.rstrip("/")
+    client = await get_client("agents", timeout=15.0)
+    base = url.rstrip("/")
 
-        for path in _CAREERS_PATH_PATTERNS:
-            probe_url = urljoin(base, path)
+    for path in _CAREERS_PATH_PATTERNS:
+        probe_url = urljoin(base, path)
+        try:
+            resp = await client.get(probe_url)
+            if resp.status_code == 200:
+                actual_url = str(resp.url)
+                text_sample = resp.text[:5000].lower()
+
+                if _ATS_PATTERN.search(actual_url):
+                    ats_type = _identify_ats(actual_url)
+                    results.append(
+                        FrontierEntry(
+                            id=f"ats:{company}:{ats_type}",
+                            agent="ats_crawler",
+                            node_id=entry.node_id,
+                            node_type=NodeType.CAREER_SITE,
+                            priority=60,
+                            depth=entry.depth + 1,
+                            payload={
+                                "company": company,
+                                "ats_url": actual_url,
+                                "ats_type": ats_type,
+                            },
+                        )
+                    )
+                    logger.info("ATS endpoint discovered", company=company, url=actual_url)
+                    break
+
+                if any(
+                    kw in text_sample for kw in ("career", "job", "hiring", "position", "opening")
+                ):
+                    results.append(
+                        FrontierEntry(
+                            id=f"career:{company}",
+                            agent="ats_crawler",
+                            node_id=entry.node_id,
+                            node_type=NodeType.CAREER_SITE,
+                            priority=55,
+                            depth=entry.depth + 1,
+                            payload={
+                                "company": company,
+                                "ats_url": actual_url,
+                                "ats_type": "careers_page",
+                            },
+                        )
+                    )
+                    break
+        except Exception:
+            continue
+
+    if not results:
+        _ats_subdomains = [
+            f"https://jobs.{_extract_domain(url)}",
+            f"https://careers.{_extract_domain(url)}",
+            f"https://boards.greenhouse.io/{_extract_domain(url).split('.')[0]}",
+            f"https://jobs.lever.co/{_extract_domain(url).split('.')[0]}",
+            f"https://jobs.ashbyhq.com/{_extract_domain(url).split('.')[0]}",
+            f"https://apply.workable.com/{_extract_domain(url).split('.')[0]}",
+        ]
+        for ats_url in _ats_subdomains:
             try:
-                resp = await client.get(probe_url)
+                resp = await client.get(ats_url)
                 if resp.status_code == 200:
-                    actual_url = str(resp.url)
-                    text_sample = resp.text[:5000].lower()
-
-                    if _ATS_PATTERN.search(actual_url):
-                        ats_type = _identify_ats(actual_url)
-                        results.append(
-                            FrontierEntry(
-                                id=f"ats:{company}:{ats_type}",
-                                agent="ats_crawler",
-                                node_id=entry.node_id,
-                                node_type=NodeType.CAREER_SITE,
-                                priority=60,
-                                depth=entry.depth + 1,
-                                payload={
-                                    "company": company,
-                                    "ats_url": actual_url,
-                                    "ats_type": ats_type,
-                                },
-                            )
+                    ats_type = _identify_ats(str(resp.url))
+                    results.append(
+                        FrontierEntry(
+                            id=f"ats:{company}:{ats_type}",
+                            agent="ats_crawler",
+                            node_id=entry.node_id,
+                            node_type=NodeType.CAREER_SITE,
+                            priority=60,
+                            depth=entry.depth + 1,
+                            payload={
+                                "company": company,
+                                "ats_url": str(resp.url),
+                                "ats_type": ats_type,
+                            },
                         )
-                        logger.info("ATS endpoint discovered", company=company, url=actual_url)
-                        break
-
-                    if any(
-                        kw in text_sample
-                        for kw in ("career", "job", "hiring", "position", "opening")
-                    ):
-                        results.append(
-                            FrontierEntry(
-                                id=f"career:{company}",
-                                agent="ats_crawler",
-                                node_id=entry.node_id,
-                                node_type=NodeType.CAREER_SITE,
-                                priority=55,
-                                depth=entry.depth + 1,
-                                payload={
-                                    "company": company,
-                                    "ats_url": actual_url,
-                                    "ats_type": "careers_page",
-                                },
-                            )
-                        )
-                        break
+                    )
+                    break
             except Exception:
                 continue
-
-        if not results:
-            _ats_subdomains = [
-                f"https://jobs.{_extract_domain(url)}",
-                f"https://careers.{_extract_domain(url)}",
-                f"https://boards.greenhouse.io/{_extract_domain(url).split('.')[0]}",
-                f"https://jobs.lever.co/{_extract_domain(url).split('.')[0]}",
-                f"https://jobs.ashbyhq.com/{_extract_domain(url).split('.')[0]}",
-                f"https://apply.workable.com/{_extract_domain(url).split('.')[0]}",
-            ]
-            for ats_url in _ats_subdomains:
-                try:
-                    resp = await client.get(ats_url)
-                    if resp.status_code == 200:
-                        ats_type = _identify_ats(str(resp.url))
-                        results.append(
-                            FrontierEntry(
-                                id=f"ats:{company}:{ats_type}",
-                                agent="ats_crawler",
-                                node_id=entry.node_id,
-                                node_type=NodeType.CAREER_SITE,
-                                priority=60,
-                                depth=entry.depth + 1,
-                                payload={
-                                    "company": company,
-                                    "ats_url": str(resp.url),
-                                    "ats_type": ats_type,
-                                },
-                            )
-                        )
-                        break
-                except Exception:
-                    continue
 
     return results
 
@@ -209,28 +207,28 @@ async def ats_crawler(entry: FrontierEntry) -> list[FrontierEntry]:
     try:
         cfg = get_config().firecrawl
         ats_cfg = get_config().ats
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-            resp = await client.post(
-                f"{cfg.url}/v1/map",
-                json={"url": ats_url, "limit": cfg.map_limit},
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                links = data.get("links", []) or []
-                limit = min(ats_cfg.max_pages_per_board * 20, 200)
-                for link in links[:limit]:
-                    if not isinstance(link, str):
-                        continue
-                    if _ATS_PATTERN.search(link) or "/jobs/" in link or "/postings/" in link:
-                        observations.append(
-                            JobObservation(
-                                url=link,
-                                source=f"ats:{ats_type}",
-                                title=f"Job at {company}",
-                                snippet=company,
-                                raw_markdown="",
-                            )
+        client = await get_client("agents", timeout=30.0)
+        resp = await client.post(
+            f"{cfg.url}/v1/map",
+            json={"url": ats_url, "limit": cfg.map_limit},
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            links = data.get("links", []) or []
+            limit = min(ats_cfg.max_pages_per_board * 20, 200)
+            for link in links[:limit]:
+                if not isinstance(link, str):
+                    continue
+                if _ATS_PATTERN.search(link) or "/jobs/" in link or "/postings/" in link:
+                    observations.append(
+                        JobObservation(
+                            url=link,
+                            source=f"ats:{ats_type}",
+                            title=f"Job at {company}",
+                            snippet=company,
+                            raw_markdown="",
                         )
+                    )
     except Exception as e:
         logger.warning("ATS crawl failed", company=company, exception=str(e))
         return []
@@ -285,39 +283,39 @@ async def founder_social_agent(entry: FrontierEntry) -> list[FrontierEntry]:
 
     try:
         cfg = get_config().searxng
-        async with httpx.AsyncClient(timeout=cfg.timeout) as client:
-            for query in queries:
-                try:
-                    resp = await client.get(
-                        cfg.url,
-                        params={
-                            "q": query,
-                            "format": "json",
-                            "time_range": "month",
-                            "engines": "bing,bing news,github",
-                        },
-                    )
-                    if resp.status_code == 200:
-                        results_list = resp.json().get("results", [])
-                        for r in results_list[:3]:
-                            rurl = r.get("url", "")
-                            if "linkedin.com" in rurl:
-                                evidence["linkedin"] = rurl
-                            elif "github.com" in rurl:
-                                evidence["github"] = rurl
-                            elif any(
-                                kw in r.get("content", "").lower()
-                                for kw in ("hiring", "looking for", "join", "role")
-                            ):
-                                evidence["verified_hiring_posts"].append(
-                                    {
-                                        "url": rurl,
-                                        "snippet": r.get("content", "")[:200],
-                                        "title": r.get("title", ""),
-                                    }
-                                )
-                except Exception:
-                    continue
+        client = await get_client("agents", timeout=cfg.timeout)
+        for query in queries:
+            try:
+                resp = await client.get(
+                    cfg.url,
+                    params={
+                        "q": query,
+                        "format": "json",
+                        "time_range": "month",
+                        "engines": "bing,bing news,github",
+                    },
+                )
+                if resp.status_code == 200:
+                    results_list = resp.json().get("results", [])
+                    for r in results_list[:3]:
+                        rurl = r.get("url", "")
+                        if "linkedin.com" in rurl:
+                            evidence["linkedin"] = rurl
+                        elif "github.com" in rurl:
+                            evidence["github"] = rurl
+                        elif any(
+                            kw in r.get("content", "").lower()
+                            for kw in ("hiring", "looking for", "join", "role")
+                        ):
+                            evidence["verified_hiring_posts"].append(
+                                {
+                                    "url": rurl,
+                                    "snippet": r.get("content", "")[:200],
+                                    "title": r.get("title", ""),
+                                }
+                            )
+            except Exception:
+                continue
     except Exception as e:
         logger.warning("Founder social search failed", founder=founder_name, exception=str(e))
 
@@ -359,29 +357,29 @@ async def employee_discovery_agent(entry: FrontierEntry) -> list[FrontierEntry]:
 
     try:
         cfg = get_config().searxng
-        async with httpx.AsyncClient(timeout=cfg.timeout) as client:
-            resp = await client.get(
-                cfg.url,
-                params={
-                    "q": (
-                        f'"{company}" recruiting OR "talent" OR "people ops" '
-                        f"email OR contact site:linkedin.com OR "
-                        f"site:{_extract_domain_from_company(company)}"
-                    ),
-                    "format": "json",
-                },
-            )
-            if resp.status_code == 200:
-                for r in resp.json().get("results", [])[:5]:
-                    rurl = r.get("url", "")
-                    if rurl and rurl.startswith("http"):
-                        contact_routes.append(
-                            {
-                                "type": "public_profile",
-                                "url": rurl,
-                                "title": r.get("title", ""),
-                            }
-                        )
+        client = await get_client("agents", timeout=cfg.timeout)
+        resp = await client.get(
+            cfg.url,
+            params={
+                "q": (
+                    f'"{company}" recruiting OR "talent" OR "people ops" '
+                    f"email OR contact site:linkedin.com OR "
+                    f"site:{_extract_domain_from_company(company)}"
+                ),
+                "format": "json",
+            },
+        )
+        if resp.status_code == 200:
+            for r in resp.json().get("results", [])[:5]:
+                rurl = r.get("url", "")
+                if rurl and rurl.startswith("http"):
+                    contact_routes.append(
+                        {
+                            "type": "public_profile",
+                            "url": rurl,
+                            "title": r.get("title", ""),
+                        }
+                    )
     except Exception as e:
         logger.debug("Employee discovery search failed", company=company, exception=str(e))
 

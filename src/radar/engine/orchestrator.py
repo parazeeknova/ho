@@ -31,6 +31,7 @@ from src.graph.event_bus import EventBus
 from src.graph.frontier import CrawlFrontier
 from src.graph.graph_store import GraphStore
 from src.http_client import close_all as _close_http_clients
+from src.http_client import get_client
 from src.llm.context import ContextManager
 from src.logging import get_logger
 from src.memory.pgvector_store import MemoryStore
@@ -375,8 +376,6 @@ async def _fetch_postings_and_gate(
 ) -> tuple[list[JobCandidate], dict[str, Any]]:
     import time as _time
 
-    import httpx
-
     cfg = get_config().firecrawl
     passed: list[JobCandidate] = []
     rejected_count = 0
@@ -406,19 +405,19 @@ async def _fetch_postings_and_gate(
         async with sem:
             try:
                 if not obs.raw_markdown or len(obs.raw_markdown) < 100:
-                    async with httpx.AsyncClient(timeout=15.0) as client:
-                        resp = await client.post(
-                            f"{cfg.url}/v1/scrape",
-                            json={"url": obs.url, "formats": ["markdown"], "onlyMainContent": True},
-                        )
-                        if resp.status_code != 200:
-                            _PIPELINE_METRICS["failed_fetches"] += 1
-                            return
-                        md = (resp.json().get("data") or {}).get("markdown", "") or ""
-                        if not md or len(md) < 100:
-                            _PIPELINE_METRICS["dropped_postings"] += 1
-                            return
-                        obs.raw_markdown = md
+                    client = await get_client("orchestrator", timeout=15.0)
+                    resp = await client.post(
+                        f"{cfg.url}/v1/scrape",
+                        json={"url": obs.url, "formats": ["markdown"], "onlyMainContent": True},
+                    )
+                    if resp.status_code != 200:
+                        _PIPELINE_METRICS["failed_fetches"] += 1
+                        return
+                    md = (resp.json().get("data") or {}).get("markdown", "") or ""
+                    if not md or len(md) < 100:
+                        _PIPELINE_METRICS["dropped_postings"] += 1
+                        return
+                    obs.raw_markdown = md
 
                 now_ts = _time.time()
                 obs.observed_at = now_ts
@@ -962,7 +961,6 @@ async def _outreach_handler(entry: FrontierEntry) -> list[FrontierEntry]:
 
 async def _job_processor(entry: FrontierEntry) -> list[FrontierEntry]:
     """Process ats_crawler output: fetch posting, load DB state, gate, enqueue."""
-    import httpx
 
     _PIPELINE_METRICS["job_processor_invocations"] += 1
     url = entry.payload.get("observation_url", "")
@@ -975,18 +973,18 @@ async def _job_processor(entry: FrontierEntry) -> list[FrontierEntry]:
 
     cfg = get_config().firecrawl
     try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            resp = await client.post(
-                f"{cfg.url}/v1/scrape",
-                json={"url": url, "formats": ["markdown"], "onlyMainContent": True},
-            )
-            if resp.status_code != 200:
-                _PIPELINE_METRICS["job_processor_failures"] += 1
-                return []
-            md = (resp.json().get("data") or {}).get("markdown", "") or ""
-            if not md or len(md) < 100:
-                _PIPELINE_METRICS["dropped_postings"] += 1
-                return []
+        client = await get_client("orchestrator", timeout=20.0)
+        resp = await client.post(
+            f"{cfg.url}/v1/scrape",
+            json={"url": url, "formats": ["markdown"], "onlyMainContent": True},
+        )
+        if resp.status_code != 200:
+            _PIPELINE_METRICS["job_processor_failures"] += 1
+            return []
+        md = (resp.json().get("data") or {}).get("markdown", "") or ""
+        if not md or len(md) < 100:
+            _PIPELINE_METRICS["dropped_postings"] += 1
+            return []
     except Exception:
         _PIPELINE_METRICS["job_processor_failures"] += 1
         return []

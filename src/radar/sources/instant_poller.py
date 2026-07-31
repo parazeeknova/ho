@@ -8,8 +8,7 @@ import hashlib
 import re
 import xml.etree.ElementTree as ET
 
-import httpx
-
+from src.http_client import get_client
 from src.logging import get_logger
 from src.radar.core.models import JobObservation
 
@@ -76,25 +75,25 @@ class InstantPoller:
         if etag:
             headers["If-None-Match"] = etag
 
-        async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
-            resp = await client.get(url, headers=headers)
-            if resp.status_code == 304:
-                # Content unmodified since last check
-                return []
-            if resp.status_code != 200 or not resp.text.strip():
-                return []
+        client = await get_client("instant_poller", timeout=self.timeout)
+        resp = await client.get(url, headers=headers)
+        if resp.status_code == 304:
+            # Content unmodified since last check
+            return []
+        if resp.status_code != 200 or not resp.text.strip():
+            return []
 
-            new_etag = resp.headers.get("ETag") or resp.headers.get("Last-Modified")
-            if new_etag:
-                self._etag_cache[url] = new_etag
+        new_etag = resp.headers.get("ETag") or resp.headers.get("Last-Modified")
+        if new_etag:
+            self._etag_cache[url] = new_etag
 
-            body = resp.text
-            content_hash = hashlib.sha256(body.encode("utf-8")).hexdigest()
-            if self._hash_cache.get(url) == content_hash:
-                return []
-            self._hash_cache[url] = content_hash
+        body = resp.text
+        content_hash = hashlib.sha256(body.encode("utf-8")).hexdigest()
+        if self._hash_cache.get(url) == content_hash:
+            return []
+        self._hash_cache[url] = content_hash
 
-            return self._parse_xml_feed(source_id, body)
+        return self._parse_xml_feed(source_id, body)
 
     def _parse_xml_feed(self, source_id: str, xml_content: str) -> list[JobObservation]:
         observations: list[JobObservation] = []
@@ -149,43 +148,43 @@ class InstantPoller:
         if etag:
             headers["If-None-Match"] = etag
 
-        async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
-            resp = await client.get(base_url, headers=headers)
-            if resp.status_code == 304 or resp.status_code != 200:
-                return []
+        client = await get_client("instant_poller", timeout=self.timeout)
+        resp = await client.get(base_url, headers=headers)
+        if resp.status_code == 304 or resp.status_code != 200:
+            return []
 
-            new_etag = resp.headers.get("ETag")
-            if new_etag:
-                self._etag_cache[base_url] = new_etag
+        new_etag = resp.headers.get("ETag")
+        if new_etag:
+            self._etag_cache[base_url] = new_etag
 
-            body = resp.text
-            content_hash = hashlib.sha256(body.encode("utf-8")).hexdigest()
-            if self._hash_cache.get(base_url) == content_hash:
-                return []
+        body = resp.text
+        content_hash = hashlib.sha256(body.encode("utf-8")).hexdigest()
+        if self._hash_cache.get(base_url) == content_hash:
+            return []
 
-            self._hash_cache[base_url] = content_hash
+        self._hash_cache[base_url] = content_hash
 
-            # Extract job links using regex
-            links = set(re.findall(r'href=["\'](https?://[^"\']+)["\']', body))
-            job_links = [
-                link_url
-                for link_url in links
-                if self._is_job_url(link_url) and link_url not in self._seen_urls
-            ]
+        # Extract job links using regex
+        links = set(re.findall(r'href=["\'](https?://[^"\']+)["\']', body))
+        job_links = [
+            link_url
+            for link_url in links
+            if self._is_job_url(link_url) and link_url not in self._seen_urls
+        ]
 
-            observations: list[JobObservation] = []
-            for link_url in job_links[:20]:
-                self._seen_urls.add(link_url)
-                role_guess = link_url.rstrip("/").split("/")[-1].replace("-", " ").title()
-                observations.append(
-                    JobObservation(
-                        url=link_url,
-                        source=source_id,
-                        title=role_guess,
-                    )
+        observations: list[JobObservation] = []
+        for link_url in job_links[:20]:
+            self._seen_urls.add(link_url)
+            role_guess = link_url.rstrip("/").split("/")[-1].replace("-", " ").title()
+            observations.append(
+                JobObservation(
+                    url=link_url,
+                    source=source_id,
+                    title=role_guess,
                 )
+            )
 
-            return observations
+        return observations
 
     @staticmethod
     def _is_job_url(url: str) -> bool:

@@ -9,8 +9,7 @@ from __future__ import annotations
 
 import asyncio
 
-import httpx
-
+from src.http_client import get_client
 from src.logging import get_logger
 from src.radar.core.extractors import extract_github_index_markdown
 from src.radar.core.models import JobObservation
@@ -47,34 +46,34 @@ async def poll_github_index_etag(url: str) -> tuple[list[JobObservation], bool]:
         headers["If-None-Match"] = _ETAG_CACHE[url]
 
     try:
-        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-            resp = await client.get(url, headers=headers)
+        client = await get_client("github_poller", timeout=15.0)
+        resp = await client.get(url, headers=headers)
 
-            if resp.status_code == 304:
-                logger.debug(f"GitHub ETag 304 Not Modified: {url}")
-                return [], False
+        if resp.status_code == 304:
+            logger.debug(f"GitHub ETag 304 Not Modified: {url}")
+            return [], False
 
-            if resp.status_code == 200:
-                etag = resp.headers.get("etag") or resp.headers.get("ETag")
-                if etag:
-                    _ETAG_CACHE[url] = etag
+        if resp.status_code == 200:
+            etag = resp.headers.get("etag") or resp.headers.get("ETag")
+            if etag:
+                _ETAG_CACHE[url] = etag
 
-                markdown = resp.text
-                repo_name = url.split("githubusercontent.com/")[-1].rsplit("/", 1)[0]
-                source_id = f"github_index:{repo_name}"
+            markdown = resp.text
+            repo_name = url.split("githubusercontent.com/")[-1].rsplit("/", 1)[0]
+            source_id = f"github_index:{repo_name}"
 
-                all_obs = extract_github_index_markdown(markdown, source_id)
+            all_obs = extract_github_index_markdown(markdown, source_id)
 
-                # Diff against last seen hashes for this repo
-                prev_hashes = _LAST_OBS_HASHES.get(url, set())
-                current_hashes = {o.canonical_url_hash() for o in all_obs}
-                _LAST_OBS_HASHES[url] = current_hashes
+            # Diff against last seen hashes for this repo
+            prev_hashes = _LAST_OBS_HASHES.get(url, set())
+            current_hashes = {o.canonical_url_hash() for o in all_obs}
+            _LAST_OBS_HASHES[url] = current_hashes
 
-                new_obs = [o for o in all_obs if o.canonical_url_hash() not in prev_hashes]
-                logger.info(
-                    f"GitHub ETag 200 OK ({source_id}): {len(all_obs)} total, {len(new_obs)} new"
-                )
-                return new_obs if prev_hashes else all_obs, True
+            new_obs = [o for o in all_obs if o.canonical_url_hash() not in prev_hashes]
+            logger.info(
+                f"GitHub ETag 200 OK ({source_id}): {len(all_obs)} total, {len(new_obs)} new"
+            )
+            return new_obs if prev_hashes else all_obs, True
 
     except Exception as exc:
         logger.warning(f"GitHub ETag polling failed for {url}: {exc}")

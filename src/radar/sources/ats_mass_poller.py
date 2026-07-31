@@ -16,8 +16,7 @@ import re
 import time
 from typing import Any
 
-import httpx
-
+from src.http_client import get_client
 from src.logging import get_logger
 from src.radar.core.models import JobObservation
 
@@ -57,7 +56,7 @@ _SLUG_LAST_HARVEST = 0.0
 _SLUG_COUNT = 0
 
 
-def harvest_slugs_from_github_readmes() -> int:
+async def harvest_slugs_from_github_readmes() -> int:
     """Pull all community GitHub README.md files and regex-extract company slugs.
 
     Scrapes every ATS URL from the raw markdown, extracts the {company_slug},
@@ -67,39 +66,40 @@ def harvest_slugs_from_github_readmes() -> int:
     """
     global _SLUG_STORE, _SLUG_LAST_HARVEST, _SLUG_COUNT
 
+    client = await get_client("ats_mass_poller", timeout=15.0)
     new_slugs = 0
     for url in _COMMUNITY_README_URLS:
         try:
-            with httpx.Client(timeout=15.0, follow_redirects=True) as client:
-                resp = client.get(
-                    url,
-                    headers={
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-                    },
-                )
-                if resp.status_code != 200:
-                    logger.debug(f"Slug harvest: {url} returned {resp.status_code}")
+            resp = await client.get(
+                url,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                },
+                timeout=15.0,
+            )
+            if resp.status_code != 200:
+                logger.debug(f"Slug harvest: {url} returned {resp.status_code}")
+                continue
+
+            matches = _ATS_SLUG_RE.findall(resp.text)
+            for slug in matches:
+                slug = slug.lower().strip().rstrip("/")
+                if not slug or slug in ("embed", "v1", "api", "www"):
                     continue
 
-                matches = _ATS_SLUG_RE.findall(resp.text)
-                for slug in matches:
-                    slug = slug.lower().strip().rstrip("/")
-                    if not slug or slug in ("embed", "v1", "api", "www"):
-                        continue
+                is_gh = "boards.greenhouse.io" in resp.text.lower()
+                is_lev = "jobs.lever.co" in resp.text.lower() or "lever.co" in resp.text.lower()
+                is_ash = "ashbyhq.com" in resp.text.lower()
 
-                    is_gh = "boards.greenhouse.io" in resp.text.lower()
-                    is_lev = "jobs.lever.co" in resp.text.lower() or "lever.co" in resp.text.lower()
-                    is_ash = "ashbyhq.com" in resp.text.lower()
-
-                    if is_gh and slug not in _SLUG_STORE["greenhouse"]:
-                        _SLUG_STORE["greenhouse"].add(slug)
-                        new_slugs += 1
-                    if is_lev and slug not in _SLUG_STORE["lever"]:
-                        _SLUG_STORE["lever"].add(slug)
-                        new_slugs += 1
-                    if is_ash and slug not in _SLUG_STORE["ashby"]:
-                        _SLUG_STORE["ashby"].add(slug)
-                        new_slugs += 1
+                if is_gh and slug not in _SLUG_STORE["greenhouse"]:
+                    _SLUG_STORE["greenhouse"].add(slug)
+                    new_slugs += 1
+                if is_lev and slug not in _SLUG_STORE["lever"]:
+                    _SLUG_STORE["lever"].add(slug)
+                    new_slugs += 1
+                if is_ash and slug not in _SLUG_STORE["ashby"]:
+                    _SLUG_STORE["ashby"].add(slug)
+                    new_slugs += 1
         except Exception as exc:
             logger.debug(f"Slug harvest failed for {url}: {exc}")
 
@@ -109,11 +109,11 @@ def harvest_slugs_from_github_readmes() -> int:
     return new_slugs
 
 
-def get_all_slugs() -> dict[str, set[str]]:
+async def get_all_slugs() -> dict[str, set[str]]:
     """Return the current slug database. Triggers harvest if empty."""
     total = sum(len(v) for v in _SLUG_STORE.values())
     if total == 0:
-        harvest_slugs_from_github_readmes()
+        await harvest_slugs_from_github_readmes()
     return _SLUG_STORE
 
 
@@ -125,35 +125,35 @@ async def _poll_greenhouse_slugs(slugs: set[str]) -> list[dict[str, Any]]:
     async def _fetch(slug: str) -> None:
         async with sem:
             try:
-                async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
-                    url = GREENHOUSE_API.format(slug=slug)
-                    resp = await client.get(
-                        url,
-                        headers={
-                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-                            "Accept": "application/json",
-                        },
+                client = await get_client("ats_mass_poller", timeout=8.0)
+                url = GREENHOUSE_API.format(slug=slug)
+                resp = await client.get(
+                    url,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                        "Accept": "application/json",
+                    },
+                )
+                if resp.status_code != 200:
+                    return
+                data = resp.json()
+                for item in data.get("jobs", []):
+                    title = item.get("title", "")
+                    if not _TITLE_KEYWORDS.search(title):
+                        continue
+                    updated = item.get("updated_at", "")
+                    if not _is_within_48h(updated):
+                        continue
+                    jobs.append(
+                        {
+                            "url": item.get("absolute_url", ""),
+                            "title": title,
+                            "location": (item.get("location") or {}).get("name", ""),
+                            "updated_at": updated,
+                            "platform": "greenhouse",
+                            "slug": slug,
+                        }
                     )
-                    if resp.status_code != 200:
-                        return
-                    data = resp.json()
-                    for item in data.get("jobs", []):
-                        title = item.get("title", "")
-                        if not _TITLE_KEYWORDS.search(title):
-                            continue
-                        updated = item.get("updated_at", "")
-                        if not _is_within_48h(updated):
-                            continue
-                        jobs.append(
-                            {
-                                "url": item.get("absolute_url", ""),
-                                "title": title,
-                                "location": (item.get("location") or {}).get("name", ""),
-                                "updated_at": updated,
-                                "platform": "greenhouse",
-                                "slug": slug,
-                            }
-                        )
             except Exception:
                 pass
 
@@ -170,37 +170,37 @@ async def _poll_lever_slugs(slugs: set[str]) -> list[dict[str, Any]]:
     async def _fetch(slug: str) -> None:
         async with sem:
             try:
-                async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
-                    url = LEVER_API.format(slug=slug)
-                    resp = await client.get(
-                        url,
-                        headers={
-                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-                            "Accept": "application/json",
-                        },
+                client = await get_client("ats_mass_poller", timeout=8.0)
+                url = LEVER_API.format(slug=slug)
+                resp = await client.get(
+                    url,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                        "Accept": "application/json",
+                    },
+                )
+                if resp.status_code != 200:
+                    return
+                data = resp.json()
+                if not isinstance(data, list):
+                    return
+                for item in data:
+                    title = item.get("text", "")
+                    if not _TITLE_KEYWORDS.search(title):
+                        continue
+                    created = item.get("createdAt", "")
+                    if not _is_within_48h(created):
+                        continue
+                    jobs.append(
+                        {
+                            "url": item.get("hostedUrl") or item.get("applyUrl", ""),
+                            "title": title,
+                            "location": (item.get("categories") or {}).get("location", ""),
+                            "updated_at": created,
+                            "platform": "lever",
+                            "slug": slug,
+                        }
                     )
-                    if resp.status_code != 200:
-                        return
-                    data = resp.json()
-                    if not isinstance(data, list):
-                        return
-                    for item in data:
-                        title = item.get("text", "")
-                        if not _TITLE_KEYWORDS.search(title):
-                            continue
-                        created = item.get("createdAt", "")
-                        if not _is_within_48h(created):
-                            continue
-                        jobs.append(
-                            {
-                                "url": item.get("hostedUrl") or item.get("applyUrl", ""),
-                                "title": title,
-                                "location": (item.get("categories") or {}).get("location", ""),
-                                "updated_at": created,
-                                "platform": "lever",
-                                "slug": slug,
-                            }
-                        )
             except Exception:
                 pass
 
@@ -217,38 +217,38 @@ async def _poll_ashby_slugs(slugs: set[str]) -> list[dict[str, Any]]:
     async def _fetch(slug: str) -> None:
         async with sem:
             try:
-                async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
-                    url = ASHBY_API.format(slug=slug)
-                    resp = await client.post(
-                        url,
-                        json={"includeCompensation": True},
-                        headers={
-                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-                            "Accept": "application/json",
-                        },
+                client = await get_client("ats_mass_poller", timeout=8.0)
+                url = ASHBY_API.format(slug=slug)
+                resp = await client.post(
+                    url,
+                    json={"includeCompensation": True},
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                        "Accept": "application/json",
+                    },
+                )
+                if resp.status_code != 200:
+                    return
+                data = resp.json()
+                for item in data.get("jobs", []):
+                    title = item.get("title", "")
+                    if not _TITLE_KEYWORDS.search(title):
+                        continue
+                    published = item.get("publishedAt", "")
+                    if not _is_within_48h(published):
+                        continue
+                    job_id = item.get("id", "")
+                    job_url = f"https://jobs.ashbyhq.com/{slug}/{job_id}" if job_id else ""
+                    jobs.append(
+                        {
+                            "url": job_url,
+                            "title": title,
+                            "location": item.get("locationName", ""),
+                            "updated_at": published,
+                            "platform": "ashby",
+                            "slug": slug,
+                        }
                     )
-                    if resp.status_code != 200:
-                        return
-                    data = resp.json()
-                    for item in data.get("jobs", []):
-                        title = item.get("title", "")
-                        if not _TITLE_KEYWORDS.search(title):
-                            continue
-                        published = item.get("publishedAt", "")
-                        if not _is_within_48h(published):
-                            continue
-                        job_id = item.get("id", "")
-                        job_url = f"https://jobs.ashbyhq.com/{slug}/{job_id}" if job_id else ""
-                        jobs.append(
-                            {
-                                "url": job_url,
-                                "title": title,
-                                "location": item.get("locationName", ""),
-                                "updated_at": published,
-                                "platform": "ashby",
-                                "slug": slug,
-                            }
-                        )
             except Exception:
                 pass
 
@@ -299,7 +299,7 @@ async def poll_all_mass_slugs() -> list[JobObservation]:
 
     Returns list of JobObservations ready for gating and LLM matching.
     """
-    slugs = get_all_slugs()
+    slugs = await get_all_slugs()
     total_slugs = sum(len(v) for v in slugs.values())
     if total_slugs == 0:
         logger.warning("Mass poller: no slugs available")
@@ -370,7 +370,7 @@ async def mass_poll_loop(
 
         try:
             if first_run:
-                harvest_slugs_from_github_readmes()
+                await harvest_slugs_from_github_readmes()
                 first_run = False
 
             jobs = await poll_all_mass_slugs()

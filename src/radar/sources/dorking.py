@@ -10,8 +10,7 @@ from __future__ import annotations
 
 import asyncio
 
-import httpx
-
+from src.http_client import get_client
 from src.logging import get_logger
 from src.radar.core.models import JobObservation
 
@@ -77,47 +76,47 @@ class DorkingEngine:
         target_queries = queries or _DORK_QUERIES
         observations: list[JobObservation] = []
 
-        async with httpx.AsyncClient(timeout=12.0) as client:
-            for q in target_queries:
-                try:
-                    resp = await client.get(
-                        f"{self.searxng_url}/search",
-                        params={
-                            "q": q,
-                            "format": "json",
-                            "time_range": time_range,
-                            "language": "en",
-                            "safesearch": "0",
-                        },
-                    )
-                    if resp.status_code != 200:
+        client = await get_client("dorking", timeout=12.0)
+        for q in target_queries:
+            try:
+                resp = await client.get(
+                    f"{self.searxng_url}/search",
+                    params={
+                        "q": q,
+                        "format": "json",
+                        "time_range": time_range,
+                        "language": "en",
+                        "safesearch": "0",
+                    },
+                )
+                if resp.status_code != 200:
+                    continue
+
+                data = resp.json()
+                results = data.get("results", [])
+                for r in results:
+                    link = r.get("url", "")
+                    title = r.get("title", "")
+                    content = r.get("content", "")
+
+                    if not link or link in self._seen_urls:
                         continue
 
-                    data = resp.json()
-                    results = data.get("results", [])
-                    for r in results:
-                        link = r.get("url", "")
-                        title = r.get("title", "")
-                        content = r.get("content", "")
-
-                        if not link or link in self._seen_urls:
-                            continue
-
-                        self._seen_urls.add(link)
-                        comp_guess = self._extract_company_from_url(link)
-                        observations.append(
-                            JobObservation(
-                                url=link,
-                                source=f"dork-{comp_guess}",
-                                title=title or "Software Engineer",
-                                snippet=content,
-                                extra={"discovery_method": "searxng_dork", "time_filter": "48h"},
-                            )
+                    self._seen_urls.add(link)
+                    comp_guess = self._extract_company_from_url(link)
+                    observations.append(
+                        JobObservation(
+                            url=link,
+                            source=f"dork-{comp_guess}",
+                            title=title or "Software Engineer",
+                            snippet=content,
+                            extra={"discovery_method": "searxng_dork", "time_filter": "48h"},
                         )
-                except Exception as e:
-                    logger.debug(f"SearXNG dork query failed: {e}")
+                    )
+            except Exception as e:
+                logger.debug(f"SearXNG dork query failed: {e}")
 
-                await asyncio.sleep(0.5)
+            await asyncio.sleep(0.5)
 
         logger.info(f"Dorking engine discovered {len(observations)} job postings from SearXNG")
         return observations

@@ -12,6 +12,7 @@ from typing import Any
 
 import httpx
 
+from src.http_client import get_client
 from src.logging import get_logger
 
 logger = get_logger("board_registry")
@@ -710,12 +711,9 @@ async def verify_board_registry(
             else:
                 failed_items.append((board, reason))
 
-    headers = {
-        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0"
-    }
-    async with httpx.AsyncClient(headers=headers) as client:
-        tasks = [_worker(client, item) for item in REGISTERED_BOARDS]
-        await asyncio.gather(*tasks)
+    client = await get_client("board_registry", timeout=15.0)
+    tasks = [_worker(client, item) for item in REGISTERED_BOARDS]
+    await asyncio.gather(*tasks)
 
     results = {
         "total": len(REGISTERED_BOARDS),

@@ -11,9 +11,9 @@ import os
 import re
 from typing import Any
 
-import httpx
 from bs4 import BeautifulSoup
 
+from src.http_client import get_client
 from src.logging import get_logger
 
 logger = get_logger("github_linkedin_loader")
@@ -71,32 +71,32 @@ async def fetch_github_profile(username: str | None = None) -> str:
         headers["Authorization"] = f"token {token}"
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(url, headers=headers)
-            if resp.status_code == 200:
-                data: list[dict[str, Any]] = resp.json()
-                repo_lines = [f"GitHub Profile: {user}"]
-                languages: set[str] = set()
+        client = await get_client("github_linkedin_loader", timeout=10.0)
+        resp = await client.get(url, headers=headers)
+        if resp.status_code == 200:
+            data: list[dict[str, Any]] = resp.json()
+            repo_lines = [f"GitHub Profile: {user}"]
+            languages: set[str] = set()
 
-                for r in data:
-                    name = r.get("name", "")
-                    desc = r.get("description") or ""
-                    lang = r.get("language")
-                    stars = r.get("stargazers_count", 0)
-                    topics = r.get("topics", [])
+            for r in data:
+                name = r.get("name", "")
+                desc = r.get("description") or ""
+                lang = r.get("language")
+                stars = r.get("stargazers_count", 0)
+                topics = r.get("topics", [])
 
-                    if lang:
-                        languages.add(lang)
+                if lang:
+                    languages.add(lang)
 
-                    topic_str = f" [Topics: {', '.join(topics)}]" if topics else ""
-                    repo_lines.append(
-                        f"- Repo {name} ({lang or 'Tech'} | {stars} stars): {desc}{topic_str}"
-                    )
+                topic_str = f" [Topics: {', '.join(topics)}]" if topics else ""
+                repo_lines.append(
+                    f"- Repo {name} ({lang or 'Tech'} | {stars} stars): {desc}{topic_str}"
+                )
 
-                if languages:
-                    repo_lines.insert(1, f"Primary Tech Stack: {', '.join(languages)}")
+            if languages:
+                repo_lines.insert(1, f"Primary Tech Stack: {', '.join(languages)}")
 
-                return "\n".join(repo_lines)
+            return "\n".join(repo_lines)
     except Exception as e:
         logger.warning(
             "GitHub profile fetch failed",
@@ -110,18 +110,18 @@ async def fetch_github_profile(username: str | None = None) -> str:
 async def scrape_portfolio(url: str) -> str:
     """Scrape personal portfolio site to extract bio and projects (async)."""
     try:
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-            resp = await client.get(
-                url,
-                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
-            )
-            if resp.status_code == 200 and len(resp.text) > 200:
-                soup = BeautifulSoup(resp.text, "html.parser")
-                for el in soup(["script", "style", "meta", "noscript", "svg"]):
-                    el.decompose()
-                clean_text = soup.get_text("\n", strip=True)
-                if len(clean_text) > 100:
-                    return clean_text[:4000]
+        client = await get_client("github_linkedin_loader", timeout=10.0)
+        resp = await client.get(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+        )
+        if resp.status_code == 200 and len(resp.text) > 200:
+            soup = BeautifulSoup(resp.text, "html.parser")
+            for el in soup(["script", "style", "meta", "noscript", "svg"]):
+                el.decompose()
+            clean_text = soup.get_text("\n", strip=True)
+            if len(clean_text) > 100:
+                return clean_text[:4000]
     except Exception as e:
         logger.warning(
             "Portfolio scrape failed",

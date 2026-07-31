@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from src.http_client import get_client
 from src.logging import get_logger
 
 if TYPE_CHECKING:
@@ -68,9 +69,9 @@ async def _check_port(host: str, port: int, timeout: float = 2.0) -> bool:
 
 async def _check_http(url: str, timeout: float = 3.0) -> bool:
     try:
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-            resp = await client.get(url)
-            return resp.status_code < 500
+        client = await get_client("telegram_agent", timeout=timeout)
+        resp = await client.get(url)
+        return resp.status_code < 500
     except Exception:
         return False
 
@@ -224,38 +225,36 @@ class TelegramAgent:
     ) -> bool:
         for attempt in range(3):
             try:
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    payload: dict[str, Any] = {
-                        "chat_id": cid,
-                        "text": text,
-                        "parse_mode": parse_mode,
-                        "disable_web_page_preview": True,
-                    }
-                    if reply_markup:
-                        payload["reply_markup"] = reply_markup
+                client = await get_client("telegram_agent", timeout=10.0)
+                payload: dict[str, Any] = {
+                    "chat_id": cid,
+                    "text": text,
+                    "parse_mode": parse_mode,
+                    "disable_web_page_preview": True,
+                }
+                if reply_markup:
+                    payload["reply_markup"] = reply_markup
 
-                    resp = await client.post(
-                        TELEGRAM_SEND.format(token=self.bot_token), json=payload
-                    )
-                    if resp.status_code == 200:
-                        return True
+                resp = await client.post(TELEGRAM_SEND.format(token=self.bot_token), json=payload)
+                if resp.status_code == 200:
+                    return True
 
-                    body = resp.text[:200]
-                    logger.warning(
-                        f"Telegram send {resp.status_code}",
-                        source="telegram",
-                        extra={"body": body},
-                    )
-                    if resp.status_code == 400 and parse_mode == "HTML":
-                        text = _HTML_TAG_RX.sub("", text)
-                        parse_mode = ""
-                        continue
-                    if resp.status_code == 429:
-                        await asyncio.sleep(2 << attempt)
-                    elif resp.status_code >= 500:
-                        await asyncio.sleep(1 << attempt)
-                    else:
-                        return False
+                body = resp.text[:200]
+                logger.warning(
+                    f"Telegram send {resp.status_code}",
+                    source="telegram",
+                    extra={"body": body},
+                )
+                if resp.status_code == 400 and parse_mode == "HTML":
+                    text = _HTML_TAG_RX.sub("", text)
+                    parse_mode = ""
+                    continue
+                if resp.status_code == 429:
+                    await asyncio.sleep(2 << attempt)
+                elif resp.status_code >= 500:
+                    await asyncio.sleep(1 << attempt)
+                else:
+                    return False
             except Exception as e:
                 logger.warning(
                     f"Telegram send attempt {attempt + 1} failed",
@@ -298,13 +297,13 @@ class TelegramAgent:
         if self._update_id > 0:
             params["offset"] = self._update_id + 1
 
-        async with httpx.AsyncClient(timeout=8.0) as client:
-            resp = await client.get(TELEGRAM_UPDATES.format(token=self.bot_token), params=params)
-            if resp.status_code != 200:
-                return
-            data = resp.json()
-            if not data.get("ok"):
-                return
+        client = await get_client("telegram_agent", timeout=8.0)
+        resp = await client.get(TELEGRAM_UPDATES.format(token=self.bot_token), params=params)
+        if resp.status_code != 200:
+            return
+        data = resp.json()
+        if not data.get("ok"):
+            return
 
         for upd in data.get("result", []):
             self._update_id = max(self._update_id, upd.get("update_id", 0))
@@ -662,18 +661,18 @@ class TelegramAgent:
 
         deleted = 0
         tasks = []
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            for m_id in range(current_msg_id, max(0, current_msg_id - count - 1), -1):
-                tasks.append(
-                    client.post(
-                        TELEGRAM_DELETE.format(token=self.bot_token),
-                        json={"chat_id": chat_id, "message_id": m_id},
-                    )
+        client = await get_client("telegram_agent", timeout=10.0)
+        for m_id in range(current_msg_id, max(0, current_msg_id - count - 1), -1):
+            tasks.append(
+                client.post(
+                    TELEGRAM_DELETE.format(token=self.bot_token),
+                    json={"chat_id": chat_id, "message_id": m_id},
                 )
-            resps = await asyncio.gather(*tasks, return_exceptions=True)
-            for r in resps:
-                if isinstance(r, httpx.Response) and r.status_code == 200:
-                    deleted += 1
+            )
+        resps = await asyncio.gather(*tasks, return_exceptions=True)
+        for r in resps:
+            if isinstance(r, httpx.Response) and r.status_code == 200:
+                deleted += 1
 
         await self._send_to_chat(chat_id, f"<i>Cleared {deleted} recent messages.</i>", "HTML")
 

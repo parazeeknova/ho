@@ -22,7 +22,9 @@ _global_client: httpx.AsyncClient | None = None
 
 
 def _make_client(
-    timeout: float | None = None, extra_limits: dict[str, Any] | None = None
+    timeout: float | None = None,
+    extra_limits: dict[str, Any] | None = None,
+    follow_redirects: bool = True,
 ) -> httpx.AsyncClient:
     cfg = _client_config or get_config().http
     t = timeout if timeout is not None else cfg.default_timeout
@@ -34,6 +36,7 @@ def _make_client(
     return httpx.AsyncClient(
         timeout=httpx.Timeout(t, connect=cfg.connect_timeout),
         limits=httpx.Limits(**limits_kw),
+        follow_redirects=follow_redirects,
     )
 
 
@@ -41,6 +44,7 @@ async def get_client(
     name: str = "default",
     timeout: float | None = None,
     extra_limits: dict[str, Any] | None = None,
+    follow_redirects: bool = True,
 ) -> httpx.AsyncClient:
     """Return a named (cached) httpx.AsyncClient. Create it if missing.
 
@@ -56,7 +60,9 @@ async def get_client(
     async with _CLIENTS_LOCK:
         if name in _CLIENTS:
             return _CLIENTS[name]
-        client = _make_client(timeout=timeout, extra_limits=extra_limits)
+        client = _make_client(
+            timeout=timeout, extra_limits=extra_limits, follow_redirects=follow_redirects
+        )
         _CLIENTS[name] = client
         return client
 
@@ -84,13 +90,19 @@ class HttpClientManager:
         self,
         timeout: float | None = None,
         extra_limits: dict[str, Any] | None = None,
+        follow_redirects: bool = True,
     ) -> None:
         self._timeout = timeout
         self._extra_limits = extra_limits
+        self._follow_redirects = follow_redirects
         self._client: httpx.AsyncClient | None = None
 
     async def __aenter__(self) -> httpx.AsyncClient:
-        self._client = _make_client(timeout=self._timeout, extra_limits=self._extra_limits)
+        self._client = _make_client(
+            timeout=self._timeout,
+            extra_limits=self._extra_limits,
+            follow_redirects=self._follow_redirects,
+        )
         return self._client
 
     async def __aexit__(self, *args: Any) -> None:

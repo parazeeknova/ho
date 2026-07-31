@@ -15,9 +15,8 @@ import random
 from typing import Any
 from urllib.parse import urlparse
 
-import httpx
-
 from src.configuration import get_config
+from src.http_client import get_client
 from src.logging import get_logger
 from src.radar.sources.discovery import (
     is_aggregator_domain,
@@ -131,33 +130,33 @@ async def run_search_discovery(
     async def _query_one(q: str) -> None:
         async with sem:
             try:
-                async with httpx.AsyncClient(timeout=cfg.timeout) as client:
-                    resp = await client.get(
-                        cfg.url,
-                        params={
-                            "q": q,
-                            "format": "json",
-                            "time_range": "week",
-                            "engines": "bing,bing news,github",
-                        },
-                    )
-                    if resp.status_code == 200:
-                        for r in resp.json().get("results", [])[:max_results_per_query]:
-                            url = r.get("url", "")
-                            title = r.get("title", "")
-                            snippet = r.get("content", "")
-                            if not url or not url.startswith("http"):
-                                continue
-                            classification = _classify_result(url, title, snippet)
-                            raw_results.append(
-                                {
-                                    "url": url,
-                                    "title": title,
-                                    "snippet": snippet,
-                                    "classification": classification,
-                                    "query": q,
-                                }
-                            )
+                client = await get_client("crawler", timeout=cfg.timeout)
+                resp = await client.get(
+                    cfg.url,
+                    params={
+                        "q": q,
+                        "format": "json",
+                        "time_range": "week",
+                        "engines": "bing,bing news,github",
+                    },
+                )
+                if resp.status_code == 200:
+                    for r in resp.json().get("results", [])[:max_results_per_query]:
+                        url = r.get("url", "")
+                        title = r.get("title", "")
+                        snippet = r.get("content", "")
+                        if not url or not url.startswith("http"):
+                            continue
+                        classification = _classify_result(url, title, snippet)
+                        raw_results.append(
+                            {
+                                "url": url,
+                                "title": title,
+                                "snippet": snippet,
+                                "classification": classification,
+                                "query": q,
+                            }
+                        )
             except Exception:
                 pass
 

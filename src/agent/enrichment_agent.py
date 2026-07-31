@@ -9,9 +9,8 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Any
 
-import httpx
-
 from src.configuration import get_config
+from src.http_client import get_client
 from src.logging import get_logger
 
 if TYPE_CHECKING:
@@ -24,16 +23,16 @@ async def _get_embedding(text: str) -> list[float] | None:
     """Fetch text embedding from local llama-server. Returns None on failure."""
     cfg = get_config().embed
     try:
-        async with httpx.AsyncClient(timeout=cfg.timeout) as client:
-            resp = await client.post(
-                f"{cfg.url}/embeddings",
-                json={"input": text[:2000]},
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                emb = data.get("data", [{}])[0].get("embedding", [])
-                if isinstance(emb, list) and len(emb) > 0:
-                    return [float(v) for v in emb]
+        client = await get_client("enrichment_agent", timeout=cfg.timeout)
+        resp = await client.post(
+            f"{cfg.url}/embeddings",
+            json={"input": text[:2000]},
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            emb = data.get("data", [{}])[0].get("embedding", [])
+            if isinstance(emb, list) and len(emb) > 0:
+                return [float(v) for v in emb]
     except Exception as e:
         logger.error(
             "Embedding fetch failed, returning None",

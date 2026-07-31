@@ -8,6 +8,7 @@ from pathlib import Path
 import httpx
 
 from src.configuration import get_config
+from src.http_client import get_client
 
 
 def download_resume(url: str) -> tuple[Path, str]:
@@ -240,9 +241,10 @@ async def index_resume_in_pgvector(
     store,
 ) -> None:
     cfg = get_config().embed
-    embed_client = httpx.AsyncClient(
+    embed_client = await get_client(
+        "rag_embedder",
         timeout=httpx.Timeout(120.0, connect=10.0),
-        limits=httpx.Limits(max_keepalive_connections=2, max_connections=4),
+        extra_limits={"max_keepalive_connections": 2, "max_connections": 4},
     )
     try:
         records: list[dict[str, object]] = []

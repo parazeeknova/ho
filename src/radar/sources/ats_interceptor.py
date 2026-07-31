@@ -9,8 +9,6 @@ from __future__ import annotations
 import re
 from typing import Any
 
-import httpx
-
 from src.logging import get_logger
 from src.radar.core.models import JobObservation
 
@@ -63,29 +61,31 @@ async def fetch_ats_jobs(platform: str, slug: str) -> list[dict[str, Any]]:
     timeout = 10.0
     jobs: list[dict[str, Any]] = []
 
-    async with httpx.AsyncClient(headers=headers, timeout=timeout, follow_redirects=True) as client:
-        try:
-            if platform == "greenhouse":
-                # GET https://boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=true
-                api_url = f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=true"
-                resp = await client.get(api_url)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    for item in data.get("jobs", []):
-                        jobs.append(
-                            {
-                                "url": item.get("absolute_url", ""),
-                                "title": item.get("title", ""),
-                                "location": (item.get("location") or {}).get("name", ""),
-                                "updated_at": item.get("updated_at", ""),
-                                "raw_markdown": item.get("content", ""),
-                            }
-                        )
+    from src.http_client import get_client
+
+    client = await get_client("ats_interceptor", timeout=timeout)
+    try:
+        if platform == "greenhouse":
+            # GET https://boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=true
+            api_url = f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=true"
+            resp = await client.get(api_url, headers=headers)
+            if resp.status_code == 200:
+                data = resp.json()
+                for item in data.get("jobs", []):
+                    jobs.append(
+                        {
+                            "url": item.get("absolute_url", ""),
+                            "title": item.get("title", ""),
+                            "location": (item.get("location") or {}).get("name", ""),
+                            "updated_at": item.get("updated_at", ""),
+                            "raw_markdown": item.get("content", ""),
+                        }
+                    )
 
             elif platform == "lever":
                 # GET https://api.lever.co/v0/postings/{slug}
                 api_url = f"https://api.lever.co/v0/postings/{slug}"
-                resp = await client.get(api_url)
+                resp = await client.get(api_url, headers=headers)
                 if resp.status_code == 200:
                     data = resp.json()
                     if isinstance(data, list):
@@ -107,7 +107,9 @@ async def fetch_ats_jobs(platform: str, slug: str) -> list[dict[str, Any]]:
             elif platform == "ashby":
                 # POST https://api.ashbyhq.com/posting-api/job-board/{slug}
                 api_url = f"https://api.ashbyhq.com/posting-api/job-board/{slug}"
-                resp = await client.post(api_url, json={"includeCompensation": True})
+                resp = await client.post(
+                    api_url, json={"includeCompensation": True}, headers=headers
+                )
                 if resp.status_code == 200:
                     data = resp.json()
                     for item in data.get("jobs", []):
@@ -126,7 +128,7 @@ async def fetch_ats_jobs(platform: str, slug: str) -> list[dict[str, Any]]:
             elif platform == "workable":
                 # GET https://apply.workable.com/api/v1/widget/accounts/{slug}
                 api_url = f"https://apply.workable.com/api/v1/widget/accounts/{slug}"
-                resp = await client.get(api_url)
+                resp = await client.get(api_url, headers=headers)
                 if resp.status_code == 200:
                     data = resp.json()
                     for item in data.get("jobs", []):
@@ -147,7 +149,7 @@ async def fetch_ats_jobs(platform: str, slug: str) -> list[dict[str, Any]]:
             elif platform == "smartrecruiters":
                 # GET https://api.smartrecruiters.com/v1/companies/{slug}/postings
                 api_url = f"https://api.smartrecruiters.com/v1/companies/{slug}/postings"
-                resp = await client.get(api_url)
+                resp = await client.get(api_url, headers=headers)
                 if resp.status_code == 200:
                     data = resp.json()
                     for item in data.get("content", []):
@@ -165,8 +167,8 @@ async def fetch_ats_jobs(platform: str, slug: str) -> list[dict[str, Any]]:
                             }
                         )
 
-        except Exception as exc:
-            logger.debug(f"ATS API fetch failed for {platform}:{slug}: {exc}")
+    except Exception as exc:
+        logger.debug(f"ATS API fetch failed for {platform}:{slug}: {exc}")
 
     return jobs
 

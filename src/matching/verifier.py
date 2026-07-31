@@ -15,9 +15,9 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-import httpx
 from firecrawl import FirecrawlApp
 
+from src.http_client import get_client
 from src.llm.context import VERIFY_SCHEMA, ContextManager
 from src.logging import get_logger
 
@@ -166,33 +166,33 @@ class MultiSourceVerifier:
 
 async def _scrape_alternate(role: str, company: str, original_url: str) -> str:
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.post(
-                f"{FIRECRAWL_URL}/v1/search",
-                json={"query": f"{role} {company} job"},
-            )
-            if resp.status_code != 200:
-                return ""
-            data = resp.json().get("data", []) or []
-            if not isinstance(data, list) or not data:
-                return ""
+        client = await get_client("verifier", timeout=60.0)
+        resp = await client.post(
+            f"{FIRECRAWL_URL}/v1/search",
+            json={"query": f"{role} {company} job"},
+        )
+        if resp.status_code != 200:
+            return ""
+        data = resp.json().get("data", []) or []
+        if not isinstance(data, list) or not data:
+            return ""
 
-            alt_url = None
-            for r in data:
-                u = r.get("url", "")
-                if u and u != original_url and u.startswith("http"):
-                    alt_url = u
-                    break
-            if not alt_url:
-                return ""
+        alt_url = None
+        for r in data:
+            u = r.get("url", "")
+            if u and u != original_url and u.startswith("http"):
+                alt_url = u
+                break
+        if not alt_url:
+            return ""
 
-            scrape_resp = await client.post(
-                f"{FIRECRAWL_URL}/v1/scrape",
-                json={"url": alt_url, "formats": ["markdown"]},
-            )
-            if scrape_resp.status_code == 200:
-                alt_content = (scrape_resp.json().get("data") or {}).get("markdown", "") or ""
-                return alt_content if len(alt_content) >= 100 else ""
+        scrape_resp = await client.post(
+            f"{FIRECRAWL_URL}/v1/scrape",
+            json={"url": alt_url, "formats": ["markdown"]},
+        )
+        if scrape_resp.status_code == 200:
+            alt_content = (scrape_resp.json().get("data") or {}).get("markdown", "") or ""
+            return alt_content if len(alt_content) >= 100 else ""
     except Exception:
         pass
     return ""

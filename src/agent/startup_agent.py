@@ -10,11 +10,11 @@ import asyncio
 import re
 from typing import Any
 
-import httpx
 from rich.console import Console
 
 from src.agent.email_triangulation import triangulate_founder_email
 from src.configuration import get_config
+from src.http_client import get_client
 from src.llm.context import ContextManager
 from src.logging import get_logger
 
@@ -56,18 +56,18 @@ async def _searxng_search(query: str, time_range: str | None = None) -> list[str
     cfg = get_config().searxng
     async with _searxng_sem:
         try:
-            async with httpx.AsyncClient(timeout=cfg.timeout) as client:
-                resp = await client.get(
-                    cfg.url,
-                    params=params,
-                )
-                if resp.status_code == 200:
-                    results = resp.json().get("results", [])
-                    return [
-                        f"{r.get('title', '')}: {r.get('content', '')} ({r.get('url', '')})"
-                        for r in results[:5]
-                        if r.get("content") or r.get("title")
-                    ]
+            client = await get_client("startup_agent", timeout=cfg.timeout)
+            resp = await client.get(
+                cfg.url,
+                params=params,
+            )
+            if resp.status_code == 200:
+                results = resp.json().get("results", [])
+                return [
+                    f"{r.get('title', '')}: {r.get('content', '')} ({r.get('url', '')})"
+                    for r in results[:5]
+                    if r.get("content") or r.get("title")
+                ]
         except Exception as e:
             logger.debug(
                 "SearXNG query failed",
