@@ -92,15 +92,15 @@ async def run_health_checks() -> str:
     lines = ["<b>System Health Check</b>", ""]
     all_ok = True
     for (name, _), ok in zip(checks, results, strict=True):
-        icon = "✅" if ok else "❌"
-        lines.append(f"{icon} {name}")
+        tag = "<b>[OK]</b>" if ok else "<b>[DOWN]</b>"
+        lines.append(f"{tag} {name}")
         if not ok:
             all_ok = False
 
     if all_ok:
         lines.extend(["", "All 9 infrastructure services are healthy."])
     else:
-        lines.extend(["", "⚠️ One or more services are DOWN."])
+        lines.extend(["", "[WARNING] One or more services are down."])
     return "\n".join(lines)
 
 
@@ -291,7 +291,7 @@ class TelegramAgent:
                 await self._handle_help()
 
     async def _handle_analytics(self) -> None:
-        await self._send_raw("⏳ <i>Crunching market data and calculating skill arbitrage...</i>")
+        await self._send_raw("<i>Crunching market data and calculating skill arbitrage...</i>")
         sections: list[str] = []
         try:
             from src.agent.analytics_agent import AnalyticsAgent
@@ -309,7 +309,7 @@ class TelegramAgent:
         except Exception as e:
             logger.exception("Analytics report generation failed", exc=e)
             sections.append(
-                "❌ <b>Analytics Report Failed</b>\n\n"
+                "<b>[ERROR] Analytics Report Failed</b>\n\n"
                 f"<code>{str(e)[:400]}</code>\n\n"
                 "Try again in a moment."
             )
@@ -328,7 +328,7 @@ class TelegramAgent:
             mm, ss = divmod(m, 60)
             uptime = f"{h}h {mm}m {ss}s"
 
-        status = "🟢 running" if s["running"] else "🔴 idle"
+        status = "<b>[RUNNING]</b>" if s["running"] else "<b>[IDLE]</b>"
         lines = [
             "<b>Pipeline Status</b>",
             "",
@@ -349,7 +349,7 @@ class TelegramAgent:
                 lines.extend(
                     [
                         "",
-                        "<b>🎯 Search Persona Focus</b>",
+                        "<b>Search Persona Focus</b>",
                         f"<code>{html.escape(short_persona)}</code>",
                     ]
                 )
@@ -382,12 +382,12 @@ class TelegramAgent:
                 lines.extend(
                     [
                         "",
-                        "<b>💾 Storage & Volume Stats</b>",
-                        f"📄 Resume Chunks: <b>{resume_chunks}</b>",
-                        f"🌐 Active Sources: <b>{src_cnt}</b>",
-                        f"👁️ Job Observations: <b>{obs_cnt}</b>",
-                        f"🎯 Saved Candidates: <b>{cand_cnt}</b> (<b>{accepted_cnt}</b> accepted)",
-                        f"🕸️ Neo4j Graph Nodes: <b>{graph_nodes}</b>",
+                        "<b>Storage & Volume Stats</b>",
+                        f"▪ Resume Chunks: <b>{resume_chunks}</b>",
+                        f"▪ Active Sources: <b>{src_cnt}</b>",
+                        f"▪ Job Observations: <b>{obs_cnt}</b>",
+                        f"▪ Saved Candidates: <b>{cand_cnt}</b> (<b>{accepted_cnt}</b> accepted)",
+                        f"▪ Neo4j Graph Nodes: <b>{graph_nodes}</b>",
                     ]
                 )
             finally:
@@ -398,7 +398,7 @@ class TelegramAgent:
 
         queue_status = s.get("llm_queue", {})
         if queue_status:
-            cooldown = "🛑 Active" if queue_status.get("cooldown_active") else "✅ Clear"
+            cooldown = "Active" if queue_status.get("cooldown_active") else "Clear"
             lines.extend(
                 [
                     "",
@@ -417,20 +417,20 @@ class TelegramAgent:
             lines.extend(["", "<b>Top Rejection Reasons</b>"])
             for rc in rejection_counts[:5]:
                 reason = rc.get("reason", "?").replace("_", " ")
-                lines.append(f"  • {reason}: {rc.get('count', 0)}")
+                lines.append(f"  ▪ {reason}: {rc.get('count', 0)}")
 
         source_health = s.get("source_health", {})
         if source_health:
             disabled = [sid for sid, sh in source_health.items() if not sh.get("active")]
             if disabled:
-                lines.extend(["", f"⚠️ Disabled sources: {len(disabled)}"])
+                lines.extend(["", f"Disabled sources: {len(disabled)}"])
 
         lines.extend(
             [
                 "",
-                f"✅ Matched total: <b>{s['matched_total']}</b>",
-                f"❌ Rejected total: <b>{s['rejected_total']}</b>",
-                f"Scraped this sweep: {s['scraped_count']}",
+                f"Matched total: <b>{s['matched_total']}</b> | "
+                f"Rejected total: <b>{s['rejected_total']}</b> | "
+                f"Scraped this sweep: <b>{s['scraped_count']}</b>",
             ]
         )
 
@@ -452,15 +452,15 @@ class TelegramAgent:
                                 logger_n = d.get("logger", "app")
                                 msg = d.get("message", line_str)
                                 recent_logs.append(
-                                    f"• <code>[{html.escape(logger_n)}]</code> "
+                                    f"▪ <code>[{html.escape(logger_n)}]</code> "
                                     f"{html.escape(msg[:70])}"
                                 )
                             except Exception:
-                                recent_logs.append(f"• {html.escape(line_str[:70])}")
+                                recent_logs.append(f"▪ {html.escape(line_str[:70])}")
                         else:
-                            recent_logs.append(f"• {html.escape(line_str[:70])}")
+                            recent_logs.append(f"▪ {html.escape(line_str[:70])}")
                 if recent_logs:
-                    lines.extend(["", "<b>📜 Recent Logs</b>"] + recent_logs)
+                    lines.extend(["", "<b>Recent Logs</b>"] + recent_logs)
         except Exception:
             pass
 
@@ -471,7 +471,7 @@ class TelegramAgent:
             if s["phase"].startswith("idle") and s["running"]:
                 remaining = max(0, interval - elapsed)
                 m, sec = divmod(int(remaining), 60)
-                lines.append(f"\n⏳ Next sweep in: <b>{m}m {sec}s</b>")
+                lines.append(f"\nNext sweep in: <b>{m}m {sec}s</b>")
 
         if s.get("last_error"):
             lines.extend(
@@ -523,12 +523,12 @@ class TelegramAgent:
                     )
 
                 if not rows:
-                    await self._send_raw("ℹ️ No accepted job matches found in database to resend.")
+                    await self._send_raw("No accepted job matches found in database to resend.")
                     return
 
                 if is_dry:
                     lines = [
-                        "📋 <b>Dry Run: Available Accepted Jobs</b>",
+                        "<b>[DRY RUN] Available Accepted Jobs</b>",
                         f"<i>Total in DB: {total_count} accepted | Showing top {len(rows)}:</i>",
                         "",
                     ]
@@ -546,14 +546,14 @@ class TelegramAgent:
                     lines.extend(
                         [
                             "",
-                            "💡 <i>Run <code>/resend</code> to send cards for top 10, "
+                            "<i>Run <code>/resend</code> to send cards for top 10, "
                             "or <code>/resend N</code> for top N.</i>",
                         ]
                     )
                     await self._send_raw("\n".join(lines))
                     return
 
-                await self._send_raw(f"⏳ <i>Resending top {len(rows)} accepted job matches...</i>")
+                await self._send_raw(f"<i>Resending top {len(rows)} accepted job matches...</i>")
 
                 count = 0
                 for r in rows:
@@ -593,10 +593,10 @@ class TelegramAgent:
                 await store.close()
         except Exception as e:
             logger.exception("Resend command failed", exc=e)
-            await self._send_raw(f"❌ <b>Resend failed:</b> <code>{str(e)[:200]}</code>")
+            await self._send_raw(f"<b>[ERROR] Resend failed:</b> <code>{str(e)[:200]}</code>")
             return
 
-        await self._send_raw(f"✅ <b>Resent {count} job alerts to Telegram.</b>")
+        await self._send_raw(f"<b>[RESEND] Sent {count} job alerts to Telegram.</b>")
 
     async def _handle_clear(self, chat_id: str, current_msg_id: int, text: str) -> None:
         parts = text.split()
@@ -619,7 +619,7 @@ class TelegramAgent:
                 if isinstance(r, httpx.Response) and r.status_code == 200:
                     deleted += 1
 
-        await self._send_to_chat(chat_id, f"🧹 <i>Deleted {deleted} recent messages.</i>", "HTML")
+        await self._send_to_chat(chat_id, f"<i>Cleared {deleted} recent messages.</i>", "HTML")
 
     async def _handle_help(self) -> None:
         lines = [
@@ -644,12 +644,12 @@ class TelegramAgent:
             return
         if dedup_key:
             self._seen_errors.add(dedup_key)
-        await self._send_raw(f"🚨 <b>Pipeline Error</b>\n\n<code>{message[:800]}</code>")
+        await self._send_raw(f"<b>[ERROR] Pipeline Error</b>\n\n<code>{message[:800]}</code>")
         logger.info("TelegramAgent sent error alert")
 
     async def send_startup(self, sweep_count: int = 0) -> None:
         await self._send_raw(
-            f"🟢 <b>Pipeline Started</b>\n\n"
+            f"<b>[SYSTEM] Pipeline Started</b>\n\n"
             f"Resume loaded, {sweep_count} existing jobs.\n"
             f"Beginning sweeps..."
         )
@@ -658,7 +658,7 @@ class TelegramAgent:
         self, sweep: int, matched: int, scraped: int, duration: float
     ) -> None:
         await self._send_raw(
-            f"✅ <b>Sweep {sweep} Complete</b>\n\n"
+            f"<b>[SWEEP] Sweep {sweep} Complete</b>\n\n"
             f"Scraped: {scraped}\n"
             f"Matched: {matched}\n"
             f"Duration: {duration:.1f}s"
@@ -686,7 +686,7 @@ class TelegramAgent:
             comp_desc = comp_desc[:197] + "..."
 
         lines = [
-            f"<b>{role.upper()}</b> • <b>{company.upper()}</b>",
+            f"<b>{role.upper()}</b> — <b>{company.upper()}</b>",
             "<code>───────────────────────────</code>",
             f"<b>JD Match:</b> {match_pct}%  |  <b>Shortlist:</b> {shortlist_pct}%",
             f"<b>Location:</b> {location}",
@@ -705,13 +705,13 @@ class TelegramAgent:
 
         has_osint = bool(funding_info or funding_stage or founders or osint_signals)
         if has_osint:
-            lines.extend(["", "<b>🕵️ OSINT &amp; Outreach</b>", ""])
+            lines.extend(["", "<b>OSINT &amp; Outreach</b>", ""])
 
         if isinstance(funding_info, dict) and any(funding_info.values()):
             fi = funding_info
             parts = []
             if fi.get("round"):
-                parts.append(f"💰 <b>{fi['round']}</b>")
+                parts.append(f"▪ <b>{fi['round']}</b>")
             if fi.get("amount_raised"):
                 parts.append(f"({fi['amount_raised']})")
             if fi.get("lead_investors"):
@@ -721,7 +721,7 @@ class TelegramAgent:
             if parts:
                 lines.append(" ".join(parts))
         elif funding_stage and funding_stage not in ("N/A", "-"):
-            lines.append(f"💰 Funding: {funding_stage}")
+            lines.append(f"▪ Funding: {funding_stage}")
 
         if founders:
             if isinstance(founders[0], dict):
@@ -737,9 +737,9 @@ class TelegramAgent:
                     if f.get("github_url"):
                         badges.append(f'<a href="{html.escape(f["github_url"])}">GitHub</a>')
                     badge_str = f" — {' | '.join(badges)}" if badges else ""
-                    lines.append(f"👤 {name}{title_str}{badge_str}")
+                    lines.append(f"▪ Founder: {name}{title_str}{badge_str}")
             else:
-                lines.append(f"👤 Founders: {', '.join(html.escape(str(f)) for f in founders)}")
+                lines.append(f"▪ Founders: {', '.join(html.escape(str(f)) for f in founders)}")
                 socials = job.get("founder_socials", [])
                 if socials:
                     sl = []
@@ -754,25 +754,23 @@ class TelegramAgent:
 
         if osint_signals:
             for sig in osint_signals:
-                lines.append(f"📡 {html.escape(str(sig))}")
+                lines.append(f"▪ Signal: {html.escape(str(sig))}")
 
         founder_posts = job.get("founder_posts", [])
         if founder_posts and isinstance(founder_posts, list):
-            lines.extend(["", "<b>🚨 ACTIVE FOUNDER POST:</b>"])
+            lines.extend(["", "<b>ACTIVE FOUNDER POST:</b>"])
             for fp in founder_posts[:2]:
                 if not isinstance(fp, dict):
                     continue
                 name = html.escape(str(fp.get("founder_name", "Unknown")))
                 intent = html.escape(str(fp.get("intent", "")))
                 post_url = fp.get("post_url", "")
-                line = f"👤 <b>{name}</b>"
+                line = f"▪ <b>{name}</b>"
                 if intent:
                     line += f" — {intent}"
                 lines.append(line)
                 if post_url.startswith("http"):
-                    lines.append(
-                        f'└ <a href="{html.escape(post_url)}"><b>DM them on LinkedIn →</b></a>'
-                    )
+                    lines.append(f'└ <a href="{html.escape(post_url)}"><b>DM on LinkedIn →</b></a>')
                 lines.append("")
 
         return "\n".join(lines)
@@ -850,19 +848,19 @@ class TelegramAgent:
     # ── categorized alerts (radar v2) ─────────────────────────────────
 
     _CATEGORY_ICONS: dict[str, str] = {
-        "urgent": "🔴",
-        "startup_signal": "🟣",
-        "outreach": "🟡",
-        "eligible": "🔵",
-        "review": "⚪",
+        "urgent": "[URGENT]",
+        "startup_signal": "[SIGNAL]",
+        "outreach": "[OUTREACH]",
+        "eligible": "[ELIGIBLE]",
+        "review": "[REVIEW]",
     }
 
     _CATEGORY_LABELS: dict[str, str] = {
-        "urgent": "Urgent High-Fit Verified-Fresh",
+        "urgent": "Urgent High-Fit Verified Role",
         "startup_signal": "Startup Hiring Signal",
         "outreach": "Cold Outreach Opportunity",
         "eligible": "Eligible Role",
-        "review": "Freshness-Unknown Review",
+        "review": "Freshness Review Role",
     }
 
     async def send_categorized_alert(
@@ -877,24 +875,24 @@ class TelegramAgent:
         if dedup_key and dedup_key in self._notified_keys:
             return False
 
-        icon = self._CATEGORY_ICONS.get(category, "⚪")
+        icon = self._CATEGORY_ICONS.get(category, "[ALERT]")
         label = self._CATEGORY_LABELS.get(category, category)
 
         text = self.format_job_card(job)
-        header = f"{icon} <b>{label}</b>\n\n"
+        header = f"<b>{icon} {label}</b>\n\n"
         text = header + text
 
         buttons: list[list[dict[str, str]]] = []
         link = job.get("apply_link") or job.get("direct_apply_url") or job.get("url") or ""
         if link and str(link).startswith("http"):
-            buttons.append([{"text": "🚀 Apply Direct", "url": link}])
+            buttons.append([{"text": "Apply Direct", "url": link}])
 
         founders = job.get("founders", [])
         if founders and isinstance(founders[0], dict):
             for f in founders[:2]:
                 if f.get("linkedin_url"):
                     name = html.escape(str(f.get("name", "Founder")))
-                    buttons.append([{"text": f"👤 {name} LinkedIn", "url": f["linkedin_url"]}])
+                    buttons.append([{"text": f"LinkedIn: {name}", "url": f["linkedin_url"]}])
 
         reply_markup = {"inline_keyboard": buttons} if buttons else None
         success = await self._send_to_chat(self._primary_chat_id, text, "HTML", reply_markup)
@@ -913,10 +911,10 @@ class TelegramAgent:
         if not self.is_configured or not jobs:
             return 0
 
-        icon = self._CATEGORY_ICONS.get(category, "⚪")
+        icon = self._CATEGORY_ICONS.get(category, "[DIGEST]")
         label = self._CATEGORY_LABELS.get(category, category)
 
-        lines = [f"{icon} <b>{label} Digest</b>", f"  <i>{len(jobs)} roles found</i>", ""]
+        lines = [f"<b>{icon} {label} Digest</b>", f"  <i>{len(jobs)} roles found</i>", ""]
 
         sent = 0
         for j in jobs[:max_jobs]:
@@ -952,19 +950,19 @@ class TelegramAgent:
         url = startup.get("url", "")
 
         text = (
-            f"🕵️‍♂️ <b>STEALTH HIRING SIGNAL</b>\n\n"
+            f"<b>[STEALTH SIGNAL] {name}</b>\n\n"
             f"<b>{name}</b> just surfaced with <b>{stage}</b> funding, "
-            f"but has ZERO job postings.\n"
-            f"This is your chance to bypass the ATS entirely."
+            f"but has zero job postings.\n"
+            f"Opportunity to bypass ATS entirely via direct outreach."
         )
 
         buttons: list[list[dict[str, str]]] = []
         if url:
-            buttons.append([{"text": "🌐 Website", "url": url}])
+            buttons.append([{"text": "Website", "url": url}])
         buttons.append(
             [
                 {
-                    "text": f"🔍 Search '{name}' on LinkedIn",
+                    "text": f"Search '{name}' on LinkedIn",
                     "url": (
                         f"https://www.linkedin.com/search/results/people/?keywords={name}%20founder"
                     ),
@@ -991,7 +989,7 @@ class TelegramAgent:
 
         name = html.escape(target_company)
         lines = [
-            f"🔗 <b>2-HOP WARM INTRO: {name}</b>",
+            f"<b>[WARM INTRO] {name}</b>",
             "",
         ]
         for idx, p in enumerate(paths[:3], 1):
@@ -1007,7 +1005,7 @@ class TelegramAgent:
             linkedin = p.get("linkedin_url", "")
             if linkedin:
                 founder = html.escape(str(p.get("founder_name", "Founder")))
-                buttons.append([{"text": f"👤 DM {founder}", "url": linkedin}])
+                buttons.append([{"text": f"DM {founder}", "url": linkedin}])
 
         draft = ""
         if self.ctx is not None and paths:

@@ -32,14 +32,14 @@ class AnalyticsAgent:
         self._interactive = interactive
         sections: list[list[str]] = []
         section_funcs = [
-            ("🧮 Radar Gate Stats", self._section_radar_stats),
-            ("🔥 Top Skills (Radar)", self._section_radar_skills),
-            ("📈 Near-Miss Skill Gaps", self._section_radar_arbitrage),
-            ("🕳️ Rejection Breakdown", self._section_radar_rejections),
-            ("💵 Salary Stats", self._section_radar_salaries),
-            ("📍 Freshness Breakdown", self._section_radar_freshness),
-            ("🕵️ Stealth Hiring Signals", self._section_stealth_signals),
-            ("💸 VC Tier List", self._section_vc_tier_list),
+            ("Radar Gate Stats", self._section_radar_stats),
+            ("Top In-Demand Skills", self._section_radar_skills),
+            ("Near-Miss Skill Gaps", self._section_radar_arbitrage),
+            ("Rejection Breakdown", self._section_radar_rejections),
+            ("Salary Statistics", self._section_radar_salaries),
+            ("Posting Freshness", self._section_radar_freshness),
+            ("Stealth Hiring Signals", self._section_stealth_signals),
+            ("VC Tier List", self._section_vc_tier_list),
         ]
 
         for name, func in section_funcs:
@@ -70,7 +70,7 @@ class AnalyticsAgent:
         return ["\n".join(s) for s in sections]
 
     async def _section_radar_stats(self) -> list[str]:
-        lines = ["<b>🧮 Radar Gate Stats</b>"]
+        lines = ["<b>Radar Gate Stats</b>"]
         try:
             stats = await self.store.get_radar_gate_stats()
             lines.append(f"  Total candidates: {stats.get('total', 0)}")
@@ -86,7 +86,7 @@ class AnalyticsAgent:
         return lines
 
     async def _section_radar_skills(self) -> list[str]:
-        lines = ["<b>🔥 Most In-Demand Skills (Radar)</b>"]
+        lines = ["<b>Most In-Demand Skills</b>"]
         try:
             top = await self.store.get_radar_top_skills(limit=12)
             if top:
@@ -103,7 +103,7 @@ class AnalyticsAgent:
 
     async def _section_radar_arbitrage(self) -> list[str]:
         lines = [
-            "<b>📈 Near-Miss Skill Gaps</b>",
+            "<b>Near-Miss Skill Gaps</b>",
             "  <i>(Skills that appear most in near-miss roles)</i>",
         ]
         try:
@@ -121,7 +121,7 @@ class AnalyticsAgent:
         return lines
 
     async def _section_radar_rejections(self) -> list[str]:
-        lines = ["<b>🕳️ Rejection Breakdown</b>"]
+        lines = ["<b>Rejection Breakdown</b>"]
         try:
             stats = await self.store.get_radar_gate_stats()
             top = stats.get("top_rejection_reasons", [])
@@ -137,7 +137,7 @@ class AnalyticsAgent:
         return lines
 
     async def _section_radar_salaries(self) -> list[str]:
-        lines = ["<b>💵 Salary Stats (Radar)</b>"]
+        lines = ["<b>Salary Statistics</b>"]
         try:
             s = await self.store.get_salary_stats()
             if s.get("count", 0) > 0:
@@ -152,7 +152,7 @@ class AnalyticsAgent:
         return lines
 
     async def _section_radar_freshness(self) -> list[str]:
-        lines = ["<b>📍 Freshness Breakdown</b>"]
+        lines = ["<b>Posting Freshness Breakdown</b>"]
         try:
             stats = await self.store.get_radar_gate_stats()
             total = stats.get("total", 0)
@@ -169,7 +169,7 @@ class AnalyticsAgent:
         return lines
 
     async def _section_stealth_signals(self) -> list[str]:
-        lines = ["<b>🕵️ Stealth Hiring Signals</b>"]
+        lines = ["<b>Stealth Hiring Signals</b>"]
         lines.append(
             "  <i>Funded companies with zero job postings → DM now</i>",
         )
@@ -190,7 +190,7 @@ class AnalyticsAgent:
         return lines
 
     async def _section_vc_tier_list(self) -> list[str]:
-        lines = ["<b>💸 VC Tier List — Who Funds Junior Hires</b>"]
+        lines = ["<b>VC Tier List — Who Funds Junior Hires</b>"]
         try:
             vcs = await self.graph.get_vc_tier_list(limit=10)
             if vcs:

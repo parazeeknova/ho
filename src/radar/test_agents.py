@@ -13,11 +13,11 @@ class TestTelegramCategorizedAlerts:
     def test_category_icons_defined(self) -> None:
         agent = TelegramAgent(bot_token="test", chat_id="123")
         assert "urgent" in agent._CATEGORY_ICONS
-        assert agent._CATEGORY_ICONS["urgent"] == "🔴"
-        assert agent._CATEGORY_ICONS["startup_signal"] == "🟣"
-        assert agent._CATEGORY_ICONS["outreach"] == "🟡"
-        assert agent._CATEGORY_ICONS["eligible"] == "🔵"
-        assert agent._CATEGORY_ICONS["review"] == "⚪"
+        assert agent._CATEGORY_ICONS["urgent"] == "[URGENT]"
+        assert agent._CATEGORY_ICONS["startup_signal"] == "[SIGNAL]"
+        assert agent._CATEGORY_ICONS["outreach"] == "[OUTREACH]"
+        assert agent._CATEGORY_ICONS["eligible"] == "[ELIGIBLE]"
+        assert agent._CATEGORY_ICONS["review"] == "[REVIEW]"
 
     def test_category_labels_defined(self) -> None:
         agent = TelegramAgent(bot_token="test", chat_id="123")
