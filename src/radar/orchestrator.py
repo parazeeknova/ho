@@ -722,10 +722,18 @@ async def _notify_telegram(
             except Exception:
                 pass
 
+    already_notified = set(urgent + underdog + sponsor + startup)
+    general_accepted = [
+        c
+        for c in matched
+        if c.is_accepted and _pid(c) not in notified and c not in already_notified
+    ]
+
     await _notify("urgent", urgent)
     await _notify("outreach", underdog[:15])
     await _notify("eligible", sponsor[:10])
     await _notify("startup_signal", startup[:10])
+    await _notify("eligible", general_accepted[:15])
 
 
 def _card(c: JobCandidate) -> dict[str, Any]:

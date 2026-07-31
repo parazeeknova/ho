@@ -388,7 +388,13 @@ class TelegramAgent:
 
             cfg_persona = get_config().candidate.persona.strip()
             if cfg_persona:
-                short_persona = cfg_persona.split("\n")[0][:100]
+                persona_lines = [
+                    line_str.strip()
+                    for line_str in cfg_persona.split("\n")
+                    if line_str.strip()
+                    and not line_str.strip().lower().startswith("candidate profile")
+                ]
+                short_persona = "\n".join(persona_lines[:3]) if persona_lines else cfg_persona[:200]
                 lines.extend(
                     [
                         "",
@@ -477,7 +483,7 @@ class TelegramAgent:
             ]
         )
 
-        # Recent Logs (Last 4 log entries)
+        # Recent Logs (Last 5 clean non-noise log entries)
         try:
             from pathlib import Path
 
@@ -486,24 +492,31 @@ class TelegramAgent:
                 recent_logs: list[str] = []
                 with open(log_path, encoding="utf-8", errors="ignore") as f:
                     all_lines = [line.strip() for line in f if line.strip()]
-                    for line_str in all_lines[-4:]:
+                    for line_str in reversed(all_lines):
+                        if len(recent_logs) >= 5:
+                            break
+                        if "firecrawl_tail" in line_str:
+                            continue
                         if line_str.startswith("{") and "message" in line_str:
                             try:
                                 import json
 
                                 d = json.loads(line_str)
-                                logger_n = d.get("logger", "app")
-                                msg = d.get("message", line_str)
-                                recent_logs.append(
-                                    f"▪ <code>[{html.escape(logger_n)}]</code> "
-                                    f"{html.escape(msg[:70])}"
+                                ts = d.get("timestamp", "").split("T")[-1][:8]
+                                lvl = d.get("level", "INFO")
+                                logger_n = d.get("logger", "sys")
+                                msg = str(d.get("message", line_str))
+                                tag = f"[{ts}] [{lvl}] {logger_n}"
+                                recent_logs.insert(
+                                    0,
+                                    f"▪ <code>{html.escape(tag)}</code>: {html.escape(msg[:100])}",
                                 )
                             except Exception:
-                                recent_logs.append(f"▪ {html.escape(line_str[:70])}")
+                                recent_logs.insert(0, f"▪ {html.escape(line_str[:120])}")
                         else:
-                            recent_logs.append(f"▪ {html.escape(line_str[:70])}")
+                            recent_logs.insert(0, f"▪ {html.escape(line_str[:120])}")
                 if recent_logs:
-                    lines.extend(["", "<b>Recent Logs</b>"] + recent_logs)
+                    lines.extend(["", "<b>Recent Activity Logs</b>"] + recent_logs)
         except Exception:
             pass
 
