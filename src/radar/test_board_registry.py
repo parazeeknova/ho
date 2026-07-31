@@ -11,7 +11,7 @@ from src.radar.board_registry import (
 
 def test_board_registry_structure():
     boards = get_all_registered_boards()
-    assert len(boards) > 100, f"Expected >100 registered boards, got {len(boards)}"
+    assert len(boards) > 250, f"Expected >250 registered boards, got {len(boards)}"
 
     seen_ids = set()
     for sid, url, source_type in boards:
