@@ -39,6 +39,7 @@ from src.radar.agents import (
     employee_discovery_agent,
     founder_social_agent,
 )
+from src.radar.board_registry import REGISTERED_BOARDS, get_discovery_index_sources
 from src.radar.discovery import (
     _extract_domain as _discovery_domain,
 )
@@ -79,137 +80,8 @@ from src.rag.loader import index_resume_in_pgvector, load_resume
 console = Console()
 logger = get_logger("radar_orchestrator")
 
-_SEED_BOARDS = [
-    # Big Tech / FAANG
-    (
-        "google:careers",
-        "https://www.google.com/about/careers/applications/jobs/results/",
-        "discovery_index",
-    ),
-    (
-        "microsoft:careers",
-        "https://careers.microsoft.com/v2/global/en/home.html",
-        "discovery_index",
-    ),
-    ("amazon:careers", "https://www.amazon.jobs/en/search.json", "discovery_index"),
-    ("meta:careers", "https://www.metacareers.com/jobs", "discovery_index"),
-    ("apple:careers", "https://jobs.apple.com/en-us/search", "discovery_index"),
-    (
-        "nvidia:careers",
-        "https://nvidia.wd5.myworkdayjobs.com/NVIDIAExternalCareerSite",
-        "discovery_index",
-    ),
-    ("intel:careers", "https://jobs.intel.com", "discovery_index"),
-    ("ibm:careers", "https://www.ibm.com/careers", "discovery_index"),
-    ("oracle:careers", "https://www.oracle.com/corporate/careers/", "discovery_index"),
-    (
-        "salesforce:careers",
-        "https://salesforce.wd12.myworkdayjobs.com/External_Career_Site",
-        "discovery_index",
-    ),
-    ("cisco:careers", "https://jobs.cisco.com", "discovery_index"),
-    # Modern AI & LLM Frontier Labs (Ashby & Greenhouse)
-    ("openai:ashby", "https://jobs.ashbyhq.com/openai", "official_ats"),
-    ("anthropic:ashby", "https://jobs.ashbyhq.com/anthropic", "official_ats"),
-    ("huggingface:ashby", "https://jobs.ashbyhq.com/huggingface", "official_ats"),
-    ("groq:ashby", "https://jobs.ashbyhq.com/groq", "official_ats"),
-    ("cohere:ashby", "https://jobs.ashbyhq.com/cohere", "official_ats"),
-    ("characterai:ashby", "https://jobs.ashbyhq.com/characterai", "official_ats"),
-    ("cognition:ashby", "https://jobs.ashbyhq.com/cognition", "official_ats"),
-    ("runway:ashby", "https://jobs.ashbyhq.com/runway", "official_ats"),
-    ("mistral:ashby", "https://jobs.ashbyhq.com/mistral", "official_ats"),
-    ("anysphere:ashby", "https://jobs.ashbyhq.com/anysphere", "official_ats"),
-    ("elevenlabs:ashby", "https://jobs.ashbyhq.com/elevenlabs", "official_ats"),
-    ("perplexity:ashby", "https://jobs.ashbyhq.com/perplexity", "official_ats"),
-    ("together:ashby", "https://jobs.ashbyhq.com/together", "official_ats"),
-    ("harvey:ashby", "https://jobs.ashbyhq.com/harvey", "official_ats"),
-    # Dev Tools, Cloud & AI Infrastructure (Ashby)
-    ("linear:ashby", "https://jobs.ashbyhq.com/linear", "official_ats"),
-    ("vercel:ashby", "https://jobs.ashbyhq.com/vercel", "official_ats"),
-    ("retool:ashby", "https://jobs.ashbyhq.com/retool", "official_ats"),
-    ("ramp:ashby", "https://jobs.ashbyhq.com/ramp", "official_ats"),
-    ("posthog:ashby", "https://jobs.ashbyhq.com/posthog", "official_ats"),
-    ("modal:ashby", "https://jobs.ashbyhq.com/modal", "official_ats"),
-    ("replit:ashby", "https://jobs.ashbyhq.com/replit", "official_ats"),
-    ("supabase:ashby", "https://jobs.ashbyhq.com/supabase", "official_ats"),
-    ("railway:ashby", "https://jobs.ashbyhq.com/railway", "official_ats"),
-    ("neon:ashby", "https://jobs.ashbyhq.com/neon", "official_ats"),
-    ("resend:ashby", "https://jobs.ashbyhq.com/resend", "official_ats"),
-    ("langchain:ashby", "https://jobs.ashbyhq.com/langchain", "official_ats"),
-    ("llamaindex:ashby", "https://jobs.ashbyhq.com/llamaindex", "official_ats"),
-    ("pinecone:ashby", "https://jobs.ashbyhq.com/pinecone", "official_ats"),
-    ("weaviate:ashby", "https://jobs.ashbyhq.com/weaviate", "official_ats"),
-    ("qdrant:ashby", "https://jobs.ashbyhq.com/qdrant", "official_ats"),
-    ("flyio:ashby", "https://jobs.ashbyhq.com/flyio", "official_ats"),
-    ("render:ashby", "https://jobs.ashbyhq.com/render", "official_ats"),
-    ("framer:ashby", "https://jobs.ashbyhq.com/framer", "official_ats"),
-    ("notion:ashby", "https://jobs.ashbyhq.com/notion", "official_ats"),
-    ("scaleai:ashby", "https://jobs.ashbyhq.com/scaleai", "official_ats"),
-    ("snowflake:ashby", "https://jobs.ashbyhq.com/snowflake", "official_ats"),
-    # Modern Unicorns & Tech Operations (Ashby & Greenhouse)
-    ("rippling:ashby", "https://jobs.ashbyhq.com/rippling", "official_ats"),
-    ("deel:ashby", "https://jobs.ashbyhq.com/deel", "official_ats"),
-    ("doordash:ashby", "https://jobs.ashbyhq.com/doordash", "official_ats"),
-    ("chime:ashby", "https://jobs.ashbyhq.com/chime", "official_ats"),
-    ("plaid:ashby", "https://jobs.ashbyhq.com/plaid", "official_ats"),
-    ("coinbase:ashby", "https://jobs.ashbyhq.com/coinbase", "official_ats"),
-    ("robinhood:ashby", "https://jobs.ashbyhq.com/robinhood", "official_ats"),
-    ("uber:ashby", "https://jobs.ashbyhq.com/uber", "official_ats"),
-    ("lyft:ashby", "https://jobs.ashbyhq.com/lyft", "official_ats"),
-    ("pinterest:ashby", "https://jobs.ashbyhq.com/pinterest", "official_ats"),
-    ("asana:ashby", "https://jobs.ashbyhq.com/asana", "official_ats"),
-    ("zapier:ashby", "https://jobs.ashbyhq.com/zapier", "official_ats"),
-    ("webflow:ashby", "https://jobs.ashbyhq.com/webflow", "official_ats"),
-    ("shopify:ashby", "https://jobs.ashbyhq.com/shopify", "official_ats"),
-    # Top Tech Companies (Greenhouse)
-    ("stripe:greenhouse", "https://boards.greenhouse.io/stripe", "official_ats"),
-    ("airbnb:greenhouse", "https://boards.greenhouse.io/airbnb", "official_ats"),
-    ("figma:greenhouse", "https://boards.greenhouse.io/figma", "official_ats"),
-    ("databricks:greenhouse", "https://boards.greenhouse.io/databricks", "official_ats"),
-    ("scaleai:greenhouse", "https://boards.greenhouse.io/scaleai", "official_ats"),
-    ("robinhood:greenhouse", "https://boards.greenhouse.io/robinhood", "official_ats"),
-    ("lyft:greenhouse", "https://boards.greenhouse.io/lyft", "official_ats"),
-    ("reddit:greenhouse", "https://boards.greenhouse.io/reddit", "official_ats"),
-    ("brex:greenhouse", "https://boards.greenhouse.io/brex", "official_ats"),
-    ("gusto:greenhouse", "https://boards.greenhouse.io/gusto", "official_ats"),
-    ("cloudflare:greenhouse", "https://boards.greenhouse.io/cloudflare", "official_ats"),
-    ("datadog:greenhouse", "https://boards.greenhouse.io/datadog", "official_ats"),
-    ("mongodb:greenhouse", "https://boards.greenhouse.io/mongodb", "official_ats"),
-    ("elastic:greenhouse", "https://boards.greenhouse.io/elastic", "official_ats"),
-    ("twilio:greenhouse", "https://boards.greenhouse.io/twilio", "official_ats"),
-    ("duolingo:greenhouse", "https://boards.greenhouse.io/duolingo", "official_ats"),
-    ("affirm:greenhouse", "https://boards.greenhouse.io/affirm", "official_ats"),
-    ("discord:greenhouse", "https://boards.greenhouse.io/discord", "official_ats"),
-    ("instacart:greenhouse", "https://boards.greenhouse.io/instacart", "official_ats"),
-    ("gitlab:greenhouse", "https://boards.greenhouse.io/gitlab", "official_ats"),
-    ("hubspot:greenhouse", "https://boards.greenhouse.io/hubspot", "official_ats"),
-    ("block:greenhouse", "https://boards.greenhouse.io/block", "official_ats"),
-    ("okta:greenhouse", "https://boards.greenhouse.io/okta", "official_ats"),
-    ("fastly:greenhouse", "https://boards.greenhouse.io/fastly", "official_ats"),
-    ("zscaler:greenhouse", "https://boards.greenhouse.io/zscaler", "official_ats"),
-    # Enterprise & Lever
-    ("palantir:lever", "https://jobs.lever.co/palantir", "official_ats"),
-    ("spotify:lever", "https://jobs.lever.co/spotify", "official_ats"),
-    # Aggregators & Discovery Indexes
-    ("ycombinator:jobs", "https://www.ycombinator.com/jobs", "discovery_index"),
-]
-
-_DISCOVERY_INDEX_SOURCES = frozenset(
-    {
-        "ycombinator:jobs",
-        "google:careers",
-        "microsoft:careers",
-        "amazon:careers",
-        "meta:careers",
-        "apple:careers",
-        "nvidia:careers",
-        "intel:careers",
-        "ibm:careers",
-        "oracle:careers",
-        "salesforce:careers",
-        "cisco:careers",
-    }
-)
+_SEED_BOARDS = REGISTERED_BOARDS
+_DISCOVERY_INDEX_SOURCES = get_discovery_index_sources()
 
 _SCHEDULER_ERRORS: dict[str, int] = {}
 _PIPELINE_METRICS: dict[str, Any] = {
