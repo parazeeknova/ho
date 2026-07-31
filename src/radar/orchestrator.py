@@ -575,12 +575,12 @@ def _group_key(c: JobCandidate) -> str:
 async def _enrich_high_fit(
     candidates: list[JobCandidate], sa: StartupAgent, store: MemoryStore
 ) -> None:
-    high_fit = [c for c in candidates if c.is_accepted and (c.is_urgent or c.match_percent >= 60)]
-    if not high_fit:
+    accepted = [c for c in candidates if c.is_accepted]
+    if not accepted:
         return
-    logger.info(f"Enriching {len(high_fit)} high-fit candidates...")
+    logger.info(f"Enriching {len(accepted)} accepted candidates with OSINT & founder details...")
     for idx, c in enumerate(candidates):
-        if not c.is_accepted or not (c.is_urgent or c.match_percent >= 60):
+        if not c.is_accepted:
             continue
         try:
             enriched = await sa.analyze_startup(
@@ -599,7 +599,7 @@ async def _enrich_high_fit(
             c.osint_signals = enriched.get("osint_signals", [])
             c.underdog_score = compute_underdog_score(c)
             await _persist_full(store, c)
-            logger.info(f"Enriching {c.normalized_company}: {idx + 1}/{len(high_fit)}")
+            logger.info(f"Enriching {c.normalized_company}: {idx + 1}/{len(accepted)}")
         except Exception:
             pass
 
@@ -1346,10 +1346,8 @@ async def _run_radar_pipeline() -> None:
             logger.info(f"LLM queue: {len(matched)} total matched, {accepted} accepted")
 
             await _enrich_high_fit(matched, sa, store)
-            enriched_count = len(
-                [c for c in matched if c.is_accepted and (c.is_urgent or c.match_percent >= 60)]
-            )
-            logger.info(f"Sweep {sweep}: enriched {enriched_count} high-fit candidates")
+            enriched_count = len([c for c in matched if c.is_accepted])
+            logger.info(f"Sweep {sweep}: enriched {enriched_count} accepted candidates")
             await _dispatch_company_events(matched, graph, bus)
             actual_sent = await _notify_telegram(ta, matched, store)
             accepted_count = len([c for c in matched if c.is_accepted])
