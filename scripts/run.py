@@ -16,6 +16,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 from rich import box
 from rich.console import Console
@@ -33,10 +34,12 @@ STATUS_UP = "[green]READY[/green]"
 STATUS_WAIT = "[yellow]·[/yellow]"
 STATUS_DOWN = "[red]DOWN[/red]"
 
+_proc: subprocess.Popen | None = None
 
-def run(cmd: str, silent: bool = True) -> tuple[int, str]:
+
+def run(cmd: str, silent: bool = True, timeout: int = 30) -> tuple[int, str]:
     try:
-        r = subprocess.run(cmd, shell=True, capture_output=silent, text=True, timeout=30)
+        r = subprocess.run(cmd, shell=True, capture_output=silent, text=True, timeout=timeout)
         return r.returncode, (r.stdout + r.stderr)[:500]
     except subprocess.TimeoutExpired:
         return -1, "timeout"
@@ -71,13 +74,75 @@ def row(t: Table, name: str, status: str, port: str = "") -> None:
 
 
 def stop_all() -> None:
+    console.print("\n[yellow]Stopping all services...[/yellow]")
+    run("killall llama-server 2>/dev/null", silent=True)
     run(f"{DOCKER_COMPOSE} down 2>/dev/null", silent=True)
     run("podman rm -f firecrawl_rabbitmq_1 2>/dev/null", silent=True)
-    run("killall llama-server 2>/dev/null", silent=True)
+    console.print("[green]All services stopped.[/green]")
 
 
-def container_stats() -> str:
-    """Collect snapshot of key container resource usage. Non-blocking."""
+def _podman_exec(container: str, cmd: str) -> str:
+    code, out = run(
+        f"podman exec {container} {cmd}",
+        silent=True,
+        timeout=10,
+    )
+    return out.strip() if code == 0 else ""
+
+
+def deep_stats() -> dict[str, Any]:
+    """Collect rich infra stats: DB counts, queue depth, embed info."""
+    info: dict[str, Any] = {}
+
+    # Neo4j node count
+    if check_port("localhost", 7687):
+        raw = _podman_exec(
+            "firecrawl_neo4j_1",
+            "cypher-shell -u neo4j -p password 'MATCH (n) RETURN count(n) AS nodes' 2>/dev/null",
+        )
+        for line in raw.split("\n"):
+            if line.strip().isdigit():
+                info["neo4j_nodes"] = int(line.strip())
+                break
+
+    # pgvector row counts
+    if check_port("localhost", 5433):
+        for table in ("job_observations", "job_candidates", "discovered_sources"):
+            raw = _podman_exec(
+                "firecrawl_agent-memory-db_1",
+                f"psql -U postgres -d agent_memory -t "
+                f"-c 'SELECT COUNT(*) FROM {table}' 2>/dev/null",
+            )
+            val = raw.strip()
+            if val.isdigit():
+                info[f"pg_{table}"] = int(val)
+
+    # RabbitMQ queue depths
+    if container_running("firecrawl_rabbitmq"):
+        raw = _podman_exec(
+            "firecrawl_rabbitmq_1",
+            "rabbitmqctl list_queues name messages 2>/dev/null",
+        )
+        for line in raw.split("\n"):
+            parts = line.split()
+            if len(parts) == 2 and parts[1].isdigit():
+                info[f"mq_{parts[0]}"] = int(parts[1])
+
+    # Embedding model info
+    if check_http("http://localhost:8900/health"):
+        try:
+            import json as _json
+            import urllib.request
+
+            r = urllib.request.urlopen("http://localhost:8900/slots", timeout=5)
+            data = _json.loads(r.read())
+            for slot in data:
+                info["embed_model"] = slot.get("model", "?")
+                info["embed_slots"] = len(data)
+        except Exception:
+            pass
+
+    # Container CPU/mem
     try:
         r = subprocess.run(
             "podman stats --no-stream "
@@ -90,33 +155,75 @@ def container_stats() -> str:
             text=True,
             timeout=10,
         )
-        if r.returncode == 0 and r.stdout.strip():
-            lines = r.stdout.strip().split("\n")
-            stats = []
-            for line in lines:
+        if r.returncode == 0:
+            for line in r.stdout.strip().split("\n"):
                 parts = line.split("\t")
                 if len(parts) >= 4:
                     name = parts[0].replace("firecrawl_", "")
-                    stats.append(f"{name} cpu={parts[1]} mem={parts[2]}")
-            if stats:
-                return "[infra] " + " | ".join(stats)
+                    info[f"cpu_{name}"] = parts[1]
+                    info[f"mem_{name}"] = parts[2]
     except Exception:
         pass
-    return ""
+
+    return info
+
+
+def format_stats(info: dict[str, Any]) -> str:
+    """Format deep stats into a human-readable line."""
+    parts: list[str] = []
+
+    # CPU/Mem section
+    for key, label in [
+        ("cpu_api_1", "api"),
+        ("cpu_playwright-service_1", "pw"),
+        ("cpu_rabbitmq_1", "mq"),
+        ("cpu_redis_1", "redis"),
+        ("cpu_neo4j_1", "neo4j"),
+    ]:
+        if key in info:
+            cpu = info.get(key, "?")
+            mem_key = key.replace("cpu_", "mem_")
+            mem = info.get(mem_key, "?")
+            parts.append(f"{label} cpu={cpu} mem={mem}")
+
+    # DB counts
+    for key, label in [
+        ("neo4j_nodes", "neo4j nodes"),
+        ("pg_job_observations", "pg:observations"),
+        ("pg_job_candidates", "pg:candidates"),
+        ("pg_discovered_sources", "pg:sources"),
+    ]:
+        if key in info:
+            parts.append(f"{label}={info[key]}")
+
+    # Queue depths
+    for key, label in [
+        ("mq_extract.jobs", "mq:extract"),
+        ("mq_nuq.queue_scrape.prefetch", "mq:nuq-scrape"),
+    ]:
+        if key in info:
+            parts.append(f"{label}={info[key]}")
+
+    # Embed
+    if "embed_model" in info:
+        parts.append(f"embed={info['embed_model']}")
+
+    return "[infra] " + " | ".join(parts) if parts else ""
 
 
 def stats_logger(log_path: Path, stop_event: threading.Event, interval: float = 30.0) -> None:
-    """Background daemon: periodically write container stats to log file."""
+    """Background daemon: periodically snapshot deep infra stats to log file."""
     time.sleep(interval)
     while not stop_event.is_set():
-        line = container_stats()
-        if line:
+        info = deep_stats()
+        msg = format_stats(info)
+        if msg:
             ts = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
             try:
                 with open(log_path, "a") as f:
                     f.write(
                         f'{{"timestamp": "{ts}", "level": "INFO", '
-                        f'"message": "{line}", "logger": "infra_monitor"}}\n'
+                        f'"message": "{msg}", "logger": "infra_monitor"}}\n'
                     )
                     f.flush()
             except Exception:
@@ -124,7 +231,33 @@ def stats_logger(log_path: Path, stop_event: threading.Event, interval: float = 
         stop_event.wait(interval)
 
 
+def shutdown_handler(sig: int, _frame: object) -> None:
+    """Intercept Ctrl+C: ask user, then stop everything."""
+    console.print("\n\n[bold yellow]Stop ho service? [y/N][/bold yellow] ", end="")
+    try:
+        # Read from tty directly since stdin may be consumed by subprocess
+        with open("/dev/tty") as tty:
+            answer = tty.readline().strip().lower()
+    except Exception:
+        answer = ""
+
+    if answer in ("y", "yes"):
+        console.print("[red]Shutting down...[/red]")
+        if _proc is not None and _proc.poll() is None:
+            _proc.terminate()
+            try:
+                _proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                _proc.kill()
+        stop_all()
+        sys.exit(0)
+    else:
+        console.print("[dim]Continuing...[/dim]")
+
+
 def main() -> None:
+    global _proc
+
     parser = argparse.ArgumentParser(description="ho pipeline launcher")
     parser.add_argument(
         "--no-pipeline", action="store_true", help="Start infra only, don't run pipeline"
@@ -231,13 +364,21 @@ def main() -> None:
         stop_all()
         sys.exit(1)
 
-    # ── Final status ──
+    # ── Final status + initial deep stats ──
     console.print()
     t = Table(box=box.SIMPLE, show_header=False, padding=(0, 2))
     t.add_column("")
     for name, _fn, port in services:
         row(t, name, STATUS_UP, port)
     console.print(t)
+
+    # Show initial DB state
+    snapshot = deep_stats()
+    console.print("[dim]Infra snapshot:[/dim]")
+    for k, v in sorted(snapshot.items()):
+        if not k.startswith("cpu_") and not k.startswith("mem_"):
+            console.print(f"  [dim]{k}: {v}[/dim]")
+
     console.print("\n[dim]All systems ready.[/dim]")
 
     if args.no_pipeline:
@@ -255,7 +396,8 @@ def main() -> None:
     log_dir.mkdir(exist_ok=True)
     log_path = log_dir / "run.log"
 
-    console.print("\n[bold cyan]Pipeline starting...[/bold cyan]\n")
+    console.print("\n[bold cyan]Pipeline starting...[/bold cyan]")
+    console.print("[dim]Ctrl+C → stop prompt | All logs in logs/run.log[/dim]\n")
 
     env = os.environ.copy()
     env.setdefault("OVERNIGHT_LOOP", "true")
@@ -269,7 +411,7 @@ def main() -> None:
     )
     stats_thread.start()
 
-    proc = subprocess.Popen(
+    _proc = subprocess.Popen(
         [sys.executable, "-m", "src.radar.orchestrator"],
         cwd=str(PROJECT),
         env=env,
@@ -279,29 +421,28 @@ def main() -> None:
         bufsize=1,
     )
 
-    def _on_signal(sig, _frame):
-        proc.send_signal(sig)
-
-    signal.signal(signal.SIGINT, _on_signal)
-    signal.signal(signal.SIGTERM, _on_signal)
+    # Install our shutdown handler
+    signal.signal(signal.SIGINT, shutdown_handler)
+    signal.signal(signal.SIGTERM, shutdown_handler)
 
     try:
         with open(log_path, "a") as log_file:
-            assert proc.stdout is not None
-            for line in proc.stdout:
+            assert _proc.stdout is not None
+            for line in _proc.stdout:
                 sys.stdout.write(line)
                 sys.stdout.flush()
                 log_file.write(line)
                 log_file.flush()
-    except KeyboardInterrupt:
+    except Exception:
         pass
 
-    proc.wait()
+    _proc.wait()
     stop_stats.set()
-    if proc.returncode != 0:
-        console.print(f"\n[red]Pipeline exited with code {proc.returncode}[/red]")
+
+    if _proc.returncode != 0 and _proc.returncode != -15:  # -15 = SIGTERM
+        console.print(f"\n[red]Pipeline exited with code {_proc.returncode}[/red]")
         stop_all()
-    sys.exit(proc.returncode)
+        sys.exit(_proc.returncode)
 
 
 if __name__ == "__main__":
