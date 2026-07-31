@@ -279,6 +279,10 @@ _FC_DROP = [
     "nuq-postgres",
     "postgres",
     "Started consuming",
+    "ENOTFOUND redis",
+    "ioredis",
+    "Redis error",
+    "getaddrinfo ENOTFOUND",
 ]
 
 
