@@ -94,9 +94,9 @@ async def discover_from_yc(limit: int = 50) -> list[dict[str, str]]:
     import datetime
 
     now = datetime.datetime.now()
-    yr = str(now.year)[-2:]
-    next_yr = str(now.year + 1)[-2:]
-    query = f"YC W{yr} YC S{yr} YC W{next_yr} YC-backed startup companies list {now.year}"
+    yr = int(str(now.year)[-2:])
+    batches = [f"YC W{yr - i} YC S{yr - i} YC{yr - i}" for i in range(4)]
+    query = f"{' '.join(batches)} YC-backed startup companies list"
 
     try:
         async with httpx.AsyncClient(timeout=cfg.timeout) as client:
