@@ -56,7 +56,7 @@ from src.radar.discovery import (
 )
 from src.radar.extractors import GITHUB_INDEXES, extract_github_index_markdown
 from src.radar.gates import run_gates
-from src.radar.models import JobCandidate, JobObservation
+from src.radar.models import EligibilityState, JobCandidate, JobObservation
 from src.radar.outreach import generate_outreach_card
 from src.radar.queue import enqueue_candidate, get_queue_status, process_queue
 from src.radar.scoring import compute_underdog_score, rank_score
@@ -1061,6 +1061,44 @@ async def _run_radar_pipeline() -> None:
     )
     if ta.is_configured:
         await ta.send_startup(existing_count)
+
+    # Re-deliver any previously accepted candidates that were never
+    # notified to Telegram (e.g., if DNS was down during the first sweep)
+    try:
+        async with store._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT canonical_id, normalized_role, normalized_company, "
+                "match_percent, verdict, funding_stage, extra "
+                "FROM radar_candidates "
+                "WHERE eligibility = 'accepted' "
+                "AND canonical_id NOT IN (SELECT dedup_key FROM telegram_notified_jobs) "
+                "LIMIT 50",
+            )
+        if rows:
+            from src.radar.queue import JobCandidate
+
+            pending: list[JobCandidate] = []
+            for r in rows:
+                c = JobCandidate(
+                    canonical_id=r["canonical_id"],
+                    normalized_role=r["normalized_role"],
+                    normalized_company=r["normalized_company"],
+                    normalized_location="Remote",
+                    source="radar",
+                    direct_apply_url="",
+                    match_percent=r["match_percent"],
+                    verdict=r["verdict"],
+                    funding_stage=r.get("funding_stage", ""),
+                )
+                extra = r.get("extra") or {}
+                c.extra = dict(extra) if extra else {}
+                c.eligibility = EligibilityState.ACCEPTED
+                pending.append(c)
+            if pending:
+                logger.info(f"Re-delivering {len(pending)} unnotified candidates to Telegram")
+                await _notify_telegram(ta, pending, store)
+    except Exception as e:
+        logger.warning(f"Startup re-delivery failed: {e}")
 
     sweep = 0
     last_discovery = 0.0
