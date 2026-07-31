@@ -49,6 +49,7 @@ class RejectionReason(Enum):
     SOURCE_LOW_CONFIDENCE = "source_low_confidence"
     MATCHER_NO_MATCH = "matcher_no_match"
     MATCHER_LOW_SCORE = "matcher_low_score"
+    VECTOR_GATE = "vector_gate"
     NO_SPONSORSHIP = "no_sponsorship"
     UNKNOWN = "unknown"
 

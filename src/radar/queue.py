@@ -1,6 +1,19 @@
 """LLM matcher work queue. Budget control is handled by the shared
 radar.governor; this module just manages queue dedup, ordering, and
 worker dispatch.
+
+Candidates are matched in two passes:
+
+- Pass 1 (cheap vector gate): the JD is embedded and run against the
+  pgvector store of resume chunks (``search_similar_chunks``). JDs whose
+  average cosine similarity to the resume falls below the configured
+  threshold are rejected instantly, without touching the LLM.
+- Pass 2 (expensive LLM): only high-similarity JDs are sent to the
+  GeneralCompute LLM for the final verdict and skill extraction.
+
+If the gate cannot run (no store, empty embedding index, embed server
+down) the candidate passes through to the LLM so infra hiccups never
+drop candidates.
 """
 
 from __future__ import annotations
@@ -27,6 +40,7 @@ class QueueState:
     total_completed: int = 0
     total_failed: int = 0
     total_429s: int = 0
+    total_vector_rejects: int = 0
 
 
 _queue_state = QueueState()
@@ -121,6 +135,28 @@ async def process_queue(
 
     async def _worker(candidate: JobCandidate) -> None:
         try:
+            if cfg.vector_gate_enabled:
+                similarity = await _vector_gate_similarity(candidate, store)
+                if similarity is not None:
+                    candidate.extra["vector_similarity"] = round(similarity, 4)
+                    if similarity < cfg.vector_gate_threshold:
+                        candidate.match_percent = 0
+                        candidate.verdict = "NO_MATCH"
+                        candidate.eligibility = EligibilityState.REJECTED
+                        candidate.rejection_reason = RejectionReason.VECTOR_GATE
+                        logger.info(
+                            f"Vector gate: {candidate.normalized_role} at "
+                            f"{candidate.normalized_company} -> {similarity:.3f} "
+                            f"(below {cfg.vector_gate_threshold}), skipped LLM",
+                        )
+                        async with _queue_lock:
+                            _queue_state.total_completed += 1
+                            _queue_state.total_vector_rejects += 1
+                        results.append(candidate)
+                        if store is not None:
+                            await _persist_candidate(store, candidate)
+                        return
+
             jd = candidate.extra.get("raw_markdown", "")[:8000]
 
             prompt = MATCHER_PROMPT.replace("{candidate_persona}", candidate_persona)
@@ -197,7 +233,41 @@ async def process_queue(
     return results
 
 
+async def _vector_gate_similarity(candidate: JobCandidate, store: Any) -> float | None:
+    """Pass 1: cheap pgvector gate against the resume chunk store.
+
+    Returns the JD's average cosine similarity to the top resume chunks,
+    or ``None`` when the gate cannot run (no store, no chunk index, embed
+    server down). Callers must pass ``None`` through to the LLM.
+    """
+    if store is None or not hasattr(store, "search_similar_chunks"):
+        return None
+
+    jd = candidate.extra.get("raw_markdown", "")[:4000]
+    if not jd.strip():
+        return None
+
+    from src.agent.enrichment_agent import _get_embedding
+
+    jd_vector = await _get_embedding(jd)
+    if jd_vector is None:
+        return None
+
+    chunks = await store.search_similar_chunks(jd_vector, top_k=5)
+    if not chunks:
+        return None
+
+    similarities = [1.0 - ch.get("distance", 1.0) for ch in chunks]
+    similarities = [s for s in similarities if s >= 0.0]
+    if not similarities:
+        return None
+    return sum(similarities) / len(similarities)
+
+
 async def _dequeue() -> tuple[int, JobCandidate] | None:
+    loop = asyncio.get_running_loop()
+    if getattr(_queue_not_empty, "_loop", None) is not loop:
+        _queue_not_empty._loop = loop
     try:
         await asyncio.wait_for(_queue_not_empty.wait(), timeout=5.0)
     except TimeoutError:
@@ -318,5 +388,6 @@ def get_queue_status() -> dict[str, Any]:
         "total_enqueued": _queue_state.total_enqueued,
         "total_completed": _queue_state.total_completed,
         "total_failed": _queue_state.total_failed,
+        "total_vector_rejects": _queue_state.total_vector_rejects,
         "total_429s": gs["total_429s"] + _queue_state.total_429s,
     }

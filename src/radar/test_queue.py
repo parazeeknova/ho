@@ -6,12 +6,13 @@ import time
 
 import pytest
 
-from src.radar.models import JobCandidate
+from src.radar.models import EligibilityState, JobCandidate, RejectionReason
 from src.radar.queue import (
     _queue_state,
     enqueue_candidate,
     get_queue_status,
     mark_retry,
+    process_queue,
 )
 
 
@@ -25,6 +26,7 @@ def reset_queue_state() -> None:
     _queue_state.total_completed = 0
     _queue_state.total_failed = 0
     _queue_state.total_429s = 0
+    _queue_state.total_vector_rejects = 0
     _ACTIVE_IDS.clear()
     _CANDIDATE_VERSIONS.clear()
     # Reset governor state
@@ -110,3 +112,131 @@ class TestQueueStatus:
         assert "total_completed" in status
         assert "total_enqueued" in status
         assert "in_flight" in status
+
+
+class _FakeStore:
+    def __init__(self, distances: list[float] | None = None) -> None:
+        self._distances = distances or [0.85, 0.9, 0.95]
+        self.upserts: list[dict] = []
+
+    async def search_similar_chunks(self, query_emb: list[float], top_k: int = 5) -> list[dict]:
+        return [
+            {"section": "skills", "content": "x", "distance": d} for d in self._distances[:top_k]
+        ]
+
+    async def upsert_radar_candidate(self, data: dict) -> None:
+        self.upserts.append(data)
+
+
+class _FakeCtx:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def json_chat(self, prompt: str, **_: object) -> dict:
+        self.calls += 1
+        return {
+            "company": "Acme",
+            "role": "Engineer",
+            "match_percent": 85,
+            "shortlist_probability": 70,
+            "verdict": "STRONG_MATCH",
+            "matching_skills": ["python"],
+            "missing_skills": [],
+            "location": "Remote",
+        }
+
+
+@pytest.fixture(autouse=True)
+def _patch_embedding(monkeypatch: pytest.MonkeyPatch) -> None:
+    import src.agent.enrichment_agent as ea
+
+    async def fake_embed(text: str) -> list[float] | None:
+        return [0.1, 0.2, 0.3]
+
+    monkeypatch.setattr(ea, "_get_embedding", fake_embed)
+
+
+def _candidate(canonical_id: str) -> JobCandidate:
+    return JobCandidate(
+        canonical_id=canonical_id,
+        source="greenhouse",
+        direct_apply_url="https://example.com/job",
+        normalized_company="Acme",
+        normalized_role="Engineer",
+        normalized_location="Remote",
+        extra={"raw_markdown": "Senior backend engineer, Python, distributed systems"},
+    )
+
+
+class TestVectorGate:
+    @pytest.mark.asyncio
+    async def test_rejects_below_threshold_without_llm(self) -> None:
+        store = _FakeStore(distances=[0.85, 0.9, 0.95])
+        ctx = _FakeCtx()
+        await enqueue_candidate(_candidate("gate:reject:remote"))
+        results = await process_queue(ctx, "resume", "persona", store, max_candidates=10)
+
+        assert ctx.calls == 0
+        c = results[0]
+        assert c.eligibility == EligibilityState.REJECTED
+        assert c.rejection_reason == RejectionReason.VECTOR_GATE
+        assert c.extra["vector_similarity"] < 0.35
+        assert get_queue_status()["total_vector_rejects"] == 1
+
+    @pytest.mark.asyncio
+    async def test_passes_high_similarity_to_llm(self) -> None:
+        store = _FakeStore(distances=[0.1, 0.15, 0.2])
+        ctx = _FakeCtx()
+        await enqueue_candidate(_candidate("gate:pass:remote"))
+        results = await process_queue(ctx, "resume", "persona", store, max_candidates=10)
+
+        assert ctx.calls == 1
+        assert results[0].eligibility == EligibilityState.ACCEPTED
+        assert results[0].extra["vector_similarity"] > 0.35
+        assert get_queue_status()["total_vector_rejects"] == 0
+
+    @pytest.mark.asyncio
+    async def test_disabled_gate_skips_vector_search(self) -> None:
+        from src.configuration import get_config
+
+        cfg = get_config().llm_queue
+        enabled, threshold = cfg.vector_gate_enabled, cfg.vector_gate_threshold
+        cfg.vector_gate_enabled = False
+        cfg.vector_gate_threshold = 0.99
+        try:
+            store = _FakeStore(distances=[0.85, 0.9, 0.95])
+            ctx = _FakeCtx()
+            await enqueue_candidate(_candidate("gate:disabled:remote"))
+            await process_queue(ctx, "resume", "persona", store, max_candidates=10)
+            assert ctx.calls == 1
+        finally:
+            cfg.vector_gate_enabled = enabled
+            cfg.vector_gate_threshold = threshold
+
+    @pytest.mark.asyncio
+    async def test_passes_through_when_embedding_fails(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import src.agent.enrichment_agent as ea
+
+        async def failing_embed(text: str) -> list[float] | None:
+            return None
+
+        monkeypatch.setattr(ea, "_get_embedding", failing_embed)
+
+        store = _FakeStore(distances=[0.85, 0.9, 0.95])
+        ctx = _FakeCtx()
+        await enqueue_candidate(_candidate("gate:embedfail:remote"))
+        results = await process_queue(ctx, "resume", "persona", store, max_candidates=10)
+
+        assert ctx.calls == 1
+        assert results[0].eligibility == EligibilityState.ACCEPTED
+
+    @pytest.mark.asyncio
+    async def test_passes_through_when_store_is_none(self) -> None:
+        ctx = _FakeCtx()
+        await enqueue_candidate(_candidate("gate:nostore:remote"))
+        results = await process_queue(ctx, "resume", "persona", None, max_candidates=10)
+
+        assert ctx.calls == 1
+        assert results[0].eligibility == EligibilityState.ACCEPTED

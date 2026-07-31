@@ -229,6 +229,12 @@ class LlmQueueConfig:
     match_token_budget: int = field(
         default_factory=lambda: _env_int("LLM_QUEUE_MATCH_TOKENS", 2000)
     )
+    vector_gate_enabled: bool = field(
+        default_factory=lambda: _env_bool("LLM_QUEUE_VECTOR_GATE", True)
+    )
+    vector_gate_threshold: float = field(
+        default_factory=lambda: _env_float("LLM_QUEUE_VECTOR_THRESHOLD", 0.35)
+    )
     cooldown_seconds: float = field(default_factory=lambda: _env_float("LLM_QUEUE_COOLDOWN", 30.0))
     jitter_seconds: float = field(default_factory=lambda: _env_float("LLM_QUEUE_JITTER", 5.0))
 
