@@ -18,6 +18,7 @@ import contextlib
 import html
 import os
 import re
+import shutil
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -72,6 +73,47 @@ async def _check_http(url: str, timeout: float = 3.0) -> bool:
             return resp.status_code < 500
     except Exception:
         return False
+
+
+def get_system_metrics() -> dict[str, str]:
+    mem_str = "N/A"
+    disk_str = "N/A"
+    cpu_str = "N/A"
+
+    try:
+        with open("/proc/meminfo") as f:
+            lines = {
+                line.split(":")[0]: int(line.split(":")[1].split()[0]) for line in f if ":" in line
+            }
+            total = lines.get("MemTotal", 0)
+            avail = lines.get("MemAvailable", 0)
+            mem_total_gb = round(total / (1024 * 1024), 1)
+            mem_used_gb = round((total - avail) / (1024 * 1024), 1)
+            pct = round((total - avail) / total * 100, 1) if total > 0 else 0.0
+            mem_str = f"{mem_used_gb}GB / {mem_total_gb}GB ({pct}%)"
+    except Exception:
+        pass
+
+    try:
+        du = shutil.disk_usage("/")
+        total_gb = round(du.total / (1024**3), 1)
+        used_gb = round(du.used / (1024**3), 1)
+        pct = round(du.used / du.total * 100, 1)
+        disk_str = f"{used_gb}GB / {total_gb}GB ({pct}%)"
+    except Exception:
+        pass
+
+    try:
+        load1, load5, _ = os.getloadavg()
+        cpu_str = f"{load1:.2f} (1m), {load5:.2f} (5m)"
+    except Exception:
+        pass
+
+    return {
+        "ram": mem_str,
+        "disk": disk_str,
+        "cpu_load": cpu_str,
+    }
 
 
 async def run_health_checks() -> str:
@@ -648,11 +690,78 @@ class TelegramAgent:
         logger.info("TelegramAgent sent error alert")
 
     async def send_startup(self, sweep_count: int = 0) -> None:
-        await self._send_raw(
-            f"<b>[SYSTEM] Pipeline Started</b>\n\n"
-            f"Resume loaded, {sweep_count} existing jobs.\n"
-            f"Beginning sweeps..."
-        )
+        metrics = get_system_metrics()
+
+        src_cnt = 0
+        cand_cnt = 0
+        try:
+            from src.memory.pgvector_store import MemoryStore
+
+            store = await MemoryStore.create()
+            try:
+                async with store._pool.acquire() as conn:
+                    src_cnt = await conn.fetchval("SELECT COUNT(*) FROM source_checkpoints") or 0
+                    cand_cnt = await conn.fetchval("SELECT COUNT(*) FROM radar_candidates") or 0
+            finally:
+                await store.close()
+        except Exception:
+            pass
+
+        short_persona = ""
+        try:
+            from src.configuration import get_config
+
+            short_persona = get_config().candidate.persona.strip().split("\n")[0][:100]
+        except Exception:
+            pass
+
+        lines = [
+            "<b>[SYSTEM] Pipeline Started</b>",
+            "",
+            "<b>System Resources</b>",
+            f"▪ RAM Usage: <b>{metrics['ram']}</b>",
+            f"▪ Disk Space: <b>{metrics['disk']}</b>",
+            f"▪ CPU Load: <b>{metrics['cpu_load']}</b>",
+            "",
+            "<b>Environment & Storage</b>",
+            f"▪ Resume Chunks: <b>{sweep_count} vectors loaded</b>",
+            f"▪ Registered Sources: <b>{src_cnt} active</b>",
+            f"▪ Saved Candidates: <b>{cand_cnt} in database</b>",
+            "▪ Scheduler: <b>8 async workers active</b>",
+        ]
+
+        if short_persona:
+            lines.extend(
+                [
+                    "",
+                    "<b>Search Persona Focus</b>",
+                    f"<code>{html.escape(short_persona)}</code>",
+                ]
+            )
+
+        lines.extend(["", "<i>Beginning discovery and polling sweeps...</i>"])
+        await self._send_raw("\n".join(lines))
+
+    async def send_stage_progress(
+        self,
+        stage: str,
+        summary: str,
+        extra_metrics: dict[str, Any] | None = None,
+    ) -> None:
+        if not self.is_configured:
+            return
+
+        metrics = get_system_metrics()
+        lines = [
+            f"<b>[PROGRESS] {html.escape(stage)}</b>",
+            f"▪ {html.escape(summary)}",
+            f"▪ RAM: <b>{metrics['ram']}</b> | CPU Load: <b>{metrics['cpu_load']}</b>",
+        ]
+        if extra_metrics:
+            for k, v in extra_metrics.items():
+                lines.append(f"▪ {html.escape(str(k))}: <b>{html.escape(str(v))}</b>")
+
+        await self._send_raw("\n".join(lines))
 
     async def send_sweep_summary(
         self, sweep: int, matched: int, scraped: int, duration: float

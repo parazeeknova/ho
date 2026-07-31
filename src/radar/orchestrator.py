@@ -1170,6 +1170,11 @@ async def _run_radar_pipeline() -> None:
                 discovered = await _discover_new_companies()
                 await _persist_discovered_sources(store, discovered)
                 await persist_checkpoints(store)  # Persist new sources immediately
+                if ta.is_configured:
+                    await ta.send_stage_progress(
+                        f"Sweep {sweep}: Company Discovery",
+                        f"Surfaced {len(discovered)} potential company sources.",
+                    )
 
             all_obs: list[JobObservation] = []
             # GitHub indexes: low-freq supplementary source
@@ -1210,6 +1215,13 @@ async def _run_radar_pipeline() -> None:
             candidates, gate_stats = await _fetch_postings_and_gate(all_obs, store)
             set_pipeline_state(scraped=len(all_obs), gated=len(candidates))
             logger.info(f"Gating: {len(candidates)} passed, {gate_stats['rejected']} rejected")
+            if ta.is_configured:
+                await ta.send_stage_progress(
+                    f"Sweep {sweep}: Source Polling & Gating",
+                    f"Polled {len(active_sources)} sources ({len(all_obs)} jobs). "
+                    f"{len(candidates)} passed gating filter "
+                    f"({gate_stats.get('rejected', 0)} rejected).",
+                )
 
             console.rule(f"[bold cyan]RADAR PHASE 3 (sweep {sweep}): LLM Matching[/bold cyan]")
             resume_ctx = full_text[:3000] if full_text else candidate_persona
