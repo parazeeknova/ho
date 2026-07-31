@@ -266,6 +266,12 @@ class MemoryStore:
                 "jsonb", encoder=json.dumps, decoder=json.loads, schema="pg_catalog"
             )
             await conn.execute(CREATE_TABLES_SQL)
+            # Lightweight column migrations for tables that predate schema
+            # additions (CREATE TABLE IF NOT EXISTS won't touch them).
+            await conn.execute(
+                "ALTER TABLE company_osint ADD COLUMN IF NOT EXISTS "
+                "expires_at DOUBLE PRECISION NOT NULL DEFAULT 0"
+            )
             await cls._create_hnsw_indexes(conn)
             await cls._prune_llm_queue(conn)
         logger.info("MemoryStore initialized", dsn=cfg.dsn.split("@")[-1])
