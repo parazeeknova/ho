@@ -45,3 +45,10 @@ async def test_notify_unconfigured_noop() -> None:
     job = {"role": "Engineer", "company": "Acme", "match_percent": 80}
     sent = await agent.notify_verified_jobs([job])
     assert sent == 0
+
+
+@pytest.mark.asyncio
+async def test_handle_resend_unconfigured() -> None:
+    agent = TelegramAgent(bot_token="", chat_id="")
+    # Should safely return without sending if unconfigured
+    await agent._handle_resend("/resend 5")

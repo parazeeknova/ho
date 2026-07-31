@@ -6,6 +6,7 @@ Commands (send to bot in Telegram DMs):
     /status    – current pipeline state (sweep, matched jobs, LLM status)
     /health    – runs live health checks on all services
     /analytics – generate market intelligence & skill arbitrage report
+    /resend    – resend accepted job matches (usage: /resend [limit])
     /help      – lists available commands
 """  # noqa: E501
 
@@ -270,6 +271,8 @@ class TelegramAgent:
                 await self._handle_health()
             elif cmd == "/analytics":
                 await self._handle_analytics()
+            elif cmd == "/resend":
+                await self._handle_resend(text)
             elif cmd == "/help":
                 await self._handle_help()
 
@@ -378,6 +381,81 @@ class TelegramAgent:
         report = await run_health_checks()
         await self._send_raw(report)
 
+    async def _handle_resend(self, text: str) -> None:
+        parts = text.split()
+        limit = 10
+        if len(parts) > 1 and parts[1].isdigit():
+            limit = min(50, max(1, int(parts[1])))
+
+        await self._send_raw(f"⏳ <i>Resending top {limit} accepted job matches...</i>")
+
+        from src.memory.pgvector_store import MemoryStore
+
+        count = 0
+        try:
+            store = await MemoryStore.create()
+            try:
+                async with store._pool.acquire() as conn:
+                    rows = await conn.fetch(
+                        """
+                        SELECT canonical_id, normalized_role, normalized_company,
+                               normalized_location, direct_apply_url, match_percent,
+                               shortlist_probability, verdict, funding_stage,
+                               funding_info, salary_raw, company_description,
+                               jd_summary, founders, founder_socials, osint_signals, extra
+                        FROM radar_candidates
+                        WHERE eligibility = 'accepted'
+                        ORDER BY match_percent DESC, created_at DESC
+                        LIMIT $1
+                        """,
+                        limit,
+                    )
+                if not rows:
+                    await self._send_raw("ℹ️ No accepted job matches found in database to resend.")
+                    return
+
+                for r in rows:
+                    import json
+
+                    def _parse_json(val: Any, default: Any) -> Any:
+                        if isinstance(val, (dict, list)):
+                            return val
+                        if isinstance(val, str) and val.strip():
+                            try:
+                                return json.loads(val)
+                            except Exception:
+                                pass
+                        return default
+
+                    job_card = {
+                        "role": r["normalized_role"],
+                        "company": r["normalized_company"],
+                        "match_percent": r["match_percent"],
+                        "shortlist_probability": r["shortlist_probability"],
+                        "salary": r["salary_raw"],
+                        "location": r["normalized_location"],
+                        "apply_link": r["direct_apply_url"],
+                        "jd_summary": r["jd_summary"],
+                        "company_description": r["company_description"],
+                        "founders": _parse_json(r["founders"], []),
+                        "funding_stage": r["funding_stage"],
+                        "funding_info": _parse_json(r["funding_info"], {}),
+                        "osint_signals": _parse_json(r["osint_signals"], []),
+                        "founder_socials": _parse_json(r["founder_socials"], []),
+                    }
+                    ok = await self.send_categorized_alert("eligible", job_card, dedup_key="")
+                    if ok:
+                        count += 1
+                        await asyncio.sleep(0.8)
+            finally:
+                await store.close()
+        except Exception as e:
+            logger.exception("Resend command failed", exc=e)
+            await self._send_raw(f"❌ <b>Resend failed:</b> <code>{str(e)[:200]}</code>")
+            return
+
+        await self._send_raw(f"✅ <b>Resent {count} job alerts to Telegram.</b>")
+
     async def _handle_help(self) -> None:
         lines = [
             "<b>Commands</b>",
@@ -385,6 +463,7 @@ class TelegramAgent:
             "/status    – pipeline state + match count",
             "/health    – live service health check",
             "/analytics – market intelligence & skill arbitrage report",
+            "/resend    – resend top accepted job alerts (e.g. /resend 10)",
             "/help      – this message",
             "",
             "I'll also notify you on pipeline errors, new matches,",
