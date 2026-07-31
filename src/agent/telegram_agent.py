@@ -802,8 +802,19 @@ class TelegramAgent:
         company = html.escape(str(job.get("company") or "Company").strip())
         match_pct = job.get("match_percent", 0)
         shortlist_pct = job.get("shortlist_probability", 0)
-        salary = html.escape(str(job.get("salary") or "Not specified").strip())
+
+        raw_sal = str(job.get("salary") or "").strip()
+        salary_annual = job.get("salary_annual_usd")
+        if raw_sal and raw_sal not in ("-", "Not specified", "N/A"):
+            salary_str = html.escape(raw_sal)
+        elif salary_annual:
+            salary_str = f"${salary_annual:,.0f}/yr"
+        else:
+            salary_str = "Flexible / Competitive"
+
         location = html.escape(str(job.get("location") or "Remote").strip())
+        raw_link = job.get("apply_link") or job.get("direct_apply_url") or job.get("url") or ""
+        apply_link = str(raw_link).strip()
 
         comp_desc = html.escape(
             str(
@@ -821,10 +832,12 @@ class TelegramAgent:
             "<code>───────────────────────────</code>",
             f"<b>JD Match:</b> {match_pct}%  |  <b>Shortlist:</b> {shortlist_pct}%",
             f"<b>Location:</b> {location}",
+            f"<b>Salary:</b> {salary_str}",
         ]
 
-        if salary and salary != "-":
-            lines.append(f"<b>Salary:</b> {salary}")
+        if apply_link and apply_link.startswith("http"):
+            esc_link = html.escape(apply_link)
+            lines.append(f'🔗 <b>Apply Direct:</b> <a href="{esc_link}">Click Here to Apply →</a>')
 
         if comp_desc:
             lines.extend(["", f"<blockquote>{comp_desc}</blockquote>"])

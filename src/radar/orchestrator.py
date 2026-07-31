@@ -696,7 +696,6 @@ async def _notify_telegram(
         and _pid(c) not in urgent_pids
         and _pid(c) not in underdog_pids
     ]
-    sponsor_pids = {_pid(c) for c in sponsor}
 
     startup = [
         c
@@ -707,10 +706,12 @@ async def _notify_telegram(
         and _pid(c) not in urgent_pids
         and _pid(c) not in underdog_pids
     ]
-    startup_pids = {_pid(c) for c in startup}
 
     async def _notify(cat: str, candidates: list[JobCandidate]) -> None:
         for c in candidates:
+            link = c.direct_apply_url or c.extra.get("source_url") or c.extra.get("ats_url") or ""
+            if not link or not str(link).startswith("http"):
+                continue
             key = _pid(c)
             try:
                 ok = await ta.send_categorized_alert(cat, _card(c), dedup_key=key)
@@ -727,21 +728,14 @@ async def _notify_telegram(
             except Exception:
                 pass
 
-    already_pids = urgent_pids | underdog_pids | sponsor_pids | startup_pids
-    general_accepted = [
-        c
-        for c in matched
-        if c.is_accepted and _pid(c) not in notified and _pid(c) not in already_pids
-    ]
-
     await _notify("urgent", urgent)
     await _notify("outreach", underdog[:15])
     await _notify("eligible", sponsor[:10])
     await _notify("startup_signal", startup[:10])
-    await _notify("eligible", general_accepted[:15])
 
 
 def _card(c: JobCandidate) -> dict[str, Any]:
+    link = c.direct_apply_url or c.extra.get("source_url") or c.extra.get("ats_url") or ""
     return {
         "role": c.normalized_role,
         "company": c.normalized_company,
@@ -750,7 +744,7 @@ def _card(c: JobCandidate) -> dict[str, Any]:
         "salary": c.salary.raw if c.salary else None,
         "salary_annual_usd": c.salary_annual_usd,
         "location": c.normalized_location,
-        "apply_link": c.direct_apply_url,
+        "apply_link": link,
         "jd_summary": c.jd_summary,
         "company_description": c.company_description,
         "founders": c.founders,
