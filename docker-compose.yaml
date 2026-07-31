@@ -125,6 +125,7 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: agent_memory
     volumes:
+      - agent_memory_data:/var/lib/postgresql/data
       - ./scripts/init-pgvector.sql:/docker-entrypoint-initdb.d/init.sql
     logging:
       driver: "json-file"
@@ -152,5 +153,6 @@ services:
         max-file: "1"
 
 volumes:
+  agent_memory_data:
   neo4j_data:
   neo4j_logs:
