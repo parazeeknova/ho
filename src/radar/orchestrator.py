@@ -675,29 +675,39 @@ async def _notify_telegram(
         and c.salary_annual_usd >= 60000
         and _pid(c) not in notified
     ]
+    urgent_pids = {_pid(c) for c in urgent}
+
     underdog = [
         c
         for c in matched
-        if c.is_accepted and c.underdog_score >= 0.6 and _pid(c) not in notified and c not in urgent
+        if c.is_accepted
+        and c.underdog_score >= 0.6
+        and _pid(c) not in notified
+        and _pid(c) not in urgent_pids
     ]
+    underdog_pids = {_pid(c) for c in underdog}
+
     sponsor = [
         c
         for c in matched
         if c.is_accepted
         and c.sponsors_visa
         and _pid(c) not in notified
-        and c not in urgent
-        and c not in underdog
+        and _pid(c) not in urgent_pids
+        and _pid(c) not in underdog_pids
     ]
+    sponsor_pids = {_pid(c) for c in sponsor}
+
     startup = [
         c
         for c in matched
         if c.is_accepted
         and c.funding_stage
         and _pid(c) not in notified
-        and c not in urgent
-        and c not in underdog
+        and _pid(c) not in urgent_pids
+        and _pid(c) not in underdog_pids
     ]
+    startup_pids = {_pid(c) for c in startup}
 
     async def _notify(cat: str, candidates: list[JobCandidate]) -> None:
         for c in candidates:
@@ -717,11 +727,11 @@ async def _notify_telegram(
             except Exception:
                 pass
 
-    already_notified = set(urgent + underdog + sponsor + startup)
+    already_pids = urgent_pids | underdog_pids | sponsor_pids | startup_pids
     general_accepted = [
         c
         for c in matched
-        if c.is_accepted and _pid(c) not in notified and c not in already_notified
+        if c.is_accepted and _pid(c) not in notified and _pid(c) not in already_pids
     ]
 
     await _notify("urgent", urgent)
@@ -1208,38 +1218,36 @@ async def _run_radar_pipeline() -> None:
                     f"[bold cyan]RADAR PHASE 2 (sweep {sweep}): Source Polling + Gating[/bold cyan]"
                 )
 
-            # Dynamic discovery + ATS detection (Master process only)
-            if not is_worker and (
-                sweep == 1 or time.monotonic() - last_discovery > cfg.radar.poll_low_freq_seconds
-            ):
-                last_discovery = time.monotonic()
-                discovered = await _discover_new_companies()
-                await _persist_discovered_sources(store, discovered)
-                await persist_checkpoints(store)  # Persist new sources immediately
-                if ta.is_configured:
-                    await ta.send_stage_progress(
-                        f"Sweep {sweep}: Company Discovery",
-                        f"Surfaced {len(discovered)} potential company sources.",
-                    )
-
             all_obs: list[JobObservation] = []
-            # GitHub indexes: low-freq supplementary source
+
+            # 1. GitHub Indexes (400+ jobs) - High speed instant scraping
             if time.monotonic() - last_index_scrape > _index_interval:
                 last_index_scrape = time.monotonic()
                 index_obs = await _scrape_indexes()
                 all_obs.extend(index_obs)
                 logger.info(f"Sweep {sweep}: {len(index_obs)} observations from GitHub indexes")
 
-            # Load active sources (seeds + dynamically discovered, all with URLs)
+            # 2. Pillar 2 SearXNG Dorking (Junior/New Grad/Entry Level queries)
+            try:
+                from src.radar.dorking import DorkingEngine
+
+                dork_engine = DorkingEngine()
+                dork_obs = await dork_engine.execute_dorks()
+                all_obs.extend(dork_obs)
+                logger.info(f"Sweep {sweep}: {len(dork_obs)} observations from SearXNG dorks")
+            except Exception as dork_err:
+                logger.warning(f"SearXNG dorking sweep warning: {dork_err}")
+
+            # 3. Load 110+ verified seed boards + active sources
             active_sources = await load_active_sources(store)
-            logger.info(f"Sweep {sweep}: {len(active_sources)} active sources to poll")
-            # Also poll seed boards
             for id_, url, source_type in _SEED_BOARDS:
                 if should_poll(id_) and not any(s["id"] == id_ for s in active_sources):
                     active_sources.append({"id": id_, "url": url, "source_type": source_type})
 
-            # Parallel source polling
-            poll_sem = asyncio.Semaphore(8)
+            logger.info(f"Sweep {sweep}: {len(active_sources)} active sources to poll")
+
+            # Parallel source polling across all registered seed boards
+            poll_sem = asyncio.Semaphore(12)
             board_results: list[list[JobObservation]] = []
 
             async def _poll_one(board, sem):
@@ -1247,16 +1255,31 @@ async def _run_radar_pipeline() -> None:
                     return await _poll_board(board, app)
 
             tasks = [asyncio.create_task(_poll_one(b, poll_sem)) for b in active_sources]
-            for board_done, task in enumerate(asyncio.as_completed(tasks), start=1):
-                board_results.append(await task)
-                if board_done % 10 == 0:
-                    logger.debug(f"Board polling: {board_done}/{len(active_sources)} complete")
-            for obs_list in board_results:
-                all_obs.extend(obs_list)
+            for _board_done, task in enumerate(asyncio.as_completed(tasks), start=1):
+                try:
+                    res = await task
+                    board_results.append(res)
+                except Exception as exc:
+                    logger.warning(f"Board poll failed: {exc}")
 
-            logger.info(
-                f"Sources: {len(all_obs)} observations across {len(active_sources)} active sources"
-            )
+            for b_obs in board_results:
+                all_obs.extend(b_obs)
+
+            logger.info(f"Sweep {sweep}: Total raw observations fetched: {len(all_obs)}")
+
+            # 4. Dynamic discovery + ATS detection (Master process background task)
+            if not is_worker and (
+                sweep == 1 or time.monotonic() - last_discovery > cfg.radar.poll_low_freq_seconds
+            ):
+                last_discovery = time.monotonic()
+                discovered = await _discover_new_companies()
+                await _persist_discovered_sources(store, discovered)
+                await persist_checkpoints(store)
+                if ta.is_configured:
+                    await ta.send_stage_progress(
+                        f"Sweep {sweep}: Company Discovery",
+                        f"Surfaced {len(discovered)} potential company sources.",
+                    )
 
             candidates, gate_stats = await _fetch_postings_and_gate(all_obs, store)
             set_pipeline_state(scraped=len(all_obs), gated=len(candidates))
