@@ -193,7 +193,7 @@ async def discover_from_vc_portfolios(limit: int = 40) -> list[dict[str, str]]:
                         "source": "vc_portfolio",
                     }
                 )
-                if processed % 50 == 0:
+                if processed % 10 == 0:
                     logger.info(
                         f"VC domain resolution: "
                         f"{processed}/{total_names} companies, "
@@ -367,11 +367,16 @@ async def discover_from_dealroom(limit: int = 50) -> list[dict[str, str]]:
         pass
 
     # Resolve domains for companies without websites
-    for c in companies:
+    need_resolve = [c for c in companies if not c["website"] or not c["website"].startswith("http")]
+    if need_resolve:
+        logger.info(f"Dealroom: resolving domains for {len(need_resolve)} companies...")
+    for i, c in enumerate(companies):
         if not c["website"] or not c["website"].startswith("http"):
             domain = await _resolve_official_domain(c["name"])
             if domain and not is_aggregator_domain(domain):
                 c["website"] = f"https://{domain}"
+            if (i + 1) % 10 == 0:
+                logger.info(f"Dealroom domain resolution: {i + 1}/{len(companies)}")
     return companies
 
 
@@ -443,11 +448,14 @@ async def discover_from_remoteok(limit: int = 30) -> list[dict[str, str]]:
 
     logger.info(f"RemoteOK: {len(companies)} companies with tech roles")
     # Resolve official domains for discovered companies
-    logger.info(f"RemoteOK: resolving domains for {len(companies)} companies...")
-    for c in companies:
+    if companies:
+        logger.info(f"RemoteOK: resolving domains for {len(companies)} companies...")
+    for i, c in enumerate(companies):
         domain = await _resolve_official_domain(c["name"])
         if domain and not is_aggregator_domain(domain):
             c["website"] = f"https://{domain}"
+        if (i + 1) % 10 == 0:
+            logger.info(f"RemoteOK domain resolution: {i + 1}/{len(companies)}")
     return companies
 
 
@@ -489,10 +497,14 @@ async def discover_from_weworkremotely(limit: int = 30) -> list[dict[str, str]]:
     except Exception:
         pass
 
-    for c in companies:
+    if companies:
+        logger.info(f"WeWorkRemotely: resolving domains for {len(companies)} companies...")
+    for i, c in enumerate(companies):
         domain = await _resolve_official_domain(c["name"])
         if domain and not is_aggregator_domain(domain):
             c["website"] = f"https://{domain}"
+        if (i + 1) % 10 == 0:
+            logger.info(f"WWR domain resolution: {i + 1}/{len(companies)}")
     return companies
 
 
@@ -536,10 +548,14 @@ async def discover_from_betalist(limit: int = 30) -> list[dict[str, str]]:
         pass
 
     logger.info(f"BetaList: {len(companies)} startups from {len(slugs)} slugs")
-    for c in companies:
+    if companies:
+        logger.info(f"BetaList: resolving domains for {len(companies)} companies...")
+    for i, c in enumerate(companies):
         domain = await _resolve_official_domain(c["name"])
         if domain and not is_aggregator_domain(domain):
             c["website"] = f"https://{domain}"
+        if (i + 1) % 10 == 0:
+            logger.info(f"BetaList domain resolution: {i + 1}/{len(companies)}")
     return companies
 
 
