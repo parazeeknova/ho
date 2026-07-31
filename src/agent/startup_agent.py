@@ -13,6 +13,7 @@ from typing import Any
 import httpx
 from rich.console import Console
 
+from src.agent.email_triangulation import triangulate_founder_email
 from src.configuration import get_config
 from src.llm.context import ContextManager
 from src.logging import get_logger
@@ -333,6 +334,15 @@ class StartupAgent:
         else:
             if extracted.get("founder_socials"):
                 job["founder_socials"] = extracted["founder_socials"]
+
+        # Email triangulation fallback for founders missing direct email
+        domain = company.lower().replace(" ", "").strip() + ".com"
+        for f in job.get("founders", []):
+            if isinstance(f, dict) and f.get("name") and not f.get("email"):
+                tri = await triangulate_founder_email(f["name"], domain)
+                if tri:
+                    f["email"] = tri["email"]
+                    f["email_triangulated"] = True
 
         fi = extracted.get("funding_info")
         if isinstance(fi, dict) and any(fi.values()):

@@ -761,6 +761,49 @@ async def _notify_telegram(
     return sent_count
 
 
+async def _check_and_notify_stealth_signals(
+    ta: TelegramAgent, graph: GraphStore, store: MemoryStore
+) -> int:
+    """Detect and notify high-centrality stealth startups before public job postings exist."""
+    if not ta.is_configured:
+        return 0
+    signals = await graph.get_stealth_hiring_signals(limit=5)
+    if not signals:
+        return 0
+    sent = 0
+    for s in signals:
+        cname = s.get("company_name", "Unknown")
+        if not cname or cname in ("Unknown", "N/A", ""):
+            continue
+        key = f"stealth:{cname.lower().strip()}"
+        job_card = {
+            "role": "Founding / Early Engineer (Stealth Signal)",
+            "company": cname,
+            "match_percent": 85,
+            "shortlist_probability": 80,
+            "location": "Remote / Onsite",
+            "apply_link": s.get("url") or f"https://www.google.com/search?q={cname}+startup",
+            "funding_stage": s.get("funding_stage") or "Seed / Venture Backed",
+            "company_description": (
+                f"High graph-centrality stealth company (PageRank: {s.get('pagerank', 0.0)}). "
+                "No public postings on ATS boards yet — prime target for cold outreach!"
+            ),
+            "osint_signals": [
+                f"PageRank Score: {s.get('pagerank', 0.0)}",
+                "Pre-posting stealth hiring signal detected",
+            ],
+        }
+        try:
+            ok = await ta.send_categorized_alert("startup_signal", job_card, dedup_key=key)
+            if ok:
+                sent += 1
+        except Exception:
+            pass
+    if sent > 0:
+        logger.info(f"Dispatched {sent} stealth startup hiring signals to Telegram")
+    return sent
+
+
 def _card(c: JobCandidate) -> dict[str, Any]:
     link = c.direct_apply_url or c.extra.get("source_url") or c.extra.get("ats_url") or ""
     return {
@@ -1350,10 +1393,11 @@ async def _run_radar_pipeline() -> None:
             logger.info(f"Sweep {sweep}: enriched {enriched_count} accepted candidates")
             await _dispatch_company_events(matched, graph, bus)
             actual_sent = await _notify_telegram(ta, matched, store)
+            stealth_sent = await _check_and_notify_stealth_signals(ta, graph, store)
             accepted_count = len([c for c in matched if c.is_accepted])
             logger.info(
-                f"Sweep {sweep}: {actual_sent} Telegram alerts actually sent"
-                f" ({accepted_count} accepted)"
+                f"Sweep {sweep}: {actual_sent + stealth_sent} Telegram alerts sent"
+                f" ({actual_sent} jobs, {stealth_sent} stealth signals, {accepted_count} accepted)"
             )
 
             accepted = len([c for c in matched if c.is_accepted])
