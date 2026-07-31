@@ -6,7 +6,8 @@ Commands (send to bot in Telegram DMs):
     /status    – current pipeline state (sweep, matched jobs, LLM status)
     /health    – runs live health checks on all services
     /analytics – generate market intelligence & skill arbitrage report
-    /resend    – resend accepted job matches (usage: /resend [limit])
+    /resend    – resend accepted job matches (usage: /resend [--dry] [limit])
+    /clear     – delete recent bot messages (usage: /clear [count])
     /help      – lists available commands
 """  # noqa: E501
 
@@ -32,6 +33,7 @@ logger = get_logger("telegram_agent")
 TELEGRAM_BASE = "https://api.telegram.org/bot{token}"
 TELEGRAM_SEND = f"{TELEGRAM_BASE}/sendMessage"
 TELEGRAM_UPDATES = f"{TELEGRAM_BASE}/getUpdates"
+TELEGRAM_DELETE = f"{TELEGRAM_BASE}/deleteMessage"
 
 _TG_MAX_LEN = 4000
 _HTML_TAG_RX = re.compile(r"<[^>]+>")
@@ -273,6 +275,7 @@ class TelegramAgent:
             if not text.startswith("/"):
                 continue
 
+            msg_id = msg.get("message_id", 0)
             cmd = text.split()[0].lower().split("@")[0]
             if cmd == "/status":
                 await self._handle_status()
@@ -282,6 +285,8 @@ class TelegramAgent:
                 await self._handle_analytics()
             elif cmd == "/resend":
                 await self._handle_resend(text)
+            elif cmd == "/clear":
+                await self._handle_clear(sender_id, msg_id, text)
             elif cmd == "/help":
                 await self._handle_help()
 
@@ -593,6 +598,29 @@ class TelegramAgent:
 
         await self._send_raw(f"✅ <b>Resent {count} job alerts to Telegram.</b>")
 
+    async def _handle_clear(self, chat_id: str, current_msg_id: int, text: str) -> None:
+        parts = text.split()
+        count = 50
+        if len(parts) > 1 and parts[1].isdigit():
+            count = min(100, max(1, int(parts[1])))
+
+        deleted = 0
+        tasks = []
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            for m_id in range(current_msg_id, max(0, current_msg_id - count - 1), -1):
+                tasks.append(
+                    client.post(
+                        TELEGRAM_DELETE.format(token=self.bot_token),
+                        json={"chat_id": chat_id, "message_id": m_id},
+                    )
+                )
+            resps = await asyncio.gather(*tasks, return_exceptions=True)
+            for r in resps:
+                if isinstance(r, httpx.Response) and r.status_code == 200:
+                    deleted += 1
+
+        await self._send_to_chat(chat_id, f"🧹 <i>Deleted {deleted} recent messages.</i>", "HTML")
+
     async def _handle_help(self) -> None:
         lines = [
             "<b>Commands</b>",
@@ -601,6 +629,7 @@ class TelegramAgent:
             "/health    – live service health check",
             "/analytics – market intelligence & skill arbitrage report",
             "/resend    – resend top accepted job alerts (e.g. /resend 10)",
+            "/clear     – delete recent bot messages (e.g. /clear 50)",
             "/help      – this message",
             "",
             "I'll also notify you on pipeline errors, new matches,",

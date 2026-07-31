@@ -54,3 +54,9 @@ async def test_handle_resend_unconfigured() -> None:
     await agent._handle_resend("/resend 5")
     await agent._handle_resend("/resend --dry")
     await agent._handle_resend("/resend --dry 5")
+
+
+@pytest.mark.asyncio
+async def test_handle_clear_unconfigured() -> None:
+    agent = TelegramAgent(bot_token="", chat_id="")
+    await agent._handle_clear("123", 100, "/clear 10")
