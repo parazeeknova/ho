@@ -26,7 +26,16 @@ PERSONA_TXT = ROOT / "persona.txt"
 ASK_USER = "__ASK_USER__"
 
 # Cosine distance (embedding <=>) below which a persona chunk is a confident match.
-PERSONA_MATCH_THRESHOLD = 0.6
+PERSONA_MATCH_THRESHOLD = 0.35
+
+# Protected-class / self-identification questions. Never auto-answer these —
+# the LLM tends to invent values (e.g. disability status). If the persona
+# store has no high-confidence answer, we ask the user instead.
+_SENSITIVE_QUESTION_RE = re.compile(
+    r"disabilit|veteran|armed forces|military service|race|ethnic|hispanic|latino|"
+    r"gender|sexual orientation|religio|marital",
+    re.I,
+)
 
 # Personal / knockout question categories. We never guess these - if the user
 # hasn't configured an answer in profile.customAnswers or the persona store,
@@ -38,15 +47,26 @@ _PERSONAL_RULES: list[tuple[re.Pattern, str]] = [
         "authorization",
     ),
     (
-        re.compile(r"expected (annual )?(cash )?(salary|compensation)|salary expectation|expected comp", re.I),
+        re.compile(
+            r"expected (annual )?(cash )?(salary|compensation)|salary expectation|expected comp",
+            re.I,
+        ),
         "expected_comp",
     ),
     (
         re.compile(r"current (annual )?(cash )?compensation|current salary|current comp", re.I),
         "current_comp",
     ),
-    (re.compile(r"current location|currently (based|located|residing|living)", re.I), "current_location"),
-    (re.compile(r"how soon.*join|when can you (start|join)|start date|availability|notice period", re.I), "start_date"),
+    (
+        re.compile(r"current location|currently (based|located|residing|living)", re.I),
+        "current_location",
+    ),
+    (
+        re.compile(
+            r"how soon.*join|when can you (start|join)|start date|availability|notice period", re.I
+        ),
+        "start_date",
+    ),
     (re.compile(r"relocat", re.I), "relocation"),
     (re.compile(r"hybrid|in.?office|work model|office per week", re.I), "work_model"),
     (re.compile(r"equity|rsu|esop|stock options|hold any equity", re.I), "equity"),
@@ -73,6 +93,16 @@ _COUNTRY_PATTERNS: list[tuple[str, re.Pattern]] = [
 
 def _mentioned_countries(text: str) -> set[str]:
     return {name for name, pat in _COUNTRY_PATTERNS if pat.search(text)}
+
+
+def _normalise_question(text: str) -> str:
+    """Normalise question text for deterministic exact matching.
+
+    Mirrors the Node adapter's ``normalise``: collapse whitespace, strip
+    leading/trailing asterisks, lowercase.
+    """
+    t = re.sub(r"\s+", " ", (text or "").strip()).strip("*")
+    return t.lower()
 
 
 async def _embed_text(text: str) -> list[float] | None:
@@ -107,10 +137,43 @@ class ScreenerRAG:
         context_manager: ContextManager | None = None,
         profile: Profile | None = None,
         store: MemoryStore | None = None,
+        exact_answers: dict[str, str] | None = None,
     ) -> None:
         self.cm = context_manager or ContextManager()
         self.profile = profile or Profile()
         self.store = store
+        # Tier-0 deterministic index of learned answers. Injectable for tests;
+        # when None it is loaded from persona.json.
+        if exact_answers is not None:
+            self._exact_answers: dict[str, str] = {
+                _normalise_question(k): v for k, v in dict(exact_answers).items()
+            }
+        else:
+            self._exact_answers = self._load_exact_answers()
+
+    def _load_exact_answers(self) -> dict[str, str]:
+        """Deterministic tier-0 index: learned answers keyed by normalised question."""
+        try:
+            data = json.loads(PERSONA_JSON.read_text())
+        except (OSError, json.JSONDecodeError):
+            return {}
+        answers: dict[str, str] = {}
+        for entry in data.get("answers", []):
+            q = (entry.get("question") or "").strip()
+            a = (entry.get("answer") or "").strip()
+            if q and a:
+                answers[_normalise_question(q)] = a
+        return answers
+
+    def exact_answer(self, question: str) -> str | None:
+        """Tier-0 lookup: the learned answer for an exactly-matching question.
+
+        Deterministic by construction — no embeddings, no thresholds — so a
+        question the user already answered can never be misfilled semantically.
+        """
+        if not (question or "").strip():
+            return None
+        return self._exact_answers.get(_normalise_question(question))
 
     async def close(self) -> None:
         if self.store is not None:
@@ -186,15 +249,58 @@ class ScreenerRAG:
                 return custom_val
         return None
 
+    async def kb_answer(self, question: str) -> str | None:
+        """Ground-truth answer for a question, or None when no deterministic
+        source applies.
+
+        Resolution order: customAnswers (explicit config) → exact normalised
+        question match (learned answers) → persona embeddings (paraphrases) →
+        deterministic rules (visa/authorization/expected-comp). Protected-class
+        questions without a confident persona answer return None — they must
+        never be fabricated.
+        """
+        q = (question or "").strip()
+        if not q:
+            return None
+        q_lower = q.lower()
+
+        custom = self._match_custom_answer(q, q_lower)
+        if custom is not None:
+            return custom
+
+        exact = self.exact_answer(q)
+        if exact is not None:
+            return exact
+
+        persona_ans = await self._lookup_persona(q, q_lower)
+        if persona_ans is not None:
+            return persona_ans
+
+        cfg = get_config()
+        min_salary = getattr(cfg.candidate, "min_salary", "Flexible / Open to discussion")
+
+        matched_rule = next(((p, key) for p, key in _PERSONAL_RULES if p.search(q)), None)
+        if matched_rule:
+            _, key = matched_rule
+            if key in _DETERMINISTIC_ANSWERS:
+                return _DETERMINISTIC_ANSWERS[key]
+            if key in _EXPECTED_COMP_KEYS:
+                return min_salary
+            return None
+
+        if _SENSITIVE_QUESTION_RE.search(q_lower):
+            return None
+
+        return None
+
     async def answer_questions(self, questions: list[str]) -> dict[str, str]:
         """Generate answers for a list of screener questions.
 
         Resolution order per question:
-        1. profile.customAnswers (explicit config)
-        2. persona_embeddings (grilled ground truth)
-        3. deterministic rules (visa/authorization/expected-comp fallback)
-        4. LLM grounded in resume + persona context (open-ended)
-        5. __ASK_USER__ when nothing grounds the answer.
+        1. ``kb_answer`` (customAnswers, exact learned match, persona
+           embeddings, deterministic rules)
+        2. LLM grounded in resume + persona context (open-ended text only)
+        3. ``__ASK_USER__`` when nothing grounds the answer.
         """
         if not questions:
             return {}
@@ -206,35 +312,20 @@ class ScreenerRAG:
             "Experienced Software Engineer with strong background in "
             "backend, Python, Node.js, and cloud systems."
         )
-        min_salary = getattr(cfg.candidate, "min_salary", "Flexible / Open to discussion")
 
         answers: dict[str, str] = {}
         unresolved_questions: list[str] = []
 
         for q in questions:
-            q_lower = q.lower()
-
-            custom = self._match_custom_answer(q, q_lower)
-            if custom is not None:
-                answers[q] = custom
+            kb = await self.kb_answer(q)
+            if kb is not None:
+                answers[q] = kb
                 continue
-
-            persona_ans = await self._lookup_persona(q, q_lower)
-            if persona_ans is not None:
-                answers[q] = persona_ans
+            # Protected-class questions never reach the LLM: without a confident
+            # KB answer they are a user prompt, never a generated guess.
+            if _SENSITIVE_QUESTION_RE.search(q.lower()):
+                answers[q] = ASK_USER
                 continue
-
-            matched_rule = next(((p, key) for p, key in _PERSONAL_RULES if p.search(q)), None)
-            if matched_rule:
-                _, key = matched_rule
-                if key in _DETERMINISTIC_ANSWERS:
-                    answers[q] = _DETERMINISTIC_ANSWERS[key]
-                elif key in _EXPECTED_COMP_KEYS:
-                    answers[q] = min_salary
-                else:
-                    answers[q] = ASK_USER
-                continue
-
             unresolved_questions.append(q)
 
         if not unresolved_questions:
@@ -261,40 +352,46 @@ Verified facts retrieved from the candidate's resume:
         prompt += f"""
 Writing style rules (follow strictly for every answer):
 - Direct and professional-casual. No "Dear Hiring Manager" tone, no corporate filler.
-- Lead with concrete, quantified outcomes from the persona (metrics, numbers, specific tech) instead of generic claims like "passionate about" or "excited to leverage."
+- Lead with concrete, quantified outcomes from the persona (metrics, numbers, specific
+  tech) instead of generic claims like "passionate about" or "excited to leverage."
 - Every sentence must earn its place. Cut anything that doesn't add information.
 - Never use em dashes.
-- No buzzwords, no vague enthusiasm statements, no restating the question back before answering.
-- Answers must be strictly grounded in the persona and profile data above. Do not invent facts, projects, or numbers not present in the persona.
-- Match answer length to the question: one or two tight sentences for short-answer fields, a short paragraph (3-5 sentences) for "why this role/company" style prompts. Never pad to sound more substantial.
+- No buzzwords, no vague enthusiasm statements, no restating the question back before
+  answering.
+- Answers must be strictly grounded in the persona and profile data above. Do not invent
+  facts, projects, or numbers not present in the persona.
+- Match answer length to the question: one or two tight sentences for short-answer fields,
+  a short paragraph (3-5 sentences) for "why this role/company" style prompts. Never pad
+  to sound more substantial.
 
 CRITICAL RULE: If a question asks for a personal fact or detail that is NOT present in the
 candidate persona or profile above (for example exact dates, precise numbers, compensation,
-location, availability, or anything you would be guessing), do NOT invent an answer. Return
-the exact literal string "__ASK_USER__" as that question's answer value instead.
+location, availability, protected-class information such as disability, veteran status, race,
+ethnicity, gender, religion, or anything you would be guessing), do NOT invent an answer.
+Return the exact literal string "__ASK_USER__" as that question's answer value instead.
 
 Answer the following open-ended application questions concisely, professionally, and accurately as
 the candidate, following the style rules above:
 {json.dumps(unresolved_questions, indent=2)}
 
-Return a JSON object mapping each question string to its generated answer string. Return only the JSON object, no preamble or explanation.
+Return a JSON object mapping each question string to its generated answer string. Return
+only the JSON object, no preamble or explanation.
 """
 
         try:
-            schema = {
-                "type": "object",
-                "additionalProperties": {"type": "string"}
-            }
+            schema = {"type": "object", "additionalProperties": {"type": "string"}}
             raw_resp = await self.cm.chat(prompt, schema=schema)
             cleaned = raw_resp.strip()
 
-            match = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', cleaned, re.DOTALL)
+            match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", cleaned, re.DOTALL)
             if match:
                 cleaned = match.group(1).strip()
 
             generated = json.loads(cleaned)
             for q, a in generated.items():
-                if isinstance(a, str) and a.strip() and a.strip() != ASK_USER:
+                if _SENSITIVE_QUESTION_RE.search(q.lower()):
+                    answers[q] = ASK_USER
+                elif isinstance(a, str) and a.strip() and a.strip() != ASK_USER:
                     answers[q] = a.strip()
                 else:
                     answers[q] = ASK_USER
@@ -332,6 +429,8 @@ Return a JSON object mapping each question string to its generated answer string
                     return False
             except Exception as e:
                 logger.warning("Learn dedup check failed", error=str(e))
+
+        self._exact_answers[_normalise_question(question)] = answer
 
         matched_rule = next(((p, key) for p, key in _PERSONAL_RULES if p.search(question)), None)
         category = matched_rule[1] if matched_rule else "general"
@@ -373,7 +472,7 @@ Return a JSON object mapping each question string to its generated answer string
         """Durably append a learned Q&A to persona.json (atomic write)."""
         try:
             data = json.loads(PERSONA_JSON.read_text())
-        except (OSError, json.JSONDecodeError):
+        except OSError, json.JSONDecodeError:
             data = {"name": "", "version": 1, "answers": []}
         data["version"] = int(data.get("version", 1)) + 1
         data.setdefault("answers", []).append(
