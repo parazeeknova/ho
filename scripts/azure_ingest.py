@@ -22,6 +22,7 @@ import time
 from azure.storage.blob import BlobServiceClient
 
 from src.logging import get_logger
+from src.memory.pgvector_store import MemoryStore
 from src.radar.core.models import JobObservation
 
 logger = get_logger("azure_ingest")
@@ -31,9 +32,7 @@ def _posting_id(obs: JobObservation) -> str:
     return obs.canonical_url_hash()
 
 
-async def _ensure_tables() -> None:
-    from src.memory.pgvector_store import MemoryStore
-
+async def _ensure_tables() -> MemoryStore:
     store = await MemoryStore.create()
     async with store._pool.acquire() as conn:
         await conn.execute(
