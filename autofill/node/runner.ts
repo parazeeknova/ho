@@ -171,13 +171,25 @@ async function main() {
 
     if (!payload.submitAllowed) {
       // No-apply phase: the form is filled and verified, but the application
-      // is never submitted. Report the fill, then close cleanly.
-      console.log("[Runner] Submission disabled in this phase — closing without submitting.");
+      // is never submitted. The browser stays open (bounded by
+      // AUTOFILL_REVIEW_HOLD_MS) so a human can inspect the filled answers;
+      // any action — or the hold timeout — closes without submitting.
+      console.log(
+        "[Runner] Submission disabled — browser window remaining open for review. " +
+          "Any action (or the hold timeout) closes without submitting."
+      );
       emitStatus({
         jobId: payload.jobId,
         status: "awaiting_review",
         screenshotPath: screenshotPath,
         message: "Form filled successfully. Submission is disabled in this phase."
+      });
+      const holdMs = parseInt(process.env.AUTOFILL_REVIEW_HOLD_MS || "600000", 10);
+      await new Promise<"submit" | "skip">((resolve) => {
+        actionCallbackResolver = resolve;
+        if (holdMs > 0) {
+          setTimeout(() => resolve("skip"), holdMs);
+        }
       });
       rl.close();
       await stagehand.close();
