@@ -261,19 +261,38 @@ class Indexer:
         async with self.lock:
             if self.obs:
                 body = "\n".join(json.dumps(o) for o in self.obs).encode()
-                self.container_client.get_blob_client(f"obs/{hour}.jsonl").upload_blob(
-                    body, overwrite=True
-                )
+                blob_name = f"obs/{hour}.jsonl"
+                blob_client = self.container_client.get_blob_client(blob_name)
+                try:
+                    blob_client.create_append_blob()
+                    blob_client.append_block(body)
+                except Exception:
+                    # Existing block blob (legacy) or race: write a unique
+                    # append blob so nothing is lost this cycle.
+                    seq = int(time.time() * 1000) % 100000
+                    alt = f"obs/{hour}_{seq}.jsonl"
+                    alt_client = self.container_client.get_blob_client(alt)
+                    alt_client.create_append_blob()
+                    alt_client.append_block(body)
+                    blob_name = alt
                 freshers = [o for o in self.obs if o.get("fresher")]
                 if freshers:
                     fbody = "\n".join(json.dumps(o) for o in freshers).encode()
-                    self.container_client.get_blob_client(f"freshers/{hour}.jsonl").upload_blob(
-                        fbody, overwrite=True
-                    )
+                    fblob = f"freshers/{hour}.jsonl"
+                    f_client = self.container_client.get_blob_client(fblob)
+                    try:
+                        f_client.create_append_blob()
+                        f_client.append_block(fbody)
+                    except Exception:
+                        fseq = int(time.time() * 1000) % 100000
+                        fblob = f"freshers/{hour}_{fseq}.jsonl"
+                        alt_f = self.container_client.get_blob_client(fblob)
+                        alt_f.create_append_blob()
+                        alt_f.append_block(fbody)
                     logger.info(
-                        f"Uploaded {len(freshers)} fresher observations to freshers/{hour}.jsonl"
+                        f"Uploaded {len(freshers)} fresher observations to freshers/{fblob}"
                     )
-                logger.info(f"Uploaded {len(self.obs)} observations to obs/{hour}.jsonl")
+                logger.info(f"Appended {len(self.obs)} observations to obs/{blob_name}")
                 self.obs = []
             if self.companies:
                 body = "\n".join(json.dumps(c) for c in self.companies.values()).encode()

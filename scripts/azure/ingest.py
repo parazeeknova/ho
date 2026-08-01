@@ -101,6 +101,77 @@ async def _persist_observation(store, obs: JobObservation) -> None:
         logger.warning(f"persist observation {obs.url[:60]}: {exc}")
 
 
+async def _bulk_persist_observations(store, obs_list: list[JobObservation]) -> int:
+    """Bulk-insert observations via COPY into a temp table + merge.
+
+    Asyncpg's COPY is ~50x faster than per-row INSERTs, which matters when
+    a single hourly blob holds 200k+ postings.
+    """
+    if not obs_list:
+        return 0
+    rows: list[tuple] = []
+    for obs in obs_list:
+        if not obs.url.startswith("http"):
+            continue
+        rows.append(
+            (
+                _posting_id(obs),
+                obs.url,
+                obs.source,
+                obs.title or "",
+                obs.snippet or "",
+                obs.observed_at,
+                obs.observed_at,
+                "review",
+                not obs.source.startswith("github_index:"),
+                _raw_json_value(obs.raw_markdown),
+            )
+        )
+    if not rows:
+        return 0
+    async with store._pool.acquire() as conn:
+        await conn.execute(
+            """CREATE TEMP TABLE IF NOT EXISTS _ingest_obs (
+                url_hash TEXT, url TEXT, source TEXT, title TEXT, snippet TEXT,
+                first_seen DOUBLE PRECISION, last_seen DOUBLE PRECISION,
+                freshness_lane TEXT, direct_posting_verified BOOLEAN, raw_json TEXT
+            )"""
+        )
+        await conn.execute("TRUNCATE _ingest_obs")
+        await conn.copy_records_to_table(
+            "_ingest_obs",
+            records=rows,
+            columns=[
+                "url_hash",
+                "url",
+                "source",
+                "title",
+                "snippet",
+                "first_seen",
+                "last_seen",
+                "freshness_lane",
+                "direct_posting_verified",
+                "raw_json",
+            ],
+        )
+        await conn.execute(
+            """INSERT INTO job_observations (url_hash, url, source, title, snippet,
+                first_seen, last_seen, freshness_lane, direct_posting_verified, raw_json)
+            SELECT url_hash, url, source, title, snippet,
+                first_seen, last_seen, freshness_lane, direct_posting_verified,
+                raw_json::jsonb
+            FROM _ingest_obs
+            ON CONFLICT (url_hash) DO UPDATE SET
+                last_seen = EXCLUDED.last_seen,
+                raw_json = CASE
+                    WHEN EXCLUDED.raw_json <> '{}'::jsonb
+                    THEN EXCLUDED.raw_json
+                    ELSE job_observations.raw_json
+                END"""
+        )
+    return len(rows)
+
+
 async def _ingest(store) -> None:
     conn_str = (
         "DefaultEndpointsProtocol=https;"
@@ -125,6 +196,7 @@ async def _ingest(store) -> None:
                 data = cc.get_blob_client(blob.name).download_blob().readall()
                 records = [json.loads(line) for line in data.decode().splitlines() if line.strip()]
                 if handler == "obs":
+                    batch: list[JobObservation] = []
                     for rec in records:
                         obs = JobObservation(
                             url=rec.get("url", ""),
@@ -136,12 +208,13 @@ async def _ingest(store) -> None:
                             source_freshness_evidence=rec.get("source_freshness_evidence"),
                         )
                         if obs.url.startswith("http"):
-                            await _persist_observation(store, obs)
-                            obs_rows += 1
+                            batch.append(obs)
+                    obs_rows += await _bulk_persist_observations(store, batch)
                 else:
+                    batch_comp: list[dict] = []
                     for rec in records:
-                        await _persist_company(store, rec)
-                        comp_rows += 1
+                        batch_comp.append(rec)
+                    comp_rows += await _bulk_persist_companies(store, batch_comp)
                 async with store._pool.acquire() as conn:
                     await conn.execute(
                         "INSERT INTO azure_ingest_marker (blob, ingested_at) VALUES ($1, $2)",
@@ -179,6 +252,57 @@ async def _persist_company(store, rec: dict) -> None:
             )
     except Exception as exc:
         logger.warning(f"persist company {rec.get('slug')}: {exc}")
+
+
+async def _bulk_persist_companies(store, rec_list: list[dict]) -> int:
+    if not rec_list:
+        return 0
+    now = time.time()
+    rows = [
+        (
+            r.get("slug", ""),
+            r.get("platform", ""),
+            r.get("careers_url", ""),
+            r.get("name", ""),
+            r.get("location", ""),
+            r.get("job_count", 0),
+            r.get("first_seen", now),
+            r.get("last_seen", now),
+        )
+        for r in rec_list
+    ]
+    async with store._pool.acquire() as conn:
+        await conn.execute("CREATE TEMP TABLE IF NOT EXISTS _ingest_comp (LIKE companies_index)")
+        await conn.execute("TRUNCATE _ingest_comp")
+        await conn.copy_records_to_table(
+            "_ingest_comp",
+            records=rows,
+            columns=[
+                "slug",
+                "platform",
+                "careers_url",
+                "name",
+                "location",
+                "job_count",
+                "first_seen",
+                "last_seen",
+            ],
+        )
+        await conn.execute(
+            """INSERT INTO companies_index (slug, platform, careers_url, name, location,
+                job_count, first_seen, last_seen)
+            SELECT slug, platform, careers_url, name, location,
+                job_count, first_seen, last_seen
+            FROM _ingest_comp
+            ON CONFLICT (slug) DO UPDATE SET
+                platform = EXCLUDED.platform,
+                careers_url = EXCLUDED.careers_url,
+                name = EXCLUDED.name,
+                location = EXCLUDED.location,
+                job_count = GREATEST(companies_index.job_count, EXCLUDED.job_count),
+                last_seen = EXCLUDED.last_seen"""
+        )
+    return len(rows)
 
 
 async def main() -> None:
