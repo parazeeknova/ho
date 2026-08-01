@@ -925,6 +925,105 @@ class Indexer:
         except Exception as exc:
             logger.warning(f"arbeitnow: {exc}")
 
+    async def poll_remoteok(self, client: AsyncClient) -> None:
+        """RemoteOK public API - large token-free remote job feed."""
+        try:
+            resp = await client.get("https://remoteok.com/api", timeout=30.0)
+            if resp.status_code != 200:
+                return
+            for item in resp.json():
+                if not isinstance(item, dict) or not item.get("url"):
+                    continue
+                self.add_obs(
+                    {
+                        "url": item.get("url", ""),
+                        "source": "remoteok",
+                        "title": item.get("position", ""),
+                        "snippet": f"{item.get('company', '')} | Remote",
+                        "raw_markdown": json.dumps(item),
+                        "observed_at": time.time(),
+                        "source_freshness_evidence": "remoteok api",
+                    }
+                )
+                self.add_company(
+                    str(item.get("company", "")).lower().replace(" ", "-"),
+                    "remoteok",
+                    careers_url=item.get("company_url", ""),
+                    name=item.get("company", ""),
+                )
+            logger.info("RemoteOK poll done")
+        except Exception as exc:
+            logger.warning(f"remoteok: {exc}")
+
+    async def poll_himalayas(self, client: AsyncClient) -> None:
+        """Himalayas public API - curated remote tech jobs."""
+        try:
+            resp = await client.get(
+                "https://himalayas.app/jobs/api",
+                headers={"Accept": "application/json"},
+                timeout=30.0,
+            )
+            if resp.status_code != 200:
+                logger.info(f"himalayas: blocked ({resp.status_code})")
+                return
+            for item in resp.json().get("jobs", []):
+                self.add_obs(
+                    {
+                        "url": item.get("url", ""),
+                        "source": "himalayas",
+                        "title": item.get("title", ""),
+                        "snippet": f"{item.get('company', {}).get('name', '')} | Remote",
+                        "raw_markdown": json.dumps(item),
+                        "observed_at": time.time(),
+                        "source_freshness_evidence": "himalayas api",
+                    }
+                )
+                cname = (item.get("company") or {}).get("name", "")
+                if cname:
+                    self.add_company(
+                        str(cname).lower().replace(" ", "-"),
+                        "himalayas",
+                        name=cname,
+                    )
+            logger.info("Himalayas poll done")
+        except Exception as exc:
+            logger.warning(f"himalayas: {exc}")
+
+    async def poll_jobicy(self, client: AsyncClient) -> None:
+        """Jobicy public API - remote job feed (no params needed)."""
+        try:
+            resp = await client.get(
+                "https://jobicy.com/api/v2/remote-jobs",
+                timeout=30.0,
+            )
+            if resp.status_code != 200:
+                return
+            for item in resp.json().get("jobs", []):
+                self.add_obs(
+                    {
+                        "url": item.get("url", ""),
+                        "source": "jobicy",
+                        "title": item.get("jobTitle", ""),
+                        "snippet": (
+                            f"{item.get('companyName', '')} | "
+                            f"{item.get('jobGeo', '')}"
+                        ),
+                        "raw_markdown": json.dumps(item),
+                        "observed_at": time.time(),
+                        "source_freshness_evidence": "jobicy api",
+                    }
+                )
+                cname = item.get("companyName", "")
+                if cname:
+                    self.add_company(
+                        str(cname).lower().replace(" ", "-"),
+                        "jobicy",
+                        name=cname,
+                    )
+            logger.info("Jobicy poll done")
+        except Exception as exc:
+            logger.warning(f"jobicy: {exc}")
+
     # ── main loop ────────────────────────────────────────────────────
 
     async def resolve_directory_slugs(self, client: AsyncClient) -> None:
@@ -1119,6 +1218,7 @@ class Indexer:
         last_hn_hist = 0.0
         last_remotive = 0.0
         last_arbeitnow = 0.0
+        last_remoteok = 0.0
         last_checkpoint = 0.0
 
         # Independent checkpoint loop: snapshots progress every 10 minutes
@@ -1160,6 +1260,11 @@ class Indexer:
                 if now - last_arbeitnow > 3600 or last_arbeitnow == 0:
                     await self.poll_arbeitnow(client)
                     last_arbeitnow = time.monotonic()
+                if now - last_remoteok > 1800 or last_remoteok == 0:
+                    await self.poll_remoteok(client)
+                    await self.poll_himalayas(client)
+                    await self.poll_jobicy(client)
+                    last_remoteok = time.monotonic()
             await self.flush()
             if time.monotonic() - last_checkpoint > 600 or last_checkpoint == 0:
                 await self.save_checkpoint()
