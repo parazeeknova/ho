@@ -1,0 +1,230 @@
+#!/usr/bin/env python3
+"""One-command setup of the user memory base for a fresh checkout.
+
+Checks Postgres + the embedding server (starting it if needed), indexes the
+resume into resume_embeddings, builds the persona into persona_embeddings +
+persona.txt (grilling interactively when persona.json is missing), and prints
+a summary of what is now in memory.
+
+Usage:
+    uv run python scripts/init_memory.py                       # full setup
+    uv run python scripts/init_memory.py --no-resume           # persona only
+    uv run python scripts/init_memory.py --grill               # force re-grill
+    uv run python scripts/init_memory.py --resume-url <url>    # explicit resume
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import os
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import httpx
+from dotenv import load_dotenv
+
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+load_dotenv()
+
+import ux  # noqa: E402
+
+from src.configuration import get_config  # noqa: E402
+from src.logging import get_logger  # noqa: E402
+from src.memory.pgvector_store import MemoryStore  # noqa: E402
+
+logger = get_logger("init_memory")
+
+
+def _embed_health_url() -> str:
+    return get_config().embed.url.rsplit("/v1", 1)[0] + "/health"
+
+
+async def embed_server_ready() -> bool:
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=2.0)) as client:
+            resp = await client.get(_embed_health_url())
+            return resp.status_code == 200
+    except Exception:
+        return False
+
+
+async def ensure_embed_server(auto_start: bool) -> bool:
+    if await embed_server_ready():
+        ux.chip("ok", "Embedding server up on :8900 (Qwen3-Embedding-0.6B)")
+        return True
+    ux.chip("err", f"Embedding server DOWN at {_embed_health_url()}")
+    if not shutil.which("llama-server"):
+        ux.bullet("Install llama.cpp (the llama-server binary) first, e.g. via:")
+        ux.bullet("  brew install llama.cpp        # macos", style="cyan")
+        ux.bullet(
+            "  pip install llama-cpp-python  # alternative, see scripts/serve.py",
+            style="cyan",
+        )
+        return False
+    if not auto_start:
+        ux.bullet("Start it with `uv run python scripts/serve.py` and re-run init_memory.")
+        return False
+    ux.bullet("Start it now via scripts/serve.py? [Y/n]", style="white")
+    answer = input("").strip().lower()
+    if answer not in ("", "y", "yes"):
+        return False
+    log = Path("/tmp/opencode") if Path("/tmp/opencode").exists() else Path("/tmp")
+    log = log / "embed_server.log"
+    with open(log, "a") as out:
+        proc = subprocess.Popen(
+            [sys.executable, str(ROOT / "scripts" / "serve.py")],
+            stdout=out,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    ux.chip("info", f"Spawned embed server (pid {proc.pid}); waiting for health...")
+    with ux.console.status("Waiting for embedding server...", spinner="dots"):
+        for _ in range(60):
+            if await embed_server_ready():
+                ux.chip("ok", "Embedding server is up.")
+                return True
+            time.sleep(1)
+    ux.chip("err", f"Embed server did not become healthy; check {log}")
+    return False
+
+
+async def index_resume(resume_url: str | None, resume_path: str | None) -> None:
+    cmd = [sys.executable, str(ROOT / "scripts" / "index_resume.py")]
+    if resume_url:
+        cmd += ["--url", resume_url]
+    if resume_path:
+        cmd += ["--path", resume_path]
+    result = subprocess.run(cmd, cwd=ROOT)
+    if result.returncode != 0:
+        ux.chip(
+            "warn",
+            "Resume indexing failed; continuing (fix RESUME_URL/RESUME_PATH and re-run).",
+        )
+
+
+async def run_script(name: str, *extra: str) -> int:
+    return subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / name), *extra], cwd=ROOT
+    ).returncode
+
+
+def has_env(source: str) -> bool:
+    return bool(os.environ.get(source))
+
+
+async def main() -> None:
+    parser = argparse.ArgumentParser(description="Build the user memory base for a fresh checkout.")
+    parser.add_argument("--no-resume", action="store_true", help="Skip resume indexing")
+    parser.add_argument("--resume-url", help="Resume download URL (overrides RESUME_URL)")
+    parser.add_argument("--resume-path", help="Local resume file path (overrides RESUME_PATH)")
+    parser.add_argument("--no-grill", action="store_true", help="Never run the interactive wizard")
+    parser.add_argument(
+        "--grill",
+        action="store_true",
+        help="Force the interactive wizard even if persona.json exists",
+    )
+    parser.add_argument(
+        "--no-embed-start",
+        action="store_true",
+        help="Never auto-spawn the embed server",
+    )
+    args = parser.parse_args()
+
+    ux.banner(
+        "USER MEMORY INITIALIZATION",
+        "one-command setup  ·  resume + persona RAG base",
+    )
+
+    # 1. Postgres
+    ux.section(1, 4, "Postgres")
+    try:
+        store = await MemoryStore.create()
+    except Exception as e:
+        ux.chip("err", f"Could not connect to Postgres: {e}")
+        ux.bullet("Start the database first:")
+        ux.bullet("  docker compose up -d nuq-postgres", style="cyan")
+        ux.bullet(
+            "  PGPASSWORD=postgres psql -h localhost -p 5433 -U postgres "
+            "-d agent_memory -f scripts/init-pgvector.sql",
+            style="cyan",
+        )
+        sys.exit(1)
+    await store.close()
+    ux.chip("ok", "Postgres connected (localhost:5433/agent_memory)")
+
+    # 2. Embedding server
+    ux.section(2, 4, "Embedding server")
+    if not await ensure_embed_server(auto_start=not args.no_embed_start):
+        ux.chip("err", "Aborting: memory build needs the embedding server.")
+        sys.exit(1)
+
+    # 3. Resume -> resume_embeddings
+    ux.section(3, 4, "Resume")
+    if args.no_resume:
+        ux.chip("info", "Skipping resume indexing (--no-resume).")
+    elif args.resume_url or args.resume_path or has_env("RESUME_URL") or has_env("RESUME_PATH"):
+        await index_resume(args.resume_url, args.resume_path)
+    else:
+        ux.chip(
+            "warn",
+            "No resume source found; set RESUME_URL/RESUME_PATH in .env "
+            "or pass --resume-url/--resume-path.",
+        )
+
+    # 4. Persona -> persona_embeddings + persona.txt
+    ux.section(4, 4, "Persona")
+    persona_json = ROOT / "persona.json"
+    if args.grill:
+        await run_script("grill_persona.py")
+    elif persona_json.exists():
+        ux.bullet("persona.json exists. Rebuild persona memory from it? [Y/n]", style="white")
+        answer = input("").strip().lower()
+        if answer in ("", "y", "yes"):
+            await run_script("build_persona.py")
+        else:
+            ux.chip("info", "Skipping persona rebuild.")
+    elif args.no_grill:
+        ux.chip(
+            "warn",
+            "persona.json missing and --no-grill given; "
+            "run `uv run python scripts/grill_persona.py` later.",
+        )
+    else:
+        await run_script("grill_persona.py")
+
+    # Summary
+    ux.divider()
+    store = await MemoryStore.create()
+    try:
+        resume_count = await store.chunk_count()
+        persona_count = await store.persona_chunk_count()
+    finally:
+        await store.close()
+    rows = [
+        ("resume_embeddings", f"{resume_count} chunks"),
+        ("persona_embeddings", f"{persona_count} chunks"),
+    ]
+    persona_txt = ROOT / "persona.txt"
+    if persona_txt.exists():
+        rows.append(("persona.txt", f"{len(persona_txt.read_text())} chars"))
+    else:
+        rows.append(("persona.txt", "MISSING (run build_persona.py)"))
+    ux.summary_table("MEMORY SUMMARY", rows)
+
+    ux.next_steps(
+        [
+            "uv run python -m autofill.cli apply <greenhouse-url>",
+            "uv run python -m src.radar.orchestrator",
+        ]
+    )
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
