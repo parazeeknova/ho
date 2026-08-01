@@ -39,8 +39,6 @@ def _signal_handler(signum: int, frame: object) -> None:
 signal.signal(signal.SIGINT, _signal_handler)
 signal.signal(signal.SIGTERM, _signal_handler)
 
-# ── Embedding Server (Qwen3-Embedding-0.6B Q8_0 on :8900) ───────────────
-
 print(f"Starting Embedding server on :8900 ({EMBED_HF})...")
 p_embed = subprocess.Popen(
     [
@@ -50,12 +48,12 @@ p_embed = subprocess.Popen(
         "--port",
         "8900",
         "--ctx-size",
-        "16384",
+        "8192",
         "--embedding",
         "--flash-attn",
         "on",
         "--parallel",
-        "8",
+        "2",
         "--sleep-idle-seconds",
         "300",
     ],

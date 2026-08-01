@@ -75,6 +75,7 @@ services:
   redis:
     image: redis:alpine
     command: redis-server --bind 0.0.0.0
+    restart: unless-stopped
     ports:
       - "6379:6379"
     logging:
@@ -86,6 +87,7 @@ services:
 
   nuq-postgres:
     image: ghcr.io/firecrawl/nuq-postgres:latest
+    restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -111,6 +113,7 @@ services:
 
   searxng:
     image: searxng/searxng:latest
+    restart: unless-stopped
     ports:
       - "8080:8080"
     environment:
@@ -132,6 +135,7 @@ services:
 
   agent-memory-db:
     image: pgvector/pgvector:pg18
+    restart: unless-stopped
     ports:
       - "5433:5432"
     environment:
