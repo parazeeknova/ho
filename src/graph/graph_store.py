@@ -137,12 +137,15 @@ class GraphStore:
                 if k not in ("aliases", "source")
             )
 
+            raw_source = new_data.get("source", "unknown")
+            if isinstance(raw_source, dict) and "value" in raw_source:
+                raw_source = raw_source["value"]
             existing.data = resolve_entity(
                 existing_aliases=existing.data.get("aliases", []),
                 new_alias=new_alias,
                 existing_data=existing.data,
                 new_data=new_data,
-                new_source=new_data.get("source", "unknown"),
+                new_source=str(raw_source),
             )
             existing.confidence = merge_confidence(existing.confidence, node.confidence)
             existing.updated_at = datetime.now(UTC)
