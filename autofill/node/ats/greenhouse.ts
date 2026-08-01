@@ -145,6 +145,49 @@ export class GreenhouseAdapter extends ATSAdapter {
   }
 
   /**
+   * Extract the job posting context (title, company, location, description)
+   * from the live page. Used to personalize open-ended answers and to scope
+   * country-dependent questions (work authorization, visa) to the JD's country.
+   */
+  private async readJobContext(): Promise<{
+    title: string;
+    company: string;
+    location: string;
+    description: string;
+  }> {
+    const page = this.getPage();
+    try {
+      const ctx = await page.evaluate(() => {
+        const textOf = (selectors: string[]): string => {
+          for (const sel of selectors) {
+            const el = document.querySelector(sel) as HTMLElement | null;
+            if (el?.innerText) {
+              return el.innerText.replace(/\s+/g, " ").trim();
+            }
+          }
+          return "";
+        };
+        const title =
+          textOf([".app-title", ".job-post h1", "h1"]) ||
+          document.title.replace(/\s*[|–-].*$/, "").trim();
+        const company = textOf([".company-name", ".job-post .company", "[data-company]"]);
+        const location = textOf([".location", ".job-location", ".job-post .metadata"]);
+        const description = textOf([
+          "#job-description",
+          ".job-description",
+          "#content .job-post",
+          "#content",
+        ]).slice(0, 6000);
+        return { title, company, location, description };
+      });
+      return ctx ?? { title: "", company: "", location: "", description: "" };
+    } catch (err: any) {
+      console.warn("[GreenhouseAdapter] readJobContext failed:", err?.message || err);
+      return { title: "", company: "", location: "", description: "" };
+    }
+  }
+
+  /**
    * Build a deterministic map of open questions -> {dom selector, kind} by reading
    * the Greenhouse form's labels and their associated inputs. This avoids relying on
    * the LLM to map a question's text back to an element (which was returning null).
@@ -575,6 +618,16 @@ export class GreenhouseAdapter extends ATSAdapter {
     // unknowns, learned into the KB on every answer). Basic identity fields
     // are skipped — they were filled deterministically above.
     if (rpc) {
+      // Send the extracted job context first so open-ended answers are
+      // personalized to the role and country-scoped questions resolve against
+      // the JD's country.
+      const jobCtx = await this.readJobContext();
+      await rpc("job_context", jobCtx);
+      console.log(
+        `[GreenhouseAdapter] Job context: ${jobCtx.title || "?"} @ ${jobCtx.company || "?"}` +
+          (jobCtx.location ? ` (${jobCtx.location})` : "")
+      );
+
       console.log("[GreenhouseAdapter] Walking custom screener questions one by one...");
       const basicFields = new Set([
         "first name",
@@ -680,6 +733,33 @@ export class GreenhouseAdapter extends ATSAdapter {
       );
       for (const b of blanked) {
         console.warn(`[GreenhouseAdapter]   blank: ${escapePromptValue(b)}`);
+      }
+
+      // Cover letter: LLM-generated, personalized to the job description.
+      // Never prompts the user — if the LLM has nothing to ground it on, the
+      // field is left blank. Only generated when the form actually has the
+      // field, so an LLM call is never wasted on forms without one.
+      const clField = page.locator("#job_application_cover_letter").first();
+      if (await clField.isVisible().catch(() => false)) {
+        const coverLetterResult = await rpc("cover_letter", {});
+        const coverLetter = (coverLetterResult?.answer ?? "").toString().trim();
+        if (coverLetter) {
+          await clField.fill(coverLetter);
+          let value = await this.readInputValue("job_application_cover_letter");
+          if (!value) {
+            await clField.fill(coverLetter);
+            value = await this.readInputValue("job_application_cover_letter");
+          }
+          if (value) {
+            console.log("[GreenhouseAdapter] Cover letter filled (LLM-generated, JD-personalized).");
+          } else {
+            console.warn("[GreenhouseAdapter] Cover letter did not commit; left blank.");
+          }
+        } else {
+          console.log("[GreenhouseAdapter] Cover letter skipped: LLM had nothing to ground it on.");
+        }
+      } else {
+        console.log("[GreenhouseAdapter] No cover letter field on this form; skipping generation.");
       }
     }
 
