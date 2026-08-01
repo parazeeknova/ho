@@ -32,6 +32,22 @@ def _posting_id(obs: JobObservation) -> str:
     return obs.canonical_url_hash()
 
 
+def _raw_json_value(raw_markdown: str) -> str:
+    """Store the ATS item JSON into the jsonb raw_json column.
+
+    raw_markdown is the full JSON of the posting as captured by the
+    crawl worker. If it parses as JSON keep it as an object (jsonb),
+    otherwise fall back to an empty object so the gate can still use it.
+    """
+    try:
+        parsed = json.loads(raw_markdown) if raw_markdown else None
+    except Exception:
+        parsed = None
+    if isinstance(parsed, (dict, list)):
+        return json.dumps(parsed)
+    return "{}"
+
+
 async def _ensure_tables() -> MemoryStore:
     store = await MemoryStore.create()
     async with store._pool.acquire() as conn:
@@ -61,9 +77,15 @@ async def _persist_observation(store, obs: JobObservation) -> None:
         async with store._pool.acquire() as conn:
             await conn.execute(
                 """INSERT INTO job_observations (url_hash, url, source, title, snippet,
-                    first_seen, last_seen, freshness_lane, direct_posting_verified)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-                ON CONFLICT (url_hash) DO UPDATE SET last_seen = EXCLUDED.last_seen""",
+                    first_seen, last_seen, freshness_lane, direct_posting_verified, raw_json)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+                ON CONFLICT (url_hash) DO UPDATE SET
+                    last_seen = EXCLUDED.last_seen,
+                    raw_json = CASE
+                        WHEN EXCLUDED.raw_json <> '{}'::jsonb
+                        THEN EXCLUDED.raw_json
+                        ELSE job_observations.raw_json
+                    END""",
                 _posting_id(obs),
                 obs.url,
                 obs.source,
@@ -73,6 +95,7 @@ async def _persist_observation(store, obs: JobObservation) -> None:
                 obs.observed_at,
                 "review",
                 not obs.source.startswith("github_index:"),
+                _raw_json_value(obs.raw_markdown),
             )
     except Exception as exc:
         logger.warning(f"persist observation {obs.url[:60]}: {exc}")

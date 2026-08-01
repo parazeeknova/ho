@@ -398,6 +398,52 @@ async def _poll_board(board: dict[str, str], app: FirecrawlApp) -> list[JobObser
 # ── Posting fetch + gates ────────────────────────────────────────────
 
 
+async def _load_ungated_observations(store: MemoryStore, limit: int = 400) -> list[JobObservation]:
+    """Pull the freshest observations that have never gone through the gates.
+
+    Rows in job_observations without a matching radar_candidates row were
+    ingested (Azure dumps, historic corpus) but never gated. The sweep's
+    live source polling only re-surfaces a few thousand postings, so this
+    drains the stored corpus a batch at a time into the gate + matcher.
+    """
+    try:
+        async with store._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT o.url, o.source, o.title, o.snippet, o.last_seen, o.raw_json
+                FROM job_observations o
+                LEFT JOIN radar_candidates r ON r.direct_apply_url = o.url
+                WHERE r.canonical_id IS NULL
+                ORDER BY o.last_seen DESC
+                LIMIT $1
+                """,
+                limit,
+            )
+    except Exception:
+        return []
+    out: list[JobObservation] = []
+    for r in rows:
+        if not r["url"] or not r["url"].startswith("http"):
+            continue
+        raw_md = ""
+        raw_json = r["raw_json"]
+        if isinstance(raw_json, dict):
+            raw_md = json.dumps(raw_json, default=str)
+        elif isinstance(raw_json, str) and raw_json:
+            raw_md = raw_json
+        out.append(
+            JobObservation(
+                url=r["url"],
+                source=r["source"] or "corpus",
+                title=r["title"] or "",
+                snippet=r["snippet"] or "",
+                raw_markdown=raw_md,
+                observed_at=float(r["last_seen"] or 0),
+            )
+        )
+    return out
+
+
 async def _fetch_postings_and_gate(
     observations: list[JobObservation],
     store: MemoryStore,
@@ -1515,7 +1561,19 @@ async def _run_radar_pipeline() -> None:
 
             all_obs: list[JobObservation] = []
 
-            # 1. Mass ATS Poller: 10,000+ slugs every 4 hours
+            # 0. Never-gated observations from the corpus (Azure dumps etc).
+            #    The sweep polls live sources, which re-returns the same few
+            #    thousand postings; the 200K observations sitting in
+            #    job_observations were never gated. Pull the freshest batch
+            #    each sweep so the whole corpus eventually flows through the
+            #    gate + matcher.
+            if not is_worker:
+                ungated = await _load_ungated_observations(store, limit=2000)
+                all_obs.extend(ungated)
+                if ungated:
+                    logger.info(
+                        f"Sweep {sweep}: {len(ungated)} never-gated observations from corpus"
+                    )
             if not is_worker and time.monotonic() - last_mass_poll > _mass_poll_interval:
                 try:
                     from src.radar.sources.ats_mass_poller import poll_all_mass_slugs
@@ -1578,14 +1636,21 @@ async def _run_radar_pipeline() -> None:
                 sweep == 1 or time.monotonic() - last_discovery > cfg.radar.poll_low_freq_seconds
             ):
                 last_discovery = time.monotonic()
-                discovered = await _discover_new_companies()
-                await _persist_discovered_sources(store, discovered)
-                await persist_checkpoints(store)
-                if ta.is_configured:
-                    await ta.send_stage_progress(
-                        f"Sweep {sweep}: Company Discovery",
-                        f"Surfaced {len(discovered)} potential company sources.",
-                    )
+
+                async def _run_discovery(sweep_no: int = sweep) -> None:
+                    try:
+                        discovered = await asyncio.wait_for(_discover_new_companies(), timeout=300)
+                        await _persist_discovered_sources(store, discovered)
+                        await persist_checkpoints(store)
+                        if ta.is_configured:
+                            await ta.send_stage_progress(
+                                f"Sweep {sweep_no}: Company Discovery",
+                                f"Surfaced {len(discovered)} potential company sources.",
+                            )
+                    except Exception as exc:
+                        logger.warning(f"Company discovery failed: {exc}")
+
+                asyncio.create_task(_run_discovery())
 
             # 5. Periodic graph metrics (embeddings, PageRank, WCC, betweenness)
             if not is_worker and time.monotonic() - last_graph_metrics > _graph_metrics_interval:
