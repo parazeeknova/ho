@@ -115,7 +115,7 @@ _ATS_SLUG_RE = re.compile(
 )
 
 _WAS_JOB_RE = re.compile(r'<a[^>]*href="(/jobs/\d+)"[^>]*>([^<]+)</a>', re.IGNORECASE)
-_WAS_COMPANY_LINK_RE = re.compile(
+_WAS_COMPANYlink_re = re.compile(
     r'<a[^>]*href="(/companies/[a-z0-9-]+)"[^>]*>(.*?)</a>', re.IGNORECASE
 )
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -765,7 +765,7 @@ class Indexer:
                         }
                     )
                     found += 1
-                for href, label in _WAS_COMPANY_LINK_RE.findall(text):
+                for href, label in _WAS_COMPANYlink_re.findall(text):
                     label = html.unescape(_TAG_RE.sub("", label)).strip()
                     self.add_company(
                         href.split("/")[-1],
@@ -1021,6 +1021,60 @@ class Indexer:
         except Exception as exc:
             logger.warning(f"jobicy: {exc}")
 
+    async def poll_linkedin(self, client: AsyncClient) -> None:
+        """LinkedIn Guest API - public job search, no key required."""
+        import re as _re
+
+        title_re = _re.compile(r'base-search-card__title[^>]*>\s*([^<]+?)\s*<')
+        comp_re = _re.compile(r'base-search-card__subtitle[^>]*>\s*<a[^>]*>\s*([^<]+?)\s*<')
+        loc_re = _re.compile(r'job-search-card__location[^>]*>\s*([^<]+?)\s*<')
+        link_re = _re.compile(r'base-card__full-link[^>]*href="([^"]+)"')
+        card_re = _re.compile(r'<li.*?</li>', _re.S)
+
+        try:
+            total = 0
+            for start in range(0, 90, 30):
+                resp = await client.get(
+                    "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search",
+                    params={"keywords": "software OR engineer OR developer", "start": start},
+                    headers={"User-Agent": UA},
+                    timeout=20.0,
+                )
+                if resp.status_code != 200:
+                    break
+                cards = card_re.findall(resp.text)
+                if not cards:
+                    break
+                for card in cards[:30]:
+                    t = title_re.search(card)
+                    c = comp_re.search(card)
+                    loc_m = loc_re.search(card)
+                    link = link_re.search(card)
+                    if not t or not link:
+                        continue
+                    url = link.group(1).split("?")[0]
+                    if not url.startswith("http"):
+                        continue
+                    self.add_obs(
+                        {
+                            "url": url,
+                            "source": "linkedin",
+                            "title": t.group(1).strip(),
+                            "snippet": (
+                                f"{c.group(1).strip() if c else ''} | "
+                                f"{loc_m.group(1).strip() if loc_m else ''}"
+                            ),
+                            "raw_markdown": "",
+                            "observed_at": time.time(),
+                            "source_freshness_evidence": "linkedin guest api",
+                        }
+                    )
+                    total += 1
+                await asyncio.sleep(1.0)
+            logger.info(f"LinkedIn poll done: {total} jobs")
+        except Exception as exc:
+            logger.warning(f"linkedin: {exc}")
+
     # ── main loop ────────────────────────────────────────────────────
 
     async def resolve_directory_slugs(self, client: AsyncClient) -> None:
@@ -1043,7 +1097,7 @@ class Indexer:
             srcs = c.get("sources", [])
             try:
                 year = int(c.get("year") or 0)
-            except TypeError, ValueError:
+            except (TypeError, ValueError):
                 year = 0
             if "yc" in srcs and 2021 <= year <= 2026:
                 priority = 0
@@ -1255,6 +1309,7 @@ class Indexer:
                     await self.poll_remoteok(client)
                     await self.poll_himalayas(client)
                     await self.poll_jobicy(client)
+                    await self.poll_linkedin(client)
                     await self.poll_remotive(client)
                     await self.poll_arbeitnow(client)
                     last_remoteok = time.monotonic()
