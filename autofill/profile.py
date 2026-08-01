@@ -8,7 +8,8 @@ No LLM calls happen here; the resolution is fully deterministic.
 
 import json
 import re
-from typing import Any, Dict, Optional
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 from src.logging import get_logger
@@ -21,9 +22,7 @@ _IDENTITY_FIELDS = ("firstName", "lastName", "email", "phone", "linkedin", "gith
 
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 _PHONE_RE = re.compile(r"\+?[\d][\d\s().-]{7,}\d")
-_LINKEDIN_RE = re.compile(
-    r"(?:https?://)?(?:www\.)?linkedin\.com/in/[\w.-]+", re.I
-)
+_LINKEDIN_RE = re.compile(r"(?:https?://)?(?:www\.)?linkedin\.com/in/[\w.-]+", re.I)
 _GITHUB_RE = re.compile(r"(?:https?://)?(?:www\.)?github\.com/[\w.-]+", re.I)
 _WEBSITE_RE = re.compile(r"(?:https?://)?[\w-]+(?:\.[\w-]+)+(?:/[\w./-]*)?", re.I)
 
@@ -33,16 +32,13 @@ class Profile(BaseModel):
     lastName: str = Field(default="Doe", alias="last_name")
     email: str = Field(default="john.doe@example.com")
     phone: str = Field(default="+1234567890")
-    linkedin: Optional[str] = Field(default="https://linkedin.com/in/johndoe")
-    github: Optional[str] = Field(default="https://github.com/johndoe")
-    website: Optional[str] = Field(default="https://johndoe.dev")
-    resumePath: Optional[str] = Field(default=None, alias="resume_path")
-    customAnswers: Dict[str, str] = Field(default_factory=dict, alias="custom_answers")
+    linkedin: str | None = Field(default="https://linkedin.com/in/johndoe")
+    github: str | None = Field(default="https://github.com/johndoe")
+    website: str | None = Field(default="https://johndoe.dev")
+    resumePath: str | None = Field(default=None, alias="resume_path")
+    customAnswers: dict[str, str] = Field(default_factory=dict, alias="custom_answers")
 
-    model_config = {
-        "populate_by_name": True,
-        "serialize_by_alias": False
-    }
+    model_config = {"populate_by_name": True, "serialize_by_alias": False}
 
 
 def _load_persona_json() -> dict[str, Any]:
@@ -85,6 +81,7 @@ async def _lookup_identity_field(store: Any, field: str) -> str | None:
     """Retrieve a deterministic identity value from persona_embeddings."""
     try:
         from autofill.rag import _embed_text
+
         emb = await _embed_text(f"candidate {field}")
     except Exception:
         emb = None

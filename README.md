@@ -27,3 +27,12 @@ uv run python scripts/init_memory.py --grill         # force re-grill
 uv run python scripts/grill_persona.py --no-build    # only write persona.json
 uv run python scripts/index_resume.py --path <file>  # index a local resume
 ```
+
+## Autofill
+
+When the autofill pipeline meets a screener question it cannot answer from the
+persona knowledge base, it prompts the user on Telegram (`TELEGRAM_BOT_TOKEN` /
+`TELEGRAM_CHAT_ID`) and waits for a reply (`AUTOFILL_QUESTION_TIMEOUT`, default
+300s). The answer is applied to the form and learned into the persona KB.
+Without Telegram configured, such a question fails the run loudly instead of
+submitting blank answers.

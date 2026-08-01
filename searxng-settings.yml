@@ -11,3 +11,7 @@ search:
 
 botdetection:
   enabled: false
+
+engines:
+  - name: wikidata
+    disabled: true
