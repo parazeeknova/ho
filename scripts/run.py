@@ -86,7 +86,13 @@ def row(t: Table, name: str, status: str, port: str = "") -> None:
 def stop_all() -> None:
     console.print("\n[yellow]Stopping all services...[/yellow]")
     run("killall llama-server 2>/dev/null", silent=True)
-    run(f"{DOCKER_COMPOSE} stop 2>/dev/null", silent=True)
+    # Stop pipeline containers but leave the sync stack (agent-memory-db,
+    # the ingest's Postgres) untouched so azure sync keeps running.
+    run(
+        f"{DOCKER_COMPOSE} stop redis playwright-service nuq-postgres "
+        "searxng neo4j api 2>/dev/null",
+        silent=True,
+    )
     run("podman rm -f firecrawl_rabbitmq_1 2>/dev/null", silent=True)
     console.print("[green]All services stopped.[/green]")
 
@@ -433,8 +439,7 @@ def main() -> None:
     )
 
     run(
-        f"{DOCKER_COMPOSE} up -d redis playwright-service "
-        "nuq-postgres searxng neo4j agent-memory-db api",
+        f"{DOCKER_COMPOSE} up -d redis playwright-service nuq-postgres searxng neo4j api",
         silent=True,
     )
 
