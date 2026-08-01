@@ -399,7 +399,13 @@ class MemoryStore:
     async def create(cls, config: PostgresConfig | None = None) -> MemoryStore:
         """Initialise pool, register vector type, create tables."""
         cfg = config or get_config().postgres
-        pool = await asyncpg.create_pool(cfg.dsn, min_size=cfg.min_pool, max_size=cfg.max_pool)
+
+        async def _init(conn) -> None:
+            await register_vector(conn)
+
+        pool = await asyncpg.create_pool(
+            cfg.dsn, min_size=cfg.min_pool, max_size=cfg.max_pool, init=_init
+        )
         async with pool.acquire() as conn:
             await register_vector(conn)
             await conn.set_type_codec(
