@@ -16,7 +16,7 @@ from src.radar.core.models import JobObservation
 
 logger = get_logger("dorking_engine")
 
-_TIME_SYNTAX = " qdr:d2"
+_TIME_SYNTAX = ""
 
 _DORK_QUERIES = [
     (
@@ -61,17 +61,12 @@ class DorkingEngine:
         self._seen_urls: set[str] = set()
 
     async def execute_dorks(
-        self, queries: list[str] | None = None, time_range: str = "day"
+        self, queries: list[str] | None = None, time_range: str = "week"
     ) -> list[JobObservation]:
-        """Runs 48h time-restricted dork queries against SearXNG.
+        """Runs time-restricted dork queries against SearXNG.
 
-        Two-layer time filter:
-          1. SearXNG time_range=day (maps to d/w/m/y in the metasearch engine)
-          2. qdr:d2 appended to each query string (Google/Bing-native filter)
-
-        This double gating ensures even SearXNG engines that ignore time_range
-        still return only recent results, and engines like Google that respect
-        qdr:d2 add their own 48-hour cutoff.
+        Uses a week-long window: a strict day filter returns nothing because
+        job-board pages aren't re-crawled that often by search engines.
         """
         target_queries = queries or _DORK_QUERIES
         observations: list[JobObservation] = []
