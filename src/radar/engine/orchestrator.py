@@ -398,6 +398,61 @@ async def _poll_board(board: dict[str, str], app: FirecrawlApp) -> list[JobObser
 # ── Posting fetch + gates ────────────────────────────────────────────
 
 
+def _json_to_markdown(raw_json: Any) -> str:
+    """Flatten an ATS item JSON into readable job markdown.
+
+    The crawl worker stores the raw API item; the matcher needs a human-
+    readable description. Pulls the platform-specific long-form fields
+    (descriptionPlain, description, content, summary, ...) plus core
+    attributes, recursing shallowly.
+    """
+    if not isinstance(raw_json, dict):
+        return ""
+    parts: list[str] = []
+    for key in ("title", "name", "text"):
+        val = raw_json.get(key)
+        if isinstance(val, str) and val.strip():
+            parts.append(val.strip())
+            break
+    location = raw_json.get("location")
+    if isinstance(location, dict) and location.get("name"):
+        parts.append(f"Location: {location['name']}")
+    elif isinstance(location, str) and location:
+        parts.append(f"Location: {location}")
+    for key in ("city", "country", "team", "department", "employmentType", "category"):
+        val = raw_json.get(key)
+        if isinstance(val, str) and val.strip():
+            parts.append(f"{key.title()}: {val.strip()}")
+    for key in (
+        "descriptionPlain",
+        "description",
+        "content",
+        "summary",
+        "overview",
+        "jobAd",
+        "descriptionHtml",
+    ):
+        val = raw_json.get(key)
+        if isinstance(val, str) and len(val) > 40:
+            parts.append(val.strip())
+            break
+    if "lists" in raw_json and isinstance(raw_json["lists"], list):
+        for item in raw_json["lists"]:
+            if isinstance(item, dict):
+                head = item.get("text", "")
+                content = item.get("content", "")
+                if head:
+                    parts.append(f"## {head}")
+                if isinstance(content, str) and content:
+                    parts.append(content)
+    text = "\n\n".join(p for p in parts if p)
+    if len(text) > 20:
+        import html as _html
+
+        return _html.unescape(text)
+    return ""
+
+
 async def _load_ungated_observations(store: MemoryStore, limit: int = 400) -> list[JobObservation]:
     """Pull the freshest observations that have never gone through the gates.
 
@@ -425,19 +480,19 @@ async def _load_ungated_observations(store: MemoryStore, limit: int = 400) -> li
     for r in rows:
         if not r["url"] or not r["url"].startswith("http"):
             continue
-        raw_md = ""
         raw_json = r["raw_json"]
-        if isinstance(raw_json, dict):
-            raw_md = json.dumps(raw_json, default=str)
-        elif isinstance(raw_json, str) and raw_json:
-            raw_md = raw_json
+        if isinstance(raw_json, str) and raw_json:
+            try:
+                raw_json = json.loads(raw_json)
+            except Exception:
+                raw_json = None
         out.append(
             JobObservation(
                 url=r["url"],
                 source=r["source"] or "corpus",
                 title=r["title"] or "",
                 snippet=r["snippet"] or "",
-                raw_markdown=raw_md,
+                raw_markdown=_json_to_markdown(raw_json),
                 observed_at=float(r["last_seen"] or 0),
             )
         )

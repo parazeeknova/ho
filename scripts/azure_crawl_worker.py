@@ -39,11 +39,31 @@ WORKABLE_API = "https://apply.workable.com/api/v1/widget/accounts/{slug}"
 
 CDX_ENDPOINT = "https://index.commoncrawl.org"
 
-_CDX_DOMAINS = {
-    "greenhouse": "boards.greenhouse.io/*",
-    "lever": "jobs.lever.co/*",
-    "ashby": "jobs.ashbyhq.com/*",
-    "workable": "apply.workable.com/*",
+_CDX_DOMAINS: dict[str, tuple[str, str]] = {
+    "greenhouse": ("boards.greenhouse.io/*", r"boards\.greenhouse\.io/([a-z0-9_-]+)"),
+    "lever": ("jobs.lever.co/*", r"jobs\.lever\.co/([a-z0-9_-]+)"),
+    "ashby": ("jobs.ashbyhq.com/*", r"jobs\.ashbyhq\.com/([a-z0-9_-]+)"),
+    "workable": ("apply.workable.com/*", r"apply\.workable\.com/([a-z0-9_-]+)"),
+    "smartrecruiters": (
+        "jobs.smartrecruiters.com/*",
+        r"jobs\.smartrecruiters\.com/([a-zA-Z0-9_-]+)",
+    ),
+    "teamtailor": ("*.teamtailor.com/jobs/*", r"([a-z0-9-]+)\.teamtailor\.com"),
+    "recruitee": ("*.recruitee.com/*", r"([a-z0-9-]+)\.recruitee\.com"),
+    "comeet": ("www.comeet.com/jobs/*", r"comeet\.com/jobs/([a-zA-Z0-9_-]+)"),
+    "eightfold": ("*.eightfold.ai/*", r"([a-z0-9-]+)\.eightfold\.ai"),
+}
+
+_ATS_API: dict[str, str] = {
+    "greenhouse": "https://boards-api.greenhouse.io/v1/boards/{slug}/jobs",
+    "lever": "https://api.lever.co/v0/postings/{slug}?mode=json",
+    "ashby": "https://api.ashbyhq.com/posting-api/job-board/{slug}",
+    "workable": "https://apply.workable.com/api/v1/widget/accounts/{slug}",
+    "smartrecruiters": ("https://api.smartrecruiters.com/v1/companies/{slug}/postings?limit=100"),
+    "teamtailor": "https://{slug}.teamtailor.com/jobs.json",
+    "recruitee": "https://{slug}.recruitee.com/api/offers/",
+    "comeet": "https://www.comeet.com/api/v1/jobs/{slug}",
+    "eightfold": ("https://{slug}.eightfold.ai/api/apply/v2/jobs?domain={slug}&num=100"),
 }
 
 _README_URLS = [
@@ -104,12 +124,29 @@ _SUFFIXES = (
     "ai",
 )
 
-_ATS_PROBES: dict[str, str] = {
-    "greenhouse": "https://boards-api.greenhouse.io/v1/boards/{slug}/jobs",
-    "lever": "https://api.lever.co/v0/postings/{slug}?mode=json",
-    "ashby": "https://api.ashbyhq.com/posting-api/job-board/{slug}",
-    "workable": "https://apply.workable.com/api/v1/widget/accounts/{slug}",
-}
+_ATS_PROBES = _ATS_API
+
+_FRESHER_RE = re.compile(
+    r"\b(?:intern(?:ship)?|interns|graduate|graduates?|grad|entry[- ]level|"
+    r"early[- ]career|junior|new[- ]grad|fresher|freshers?|trainee|"
+    r"apprentice|campus|co-?op|student|202[2-6]\s*[bB]atch|"
+    r"recent[- ]graduate|undergraduate|graduate[- ]program)\b",
+    re.IGNORECASE,
+)
+
+_SENIOR_RE = re.compile(
+    r"\b(?:senior|staff|principal|lead|head|director|vp|manager|architect|"
+    r"sr\.?|experienced|10\+|15\+)\b",
+    re.IGNORECASE,
+)
+
+
+def is_fresher_role(title: str, snippet: str = "") -> bool:
+    """Entry-level classifier: fresher signals beat senior signals."""
+    text = f"{title} {snippet}"
+    if _SENIOR_RE.search(text) and not _FRESHER_RE.search(title):
+        return False
+    return bool(_FRESHER_RE.search(text))
 
 
 def _slug_variants(name: str) -> list[str]:
@@ -143,6 +180,11 @@ class Indexer:
             "lever": set(),
             "ashby": set(),
             "workable": set(),
+            "smartrecruiters": set(),
+            "teamtailor": set(),
+            "recruitee": set(),
+            "comeet": set(),
+            "eightfold": set(),
         }
         self.lock = asyncio.Lock()
 
@@ -173,6 +215,15 @@ class Indexer:
                 self.container_client.get_blob_client(f"obs/{hour}.jsonl").upload_blob(
                     body, overwrite=True
                 )
+                freshers = [o for o in self.obs if o.get("fresher")]
+                if freshers:
+                    fbody = "\n".join(json.dumps(o) for o in freshers).encode()
+                    self.container_client.get_blob_client(f"freshers/{hour}.jsonl").upload_blob(
+                        fbody, overwrite=True
+                    )
+                    logger.info(
+                        f"Uploaded {len(freshers)} fresher observations to freshers/{hour}.jsonl"
+                    )
                 logger.info(f"Uploaded {len(self.obs)} observations to obs/{hour}.jsonl")
                 self.obs = []
             if self.companies:
@@ -188,6 +239,7 @@ class Indexer:
         if key in self.seen_jobs:
             return
         self.seen_jobs.add(key)
+        obs["fresher"] = is_fresher_role(obs.get("title", ""), obs.get("snippet", ""))
         self.obs.append(obs)
 
     def add_company(
@@ -245,9 +297,11 @@ class Indexer:
         if not candidates:
             logger.warning("cdx: no 2025/2026 collections found")
             return
-        candidates = sorted(candidates)[-10:]
+        candidates = sorted(candidates)
+        # Walk the whole 2024-2026 crawl history, not just the newest dozen -
+        # older collections surface slugs newer ones never captured.
+        candidates = [c for c in candidates if re.match(r"^CC-MAIN-202[456]-", c)]
         logger.info(f"cdx: collections {candidates[0]}..{candidates[-1]} ({len(candidates)})")
-        host_re = re.compile(r"https?://[^/]+/([^/?#]+)", re.IGNORECASE)
         junk = {
             "404",
             "about",
@@ -282,68 +336,72 @@ class Indexer:
             "wp-content",
             "www",
         }
-        for platform, pattern in _CDX_DOMAINS.items():
-            before = len(self.slugs[platform])
-            for cid in candidates:
-                page = 0
-                errors = 0
-                new_since_last_coll = 0
-                clean = False
-                while page < 250 and errors < 8:
-                    try:
-                        resp = await client.get(
-                            f"{CDX_ENDPOINT}/{cid}-index",
-                            params={
-                                "url": pattern,
-                                "output": "json",
-                                "pageSize": 100,
-                                "page": page,
-                            },
-                            timeout=90.0,
-                        )
-                        if resp.status_code != 200:
-                            errors += 1
-                            await asyncio.sleep(4)
-                            continue
-                        lines = [ln for ln in resp.text.splitlines() if ln.strip()]
-                        if not lines:
-                            clean = True
-                            break
-                        added = 0
-                        for line in lines:
-                            try:
-                                rec = json.loads(line)
-                                url = rec.get("url", "")
-                                m = host_re.match(url)
-                                if not m:
-                                    continue
-                                s = m.group(1).strip().lower()
-                                if not s or s in junk or "." in s:
-                                    continue
-                                if s not in self.slugs[platform]:
-                                    self.slugs[platform].add(s)
-                                    added += 1
-                            except Exception:
-                                continue
-                        new_since_last_coll += added
-                        page += 1
-                        await asyncio.sleep(1.5)
-                    except Exception:
+
+        async def walk_one(platform: str, cid: str) -> None:
+            pattern, slug_re = _CDX_DOMAINS[platform]
+            slug_re = re.compile(slug_re, re.IGNORECASE)
+            page = 0
+            errors = 0
+            new_since_last_coll = 0
+            clean = False
+            while page < 250 and errors < 15:
+                try:
+                    resp = await client.get(
+                        f"{CDX_ENDPOINT}/{cid}-index",
+                        params={
+                            "url": pattern,
+                            "output": "json",
+                            "pageSize": 100,
+                            "page": page,
+                        },
+                        timeout=90.0,
+                    )
+                    if resp.status_code != 200:
                         errors += 1
-                        await asyncio.sleep(4)
-                logger.info(
-                    f"cdx {platform} {cid}: pages={page} errors={errors} "
-                    f"clean={clean} +{new_since_last_coll} (total {len(self.slugs[platform])})"
-                )
-                if clean and new_since_last_coll == 0:
-                    break
-            logger.info(f"cdx {platform}: +{len(self.slugs[platform]) - before} slugs in harvest")
+                        await asyncio.sleep(2)
+                        continue
+                    lines = [ln for ln in resp.text.splitlines() if ln.strip()]
+                    if not lines:
+                        clean = True
+                        break
+                    added = 0
+                    for line in lines:
+                        try:
+                            rec = json.loads(line)
+                            url = rec.get("url", "")
+                            m = slug_re.search(url)
+                            if not m:
+                                continue
+                            s = m.group(1).strip().lower()
+                            if not s or s in junk or "." in s:
+                                continue
+                            if s not in self.slugs[platform]:
+                                self.slugs[platform].add(s)
+                                added += 1
+                        except Exception:
+                            continue
+                    new_since_last_coll += added
+                    page += 1
+                    await asyncio.sleep(0.2)
+                except Exception:
+                    errors += 1
+                    await asyncio.sleep(2)
+            logger.info(
+                f"cdx {platform} {cid}: pages={page} errors={errors} "
+                f"clean={clean} +{new_since_last_coll} (total {len(self.slugs[platform])})"
+            )
+
+        sem = asyncio.Semaphore(32)
+
+        async def _gated(p: str, c: str) -> None:
+            async with sem:
+                await walk_one(p, c)
+
+        tasks = [_gated(p, c) for p in _CDX_DOMAINS for c in candidates]
+        await asyncio.gather(*tasks)
+        parts = " ".join(f"{p}={len(self.slugs[p])}" for p in _CDX_DOMAINS)
         total = sum(len(v) for v in self.slugs.values())
-        logger.info(
-            f"CDX harvest done: greenhouse={len(self.slugs['greenhouse'])} "
-            f"lever={len(self.slugs['lever'])} ashby={len(self.slugs['ashby'])} "
-            f"workable={len(self.slugs['workable'])} (total {total})"
-        )
+        logger.info(f"CDX harvest done: {parts} (total {total})")
 
     async def harvest_slugs(self, client: AsyncClient) -> None:
         for url in _README_URLS:
@@ -377,7 +435,7 @@ class Indexer:
         )
 
     async def poll_ats(self, client: AsyncClient) -> None:
-        sem = asyncio.Semaphore(30)
+        sem = asyncio.Semaphore(400)
         jobs = list(self.slugs.items())
 
         async def _fetch(platform: str, slug: str) -> None:
@@ -486,6 +544,135 @@ class Indexer:
                             careers_url=f"https://apply.workable.com/{slug}/",
                             name=data.get("name", ""),
                             job_count=len(data.get("jobs", [])),
+                        )
+                    elif platform == "smartrecruiters":
+                        resp = await client.get(
+                            _ATS_API["smartrecruiters"].format(slug=slug), timeout=10.0
+                        )
+                        if resp.status_code != 200:
+                            return
+                        data = resp.json()
+                        items = data.get("postings", data) if isinstance(data, dict) else data
+                        for item in items:
+                            self.add_obs(
+                                {
+                                    "url": item.get("jobUrl", ""),
+                                    "source": "smartrecruiters",
+                                    "title": item.get("name", ""),
+                                    "snippet": item.get("location", ""),
+                                    "raw_markdown": json.dumps(item),
+                                    "observed_at": time.time(),
+                                    "source_freshness_evidence": "ats json",
+                                }
+                            )
+                        self.add_company(
+                            slug,
+                            "smartrecruiters",
+                            careers_url=f"https://jobs.smartrecruiters.com/{slug}",
+                            name=slug,
+                            job_count=len(items),
+                        )
+                    elif platform == "teamtailor":
+                        resp = await client.get(
+                            _ATS_API["teamtailor"].format(slug=slug), timeout=10.0
+                        )
+                        if resp.status_code != 200:
+                            return
+                        for item in resp.json():
+                            self.add_obs(
+                                {
+                                    "url": item.get("url") or "",
+                                    "source": "teamtailor",
+                                    "title": item.get("title", ""),
+                                    "snippet": item.get("location", ""),
+                                    "raw_markdown": json.dumps(item),
+                                    "observed_at": time.time(),
+                                    "source_freshness_evidence": "ats json",
+                                }
+                            )
+                        self.add_company(
+                            slug,
+                            "teamtailor",
+                            careers_url=f"https://{slug}.teamtailor.com",
+                            name=slug,
+                            job_count=len(resp.json()),
+                        )
+                    elif platform == "recruitee":
+                        resp = await client.get(
+                            _ATS_API["recruitee"].format(slug=slug), timeout=10.0
+                        )
+                        if resp.status_code != 200:
+                            return
+                        items = resp.json().get("offers", [])
+                        for item in items:
+                            self.add_obs(
+                                {
+                                    "url": item.get("careers_url", ""),
+                                    "source": "recruitee",
+                                    "title": item.get("title", ""),
+                                    "snippet": item.get("location", ""),
+                                    "raw_markdown": json.dumps(item),
+                                    "observed_at": time.time(),
+                                    "source_freshness_evidence": "ats json",
+                                }
+                            )
+                        self.add_company(
+                            slug,
+                            "recruitee",
+                            careers_url=f"https://{slug}.recruitee.com",
+                            name=slug,
+                            job_count=len(items),
+                        )
+                    elif platform == "comeet":
+                        resp = await client.get(_ATS_API["comeet"].format(slug=slug), timeout=10.0)
+                        if resp.status_code != 200:
+                            return
+                        data = resp.json()
+                        items = data.get("jobs", data) if isinstance(data, dict) else data
+                        for item in items:
+                            self.add_obs(
+                                {
+                                    "url": item.get("url", ""),
+                                    "source": "comeet",
+                                    "title": item.get("title", ""),
+                                    "snippet": item.get("location", ""),
+                                    "raw_markdown": json.dumps(item),
+                                    "observed_at": time.time(),
+                                    "source_freshness_evidence": "ats json",
+                                }
+                            )
+                        self.add_company(
+                            slug,
+                            "comeet",
+                            careers_url=f"https://www.comeet.com/jobs/{slug}",
+                            name=slug,
+                            job_count=len(items),
+                        )
+                    elif platform == "eightfold":
+                        resp = await client.get(
+                            _ATS_API["eightfold"].format(slug=slug), timeout=10.0
+                        )
+                        if resp.status_code != 200:
+                            return
+                        items = resp.json().get("positions", [])
+                        for item in items:
+                            self.add_obs(
+                                {
+                                    "url": item.get("canonicalPositionUrl", ""),
+                                    "source": "eightfold",
+                                    "title": item.get("name", ""),
+                                    "snippet": item.get("location", ""),
+                                    "raw_markdown": json.dumps(item),
+                                    "observed_at": time.time(),
+                                    "source_freshness_evidence": "ats json",
+                                }
+                            )
+                        self.add_company(
+                            slug,
+                            "eightfold",
+                            careers_url=f"https://{slug}.eightfold.ai/careers",
+                            name=slug,
+                            job_count=len(items),
                         )
                 except Exception as exc:
                     logger.debug(f"ats {platform}/{slug}: {exc}")
@@ -730,7 +917,7 @@ class Indexer:
         if not targets:
             return
 
-        sem = asyncio.Semaphore(150)
+        sem = asyncio.Semaphore(300)
         found: dict[str, set[str]] = {k: set() for k in self.slugs}
         probed = 0
 
@@ -761,6 +948,103 @@ class Indexer:
             total = sum(len(v) for v in self.slugs.values())
             logger.info(f"directory wave {start // wave + 1}: +{new} new slugs (total {total})")
 
+    async def crawl_directory_sitemaps(self, client: AsyncClient) -> None:
+        """Live discovery: robots.txt + sitemap crawl for directory companies.
+
+        Resolves candidate domains (slug + .com), reads robots.txt, then
+        scans the referenced sitemaps for ATS board URLs, feeding new
+        slugs into the store. This is the freshest possible signal - the
+        boards' own sitemaps describe what exists today.
+        """
+        import socket as _socket
+
+        try:
+            blob = self.container_client.get_blob_client("directory/companies.jsonl")
+            data = blob.download_blob().readall()
+            companies = [json.loads(line) for line in data.decode().splitlines() if line.strip()]
+        except Exception as exc:
+            logger.info(f"sitemaps: no directory blob yet ({exc})")
+            return
+
+        domains: list[str] = []
+        seen_domains: set[str] = set()
+        for c in companies:
+            for variant in _slug_variants(c.get("name", "")):
+                for tld in (".com", ".io", ".co"):
+                    domain = f"{variant}{tld}"
+                    if domain not in seen_domains:
+                        seen_domains.add(domain)
+                        domains.append(domain)
+        logger.info(f"sitemaps: {len(companies)} companies, {len(domains)} candidate domains")
+
+        resolved: set[str] = set()
+        sem_dns = asyncio.Semaphore(128)
+        dns_done = 0
+
+        async def check_dns(domain: str) -> None:
+            nonlocal dns_done
+            async with sem_dns:
+                try:
+                    await asyncio.wait_for(
+                        asyncio.get_running_loop().run_in_executor(
+                            None, _socket.getaddrinfo, domain, 443
+                        ),
+                        timeout=2.0,
+                    )
+                    resolved.add(domain)
+                except Exception:
+                    pass
+                dns_done += 1
+                if dns_done % 3000 == 0:
+                    logger.info(
+                        f"sitemaps dns: {dns_done}/{len(domains)} (resolved {len(resolved)})"
+                    )
+
+        await asyncio.gather(*(check_dns(d) for d in domains))
+        logger.info(f"sitemaps: {len(resolved)}/{len(domains)} domains resolved")
+
+        slug_re_cache = {p: re.compile(rx, re.IGNORECASE) for p, (_, rx) in _CDX_DOMAINS.items()}
+
+        async def crawl_domain(domain: str) -> None:
+            robots_url = f"https://{domain}/robots.txt"
+            sitemaps: list[str] = []
+            try:
+                r = await client.get(robots_url, timeout=8.0)
+                if r.status_code == 200:
+                    for line in r.text.splitlines()[:200]:
+                        if line.lower().startswith("sitemap:"):
+                            url = line.split(":", 1)[1].strip()
+                            if url.startswith("http"):
+                                sitemaps.append(url)
+                            if len(sitemaps) >= 3:
+                                break
+            except Exception:
+                pass
+            for sm_url in sitemaps[:2]:
+                try:
+                    r = await client.get(sm_url, timeout=15.0)
+                    if r.status_code != 200:
+                        continue
+                    text = r.text[:500_000]
+                    for platform, sre in slug_re_cache.items():
+                        for m in sre.finditer(text):
+                            s = m.group(1).strip().lower()
+                            if s and "." not in s and s not in self.slugs[platform]:
+                                self.slugs[platform].add(s)
+                except Exception:
+                    continue
+
+        sem = asyncio.Semaphore(300)
+
+        async def _gated(domain: str) -> None:
+            async with sem:
+                await crawl_domain(domain)
+
+        await asyncio.gather(*(_gated(d) for d in sorted(resolved)))
+        parts = " ".join(f"{p}={len(self.slugs[p])}" for p in _CDX_DOMAINS)
+        total = sum(len(v) for v in self.slugs.values())
+        logger.info(f"sitemaps done: {parts} (total {total})")
+
     async def run(self) -> None:
         await self.load_state()
         last_ats = 0.0
@@ -776,14 +1060,15 @@ class Indexer:
                 headers={"User-Agent": UA}, timeout=15.0, follow_redirects=True
             ) as client:
                 now = time.monotonic()
-                if now - last_dir > 43200 or last_dir == 0:
+                if now - last_dir > 3600 or last_dir == 0:
                     await self.resolve_directory_slugs(client)
+                    await self.crawl_directory_sitemaps(client)
                     last_dir = time.monotonic()
-                if now - last_ats > 7200 or last_ats == 0:
+                if now - last_ats > 1800 or last_ats == 0:
                     await self.harvest_slugs(client)
                     await self.poll_ats(client)
                     last_ats = time.monotonic()
-                if now - last_cdx > 21600 or last_cdx == 0:
+                if now - last_cdx > 900 or last_cdx == 0:
                     await self.harvest_slugs_from_cdx(client)
                     last_cdx = time.monotonic()
                 if now - last_was > 3600 or last_was == 0:
@@ -802,7 +1087,7 @@ class Indexer:
                     await self.poll_arbeitnow(client)
                     last_arbeitnow = time.monotonic()
             await self.flush()
-            await asyncio.sleep(600)
+            await asyncio.sleep(60)
 
 
 async def main() -> None:
