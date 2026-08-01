@@ -871,7 +871,11 @@ class TelegramAgent:
         funding_info = job.get("funding_info") or {}
         funding_stage = job.get("funding_stage", "")
         founders = job.get("founders", [])
+        if isinstance(founders, str):
+            founders = []
         osint_signals = job.get("osint_signals", [])
+        if isinstance(osint_signals, str):
+            osint_signals = []
 
         has_osint = bool(funding_info or funding_stage or founders or osint_signals)
         if has_osint:

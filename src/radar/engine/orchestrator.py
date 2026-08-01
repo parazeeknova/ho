@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import json
 import os
 import signal
 import time
@@ -603,6 +604,19 @@ def _group_key(c: JobCandidate) -> str:
 # ── Post-LLM enrichment ──────────────────────────────────────────────
 
 
+def _as_list(val: Any) -> list[Any]:
+    """Coerce JSON-string-typed enrichment values back to real lists."""
+    if isinstance(val, str):
+        try:
+            parsed = json.loads(val)
+            if isinstance(parsed, list):
+                return parsed
+        except Exception:
+            pass
+        return []
+    return val if isinstance(val, list) else []
+
+
 async def _enrich_high_fit(
     candidates: list[JobCandidate], sa: StartupAgent, store: MemoryStore, graph: GraphStore
 ) -> None:
@@ -633,12 +647,12 @@ async def _enrich_high_fit(
 
     for idx, c in by_candidate.items():
         enriched = enriched_all[idx] if idx < len(enriched_all) else {}
-        c.founders = enriched.get("founders", [])
+        c.founders = _as_list(enriched.get("founders"))
         c.funding_stage = enriched.get("funding_stage", "")
-        c.funding_info = enriched.get("funding_info", {})
-        c.founder_socials = enriched.get("founder_socials", [])
+        c.funding_info = enriched.get("funding_info", {}) or {}
+        c.founder_socials = _as_list(enriched.get("founder_socials"))
         c.company_news = enriched.get("company_news", "")
-        c.osint_signals = enriched.get("osint_signals", [])
+        c.osint_signals = _as_list(enriched.get("osint_signals"))
         c.underdog_score = compute_underdog_score(c)
 
         # Inject graph structural insights (predictive link prediction)

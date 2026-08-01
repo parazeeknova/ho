@@ -249,6 +249,25 @@ CREATE INDEX IF NOT EXISTS idx_jobs_ledger_match
 """
 
 
+def _jsonb_val(val: Any, default: Any) -> str:
+    """Coerce a value to a JSON string for a jsonb column.
+
+    Guards against string-typed JSON (e.g. a model returning ``"[]"``
+    instead of an empty list) that would otherwise be stored as a jsonb
+    *string* and break every list-typed renderer downstream.
+    """
+    if isinstance(val, str):
+        try:
+            parsed = json.loads(val)
+        except Exception:
+            parsed = None
+        if parsed is not None:
+            val = parsed
+    if isinstance(val, (list, dict, int, float, bool)) or val is None:
+        return json.dumps(val if val is not None else default)
+    return json.dumps(default)
+
+
 class MemoryStore:
     """Async connection-pool-backed pgvector store."""
 
@@ -567,12 +586,12 @@ class MemoryStore:
                 data.get("role_summary", ""),
                 str(data.get("verdict", "NO_MATCH")),
                 bool(data.get("is_startup", False)),
-                json.dumps(data.get("founders", [])),
+                _jsonb_val(data.get("founders", []), []),
                 data.get("funding_stage", ""),
-                json.dumps(data.get("funding_info", {})),
-                json.dumps(data.get("founder_socials", [])),
+                _jsonb_val(data.get("funding_info", {}), {}),
+                _jsonb_val(data.get("founder_socials", []), []),
                 data.get("company_news", ""),
-                json.dumps(data.get("osint_signals", [])),
+                _jsonb_val(data.get("osint_signals", []), []),
                 data.get("source_url", data.get("url", "")),
                 json.dumps(data),
             )
@@ -1000,8 +1019,8 @@ class MemoryStore:
                 data.get("posted_date", ""),
                 data.get("first_seen", 0.0),
                 data.get("last_seen", 0.0),
-                json.dumps(data.get("matching_skills", [])),
-                json.dumps(data.get("missing_skills", [])),
+                _jsonb_val(data.get("matching_skills", []), []),
+                _jsonb_val(data.get("missing_skills", []), []),
                 int(data.get("match_percent", 0)),
                 int(data.get("shortlist_probability", 0)),
                 data.get("verdict", "NO_MATCH"),
@@ -1009,13 +1028,13 @@ class MemoryStore:
                 data.get("company_description", ""),
                 data.get("role_summary", ""),
                 bool(data.get("is_remote", False)),
-                json.dumps(data.get("founders", [])),
+                _jsonb_val(data.get("founders", []), []),
                 data.get("funding_stage", ""),
-                json.dumps(data.get("funding_info", {})),
-                json.dumps(data.get("founder_socials", [])),
+                _jsonb_val(data.get("funding_info", {}), {}),
+                _jsonb_val(data.get("founder_socials", []), []),
                 data.get("company_news", ""),
-                json.dumps(data.get("osint_signals", [])),
-                json.dumps(data.get("extra", {})),
+                _jsonb_val(data.get("osint_signals", []), []),
+                _jsonb_val(data.get("extra", {}), {}),
             )
 
     async def record_rejection(self, canonical_id: str, reason: str, detail: str) -> None:

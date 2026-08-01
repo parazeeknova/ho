@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import re
 from typing import Any
 
@@ -455,7 +456,17 @@ class StartupAgent:
                 if isinstance(f, dict) and f.get("linkedin_url")
             ]
         elif raw_founders and isinstance(raw_founders[0], str):
-            job["founders"] = [{"name": n} for n in raw_founders]
+            if isinstance(raw_founders, str):
+                try:
+                    parsed = json.loads(raw_founders)
+                    if isinstance(parsed, list):
+                        job["founders"] = [{"name": n} for n in parsed if isinstance(n, str)]
+                    else:
+                        job["founders"] = [{"name": raw_founders}]
+                except Exception:
+                    job["founders"] = [{"name": raw_founders}]
+            else:
+                job["founders"] = [{"name": n} for n in raw_founders]
             if extracted.get("founder_socials"):
                 job["founder_socials"] = extracted["founder_socials"]
         else:
