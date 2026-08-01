@@ -78,7 +78,15 @@ def run_detached(cmd: str) -> None:
 
 
 def count_of(pidfile_pattern: str) -> int:
-    code, out = sh(f"pgrep -f '{pidfile_pattern}' | wc -l")
+    """Count live python processes whose cmdline contains the pattern.
+
+    The bracket trick stops the watchdog's own launch shell from matching;
+    filtering by process comm (python3/python) excludes uv/sh wrappers.
+    """
+    pat = pidfile_pattern.replace(".", "[.]")
+    code, out = sh(
+        f"ps -eo comm,args | grep '{pat}' | grep -E '^python' | wc -l"
+    )
     m = re.search(r"\d+", out or "0")
     return int(m.group()) if m else 0
 
@@ -165,6 +173,21 @@ class Watchdog:
         except Exception as exc:
             log(f"cycle error: {exc}")
 
+    def cycle_ingest_only(self) -> None:
+        """Heal only the local DB + ingest + backup timer, never the pipeline."""
+        try:
+            # Postgres is the ingest's dependency; keep it running.
+            code, out = sh("podman ps --format '{{.Names}}'")
+            pg_down = code == 0 and "firecrawl_agent-memory-db_1" not in out
+            if pg_down and self.due("pg"):
+                log("postgres container down, starting it")
+                sh("podman start firecrawl_agent-memory-db_1")
+            self.heal_ingest()
+            # Ensure the R2 backup timer stays armed.
+            sh("systemctl --user start ho-backup.timer 2>/dev/null")
+        except Exception as exc:
+            log(f"cycle error: {exc}")
+
 
 def acquire_lock() -> bool:
     if LOCK_PATH.exists():
@@ -172,23 +195,30 @@ def acquire_lock() -> bool:
             pid = int(LOCK_PATH.read_text().strip())
             os.kill(pid, 0)
             return False
-        except ValueError, ProcessLookupError:
+        except (ValueError, ProcessLookupError):
             pass
     LOCK_PATH.write_text(str(os.getpid()))
     return True
 
 
 def main() -> None:
+    ingest_only = "--ingest-only" in sys.argv
     if not acquire_lock():
         print("watchdog already running", flush=True)
         sys.exit(0)
-    log(f"watchdog started (interval={CHECK_INTERVAL}s)")
+    log(f"watchdog started (interval={CHECK_INTERVAL}s, ingest_only={ingest_only})")
     wd = Watchdog()
     time.sleep(15)  # let a mid-start embedding server finish loading before first check
-    wd.cycle()
+    if ingest_only:
+        wd.cycle_ingest_only()
+    else:
+        wd.cycle()
     while True:
         time.sleep(CHECK_INTERVAL)
-        wd.cycle()
+        if ingest_only:
+            wd.cycle_ingest_only()
+        else:
+            wd.cycle()
 
 
 if __name__ == "__main__":
