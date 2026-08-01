@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING
 
 from src.logging import get_logger
@@ -32,14 +33,15 @@ class AnalyticsAgent:
         self._interactive = interactive
         sections: list[list[str]] = []
         section_funcs = [
-            ("Radar Gate Stats", self._section_radar_stats),
-            ("Top In-Demand Skills", self._section_radar_skills),
+            ("Pipeline Health", self._section_health),
+            ("Acceptance Overview", self._section_radar_stats),
+            ("Top Companies To Chase", self._section_top_companies),
+            ("Sector Signal (vector)", self._section_sector_signal),
+            ("Most In-Demand Skills", self._section_radar_skills),
             ("Near-Miss Skill Gaps", self._section_radar_arbitrage),
             ("Rejection Breakdown", self._section_radar_rejections),
             ("Salary Statistics", self._section_radar_salaries),
-            ("Posting Freshness", self._section_radar_freshness),
-            ("Stealth Hiring Signals", self._section_stealth_signals),
-            ("VC Tier List", self._section_vc_tier_list),
+            ("Freshness Lanes", self._section_radar_freshness),
         ]
 
         for name, func in section_funcs:
@@ -53,21 +55,69 @@ class AnalyticsAgent:
                     section=name,
                     exception=str(e),
                 )
-                sections.append(
-                    [
-                        f"<b>{name}</b>",
-                        "  <i>Data unavailable for this section.</i>",
-                        "",
-                    ]
-                )
-
-        try:
-            count = await self.store.get_job_ledger_count()
-            sections.append([f"<i>Legacy jobs tracked: {count}</i>"])
-        except Exception:
-            sections.append(["<i>Job count unavailable.</i>"])
 
         return ["\n".join(s) for s in sections]
+
+    # ── smarter sections ───────────────────────────────────────────────
+
+    async def _section_health(self) -> list[str]:
+        """Live pipeline velocity: how fast are matches landing right now."""
+        lines = ["<b>Pipeline Velocity</b>"]
+        try:
+            rows = await self.store.get_recent_accepts(hours=24)
+            total24 = len(rows)
+            h1 = [r for r in rows if (time.time() - (r.get("ts") or 0)) < 3600]
+            n_h1 = len(h1)
+            lines.append(f"  Accepted last 24h: <b>{total24}</b>")
+            lines.append(f"  Accepted last 1h:  <b>{n_h1}</b>")
+            if rows:
+                lines.append(
+                    f"  Rate: ~{total24 / 24:.1f}/hr ({total24 / 24 / 60:.2f}/min)"
+                )
+            near = await self.store.get_near_miss_count()
+            lines.append(f"  Near-miss (LARP-able): {near}")
+        except Exception:
+            lines.append("  <i>Velocity data unavailable.</i>")
+        lines.append("")
+        return lines
+
+    async def _section_top_companies(self) -> list[str]:
+        """Accepted companies ranked — where your applications actually land."""
+        lines = ["<b>Top Companies To Chase</b>"]
+        try:
+            top = await self.store.get_top_companies(limit=8)
+            if top:
+                for idx, c in enumerate(top, 1):
+                    stage = c.get("funding_stage") or "seed"
+                    lines.append(
+                        f"  {idx}. {_esc(c['company'])} — "
+                        f"{c['accepted']} accepted, match {c.get('avg_match', 0)}% "
+                        f"[{_esc(stage)}]"
+                    )
+            else:
+                lines.append("  <i>No accepted companies yet.</i>")
+        except Exception:
+            lines.append("  <i>Company data unavailable.</i>")
+        lines.append("")
+        return lines
+
+    async def _section_sector_signal(self) -> list[str]:
+        """Vector-discovered sector clusters from accepted vs market (if embedded)."""
+        lines = ["<b>Sector Signal</b>"]
+        try:
+            signal = await self.store.get_sector_signal(limit=6)
+            if signal:
+                for idx, s in enumerate(signal, 1):
+                    lines.append(
+                        f"  {idx}. {_esc(s['label'])} — "
+                        f"{s['count']} accepted, {s['pct']}% of accepted"
+                    )
+            else:
+                lines.append("  <i>Embed a few sweeps first; sector signal needs vectors.</i>")
+        except Exception:
+            lines.append("  <i>Sector data unavailable.</i>")
+        lines.append("")
+        return lines
 
     async def _section_radar_stats(self) -> list[str]:
         lines = ["<b>Radar Gate Stats</b>"]
@@ -152,7 +202,7 @@ class AnalyticsAgent:
         return lines
 
     async def _section_radar_freshness(self) -> list[str]:
-        lines = ["<b>Posting Freshness Breakdown</b>"]
+        lines = ["<b>Posting Freshness Lanes</b>"]
         try:
             stats = await self.store.get_radar_gate_stats()
             total = stats.get("total", 0)
@@ -165,45 +215,6 @@ class AnalyticsAgent:
                 lines.append("  <i>No freshness data yet.</i>")
         except Exception:
             lines.append("  <i>Freshness data unavailable.</i>")
-        lines.append("")
-        return lines
-
-    async def _section_stealth_signals(self) -> list[str]:
-        lines = ["<b>Stealth Hiring Signals</b>"]
-        lines.append(
-            "  <i>Funded companies with zero job postings → DM now</i>",
-        )
-        try:
-            stealth = await self.graph.detect_stealth_hiring_signals(limit=8)
-            if stealth:
-                for idx, s in enumerate(stealth, 1):
-                    lines.append(
-                        f"  {idx}. {_esc(s['company_name'])} "
-                        f"(funding: {_esc(s['funding_stage'])}) "
-                        f"[PR {s['pagerank']}]",
-                    )
-            else:
-                lines.append("  <i>No stealth signals detected.</i>")
-        except Exception:
-            lines.append("  <i>Stealth data unavailable.</i>")
-        lines.append("")
-        return lines
-
-    async def _section_vc_tier_list(self) -> list[str]:
-        lines = ["<b>VC Tier List — Who Funds Junior Hires</b>"]
-        try:
-            vcs = await self.graph.get_vc_tier_list(limit=10)
-            if vcs:
-                for idx, vc in enumerate(vcs, 1):
-                    lines.append(
-                        f"  {idx}. {_esc(vc['vc_firm'])} — "
-                        f"{vc['junior_friendly_jobs']} junior jobs "
-                        f"across {vc['portfolio_companies']} companies",
-                    )
-            else:
-                lines.append("  <i>Graph data too sparse.</i>")
-        except Exception:
-            lines.append("  <i>VC data unavailable.</i>")
         lines.append("")
         return lines
 

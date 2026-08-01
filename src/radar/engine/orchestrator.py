@@ -460,28 +460,81 @@ async def _load_ungated_observations(store: MemoryStore, limit: int = 400) -> li
     ingested (Azure dumps, historic corpus) but never gated. The sweep's
     live source polling only re-surfaces a few thousand postings, so this
     drains the stored corpus a batch at a time into the gate + matcher.
+
+    Software-role titles are drained first; when the resume embedding
+    centroid is available, never-gated observations are further ordered by
+    cosine affinity to the candidate so the LLM budget lands on the
+    closest-fit jobs first instead of burning calls on 0-match noise.
     """
     try:
         async with store._pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT o.url, o.source, o.title, o.snippet, o.last_seen, o.raw_json
-                FROM job_observations o
-                LEFT JOIN radar_candidates r ON r.direct_apply_url = o.url
-                WHERE r.canonical_id IS NULL
-                ORDER BY (
-                    -- Software roles first: the matcher budget should go to
-                    -- relevant jobs, not the flood of non-software postings.
-                    CASE WHEN lower(o.title) ~
-                        'software|engineer|developer|full.?stack|backend|frontend|'
-                        'devops|sre|data|machine|ml|ai|python|java|golang|rust|'
-                        'intern|new grad|junior|entry|graduate'
-                         THEN 0 ELSE 1 END
-                ), o.last_seen DESC
-                LIMIT $1
-                """,
-                limit,
-            )
+            centroid: list[float] | None = None
+            try:
+                import numpy as np
+
+                vecs = await conn.fetch(
+                    "SELECT embedding FROM resume_embeddings WHERE embedding IS NOT NULL"
+                )
+                if vecs:
+                    acc = np.zeros(1024, dtype=np.float32)
+                    for v in vecs:
+                        acc += np.asarray(v["embedding"].to_list(), dtype=np.float32)
+                    acc /= len(vecs)
+                    centroid = acc.tolist()
+            except Exception:
+                centroid = None
+
+            if centroid is not None:
+                import numpy as np
+
+                q = np.asarray(centroid, dtype=np.float32)
+                qn = np.linalg.norm(q)
+                if qn > 0:
+                    q = q / qn
+                rows = await conn.fetch(
+                    """
+                    SELECT o.url, o.source, o.title, o.snippet, o.last_seen, o.raw_json,
+                           (CASE WHEN e.embedding IS NULL THEN NULL
+                                 ELSE 1 - (e.embedding <=> $2::vector) END) AS affinity
+                    FROM job_observations o
+                    LEFT JOIN radar_candidates r ON r.direct_apply_url = o.url
+                    LEFT JOIN obs_embeddings e ON e.url_hash = md5(o.url)
+                    WHERE r.canonical_id IS NULL
+                    ORDER BY (
+                        -- Software roles first: the matcher budget should go to
+                        -- relevant jobs, not the flood of non-software postings.
+                        CASE WHEN lower(o.title) ~
+                            'software|engineer|developer|full.?stack|backend|frontend|'
+                            'devops|sre|data|machine|ml|ai|python|java|golang|rust|'
+                            'intern|new grad|junior|entry|graduate'
+                             THEN 0 ELSE 1 END
+                    ), affinity DESC NULLS LAST, o.last_seen DESC
+                    LIMIT $1
+                    """,
+                    limit,
+                    q.tolist(),
+                )
+            else:
+                rows = await conn.fetch(
+                    """
+                    SELECT o.url, o.source, o.title, o.snippet, o.last_seen, o.raw_json,
+                           NULL AS affinity
+                    FROM job_observations o
+                    LEFT JOIN radar_candidates r ON r.direct_apply_url = o.url
+                    WHERE r.canonical_id IS NULL
+                    ORDER BY (
+                        -- Software roles first: the matcher budget should go to
+                        -- relevant jobs, not the flood of non-software postings.
+                        CASE WHEN lower(o.title) ~
+                            'software|engineer|developer|full.?stack|backend|frontend|'
+                            'devops|sre|data|machine|ml|ai|python|java|golang|rust|'
+                            'intern|new grad|junior|entry|graduate'
+                             THEN 0 ELSE 1 END
+                    ), o.last_seen DESC
+                    LIMIT $1
+                    """,
+                    limit,
+                )
     except Exception:
         return []
     out: list[JobObservation] = []
