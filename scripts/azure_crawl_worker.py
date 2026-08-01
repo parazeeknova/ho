@@ -77,6 +77,53 @@ UA = (
 )
 
 
+_SUFFIXES = (
+    "inc",
+    "llc",
+    "labs",
+    "hq",
+    "co",
+    "corp",
+    "corporation",
+    "technologies",
+    "technology",
+    "systems",
+    "software",
+    "group",
+    "holdings",
+    "ventures",
+    "partners",
+    "capital",
+    "cloud",
+    "digital",
+    "platform",
+    "networks",
+    "media",
+    "studio",
+    "works",
+    "ai",
+)
+
+_ATS_PROBES: dict[str, str] = {
+    "greenhouse": "https://boards-api.greenhouse.io/v1/boards/{slug}/jobs",
+    "lever": "https://api.lever.co/v0/postings/{slug}?mode=json",
+    "ashby": "https://api.ashbyhq.com/posting-api/job-board/{slug}",
+    "workable": "https://apply.workable.com/api/v1/widget/accounts/{slug}",
+}
+
+
+def _slug_variants(name: str) -> list[str]:
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    slug = re.sub(r"-{2,}", "-", slug)
+    if not slug:
+        return []
+    variants = {slug}
+    for suffix in _SUFFIXES:
+        if slug.endswith(f"-{suffix}") and len(slug) > len(suffix) + 2:
+            variants.add(slug[: -(len(suffix) + 1)])
+    return list(variants)
+
+
 class Indexer:
     def __init__(self) -> None:
         conn_str = (
@@ -636,10 +683,89 @@ class Indexer:
 
     # ── main loop ────────────────────────────────────────────────────
 
+    async def resolve_directory_slugs(self, client: AsyncClient) -> None:
+        """Probe the Chad directory's companies for live ATS board slugs.
+
+        Every company name is slugified (plus suffix-stripped variants)
+        and probed against the public JSON endpoints of greenhouse, lever,
+        ashby and workable. YC batches 2021-2026 are probed first - they
+        are the most likely to still be operating with a live board.
+        """
+        try:
+            blob = self.container_client.get_blob_client("directory/companies.jsonl")
+            data = blob.download_blob().readall()
+            companies = [json.loads(line) for line in data.decode().splitlines() if line.strip()]
+        except Exception as exc:
+            logger.info(f"directory: no companies.jsonl yet ({exc})")
+            return
+
+        def _key(c: dict[str, Any]) -> tuple[int, int]:
+            srcs = c.get("sources", [])
+            try:
+                year = int(c.get("year") or 0)
+            except TypeError, ValueError:
+                year = 0
+            if "yc" in srcs and 2021 <= year <= 2026:
+                priority = 0
+            elif "yc" in srcs:
+                priority = 1
+            else:
+                priority = 2
+            return (priority, -year if year else 0)
+
+        companies.sort(key=_key)
+        known = {s for v in self.slugs.values() for s in v}
+        targets: list[tuple[str, str]] = []
+        for c in companies:
+            for variant in _slug_variants(c.get("name", "")):
+                if variant in known:
+                    continue
+                for platform in _ATS_PROBES:
+                    targets.append((platform, variant))
+        targets = list(dict.fromkeys(targets))
+        logger.info(
+            f"directory: {len(companies)} companies, {len(targets)} probes "
+            f"(known slugs {len(known)})"
+        )
+        if not targets:
+            return
+
+        sem = asyncio.Semaphore(150)
+        found: dict[str, set[str]] = {k: set() for k in self.slugs}
+        probed = 0
+
+        async def probe(platform: str, slug: str) -> None:
+            nonlocal probed
+            async with sem:
+                url = _ATS_PROBES[platform].format(slug=slug)
+                try:
+                    r = await client.get(url)
+                    ctype = r.headers.get("content-type", "")
+                    if r.status_code == 200 and "application/json" in ctype:
+                        found[platform].add(slug)
+                except Exception:
+                    pass
+                probed += 1
+                if probed % 500 == 0:
+                    logger.info(f"directory probe: {probed}/{len(targets)}")
+
+        wave = 2000
+        for start in range(0, len(targets), wave):
+            chunk = targets[start : start + wave]
+            await asyncio.gather(*(probe(p, s) for p, s in chunk))
+            async with self.lock:
+                for p, slugs in found.items():
+                    self.slugs[p].update(slugs)
+            await self.save_state()
+            new = sum(len(v) for v in found.values())
+            total = sum(len(v) for v in self.slugs.values())
+            logger.info(f"directory wave {start // wave + 1}: +{new} new slugs (total {total})")
+
     async def run(self) -> None:
         await self.load_state()
         last_ats = 0.0
         last_cdx = 0.0
+        last_dir = 0.0
         last_was = 0.0
         last_hn = 0.0
         last_hn_hist = 0.0
@@ -650,6 +776,9 @@ class Indexer:
                 headers={"User-Agent": UA}, timeout=15.0, follow_redirects=True
             ) as client:
                 now = time.monotonic()
+                if now - last_dir > 43200 or last_dir == 0:
+                    await self.resolve_directory_slugs(client)
+                    last_dir = time.monotonic()
                 if now - last_ats > 7200 or last_ats == 0:
                     await self.harvest_slugs(client)
                     await self.poll_ats(client)
