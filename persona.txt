@@ -1,7 +1,44 @@
 Candidate Profile:
-- Background: B.Tech CSE undergrad, new grad / junior. Accept both internships and full-time roles. Do not accept roles requiring 3+ years of professional experience.
-- Tech Stack: Extracted automatically from your resume and GitHub profile. Accept roles with strong overlap — do not reject for missing one secondary skill.
-- Location: Based in India. Open to onsite & remote in India, remote worldwide, or onsite anywhere with relocation bonus provided. Has passport, can relocate.
-- Visa: US roles ok if company sponsors (FAANG, unicorns, well-funded startups). For other countries, relocation bonus is sufficient signal.
-- Industries to Reject: None — open to all legitimate tech roles.
-- Minimum Salary: 70,000 INR/month for India roles. For internships or roles at exceptionally good companies (reputation, learning, brand), accept any paid position even if salary is not mentioned.
+- firstName: Aman
+- lastName: Aziz
+- email: amanaziz2020@gmail.com
+- phone: +91 9315978211
+- linkedin: https://linkedin.com/in/aman-aziz
+- github: https://github.com/tutankhAman
+- website: https://aamn.dev/tldr
+- What is your current location?: Bhopal, India
+- Which work model are you comfortable with? (remote/hybrid/onsite): remote, hybrid, onsite
+- Are you willing to relocate for this role?: yes, not in third world countries
+- What is your nationality?: Indian
+- Are you legally authorized to work in India?: Yes
+- Are you legally authorized to work in the United States?: No
+- Do you require visa sponsorship?: Yes
+- What is your current annual cash compensation?: Nil
+- What is your expected compensation?: 80000 INR/ month
+- Do you hold any equity in your current company?: No
+- How soon can you join?: Immeditely
+- How many hours per week are you available to work?: 30-40
+
+From Resume:
+- Experience: Delivered 5 high-impact projects with a 4.8+ client rating and generated six-figure revenue within the first two
+- Achievements: • NPTEL: Introduction to Machine Learning | Introduction to Japanese Language and Culture
+- Experience: Translated ambiguous requirements into precise UX flows and production-ready systems, including clients with zero
+- Achievements: • IBM: Frontend Development with React, Backend Development with Node.js, Cloud Computing, Python for Data Science
+- Achievements: • 4-Star Python on HackerRank; open source contributor to AsyncAPI and LangChain
+- +91 93159 78211 amanaziz2020@gmail.com linkedin.com/in/aman-aziz github.com/tutankhaman aamn.dev/tldr
+- Education: Bachelor of Technology, Computer Science and Engineering Bhopal, MP
+- Technical  |     | Skills
+- Aman |     | Aziz --- | --- | --- | --- | --- | --- | --- | ---- | --- | ---- | --- | --- | --- | --- +91 93159 78211 amanaziz2020@gmail.com linkedin.com/in/aman-aziz github.com/tutankhaman aamn.dev/tldr ---------- | --- | --------- | ----------- | ----------- | -------- | ------- | -----
+- AI/ML: LangChain, LangGraph, pgvector, Groq, Gemini, OpenAI, Deepgram, Vercel AI SDK
+- Experience: Singularity |     |     | Works |           |     |     |     |     |     |     |     | Aug 2025 | - Present
+- Experience: technical |     | background
+- Languages: |     |           | JavaScript, | TypeScript, |          | Python, | C++,  | Rust
+- Education: VIT | Bhopal |     | University |     |     |     |     |     |     |     |     | Sep 2023 | - Present
+- Experience: --- | --------- | --- | ---------- | --- | --- | --- | --- | --- | --- | --- | --- | --- | ---
+- Backend & Cloud: Node.js, Bun, Elysia, Express.js, REST APIs, PostgreSQL, Redis, RabbitMQ, MongoDB, Supabase,
+- Realtime:   |     | WebSockets, |        | Yjs | (CRDT), | Durable |     | Objects
+- Experience: and | full-stack | development
+- Achievements: --- | ----- | -------- | --- | ----------- | --- | ---- | --- | --- | --- | --- | --- | --- | ---
+- Experience: --- | --- | ---------- | ----------- | --- | --- | --- | --- | --- | --- | --- | --- | --- | ---
+- Cloudflare, |     | AWS,        | Azure, | GCP
+- Frontend:  |     | React.js, |             | Next.js,    | Tailwind | CSS,    | Vite, | Electron, | HTML, | CSS

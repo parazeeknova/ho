@@ -1,0 +1,75 @@
+{
+  "name": "Aman Aziz",
+  "version": 3,
+  "identity": {
+    "firstName": "Aman",
+    "lastName": "Aziz",
+    "email": "amanaziz2020@gmail.com",
+    "phone": "+91 9315978211",
+    "linkedin": "https://linkedin.com/in/aman-aziz",
+    "github": "https://github.com/tutankhAman",
+    "website": "https://aamn.dev/tldr"
+  },
+  "answers": [
+    {
+      "category": "current_location",
+      "question": "What is your current location?",
+      "answer": "Bhopal, India"
+    },
+    {
+      "category": "work_model",
+      "question": "Which work model are you comfortable with? (remote/hybrid/onsite)",
+      "answer": "remote, hybrid, onsite"
+    },
+    {
+      "category": "relocation",
+      "question": "Are you willing to relocate for this role?",
+      "answer": "yes, not in third world countries"
+    },
+    {
+      "category": "nationality",
+      "question": "What is your nationality?",
+      "answer": "Indian"
+    },
+    {
+      "category": "work_authorization",
+      "question": "Are you legally authorized to work in India?",
+      "answer": "Yes"
+    },
+    {
+      "category": "work_authorization",
+      "question": "Are you legally authorized to work in the United States?",
+      "answer": "No"
+    },
+    {
+      "category": "visa_sponsorship",
+      "question": "Do you require visa sponsorship?",
+      "answer": "Yes"
+    },
+    {
+      "category": "current_compensation",
+      "question": "What is your current annual cash compensation?",
+      "answer": "Nil"
+    },
+    {
+      "category": "expected_compensation",
+      "question": "What is your expected compensation?",
+      "answer": "80000 INR/ month"
+    },
+    {
+      "category": "equity",
+      "question": "Do you hold any equity in your current company?",
+      "answer": "No"
+    },
+    {
+      "category": "availability",
+      "question": "How soon can you join?",
+      "answer": "Immeditely"
+    },
+    {
+      "category": "working_hours",
+      "question": "How many hours per week are you available to work?",
+      "answer": "30-40"
+    }
+  ]
+}
