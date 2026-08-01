@@ -508,7 +508,16 @@ async def _load_ungated_observations(store: MemoryStore, limit: int = 400) -> li
                             'devops|sre|data|machine|ml|ai|python|java|golang|rust|'
                             'intern|new grad|junior|entry|graduate'
                              THEN 0 ELSE 1 END
-                    ), affinity DESC NULLS LAST, o.last_seen DESC
+                    ),
+                    -- Junior/entry-level software roles before senior ones so the
+                    -- gate doesn't reject the entire batch as title_senior.
+                    CASE WHEN lower(o.title) ~
+                        'junior|new grad|entry|graduate|intern|associate|mid[- ]level|'
+                        'level 1|level 2|early[- ]career|recent grad|i\b|ii\b'
+                        AND lower(o.title) !~
+                        'senior|staff|principal|lead|head|manager|director|vp|principal|architect'
+                         THEN 0 ELSE 1 END,
+                    affinity DESC NULLS LAST, o.last_seen DESC
                     LIMIT $1
                     """,
                     limit,
@@ -530,7 +539,16 @@ async def _load_ungated_observations(store: MemoryStore, limit: int = 400) -> li
                             'devops|sre|data|machine|ml|ai|python|java|golang|rust|'
                             'intern|new grad|junior|entry|graduate'
                              THEN 0 ELSE 1 END
-                    ), o.last_seen DESC
+                    ),
+                    -- Junior/entry-level before senior so the gate doesn't reject
+                    -- the whole batch as title_senior.
+                    CASE WHEN lower(o.title) ~
+                        'junior|new grad|entry|graduate|intern|associate|mid[- ]level|'
+                        'level 1|level 2|early[- ]career|recent grad|i\b|ii\b'
+                        AND lower(o.title) !~
+                        'senior|staff|principal|lead|head|manager|director|vp|principal|architect'
+                         THEN 0 ELSE 1 END,
+                    o.last_seen DESC
                     LIMIT $1
                     """,
                     limit,
