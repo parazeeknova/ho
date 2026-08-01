@@ -11,7 +11,8 @@ For each screener field the Node adapter asks Python a single question via the
 3. Open-ended text questions: LLM generation grounded in persona + resume.
 4. Otherwise: Telegram ask — dropdown options included in the same message.
    The answer is persisted into the persona knowledge base (``rag.learn``).
-   A Skip/decline leaves the field blank.
+   A Skip/decline is mapped to the form's own decline option when offered;
+   only when no such option exists does a dismissal leave the field blank.
 
 Overnight (no human present): any question needing input raises
 ``DeferredError`` so the run records the question (with its options) and aborts
@@ -31,9 +32,12 @@ from autofill.telegram import TelegramNotConfiguredError
 DEFER_MARKER = "AUTOFILL_DEFER"
 
 # Matches the Node adapter's isDeclineOption: user-decline survey choices are
-# never valid targets for a definite answer.
+# never valid targets for a definite answer. Covers "I do not want to answer"
+# (used by Greenhouse disability surveys) as well as the don't-wish variants.
 _DECLINE_OPTION_RE = re.compile(
-    r"(don'?t wish|do not wish|prefer not|choose not|rather not|not wish)", re.I
+    r"(don'?t wish|do not wish|prefer not|choose not|rather not|not wish|"
+    r"do not want to answer|not want to answer)",
+    re.I,
 )
 
 
@@ -112,10 +116,12 @@ async def resolve_question(
 ) -> tuple[str, str]:
     """Resolve one screener question. Returns ``(answer, source)``.
 
-    ``answer`` is the value to fill (blank when the user declined), ``source``
-    is one of ``"kb"`` (learned/rules/LLM), ``"telegram"`` (user answered),
-    ``"decline"`` (user skipped; leave blank). Raises ``DeferredError``
-    (overnight) or ``TelegramNotConfiguredError`` (day, prompting unavailable).
+    ``answer`` is the value to fill, ``source`` is one of ``"kb"``
+    (learned/rules/LLM), ``"telegram"`` (user answered), ``"decline-option"``
+    (a dropped prompt was mapped to the form's own decline option — still a
+    committed value, never blank) or ``"decline"`` (user skipped and the form
+    offers no decline option). Raises ``DeferredError`` (overnight) or
+    ``TelegramNotConfiguredError`` (day, prompting unavailable).
 
     ``job_context`` carries the extracted job description (title, company,
     location, description) so open-ended answers personalise to the role and
@@ -130,11 +136,16 @@ async def resolve_question(
         # Dropdowns are resolved without the LLM: the option list is ground
         # truth, so the KB answer is only usable when it maps onto a real option.
         kb = await rag.kb_answer(q, job_context=job_context) if rag is not None else None
-        if kb and (kb or "").strip():
+        if isinstance(kb, str) and kb.strip():
             picked = match_option(kb, list(options or []))
             if picked:
                 return (picked, "kb")
     else:
+        # Semantic KB first — deterministic persona answers (e.g. current
+        # location) are preferred over an LLM guess for open-ended questions.
+        kb = await rag.kb_answer(q, job_context=job_context) if rag is not None else None
+        if isinstance(kb, str) and kb.strip():
+            return (kb.strip(), "kb")
         answer = (
             (await rag.answer_questions([q], job_context=job_context)).get(q, ASK_USER)
             if rag is not None
@@ -174,6 +185,14 @@ async def resolve_question(
         picked = await bridge.ask(display_q, timeout=timeout)
 
     if picked is None or not (picked or "").strip():
+        # Zero-blank policy: when the user dismisses a dropdown prompt, fill the
+        # form's own decline option (e.g. "I don't wish to answer") if one
+        # exists so the field is never silently left empty. Only when no decline
+        # option is offered does the walker treat it as an explicit user skip.
+        if kind in ("select", "multi") and options:
+            decline = next((o for o in options if is_decline_option(o)), None)
+            if decline:
+                return (decline, "decline-option")
         return ("", "decline")
 
     picked = picked.strip()
