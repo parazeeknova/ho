@@ -1235,8 +1235,6 @@ class Indexer:
         last_was = 0.0
         last_hn = 0.0
         last_hn_hist = 0.0
-        last_remotive = 0.0
-        last_arbeitnow = 0.0
         last_remoteok = 0.0
         last_checkpoint = 0.0
 
@@ -1261,6 +1259,15 @@ class Indexer:
                     await self.harvest_slugs(client)
                     await self.poll_ats(client)
                     last_ats = time.monotonic()
+                # Fast job sources poll before the slow CDX walk so they
+                # fire every cycle even while a long harvest is running.
+                if now - last_remoteok > 1800 or last_remoteok == 0:
+                    await self.poll_remoteok(client)
+                    await self.poll_himalayas(client)
+                    await self.poll_jobicy(client)
+                    await self.poll_remotive(client)
+                    await self.poll_arbeitnow(client)
+                    last_remoteok = time.monotonic()
                 if now - last_cdx > 900 or last_cdx == 0:
                     await self.harvest_slugs_from_cdx(client)
                     last_cdx = time.monotonic()
@@ -1273,17 +1280,6 @@ class Indexer:
                 if now - last_hn_hist > 21600 or last_hn_hist == 0:
                     await self.poll_hn_history(client)
                     last_hn_hist = time.monotonic()
-                if now - last_remotive > 3600 or last_remotive == 0:
-                    await self.poll_remotive(client)
-                    last_remotive = time.monotonic()
-                if now - last_arbeitnow > 3600 or last_arbeitnow == 0:
-                    await self.poll_arbeitnow(client)
-                    last_arbeitnow = time.monotonic()
-                if now - last_remoteok > 1800 or last_remoteok == 0:
-                    await self.poll_remoteok(client)
-                    await self.poll_himalayas(client)
-                    await self.poll_jobicy(client)
-                    last_remoteok = time.monotonic()
             await self.flush()
             if time.monotonic() - last_checkpoint > 600 or last_checkpoint == 0:
                 await self.save_checkpoint()
