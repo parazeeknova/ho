@@ -846,9 +846,14 @@ class TelegramAgent:
             f"<b>{role}</b>",
             f"<b>{company}</b>",
             "<code>───────────────────────────</code>",
-            f"Match <b>{match_pct}%</b> · Shortlist <b>{shortlist_pct}%</b>{badges_str}",
-            f"📍 {location}",
         ]
+        if match_pct > 0 or shortlist_pct > 0:
+            lines.append(
+                f"Match <b>{match_pct}%</b> · Shortlist <b>{shortlist_pct}%</b>{badges_str}"
+            )
+        else:
+            lines.append(f"<i>Newly surfaced</i>{badges_str}")
+        lines.append(f"📍 {location}")
         if salary_str:
             lines.append(f"💰 {salary_str}")
 

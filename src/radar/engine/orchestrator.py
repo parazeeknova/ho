@@ -7,6 +7,7 @@ import gc
 import os
 import signal
 import time
+from datetime import date, datetime
 from typing import Any
 
 from dotenv import load_dotenv
@@ -944,8 +945,9 @@ async def _founder_miner(
     founders = enriched.get("founders", [])
     node = await graph.get_node(entry.node_id)
     if node:
-        node.data["founders"] = founders
+        node.data["founders"] = _json_safe(founders)
         node.data["funding_stage"] = enriched.get("funding_stage", "")
+        node.data = _json_safe(node.data)
         node, _ = await graph.upsert_node(node)
     logger.info(f"Founder miner: resolved {len(founders)} founders for '{cn}'")
     results: list[FrontierEntry] = []
@@ -954,7 +956,7 @@ async def _founder_miner(
             fn = GraphNode(
                 id=make_founder_id(f["name"], cn),
                 node_type=NodeType.FOUNDER,
-                data={**f, "company": cn},
+                data=_json_safe({**f, "company": cn}),
             )
             fn, _ = await graph.upsert_node(fn)
             _, _ = await graph.upsert_edge(edge(entry.node_id, EdgeType.FOUNDED_BY, fn.id))
@@ -964,10 +966,40 @@ async def _founder_miner(
                     "founder_discovered",
                     fn.id,
                     NodeType.FOUNDER,
-                    {"name": f["name"], "company": cn},
+                    _json_safe(
+                        {
+                            "name": f["name"],
+                            "company": cn,
+                            "title": f.get("title", ""),
+                            "email": f.get("email"),
+                            "linkedin_url": f.get("linkedin_url"),
+                            "github_url": f.get("github_url"),
+                            "funding_stage": enriched.get("funding_stage", ""),
+                            "funding_info": enriched.get("funding_info"),
+                            "osint_signals": enriched.get("osint_signals", []),
+                            "company_news": enriched.get("company_news", ""),
+                            "match_percent": enriched.get("match_percent", 0),
+                            "shortlist_probability": enriched.get("shortlist_probability", 0),
+                            "careers_url": (node.data.get("careers_url", "") if node else ""),
+                            "website": (node.data.get("website", "") if node else ""),
+                        }
+                    ),
                 )
             )
     return results
+
+
+def _json_safe(obj: Any) -> Any:
+    """Recursively convert non-JSON values (datetime, date, sets) to JSON-safe forms."""
+    if isinstance(obj, dict):
+        return {str(k): _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(v) for v in obj]
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    if isinstance(obj, set):
+        return sorted(_json_safe(v) for v in obj)
+    return obj
 
 
 async def _outreach_handler(entry: FrontierEntry) -> list[FrontierEntry]:
@@ -994,14 +1026,22 @@ async def _outreach_handler(entry: FrontierEntry) -> list[FrontierEntry]:
     if card and card.confidence >= 0.4:
         ta = TelegramAgent()
         if ta.is_configured:
+            link = linkedin_url or (c.founders[0].get("email") if c.founders else "")
             await ta.send_categorized_alert(
                 "outreach",
                 {
                     "role": f"Outreach to {founder_name}",
                     "company": company,
-                    "apply_link": linkedin_url,
-                    "founders": c.founders,
+                    "apply_link": link,
+                    "source_url": (
+                        entry.payload.get("website") or entry.payload.get("careers_url") or link
+                    ),
+                    "company_description": entry.payload.get("company_news", ""),
+                    "match_percent": entry.payload.get("match_percent", 0),
+                    "shortlist_probability": entry.payload.get("shortlist_probability", 0),
                     "funding_stage": c.funding_stage,
+                    "osint_signals": entry.payload.get("osint_signals", []),
+                    "founders": c.founders,
                 },
                 dedup_key=f"outreach:{company}:{founder_name}",
             )
@@ -1167,7 +1207,7 @@ async def _run_radar_pipeline() -> None:
 
     async def _sub_founder(event):
         d = event.payload
-        return [
+        entries = [
             FrontierEntry(
                 id=make_work_id("founder_social_osint", event.node_id),
                 agent="founder_social_osint",
@@ -1187,6 +1227,44 @@ async def _run_radar_pipeline() -> None:
                 payload={"company": d.get("company", "")},
             ),
         ]
+        # Cold-DM card: the founder is a real outreach target once we have
+        # an email or profile URL (triangulated emails flow in from the
+        # startup OSINT cache; LinkedIn only when search finds a real page).
+        email = d.get("email")
+        linkedin = d.get("linkedin_url")
+        if email or linkedin:
+            try:
+                ta = TelegramAgent(ctx=ctx)
+                if ta.is_configured:
+                    link = linkedin or (f"mailto:{email}" if email else "")
+                    await ta.send_categorized_alert(
+                        "outreach",
+                        {
+                            "role": f"Founder: {d.get('name', '?')}",
+                            "company": d.get("company", ""),
+                            "apply_link": link,
+                            "source_url": d.get("website") or d.get("careers_url") or link,
+                            "company_description": d.get("company_news", ""),
+                            "match_percent": d.get("match_percent", 0),
+                            "shortlist_probability": d.get("shortlist_probability", 0),
+                            "funding_stage": d.get("funding_stage", ""),
+                            "funding_info": d.get("funding_info"),
+                            "osint_signals": d.get("osint_signals", []),
+                            "founders": [
+                                {
+                                    "name": d.get("name", "?"),
+                                    "title": d.get("title", ""),
+                                    "email": email,
+                                    "linkedin_url": linkedin,
+                                    "github_url": d.get("github_url"),
+                                }
+                            ],
+                        },
+                        dedup_key=f"founder:{event.node_id}",
+                    )
+            except Exception as exc:
+                logger.warning(f"Founder alert failed: {exc}")
+        return entries
 
     async def _sub_career(event):
         url = event.payload.get("url", "")
