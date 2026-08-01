@@ -109,6 +109,9 @@ class Watchdog:
 
     def heal_containers(self) -> dict[str, str]:
         statuses: dict[str, str] = {}
+        # A backup holds neo4j stopped on purpose; do not fight it.
+        if (PROJECT / "logs" / "backup.lock").exists():
+            return statuses
         for name in CONTAINERS:
             code, out = sh(f"podman ps -a --filter name={name} --format '{{{{.Status}}}}'")
             status = (out or "missing").split()[0] if out else "missing"

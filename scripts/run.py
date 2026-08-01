@@ -490,6 +490,16 @@ def main() -> None:
 
     console.print("\n[dim]All systems ready.[/dim]")
 
+    # Disaster recovery: if a volume is empty but cloud backups exist,
+    # restore before the pipeline touches the databases.
+    subprocess.run(
+        [sys.executable, f"{PROJECT}/scripts/restore.py", "--if-empty"],
+        cwd=str(PROJECT),
+        timeout=1800,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
     if args.no_pipeline:
         console.print("\n[dim]Press Ctrl+C to stop.[/dim]")
         try:

@@ -1,0 +1,8 @@
+[Unit]
+Description=ho daily R2 backup
+After=default.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/parazeeknova/Projects/ho
+ExecStart=/home/parazeeknova/Projects/ho/.devenv/state/venv/bin/python3 /home/parazeeknova/Projects/ho/scripts/backup.py
