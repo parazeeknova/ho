@@ -38,6 +38,18 @@ CREATE TABLE IF NOT EXISTS resume_embeddings (
     embedding  vector({VECTOR_DIM})
 );
 
+CREATE TABLE IF NOT EXISTS persona_embeddings (
+    id         SERIAL PRIMARY KEY,
+    category   VARCHAR(64),
+    question   TEXT,
+    answer     TEXT,
+    content    TEXT NOT NULL,
+    embedding  vector({VECTOR_DIM})
+);
+
+CREATE INDEX IF NOT EXISTS idx_persona_embeddings_category
+ON persona_embeddings(category);
+
 CREATE TABLE IF NOT EXISTS discovered_domains (
     domain          TEXT PRIMARY KEY,
     source_url      TEXT,
@@ -303,6 +315,70 @@ class MemoryStore:
     async def clear_embeddings(self) -> None:
         async with self._pool.acquire() as conn:
             await conn.execute("TRUNCATE resume_embeddings")
+
+    # Persona_embeddings
+
+    async def index_persona_chunks(self, chunks: list[dict[str, Any]]) -> None:
+        """Insert persona Q&A chunks with their pre-computed embeddings.
+
+        Each chunk dict must have keys: ``category``, ``question``, ``answer``,
+        ``content`` and ``embedding`` (list[float] of length 1024).
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            for ch in chunks:
+                emb = Vector(ch["embedding"])
+                await conn.execute(
+                    "INSERT INTO persona_embeddings (category, question, answer, content, embedding) "
+                    "VALUES ($1, $2, $3, $4, $5)",
+                    ch.get("category", ""),
+                    ch.get("question", ""),
+                    ch.get("answer", ""),
+                    ch["content"],
+                    emb,
+                )
+
+    async def search_similar_persona(
+        self, query_emb: list[float], top_k: int = 5
+    ) -> list[dict[str, Any]]:
+        """Return the *top_k* most similar persona chunks using cosine distance."""
+        vec = Vector(query_emb)
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT category, question, answer, content, embedding <=> $1 AS distance "
+                "FROM persona_embeddings "
+                "ORDER BY distance ASC "
+                "LIMIT $2",
+                vec,
+                top_k,
+            )
+        return [
+            {
+                "category": r["category"],
+                "question": r["question"],
+                "answer": r["answer"],
+                "content": r["content"],
+                "distance": float(r["distance"]),
+            }
+            for r in rows
+        ]
+
+    async def persona_chunk_count(self) -> int:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT COUNT(*) AS cnt FROM persona_embeddings")
+            return row["cnt"] if row else 0
+
+    async def persona_question_exists(self, question: str) -> bool:
+        """True if a chunk with this exact question text (case-insensitive) exists."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT 1 FROM persona_embeddings WHERE lower(question) = lower($1) LIMIT 1",
+                question,
+            )
+            return row is not None
+
+    async def clear_persona(self) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute("TRUNCATE persona_embeddings")
 
     # Discovered_domains
 
