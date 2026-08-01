@@ -22,6 +22,7 @@ Usage:
 from __future__ import annotations
 
 import gzip
+import json
 import os
 import shutil
 import subprocess
@@ -29,6 +30,7 @@ import sys
 import tarfile
 import time
 from pathlib import Path
+from typing import Any
 
 PROJECT = Path(__file__).resolve().parent.parent
 LOG_PATH = PROJECT / "logs" / "backup.log"
@@ -42,6 +44,7 @@ NEO4J_VOLUME = "firecrawl_neo4j_data"
 NEO4J_IMAGE = "neo4j:community-ubi10"
 
 FAILED = False
+NEO4J_COUNTS: dict[str, int] = {}
 
 
 def log(msg: str) -> None:
@@ -146,11 +149,12 @@ def neo4j_stop_with_retry() -> bool:
 
 
 def neo4j_dump(staging: Path) -> None:
-    global FAILED
+    global FAILED, NEO4J_COUNTS
     if not container_running(NEO4J_CONTAINER):
         log("WARN: neo4j not running, skipping neo4j dump")
         FAILED = True
         return
+    NEO4J_COUNTS = neo4j_counts()
     log("stopping neo4j for consistent dump...")
     if not neo4j_stop_with_retry():
         log("ERROR: could not stop neo4j")
@@ -195,6 +199,94 @@ def neo4j_dump(staging: Path) -> None:
         log("neo4j restarted")
 
 
+def pg_counts() -> dict[str, int]:
+    """Row counts from the live Postgres database for metadata.json."""
+    if not container_running(PG_CONTAINER):
+        return {}
+    try:
+        r = subprocess.run(
+            [
+                "podman",
+                "exec",
+                PG_CONTAINER,
+                "psql",
+                "-U",
+                "postgres",
+                "-d",
+                "agent_memory",
+                "-t",
+                "-A",
+                "-c",
+                (
+                    "SELECT 'observations=' || count(*) FROM job_observations "
+                    "UNION ALL SELECT 'candidates=' || count(*) FROM radar_candidates "
+                    "UNION ALL SELECT 'accepted=' || count(*) FROM radar_candidates "
+                    "WHERE eligibility='accepted' "
+                    "UNION ALL SELECT 'sources=' || count(*) FROM source_checkpoints "
+                    "UNION ALL SELECT 'notified=' || count(*) FROM telegram_notified_jobs"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        out: dict[str, int] = {}
+        for line in r.stdout.splitlines():
+            key, _, val = line.partition("=")
+            if val.strip().isdigit():
+                out[key.strip()] = int(val)
+        return out
+    except Exception:
+        return {}
+
+
+def neo4j_counts() -> dict[str, int]:
+    """Node/edge counts from the live Neo4j database for metadata.json."""
+    if not container_running(NEO4J_CONTAINER):
+        return {}
+    try:
+        r = subprocess.run(
+            [
+                "podman",
+                "exec",
+                NEO4J_CONTAINER,
+                "cypher-shell",
+                "-u",
+                "neo4j",
+                "-p",
+                "password",
+                "MATCH (n) RETURN count(n) AS nodes; MATCH ()-[r]->() RETURN count(r) AS edges;",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        digits = [int(t) for t in r.stdout.split() if t.strip().isdigit()]
+        return {"nodes": digits[0], "edges": digits[1]} if len(digits) >= 2 else {}
+    except Exception:
+        return {}
+
+
+def write_metadata(staging: Path) -> None:
+    """Write metadata.json (object counts, sizes, timestamps) into the snapshot."""
+    meta: dict[str, Any] = {
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "schema_version": 1,
+        "retention": KEEP,
+        "pg": pg_counts(),
+        "neo4j": NEO4J_COUNTS,
+        "files": {},
+    }
+    for f in sorted(staging.iterdir()):
+        if f.is_file():
+            meta["files"][f.name] = f.stat().st_size
+    try:
+        (staging / "metadata.json").write_text(json.dumps(meta, indent=2, default=str))
+        log(f"metadata: {json.dumps(meta['pg'])} pg, {json.dumps(meta['neo4j'])} neo4j")
+    except Exception as exc:
+        log(f"WARN: metadata write failed: {exc}")
+
+
 def upload(staging: Path, dest: str, flags: list[str]) -> None:
     global FAILED
     r = sh(["rclone", "copyto", str(staging), dest, *flags], timeout=3600)
@@ -233,6 +325,7 @@ def main() -> None:
         pg_dump(staging)
         neo4j_dump(staging)
         if not FAILED:
+            write_metadata(staging)
             upload(staging, dest, flags)
         prune(remote, flags)
     finally:
