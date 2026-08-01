@@ -24,7 +24,7 @@ import contextlib
 import re
 from typing import Any
 
-from autofill.rag import ASK_USER
+from autofill.rag import ASK_USER, is_scoped_question, qualify_question
 from autofill.telegram import TelegramNotConfiguredError
 
 # Sent RPC error marker that aborts a fill: the job was deferred overnight.
@@ -108,6 +108,7 @@ async def resolve_question(
     options: list[str] | None = None,
     overnight: bool = False,
     timeout: float = 300.0,
+    job_context: dict[str, Any] | None = None,
 ) -> tuple[str, str]:
     """Resolve one screener question. Returns ``(answer, source)``.
 
@@ -115,6 +116,11 @@ async def resolve_question(
     is one of ``"kb"`` (learned/rules/LLM), ``"telegram"`` (user answered),
     ``"decline"`` (user skipped; leave blank). Raises ``DeferredError``
     (overnight) or ``TelegramNotConfiguredError`` (day, prompting unavailable).
+
+    ``job_context`` carries the extracted job description (title, company,
+    location, description) so open-ended answers personalise to the role and
+    country-scoped questions (work authorization, visa) resolve against the
+    job's country instead of leaking a global answer.
     """
     q = (question or "").strip()
     if not q:
@@ -123,13 +129,17 @@ async def resolve_question(
     if kind == "select":
         # Dropdowns are resolved without the LLM: the option list is ground
         # truth, so the KB answer is only usable when it maps onto a real option.
-        kb = await rag.kb_answer(q) if rag is not None else None
+        kb = await rag.kb_answer(q, job_context=job_context) if rag is not None else None
         if kb and (kb or "").strip():
             picked = match_option(kb, list(options or []))
             if picked:
                 return (picked, "kb")
     else:
-        answer = (await rag.answer_questions([q])).get(q, ASK_USER) if rag is not None else ASK_USER
+        answer = (
+            (await rag.answer_questions([q], job_context=job_context)).get(q, ASK_USER)
+            if rag is not None
+            else ASK_USER
+        )
         if answer != ASK_USER and (answer or "").strip():
             return (answer.strip(), "kb")
 
@@ -142,15 +152,64 @@ async def resolve_question(
             f"TELEGRAM_CHAT_ID. Unanswered question: {q}"
         )
 
+    # Country-scoped questions are asked with the country named so the answer
+    # (and the learned entry) is qualified, never global. If the country
+    # cannot be detected from the question or the JD, the user is told so and
+    # asked to name it — a scoped answer is never stored without a country.
+    display_q = q
+    scope_country = None
+    if is_scoped_question(q):
+        scope_country = rag.target_country(q, job_context) if rag is not None else None
+        if scope_country:
+            display_q = qualify_question(q, scope_country)
+        else:
+            display_q = (
+                f"{q}\n\n(Job country could not be detected from the posting. "
+                "Please include the country in your reply, e.g. \"No (India)\".)"
+            )
+
     if kind in ("select", "multi") and options:
-        picked = await bridge.ask_options(q, list(options), timeout=timeout)
+        picked = await bridge.ask_options(display_q, list(options), timeout=timeout)
     else:
-        picked = await bridge.ask(q, timeout=timeout)
+        picked = await bridge.ask(display_q, timeout=timeout)
 
     if picked is None or not (picked or "").strip():
         return ("", "decline")
 
     picked = picked.strip()
     with contextlib.suppress(Exception):
-        await rag.learn(q, picked)  # Learning is best-effort; answer still used.
+        # Learning is best-effort; answer still used. The scope country is only
+        # passed when derived from the job description — when the question
+        # itself names a country, learn() re-derives it. When neither did, the
+        # message asked the user to name the country in their reply.
+        learn_kwargs: dict[str, Any] = {}
+        if is_scoped_question(q):
+            if not scope_country and rag is not None:
+                scope_country = rag.target_country(picked)
+            if scope_country:
+                learn_kwargs["country"] = scope_country
+        await rag.learn(q, picked, **learn_kwargs)
     return (picked, "telegram")
+
+
+async def resolve_cover_letter(
+    rag: Any, job_context: dict[str, Any] | None = None
+) -> tuple[str, str]:
+    """Generate a job-personalized cover letter from persona + job context.
+
+    Returns ``(text, "llm")`` when generated, ``("", "decline")`` when the LLM
+    has nothing to ground it on. Never prompts the user — a blank cover letter
+    is a valid outcome.
+    """
+    if rag is None:
+        return ("", "decline")
+    answer = (
+        await rag.answer_questions(
+            ["Write a personalized cover letter for this application."],
+            job_context=job_context,
+        )
+    ).get("Write a personalized cover letter for this application.", ASK_USER)
+    text = (answer or "").strip()
+    if not text or text == ASK_USER:
+        return ("", "decline")
+    return (text, "llm")
