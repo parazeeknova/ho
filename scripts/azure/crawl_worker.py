@@ -452,7 +452,10 @@ class Indexer:
 
         tasks = [_gated(p, c) for p in (*_CDX_DOMAINS, *_CDX_DISCOVERY) for c in candidates]
         await asyncio.gather(*tasks)
-        parts = " ".join(f"{p}={len(self.slugs[p])}" for p in (*_CDX_DOMAINS, *_CDX_DISCOVERY))
+        parts = " ".join(
+            f"{p}={len(self.slugs.get('discovery' if p in _CDX_DISCOVERY else p, set()))}"
+            for p in (*_CDX_DOMAINS, *_CDX_DISCOVERY)
+        )
         discovery = len(self.slugs.get("discovery", set()))
         total = sum(len(v) for v in self.slugs.values())
         logger.info(f"CDX harvest done: {parts} discovery={discovery} (total {total})")
@@ -1099,7 +1102,10 @@ class Indexer:
                 await crawl_domain(domain)
 
         await asyncio.gather(*(_gated(d) for d in sorted(resolved)))
-        parts = " ".join(f"{p}={len(self.slugs[p])}" for p in (*_CDX_DOMAINS, *_CDX_DISCOVERY))
+        parts = " ".join(
+            f"{p}={len(self.slugs.get('discovery' if p in _CDX_DISCOVERY else p, set()))}"
+            for p in (*_CDX_DOMAINS, *_CDX_DISCOVERY)
+        )
         total = sum(len(v) for v in self.slugs.values())
         logger.info(f"sitemaps done: {parts} (total {total})")
 
@@ -1114,6 +1120,15 @@ class Indexer:
         last_remotive = 0.0
         last_arbeitnow = 0.0
         last_checkpoint = 0.0
+
+        # Independent checkpoint loop: snapshots progress every 10 minutes
+        # even while a long CDX walk holds the main cycle.
+        async def _checkpoint_loop() -> None:
+            while True:
+                await asyncio.sleep(600)
+                await self.save_checkpoint()
+
+        asyncio.create_task(_checkpoint_loop())
         while True:
             async with AsyncClient(
                 headers={"User-Agent": UA}, timeout=15.0, follow_redirects=True
