@@ -5,13 +5,14 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import sys
 from typing import Any, Optional, Set
 
 from src.logging import get_logger
 from autofill.db import AutofillDB
-from autofill.profile import Profile
-from autofill.rag import ScreenerRAG
+from autofill.profile import build_profile
+from autofill.rag import ScreenerRAG, ASK_USER
+from autofill.resume import resolve_resume_path
+from src.memory.pgvector_store import MemoryStore
 
 logger = get_logger("autofill.worker")
 
@@ -22,7 +23,6 @@ class AutofillWorker:
     def __init__(self, db: AutofillDB, max_concurrent: int = 2) -> None:
         self.db = db
         self.semaphore = asyncio.Semaphore(max_concurrent)
-        self.rag = ScreenerRAG()
         self._running = False
         self._running_tasks: Set[asyncio.Task] = set()
 
@@ -60,7 +60,14 @@ class AutofillWorker:
         apply_link = job["apply_link"]
         apply_mode = job.get("apply_mode", "review")
 
-        profile = Profile()
+        try:
+            store = await MemoryStore.create()
+        except Exception as e:
+            logger.warning("Could not connect to memory store; persona retrieval disabled", error=str(e))
+            store = None
+        profile = await build_profile(store=store)
+        profile.resumePath = await resolve_resume_path()
+        rag = ScreenerRAG(profile=profile, store=store)
         job_payload = {
             "jobId": job_id,
             "url": apply_link,
@@ -107,7 +114,18 @@ class AutofillWorker:
 
                         if method == "answer_questions":
                             questions = args.get("questions", [])
-                            answers = await self.rag.answer_questions(questions)
+                            answers = await rag.answer_questions(questions)
+
+                            # Never fabricate personal facts in the background worker:
+                            # drop them so the field is left blank for human review.
+                            unanswered = [q for q, a in answers.items() if a == ASK_USER]
+                            if unanswered:
+                                logger.warning(
+                                    "Leaving personal questions blank for human review",
+                                    job_id=job_id,
+                                    questions=unanswered,
+                                )
+                            answers = {q: a for q, a in answers.items() if a != ASK_USER}
 
                             if process.stdin and not process.stdin.is_closing():
                                 rpc_resp = json.dumps({"type": "RPC_RESPONSE", "id": req_id, "result": answers})
@@ -161,6 +179,8 @@ class AutofillWorker:
         except Exception as e:
             logger.exception("Error processing job", job_id=job_id, error=str(e))
             await self.db.update_status(job_id, status="failed", error=str(e))
+        finally:
+            await rag.close()
 
     async def _wait_for_human_decision(self, job_id: str, poll_interval: float = 2.0) -> str:
         """Poll the database until job status moves to 'approved' or 'skipped'."""

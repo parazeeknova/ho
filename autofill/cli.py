@@ -6,16 +6,38 @@ import sys
 import uuid
 from dotenv import load_dotenv
 
-from autofill.profile import Profile
+from autofill.profile import build_profile
 from autofill.db import AutofillDB
 from autofill.worker import run_worker
+from autofill.rag import ScreenerRAG, ASK_USER
+from autofill.resume import resolve_resume_path
+from src.memory.pgvector_store import MemoryStore
 
 load_dotenv()
 
 
+def self_prompt(question: str) -> str:
+    """Blocking prompt for an unknown personal-fact question (runs in a thread)."""
+    print(f"\n[Python CLI] No known answer for: {question}")
+    val = input("  Enter answer (or press Enter to leave blank): ").strip()
+    return val
+
+
 async def run_apply(url: str, mode: str = "review"):
     """Phase 1 direct execution mode."""
-    profile = Profile()
+    try:
+        store = await MemoryStore.create()
+    except Exception as e:
+        print(f"[Python CLI] WARNING: Could not connect to memory store; persona retrieval disabled: {e}")
+        store = None
+    profile = await build_profile(store=store)
+    profile.resumePath = await resolve_resume_path()
+    if not profile.resumePath:
+        print(
+            "[Python CLI] WARNING: No resume available to upload (RESUME_URL unreachable / RESUME_PATH not set). "
+            "The form will be filled without a resume attachment."
+        )
+    rag = ScreenerRAG(profile=profile, store=store)
     job_id = f"job-{uuid.uuid4().hex[:8]}"
 
     payload = {
@@ -90,6 +112,31 @@ async def run_apply(url: str, mode: str = "review"):
                         await process.stdin.drain()
                 elif status_event.get("status") in ["submitted", "failed", "skipped"]:
                     break
+            elif decoded_line.startswith("RPC_REQUEST:"):
+                raw_rpc = decoded_line[len("RPC_REQUEST:") :]
+                try:
+                    rpc_req = json.loads(raw_rpc)
+                    req_id = rpc_req.get("id")
+                    method = rpc_req.get("method")
+                    args = rpc_req.get("args", {})
+
+                    if method == "answer_questions":
+                        questions = args.get("questions", [])
+                        answers = await rag.answer_questions(questions)
+
+                        unknown = [q for q, a in answers.items() if a == ASK_USER]
+                        for q in unknown:
+                            ans = await asyncio.to_thread(self_prompt, q)
+                            if ans:
+                                await rag.learn(q, ans)
+                            answers[q] = ans
+
+                        if process.stdin:
+                            rpc_resp = json.dumps({"type": "RPC_RESPONSE", "id": req_id, "result": answers})
+                            process.stdin.write(f"{rpc_resp}\n".encode("utf-8"))
+                            await process.stdin.drain()
+                except Exception as rpc_err:
+                    print(f"[Python CLI] Error handling RPC request: {rpc_err}")
             else:
                 print(f"[Node Stdout] {decoded_line}")
 
@@ -109,6 +156,8 @@ async def run_apply(url: str, mode: str = "review"):
             await stderr_task
         except asyncio.CancelledError:
             pass
+
+        await rag.close()
 
 
 async def enqueue_command(url: str, mode: str = "review", role: str = None, company: str = None):
