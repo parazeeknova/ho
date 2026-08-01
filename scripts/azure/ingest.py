@@ -39,6 +39,10 @@ def _raw_json_value(raw_markdown: str) -> str:
     crawl worker. If it parses as JSON keep it as an object (jsonb),
     otherwise fall back to an empty object so the gate can still use it.
     """
+    if raw_markdown:
+        # Null bytes are valid in JSON strings but illegal in Postgres
+        # jsonb - strip them so the bulk COPY never chokes.
+        raw_markdown = raw_markdown.replace("\\u0000", "").replace("\x00", "")
     try:
         parsed = json.loads(raw_markdown) if raw_markdown else None
     except Exception:
@@ -46,7 +50,6 @@ def _raw_json_value(raw_markdown: str) -> str:
     if isinstance(parsed, (dict, list)):
         return json.dumps(parsed)
     return "{}"
-
 
 async def _ensure_tables() -> MemoryStore:
     store = await MemoryStore.create()
@@ -101,6 +104,13 @@ async def _persist_observation(store, obs: JobObservation) -> None:
         logger.warning(f"persist observation {obs.url[:60]}: {exc}")
 
 
+def _clean_text(val: str | None) -> str:
+    """Strip characters Postgres text/jsonb rejects (null bytes etc.)."""
+    if not val:
+        return ""
+    return val.replace("\x00", "").replace("\\u0000", "")
+
+
 async def _bulk_persist_observations(store, obs_list: list[JobObservation]) -> int:
     """Bulk-insert observations via COPY into a temp table + merge.
 
@@ -117,9 +127,9 @@ async def _bulk_persist_observations(store, obs_list: list[JobObservation]) -> i
             (
                 _posting_id(obs),
                 obs.url,
-                obs.source,
-                obs.title or "",
-                obs.snippet or "",
+                _clean_text(obs.source),
+                _clean_text(obs.title),
+                _clean_text(obs.snippet),
                 obs.observed_at,
                 obs.observed_at,
                 "review",
