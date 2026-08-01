@@ -214,7 +214,8 @@ async def resolve_question(
 async def resolve_cover_letter(
     rag: Any, job_context: dict[str, Any] | None = None
 ) -> tuple[str, str]:
-    """Generate a job-personalized cover letter from persona + job context.
+    """Generate a structured, fact-grounded cover letter from persona + resume
+    + job context via ``ScreenerRAG.generate_cover_letter``.
 
     Returns ``(text, "llm")`` when generated, ``("", "decline")`` when the LLM
     has nothing to ground it on. Never prompts the user — a blank cover letter
@@ -222,13 +223,20 @@ async def resolve_cover_letter(
     """
     if rag is None:
         return ("", "decline")
-    answer = (
-        await rag.answer_questions(
-            ["Write a personalized cover letter for this application."],
-            job_context=job_context,
-        )
-    ).get("Write a personalized cover letter for this application.", ASK_USER)
-    text = (answer or "").strip()
-    if not text or text == ASK_USER:
+    gen = getattr(rag, "generate_cover_letter", None)
+    if gen is not None:
+        text = await gen(job_context)
+    else:
+        # Fallback for mocks/legacy: old single-question path.
+        answer = (
+            await rag.answer_questions(
+                ["Write a personalized cover letter for this application."],
+                job_context=job_context,
+            )
+        ).get("Write a personalized cover letter for this application.", ASK_USER)
+        text = (answer or "").strip()
+        if text == ASK_USER:
+            text = ""
+    if not text or not text.strip():
         return ("", "decline")
-    return (text, "llm")
+    return (text.strip(), "llm")
