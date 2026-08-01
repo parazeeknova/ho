@@ -12,7 +12,12 @@ from dotenv import load_dotenv
 from autofill.db import AutofillDB
 from autofill.profile import build_profile
 from autofill.rag import ScreenerRAG
-from autofill.resolve import DEFER_MARKER, DeferredError, resolve_question
+from autofill.resolve import (
+    DEFER_MARKER,
+    DeferredError,
+    resolve_cover_letter,
+    resolve_question,
+)
 from autofill.resume import resolve_resume_path
 from autofill.telegram import (
     TelegramNotConfiguredError,
@@ -67,6 +72,10 @@ async def _stream_runner(
 
     stderr_task = asyncio.create_task(read_stderr())
     final_event: dict[str, Any] | None = None
+
+    # Job description context extracted by the Node adapter; arrives via the
+    # job_context RPC before any question is resolved.
+    job_context: dict[str, Any] = {}
 
     try:
         if process.stdin:
@@ -125,6 +134,35 @@ async def _stream_runner(
                     method = rpc_req.get("method")
                     args = rpc_req.get("args", {})
 
+                    if method == "job_context":
+                        job_context = {str(k): v for k, v in (args or {}).items()}
+                        print(
+                            f"\n[Python CLI] Job context: "
+                            f"{job_context.get('title')} @ {job_context.get('company')} "
+                            f"({job_context.get('location')})"
+                        )
+                        if process.stdin:
+                            rpc_resp = json.dumps(
+                                {"type": "RPC_RESPONSE", "id": req_id, "result": {"ok": True}}
+                            )
+                            process.stdin.write(f"{rpc_resp}\n".encode())
+                            await process.stdin.drain()
+                        continue
+
+                    if method == "cover_letter":
+                        answer, source = await resolve_cover_letter(rag, job_context=job_context)
+                        if process.stdin:
+                            rpc_resp = json.dumps(
+                                {
+                                    "type": "RPC_RESPONSE",
+                                    "id": req_id,
+                                    "result": {"answer": answer, "source": source},
+                                }
+                            )
+                            process.stdin.write(f"{rpc_resp}\n".encode())
+                            await process.stdin.drain()
+                        continue
+
                     if method == "answer_question":
                         question = str(args.get("question", "")).strip()
                         kind = str(args.get("kind", "text"))
@@ -139,6 +177,7 @@ async def _stream_runner(
                                 options=options,
                                 overnight=overnight,
                                 timeout=question_timeout,
+                                job_context=job_context,
                             )
                         except TelegramNotConfiguredError as tg_err:
                             print(f"\n[Python CLI] ERROR: {tg_err}")
