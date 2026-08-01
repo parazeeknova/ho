@@ -12,6 +12,16 @@ search:
 botdetection:
   enabled: false
 
+outgoing:
+  request_timeout: 15.0
+  max_request_timeout: 30.0
+  # Route search-engine requests through the self-hosted Tor SOCKS5
+  # proxy (docker-compose torproxy service) so egress IP rotates and
+  # upstream CAPTCHA blocks are bypassed.
+  proxies:
+    tor://:
+      - socks5://127.0.0.1:9050
+
 engines:
   - name: bing
     engine: bing

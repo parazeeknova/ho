@@ -133,6 +133,13 @@ services:
         max-size: "5m"
         max-file: "1"
 
+  # Self-hosted SOCKS5 proxy rotating IPs via the Tor network, so SearXNG
+  # can bypass CAPTCHA blocks from datacenter IPs.
+  torproxy:
+    image: dperson/torproxy
+    restart: unless-stopped
+    network_mode: "host"
+
   agent-memory-db:
     image: pgvector/pgvector:pg18
     restart: unless-stopped
