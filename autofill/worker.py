@@ -13,7 +13,12 @@ from dotenv import load_dotenv
 from autofill.db import AutofillDB
 from autofill.profile import build_profile
 from autofill.rag import ScreenerRAG
-from autofill.resolve import DEFER_MARKER, DeferredError, resolve_question
+from autofill.resolve import (
+    DEFER_MARKER,
+    DeferredError,
+    resolve_cover_letter,
+    resolve_question,
+)
 from autofill.resume import resolve_resume_path
 from autofill.telegram import (
     TelegramNotConfiguredError,
@@ -204,6 +209,10 @@ class AutofillWorker:
 
             stderr_task = asyncio.create_task(self._read_stderr(process.stderr, job_id))
 
+            # Job description context extracted by the Node adapter; arrives
+            # via the job_context RPC before any question is resolved.
+            job_context: dict[str, Any] = {}
+
             # Monitor stdout for status events and RPC requests
             while True:
                 line = await process.stdout.readline() if process.stdout else b""
@@ -226,6 +235,41 @@ class AutofillWorker:
                             req_id=req_id,
                         )
 
+                        if method == "job_context":
+                            # JD extracted by the Node adapter (title, company,
+                            # location, description). Stored for the rest of the
+                            # run; open-ended answers and scoped questions use it.
+                            job_context = {str(k): v for k, v in (args or {}).items()}
+                            logger.info(
+                                "Received job context from runner",
+                                job_id=job_id,
+                                title=job_context.get("title"),
+                                location=job_context.get("location"),
+                            )
+                            if process.stdin and not process.stdin.is_closing():
+                                rpc_resp = json.dumps(
+                                    {"type": "RPC_RESPONSE", "id": req_id, "result": {"ok": True}}
+                                )
+                                process.stdin.write(f"{rpc_resp}\n".encode())
+                                await process.stdin.drain()
+                            continue
+
+                        if method == "cover_letter":
+                            answer, source = await resolve_cover_letter(
+                                rag, job_context=job_context
+                            )
+                            if process.stdin and not process.stdin.is_closing():
+                                rpc_resp = json.dumps(
+                                    {
+                                        "type": "RPC_RESPONSE",
+                                        "id": req_id,
+                                        "result": {"answer": answer, "source": source},
+                                    }
+                                )
+                                process.stdin.write(f"{rpc_resp}\n".encode())
+                                await process.stdin.drain()
+                            continue
+
                         if method == "answer_question":
                             question = str(args.get("question", "")).strip()
                             kind = str(args.get("kind", "text"))
@@ -243,6 +287,7 @@ class AutofillWorker:
                                     options=options,
                                     overnight=overnight,
                                     timeout=question_timeout,
+                                    job_context=job_context,
                                 )
                             except TelegramNotConfiguredError as tg_err:
                                 logger.error(
