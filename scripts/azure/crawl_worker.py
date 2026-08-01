@@ -261,38 +261,19 @@ class Indexer:
         async with self.lock:
             if self.obs:
                 body = "\n".join(json.dumps(o) for o in self.obs).encode()
-                blob_name = f"obs/{hour}.jsonl"
-                blob_client = self.container_client.get_blob_client(blob_name)
-                try:
-                    blob_client.create_append_blob()
-                    blob_client.append_block(body)
-                except Exception:
-                    # Existing block blob (legacy) or race: write a unique
-                    # append blob so nothing is lost this cycle.
-                    seq = int(time.time() * 1000) % 100000
-                    alt = f"obs/{hour}_{seq}.jsonl"
-                    alt_client = self.container_client.get_blob_client(alt)
-                    alt_client.create_append_blob()
-                    alt_client.append_block(body)
-                    blob_name = alt
+                # Write-once uniquely-named blob: no append races, so the
+                # ingest always reads a completed blob cleanly.
+                seq = int(time.time() * 1000) % 100000
+                blob_name = f"obs/{hour}_{seq}.jsonl"
+                self.container_client.get_blob_client(blob_name).upload_blob(body, overwrite=False)
                 freshers = [o for o in self.obs if o.get("fresher")]
                 if freshers:
                     fbody = "\n".join(json.dumps(o) for o in freshers).encode()
-                    fblob = f"freshers/{hour}.jsonl"
-                    f_client = self.container_client.get_blob_client(fblob)
-                    try:
-                        f_client.create_append_blob()
-                        f_client.append_block(fbody)
-                    except Exception:
-                        fseq = int(time.time() * 1000) % 100000
-                        fblob = f"freshers/{hour}_{fseq}.jsonl"
-                        alt_f = self.container_client.get_blob_client(fblob)
-                        alt_f.create_append_blob()
-                        alt_f.append_block(fbody)
-                    logger.info(
-                        f"Uploaded {len(freshers)} fresher observations to freshers/{fblob}"
-                    )
-                logger.info(f"Appended {len(self.obs)} observations to obs/{blob_name}")
+                    fseq = int(time.time() * 1000) % 100000
+                    fblob = f"freshers/{hour}_{fseq}.jsonl"
+                    self.container_client.get_blob_client(fblob).upload_blob(fbody, overwrite=False)
+                    logger.info(f"Uploaded {len(freshers)} fresher observations to {fblob}")
+                logger.info(f"Uploaded {len(self.obs)} observations to {blob_name}")
                 self.obs = []
             if self.companies:
                 body = "\n".join(json.dumps(c) for c in self.companies.values()).encode()
@@ -1023,10 +1004,7 @@ class Indexer:
                         "url": item.get("url", ""),
                         "source": "jobicy",
                         "title": item.get("jobTitle", ""),
-                        "snippet": (
-                            f"{item.get('companyName', '')} | "
-                            f"{item.get('jobGeo', '')}"
-                        ),
+                        "snippet": (f"{item.get('companyName', '')} | {item.get('jobGeo', '')}"),
                         "raw_markdown": json.dumps(item),
                         "observed_at": time.time(),
                         "source_freshness_evidence": "jobicy api",
@@ -1065,7 +1043,7 @@ class Indexer:
             srcs = c.get("sources", [])
             try:
                 year = int(c.get("year") or 0)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 year = 0
             if "yc" in srcs and 2021 <= year <= 2026:
                 priority = 0
@@ -1245,7 +1223,19 @@ class Indexer:
                 await asyncio.sleep(600)
                 await self.save_checkpoint()
 
+        # Independent flush loop: push captured observations to blobs every
+        # minute so the ingest picks them up in near-real-time, even while
+        # the main cycle is busy with a long CDX walk.
+        async def _flush_loop() -> None:
+            while True:
+                await asyncio.sleep(60)
+                try:
+                    await self.flush()
+                except Exception as exc:
+                    logger.warning(f"flush loop: {exc}")
+
         asyncio.create_task(_checkpoint_loop())
+        asyncio.create_task(_flush_loop())
         while True:
             async with AsyncClient(
                 headers={"User-Agent": UA}, timeout=15.0, follow_redirects=True
