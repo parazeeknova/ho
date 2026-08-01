@@ -201,6 +201,9 @@ class AutofillWorker:
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                # No human inspects the browser in the background worker: hold
+                # the review step only briefly so the queue never stalls.
+                env={**os.environ, "AUTOFILL_REVIEW_HOLD_MS": "3000"},
             )
 
             if process.stdin:
