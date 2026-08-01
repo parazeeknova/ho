@@ -39,3 +39,4 @@ scripts/.watchdog.env
 scripts/.r2.env
 backups/
 directory/
+intel/

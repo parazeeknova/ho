@@ -94,3 +94,9 @@ graph-reset:
 	docker compose -f docker-compose.yaml up -d neo4j; \
 	echo "Neo4j reset."
 
+
+intel:
+	uv run python scripts/radar_intel.py
+
+intel-telegram:
+	uv run python scripts/radar_intel.py --telegram
