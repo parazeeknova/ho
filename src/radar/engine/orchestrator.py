@@ -414,9 +414,17 @@ async def _fetch_postings_and_gate(
     last_seen: dict[str, float] = {}
     try:
         async with store._pool.acquire() as conn:
+            # Already-gated postings live in radar_candidates (canonical_id
+            # for passed, "rejected:<pid>" for rejected). Observations that
+            # exist but were NEVER gated must still go through the gates -
+            # loading known_hashes from job_observations (the whole corpus)
+            # would skip everything and starve the matcher.
+            rows = await conn.fetch("SELECT canonical_id FROM radar_candidates")
+            for r in rows:
+                cid = r["canonical_id"] or ""
+                known_hashes.add(cid.removeprefix("rejected:"))
             rows = await conn.fetch("SELECT url_hash, last_seen FROM job_observations")
             for r in rows:
-                known_hashes.add(r["url_hash"])
                 if r["last_seen"]:
                     last_seen[r["url_hash"]] = float(r["last_seen"])
     except Exception:
@@ -1106,14 +1114,19 @@ async def _job_processor(entry: FrontierEntry) -> list[FrontierEntry]:
 
     store = await MemoryStore.create()
     try:
-        # Load existing observations (NOT seed with own hash — that causes false duplicate)
+        # Already-gated postings live in radar_candidates; the observation
+        # corpus itself must not be treated as "already seen" or nothing
+        # from the Azure dump would ever be gated.
         known_hashes: set[str] = set()
         last_seen: dict[str, float] = {}
         try:
             async with store._pool.acquire() as conn:
+                rows = await conn.fetch("SELECT canonical_id FROM radar_candidates")
+                for r in rows:
+                    cid = r["canonical_id"] or ""
+                    known_hashes.add(cid.removeprefix("rejected:"))
                 rows = await conn.fetch("SELECT url_hash, last_seen FROM job_observations")
                 for r in rows:
-                    known_hashes.add(r["url_hash"])
                     if r["last_seen"]:
                         last_seen[r["url_hash"]] = float(r["last_seen"])
         except Exception:
