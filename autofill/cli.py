@@ -105,6 +105,16 @@ async def _stream_runner(
                             "[Python CLI] Submission is disabled in this phase — "
                             "the form was filled and verified, nothing was applied."
                         )
+                        print(
+                            "Review the filled answers in the browser, "
+                            "then press Enter to close it."
+                        )
+                        with contextlib.suppress(EOFError):
+                            input("[Python CLI] Press Enter to close: ")
+                        if process.stdin:
+                            action_payload = json.dumps({"action": "skip"}) + "\n"
+                            process.stdin.write(action_payload.encode())
+                            await process.stdin.drain()
                         continue
 
                     choice = (
