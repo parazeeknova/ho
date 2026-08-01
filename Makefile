@@ -1,4 +1,4 @@
-.PHONY: check check-types test serve run match health fc-up fc-down fc-logs dev dev-down start overnight clean-volumes start-daemon stop-daemon graph graph-stop graph-shell graph-reset
+.PHONY: check check-types test serve run ncrun match health fc-up fc-down fc-logs dev dev-down start overnight clean-volumes start-daemon stop-daemon graph graph-stop graph-shell graph-reset
 
 check:
 	uv run ruff format . && uv run ruff check . --fix
@@ -14,6 +14,11 @@ serve:
 
 run:
 	uv run python scripts/run.py
+
+# Run the full pipeline with NO cloud (Azure/R2) - for machines without
+# cloud creds. Same as run but skips cloud restore/sync.
+ncrun:
+	uv run python scripts/run.py --no-cloud
 
 worker:
 	uv run python scripts/run.py --worker-only

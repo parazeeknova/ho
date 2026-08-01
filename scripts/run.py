@@ -394,6 +394,9 @@ def main() -> None:
         "--no-pipeline", action="store_true", help="Start infra only, don't run pipeline"
     )
     parser.add_argument(
+        "--no-cloud", action="store_true", help="Run fully offline: no Azure/R2 sync"
+    )
+    parser.add_argument(
         "--worker-only", action="store_true", help="Start as a dedicated queue worker process"
     )
     parser.add_argument(
@@ -496,14 +499,16 @@ def main() -> None:
     console.print("\n[dim]All systems ready.[/dim]")
 
     # Disaster recovery: if a volume is empty but cloud backups exist,
-    # restore before the pipeline touches the databases.
-    subprocess.run(
-        [sys.executable, f"{PROJECT}/scripts/restore.py", "--if-empty"],
-        cwd=str(PROJECT),
-        timeout=1800,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    # restore before the pipeline touches the databases. Skipped in
+    # --no-cloud mode (no Azure/R2).
+    if not args.no_cloud:
+        subprocess.run(
+            [sys.executable, f"{PROJECT}/scripts/restore.py", "--if-empty"],
+            cwd=str(PROJECT),
+            timeout=1800,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
 
     if args.no_pipeline:
         console.print("\n[dim]Press Ctrl+C to stop.[/dim]")
