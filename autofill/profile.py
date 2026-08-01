@@ -18,7 +18,16 @@ logger = get_logger("autofill.profile")
 
 PERSONA_MATCH_THRESHOLD = 0.6
 
-_IDENTITY_FIELDS = ("firstName", "lastName", "email", "phone", "linkedin", "github", "website")
+_IDENTITY_FIELDS = (
+    "firstName",
+    "lastName",
+    "email",
+    "phone",
+    "linkedin",
+    "github",
+    "website",
+    "preferredName",
+)
 
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 _PHONE_RE = re.compile(r"\+?[\d][\d\s().-]{7,}\d")
@@ -35,6 +44,8 @@ class Profile(BaseModel):
     linkedin: str | None = Field(default="https://linkedin.com/in/johndoe")
     github: str | None = Field(default="https://github.com/johndoe")
     website: str | None = Field(default="https://johndoe.dev")
+    preferredName: str | None = Field(default=None, alias="preferred_name")
+    location: str | None = Field(default=None, alias="location")
     resumePath: str | None = Field(default=None, alias="resume_path")
     customAnswers: dict[str, str] = Field(default_factory=dict, alias="custom_answers")
 
@@ -179,6 +190,26 @@ async def build_profile(store: Any = None) -> Profile:
         ans = (a.get("answer") or "").strip()
         if q and ans:
             profile.customAnswers[q] = ans
+
+    # Preferred first name defaults to the first name when not otherwise known.
+    if not profile.preferredName:
+        profile.preferredName = profile.firstName
+
+    # Location from the persona's current-location answer (question phrasing
+    # varies across forms, so match on the persona's known question).
+    if not profile.location:
+        for _q, _a in profile.customAnswers.items():
+            if (
+                re.search(
+                    r"current location|where (are|do) you (based|live|located|stay)|"
+                    r"your location|location\b",
+                    _q,
+                    re.I,
+                )
+                and _a.strip()
+            ):
+                profile.location = _a.strip()
+                break
 
     still_defaults = [f for f in _IDENTITY_FIELDS if f not in resolved]
     if still_defaults:
