@@ -34,7 +34,7 @@ PROJECT = Path(__file__).resolve().parent.parent
 LOG_PATH = PROJECT / "logs" / "backup.log"
 LOCK_PATH = PROJECT / "logs" / "backup.lock"
 STAGING_ROOT = Path("/tmp/ho-backups")
-KEEP = int(os.environ.get("BACKUP_KEEP", "7"))
+KEEP = int(os.environ.get("BACKUP_KEEP", "10"))
 
 PG_CONTAINER = "firecrawl_agent-memory-db_1"
 NEO4J_CONTAINER = "firecrawl_neo4j_1"
@@ -132,6 +132,19 @@ def pg_dump(staging: Path) -> None:
         FAILED = True
 
 
+def neo4j_stop_with_retry() -> bool:
+    """Stop neo4j for an offline dump. Podman may need a SIGKILL after
+    the 10s grace (neo4j takes a while), and transient states can fail
+    the first attempt, so retry once and surface the real error."""
+    for attempt in (1, 2):
+        r = sh(["podman", "stop", NEO4J_CONTAINER])
+        if r.returncode == 0:
+            return True
+        log(f"podman stop attempt {attempt} failed: {r.stderr.strip()[-200:]}")
+        time.sleep(3)
+    return False
+
+
 def neo4j_dump(staging: Path) -> None:
     global FAILED
     if not container_running(NEO4J_CONTAINER):
@@ -139,7 +152,7 @@ def neo4j_dump(staging: Path) -> None:
         FAILED = True
         return
     log("stopping neo4j for consistent dump...")
-    if sh(["podman", "stop", NEO4J_CONTAINER]).returncode != 0:
+    if not neo4j_stop_with_retry():
         log("ERROR: could not stop neo4j")
         FAILED = True
         return

@@ -1470,6 +1470,17 @@ async def _run_radar_pipeline() -> None:
             )
             if not matched:
                 await asyncio.sleep(2.0)
+                continue
+            # Workers compete with the master for the shared DB queue, so
+            # they must run the full post-processing (enrichment, graph
+            # events, Telegram cards) on what they matched - otherwise
+            # accepted candidates are persisted but never surfaced.
+            try:
+                await _enrich_high_fit(matched, sa, store, graph)
+                await _dispatch_company_events(matched, graph, bus)
+                await _notify_telegram(ta, matched, store)
+            except Exception as exc:
+                logger.warning(f"Worker post-processing failed: {exc}")
         return
 
     while True:
