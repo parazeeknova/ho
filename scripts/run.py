@@ -536,6 +536,13 @@ def main() -> None:
 
     env = os.environ.copy()
     env.setdefault("OVERNIGHT_LOOP", "true")
+    # Full-force LLM matching: force the queue throttles so the workers
+    # blast through the corpus (the cloud provider quota allows it).
+    env["LLM_QUEUE_RPM"] = "240"
+    env["LLM_QUEUE_MAX_IN_FLIGHT"] = "30"
+    env["LLM_QUEUE_TPM"] = "400000"
+    env["LLM_BUDGET_RADAR_RPM"] = "240"
+    env["LLM_BUDGET_RADAR_TPM"] = "400000"
 
     # Background container stats logger
     stop_stats = threading.Event()

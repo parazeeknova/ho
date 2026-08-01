@@ -542,13 +542,16 @@ def _apply_llm_result(candidate: JobCandidate, result: dict[str, Any]) -> None:
     candidate.extra["group_key"] = _build_group_key(candidate)
 
     verdict = candidate.verdict
-    if verdict == "NO_MATCH" or candidate.match_percent < 30:
+    if verdict in ("STRONG_MATCH", "GOOD_MATCH") and candidate.match_percent >= 50:
+        candidate.eligibility = EligibilityState.ACCEPTED
+    elif verdict == "WEAK_MATCH" or (
+        candidate.match_percent >= 40 and len(candidate.missing_skills) <= 3
+    ):
+        # Fuzzy / LARP-able: close enough that the gaps are learnable.
+        candidate.eligibility = EligibilityState.NEAR_MISS
+    else:
         candidate.eligibility = EligibilityState.REJECTED
         candidate.rejection_reason = RejectionReason.MATCHER_NO_MATCH
-    elif verdict in ("STRONG_MATCH", "GOOD_MATCH"):
-        candidate.eligibility = EligibilityState.ACCEPTED
-    elif verdict == "WEAK_MATCH":
-        candidate.eligibility = EligibilityState.NEAR_MISS
 
 
 def _build_group_key(candidate: JobCandidate) -> str:

@@ -469,7 +469,15 @@ async def _load_ungated_observations(store: MemoryStore, limit: int = 400) -> li
                 FROM job_observations o
                 LEFT JOIN radar_candidates r ON r.direct_apply_url = o.url
                 WHERE r.canonical_id IS NULL
-                ORDER BY o.last_seen DESC
+                ORDER BY (
+                    -- Software roles first: the matcher budget should go to
+                    -- relevant jobs, not the flood of non-software postings.
+                    CASE WHEN lower(o.title) ~
+                        'software|engineer|developer|full.?stack|backend|frontend|'
+                        'devops|sre|data|machine|ml|ai|python|java|golang|rust|'
+                        'intern|new grad|junior|entry|graduate'
+                         THEN 0 ELSE 1 END
+                ), o.last_seen DESC
                 LIMIT $1
                 """,
                 limit,
