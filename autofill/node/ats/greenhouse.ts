@@ -10,90 +10,264 @@ function escapePromptValue(val: string): string {
 }
 
 export class GreenhouseAdapter extends ATSAdapter {
+  /**
+   * Run an AI-powered act() call but never let a single failure abort the whole
+   * form fill (e.g. a field that doesn't exist on this job's form). Values are
+   * passed through Stagehand's `variables` so they are never parsed as prompt text.
+   */
+  private async safeAct(
+    instruction: string,
+    variables?: Record<string, string>
+  ): Promise<void> {
+    try {
+      await this.stagehand.act(instruction, variables ? { variables } : {});
+    } catch (err: any) {
+      console.warn(
+        `[GreenhouseAdapter] act() failed (continuing): ${err?.message || err}`
+      );
+    }
+  }
+
+  /**
+   * Prefer a deterministic locator fill; fall back to an AI-driven act() using
+   * %variables% so arbitrary profile text (quotes, newlines) is handled safely.
+   */
+  private async fillField(
+    selector: string,
+    value: string | undefined | null,
+    actPrompt: string,
+    variableName: string
+  ): Promise<void> {
+    if (!value) return;
+    const locator = this.getPage().locator(selector).first();
+    if (await locator.isVisible().catch(() => false)) {
+      await locator.fill(value);
+      await randomSleep(100, 300);
+    } else {
+      await this.safeAct(actPrompt, { [variableName]: value });
+      await randomSleep(200, 500);
+    }
+  }
+
+  private getPage() {
+    return this.stagehand.context.pages()[0];
+  }
+
+  private async ensureApplicationForm(): Promise<void> {
+    const page = this.getPage();
+    const form = page.locator('#first_name, #application-form').first();
+    // Give the page a moment to hydrate, then check for the form.
+    await randomSleep(1200, 2000);
+    if (await form.isVisible().catch(() => false)) {
+      return;
+    }
+    // Some Greenhouse postings only reveal the application form after clicking Apply.
+    console.log("[GreenhouseAdapter] Application form not visible; clicking Apply...");
+    await this.safeAct("click the 'Apply for this job' or 'Apply now' button");
+    await randomSleep(800, 1500);
+  }
+
+  /**
+   * Select an option from a Greenhouse react-select dropdown. Tries an AI-driven
+   * selection first, then falls back to clicking the combobox and its option.
+   */
+  private async fillDropdown(questionText: string, answerText: string): Promise<void> {
+    try {
+      await this.stagehand.act(`select "${answerText}" for the dropdown asking "${questionText}"`);
+      await randomSleep(400, 800);
+      return;
+    } catch (err: any) {
+      console.warn("[GreenhouseAdapter] Dropdown AI select failed, trying manual fallback:", err?.message || err);
+    }
+
+    try {
+      const page = this.getPage();
+      // XPath: find the field wrapper whose label contains the question text, then its react-select control.
+      const q = escapePromptValue(questionText).replace(/'/g, "\\'");
+      const control = page
+        .locator(
+          `//div[contains(@class,"field-wrapper")][.//label[contains(., "${q}")]]//div[contains(@class,"select__control")]`
+        )
+        .first();
+      await control.click();
+      await randomSleep(300, 600);
+      // The menu opens with selectable options; click the one matching the answer.
+      const a = escapePromptValue(answerText).replace(/'/g, "\\'");
+      const menuOption = page
+        .locator(`//div[@id^="react-select"]//div[contains(@role,"option")][contains(., "${a}")]`)
+        .first();
+      if (await menuOption.isVisible().catch(() => false)) {
+        await menuOption.click();
+        await randomSleep(400, 800);
+      }
+    } catch (err: any) {
+      console.warn("[GreenhouseAdapter] Dropdown manual fallback failed:", err?.message || err);
+    }
+  }
+
+  /**
+   * Build a deterministic map of open questions -> {dom selector, kind} by reading
+   * the Greenhouse form's labels and their associated inputs. This avoids relying on
+   * the LLM to map a question's text back to an element (which was returning null).
+   */
+  private async collectQuestions(): Promise<Array<{ label: string; id: string; kind: "text" | "select" }>> {
+    const page = this.getPage();
+    try {
+      const rows = await page.evaluate(() => {
+        const out: Array<{ label: string; id: string; kind: "text" | "select" }> = [];
+        const labels = document.querySelectorAll(
+          "#application-form .field-wrapper label, .application--questions label, label.select__label"
+        );
+        for (const lbl of Array.from(labels)) {
+          const text = (lbl.textContent || "").replace(/\s+/g, " ").trim().replace(/^\*+|\*+$/g, "");
+          if (!text) continue;
+          const forId = lbl.getAttribute("for");
+          if (!forId) continue;
+          const input = document.getElementById(forId);
+          if (!input) continue;
+          const isSelect =
+            !!input.closest("[class*='select'], select") ||
+            input.getAttribute("role") === "combobox";
+          out.push({ label: text, id: forId, kind: isSelect ? "select" : "text" });
+        }
+        return out;
+      });
+
+      // De-duplicate by label, keep later (custom screener section takes priority).
+      const seen = new Set<string>();
+      const uniq: Array<{ label: string; id: string; kind: "text" | "select" }> = [];
+      for (const r of rows ?? []) {
+        if (seen.has(r.label)) continue;
+        seen.add(r.label);
+        uniq.push(r);
+      }
+      return uniq;
+    } catch (err: any) {
+      console.warn("[GreenhouseAdapter] collectQuestions failed:", err?.message || err);
+      return [];
+    }
+  }
+
+  private normalise(text: string): string {
+    return text.replace(/\s+/g, " ").trim().replace(/^\*+|\*+$/g, "").toLowerCase();
+  }
+
+  private async fillQuestionText(id: string, answer: string): Promise<void> {
+    const page = this.getPage();
+    const loc = page.locator(`#${id}`).first();
+    if (await loc.isVisible().catch(() => false)) {
+      await loc.fill(answer);
+      await randomSleep(200, 500);
+    }
+  }
+
+  private async fillQuestionSelect(id: string, answer: string): Promise<void> {
+    const page = this.getPage();
+    const a = escapePromptValue(answer).replace(/'/g, "\\'");
+    try {
+      const control = page
+        .locator(
+          `//div[contains(@class,"select-shell")][.//input[@id="${id}"]]//div[contains(@class,"select__control")]`
+        )
+        .first();
+      await control.click();
+      await randomSleep(300, 600);
+      const option = page
+        .locator(
+          `//div[@id^="react-select"]//div[contains(@role,"option")][contains(normalize-space(.), "${a}")]`
+        )
+        .first();
+      if (await option.isVisible().catch(() => false)) {
+        await option.click();
+        await randomSleep(300, 600);
+      }
+    } catch (err: any) {
+      console.warn(`[GreenhouseAdapter] fillQuestionSelect failed for #${id}:`, err?.message || err);
+    }
+  }
+
+  private async consentToPrivacy(): Promise<void> {
+    const page = this.getPage();
+    try {
+      // Deterministic: click Greenhouse consent checkboxes by label text.
+      for (const hint of ["agree to allow", "retain my data", "consent"]) {
+        const box = page
+          .locator(
+            `//div[contains(@class,"field-wrapper")][contains(., "${hint}")]//input[@type="checkbox"]`
+          )
+          .first();
+        if (await box.isVisible().catch(() => false)) {
+          if (!(await box.isChecked().catch(() => false))) {
+            await box.click();
+          }
+          await randomSleep(200, 400);
+        }
+      }
+    } catch (err: any) {
+      console.warn("[GreenhouseAdapter] Consent checkbox deterministic fill failed:", err?.message || err);
+      // Best-effort LLM fallback.
+      await this.safeAct("check all the 'I agree to allow' consent and data retention checkboxes");
+      await randomSleep(300, 600);
+    }
+  }
+
   async fill(payload: JobPayload, rpc?: RpcHelper): Promise<void> {
     const { url, profile } = payload;
 
     console.log(`[GreenhouseAdapter] Navigating to ${url}...`);
-    const page = this.stagehand.context.pages()[0];
+    const page = this.getPage();
     await page.goto(url);
     await randomSleep(300, 600);
 
+    await this.ensureApplicationForm();
+
     console.log("[GreenhouseAdapter] Filling deterministic profile fields...");
 
-    // First Name
-    const firstNameInput = page.locator('#first_name, input[name="job_application[first_name]"]').first();
-    if (await firstNameInput.isVisible().catch(() => false)) {
-      await firstNameInput.fill(profile.firstName);
-      await randomSleep(100, 300);
-    } else {
-      const safeFirstName = escapePromptValue(profile.firstName);
-      await this.stagehand.act(`Type "${safeFirstName}" into the First Name input field`);
-      await randomSleep(200, 500);
-    }
-
-    // Last Name
-    const lastNameInput = page.locator('#last_name, input[name="job_application[last_name]"]').first();
-    if (await lastNameInput.isVisible().catch(() => false)) {
-      await lastNameInput.fill(profile.lastName);
-      await randomSleep(100, 300);
-    } else {
-      const safeLastName = escapePromptValue(profile.lastName);
-      await this.stagehand.act(`Type "${safeLastName}" into the Last Name input field`);
-      await randomSleep(200, 500);
-    }
-
-    // Email
-    const emailInput = page.locator('#email, input[name="job_application[email]"]').first();
-    if (await emailInput.isVisible().catch(() => false)) {
-      await emailInput.fill(profile.email);
-      await randomSleep(100, 300);
-    } else {
-      const safeEmail = escapePromptValue(profile.email);
-      await this.stagehand.act(`Type "${safeEmail}" into the Email input field`);
-      await randomSleep(200, 500);
-    }
-
-    // Phone
-    const phoneInput = page.locator('#phone, input[name="job_application[phone]"]').first();
-    if (await phoneInput.isVisible().catch(() => false)) {
-      await phoneInput.fill(profile.phone);
-      await randomSleep(100, 300);
-    } else {
-      const safePhone = escapePromptValue(profile.phone);
-      await this.stagehand.act(`Type "${safePhone}" into the Phone input field`);
-      await randomSleep(200, 500);
-    }
-
-    // LinkedIn
+    await this.fillField(
+      '#first_name',
+      profile.firstName,
+      "Type %firstName% into the First Name input field",
+      "firstName"
+    );
+    await this.fillField(
+      '#last_name',
+      profile.lastName,
+      "Type %lastName% into the Last Name input field",
+      "lastName"
+    );
+    await this.fillField(
+      '#email',
+      profile.email,
+      "Type %email% into the Email input field",
+      "email"
+    );
+    await this.fillField(
+      '#phone',
+      profile.phone,
+      "Type %phone% into the Phone input field",
+      "phone"
+    );
     if (profile.linkedin) {
-      const linkedinInput = page.locator('input[aria-label*="LinkedIn"], input[name*="linkedin"]').first();
-      if (await linkedinInput.isVisible().catch(() => false)) {
-        await linkedinInput.fill(profile.linkedin);
-        await randomSleep(100, 300);
-      } else {
-        const safeLinkedin = escapePromptValue(profile.linkedin);
-        await this.stagehand.act(`Type "${safeLinkedin}" into the LinkedIn Profile URL field`);
-        await randomSleep(200, 500);
-      }
+      await this.fillField(
+        'input[aria-label*="LinkedIn"], input[name*="linkedin"]',
+        profile.linkedin,
+        "Type %linkedin% into the LinkedIn Profile URL field",
+        "linkedin"
+      );
     }
-
-    // GitHub
     if (profile.github) {
-      const githubInput = page.locator('input[aria-label*="GitHub"], input[name*="github"]').first();
-      if (await githubInput.isVisible().catch(() => false)) {
-        await githubInput.fill(profile.github);
-        await randomSleep(100, 300);
-      } else {
-        const safeGithub = escapePromptValue(profile.github);
-        await this.stagehand.act(`Type "${safeGithub}" into the GitHub Profile URL field`);
-        await randomSleep(200, 500);
-      }
+      await this.fillField(
+        'input[aria-label*="GitHub"], input[name*="github"]',
+        profile.github,
+        "Type %github% into the GitHub Profile URL field",
+        "github"
+      );
     }
 
     // Resume Upload Handling
     if (profile.resumePath && fs.existsSync(profile.resumePath)) {
       console.log(`[GreenhouseAdapter] Uploading resume from ${profile.resumePath}...`);
-      const fileInput = page.locator('input[type="file"]').first();
+      const fileInput = page.locator('input#resume[type="file"], input[type="file"]').first();
       if (await fileInput.count() > 0) {
         await fileInput.setInputFiles(profile.resumePath);
         await randomSleep(300, 600);
@@ -103,35 +277,71 @@ export class GreenhouseAdapter extends ATSAdapter {
 
     // Fill explicit customAnswers from profile
     for (const [questionKeyword, answer] of Object.entries(profile.customAnswers)) {
-      const safeKeyword = escapePromptValue(questionKeyword);
-      const safeAnswer = escapePromptValue(answer);
-      console.log(`[GreenhouseAdapter] Answering explicit custom question matching "${safeKeyword}"...`);
-      await this.stagehand.act(`Type "${safeAnswer}" into the field asking about "${safeKeyword}"`);
+      console.log(`[GreenhouseAdapter] Answering explicit custom question matching "${questionKeyword}"...`);
+      await this.safeAct(
+        "Type or select %answer% into the field asking about the question matching %keyword%",
+        { answer, keyword: questionKeyword }
+      );
       await randomSleep(200, 500);
     }
 
     // RAG Dynamic Screener Extraction & Phase 3 RPC Fill
     if (rpc) {
-      console.log("[GreenhouseAdapter] Extracting remaining unanswered custom screener questions...");
+      console.log("[GreenhouseAdapter] Extracting unanswered custom screener questions...");
       try {
         const extractionResult: any = await (this.stagehand as any).extract(
-          "Extract all open-ended questions or dropdown questions that are currently unanswered on this page. Do not include basic fields like Name, Email, Phone, LinkedIn, GitHub, or Resume.",
+          "Extract all open-ended questions or dropdown questions that are currently unanswered on this page. Do not include basic fields like Name, Email, Phone, LinkedIn, GitHub, or Resume, and do not include the preferred first name field.",
           z.object({
             unansweredQuestions: z.array(z.string())
           })
         );
 
         const questions = extractionResult?.unansweredQuestions || [];
-        if (questions.length > 0) {
+        if (questions.length === 0) {
+          console.log("[GreenhouseAdapter] No unanswered custom questions found.");
+        } else {
           console.log(`[GreenhouseAdapter] Found ${questions.length} unanswered custom questions. Requesting RAG answers from Python...`, questions);
           const ragAnswers: Record<string, string> = await rpc("answer_questions", { questions });
 
+          // Deterministic DOM map of the form's labelled inputs.
+          const formFields = await this.collectQuestions();
+          const byNorm = new Map<string, { id: string; kind: "text" | "select" }>();
+          for (const f of formFields) {
+            const n = this.normalise(f.label);
+            if (!byNorm.has(n)) byNorm.set(n, f);
+          }
+
           for (const [questionText, answerText] of Object.entries(ragAnswers)) {
-            if (!answerText || answerText === "N/A") continue;
-            const safeQ = escapePromptValue(questionText);
-            const safeA = escapePromptValue(answerText);
-            console.log(`[GreenhouseAdapter] RAG Filling question "${safeQ}"...`);
-            await this.stagehand.act(`Type or select "${safeA}" for the question asking "${safeQ}"`);
+            // ASK_USER sentinel: Python could not determine an answer without the
+            // user's input. Leave the field blank rather than fabricate.
+            if (!answerText || answerText === "N/A" || answerText === "__ASK_USER__") {
+              console.log(`[GreenhouseAdapter] Skipping unanswered question "${escapePromptValue(questionText)}" (no known answer)`);
+              continue;
+            }
+
+            const origNorm = this.normalise(questionText);
+            const target = byNorm.get(origNorm);
+            if (target) {
+              console.log(`[GreenhouseAdapter] Deterministic fill for "${escapePromptValue(questionText)}" (${target.kind})`);
+              if (target.kind === "select") {
+                await this.fillQuestionSelect(target.id, answerText);
+              } else {
+                await this.fillQuestionText(target.id, answerText);
+              }
+              continue;
+            }
+
+            // Fallback: let the LLM locate the field by its question text.
+            const looksLikeDropdown = /(select|choose|which|how soon|ready to|comfortable|dropdown)/i.test(questionText);
+            console.log(`[GreenhouseAdapter] No DOM match, using AI fill for "${escapePromptValue(questionText)}"`);
+            if (looksLikeDropdown) {
+              await this.fillDropdown(questionText, answerText);
+            } else {
+              await this.safeAct(
+                "Type or select %answer% for the question asking %question%",
+                { answer: escapePromptValue(answerText), question: questionText }
+              );
+            }
             await randomSleep(200, 500);
           }
         }
@@ -139,6 +349,9 @@ export class GreenhouseAdapter extends ATSAdapter {
         console.warn("[GreenhouseAdapter] Dynamic screener extraction warning:", extractErr);
       }
     }
+
+    // Consent checkboxes
+    await this.consentToPrivacy();
 
     console.log("[GreenhouseAdapter] Form filling completed.");
   }

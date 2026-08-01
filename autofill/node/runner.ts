@@ -68,20 +68,24 @@ async function main() {
     process.exit(1);
   }
 
-  process.env.OPENAI_API_KEY = apiKey;
-  process.env.OPENAI_BASE_URL = "https://api.generalcompute.com/v1";
-
   const modelName = process.env.GENERALCOMPUTE_MODEL || "deepseek-v3.2";
-  const stagehandModel = modelName.includes("/") ? modelName : `openai/${modelName}`;
+  const genericModel = modelName.includes("/") ? modelName : `openai/${modelName}`;
+  if (modelName.includes("/")) {
+    console.warn(`[Runner] GENERALCOMPUTE_MODEL "${modelName}" includes a provider prefix; using as-is.`);
+  }
 
-  console.log(`[Runner] Initializing Stagehand LOCAL environment with model ${stagehandModel}...`);
+  console.log(`[Runner] Initializing Stagehand LOCAL environment with model ${genericModel}...`);
 
+  // Stagehand v3 unified model config: modelClientOptions was removed, and the
+  // OpenAI AI SDK defaults custom baseURL endpoints to the Responses API. GeneralCompute
+  // exposes an OpenAI-compatible Chat Completions endpoint, so we must opt into chat format.
   const stagehandConfig: any = {
     env: "LOCAL",
-    model: stagehandModel,
-    modelClientOptions: {
+    model: {
+      modelName: genericModel,
       apiKey: apiKey,
-      baseURL: "https://api.generalcompute.com/v1"
+      baseURL: "https://api.generalcompute.com/v1",
+      openaiEndpointFormat: "chat"
     },
     localBrowserLaunchOptions: {
       headless: false,
@@ -131,8 +135,8 @@ async function main() {
       
       const timer = setTimeout(() => {
         pendingRpcPromises.delete(id);
-        reject(new Error(`RPC timeout for method "${method}" after 30 seconds`));
-      }, 30000);
+        reject(new Error(`RPC timeout for method "${method}" after 600 seconds`));
+      }, 600000);
 
       pendingRpcPromises.set(id, { resolve, reject, timer });
       console.log(`RPC_REQUEST:${JSON.stringify({ id, method, args })}`);
