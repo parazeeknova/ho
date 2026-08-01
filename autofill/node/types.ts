@@ -19,7 +19,8 @@ export const JobPayloadSchema = z.preprocess(
         jobId: data.jobId,
         url: data.url || data.applyLink,
         mode: data.mode || data.applyMode || "review",
-        profile: data.profile
+        profile: data.profile,
+        submitAllowed: data.submitAllowed
       };
     }
     return data;
@@ -28,7 +29,10 @@ export const JobPayloadSchema = z.preprocess(
     jobId: z.string(),
     url: z.string().url(),
     profile: ProfileSchema,
-    mode: z.enum(["auto", "review"]).default("review")
+    mode: z.enum(["auto", "review"]).default("review"),
+    // No-apply phase: when false the fill completes with a screenshot but the
+    // application is never submitted, regardless of mode or review choice.
+    submitAllowed: z.boolean().default(true)
   })
 );
 

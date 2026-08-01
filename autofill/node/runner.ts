@@ -129,14 +129,16 @@ async function main() {
     } catch (_) {}
   });
 
+  const rpcTimeoutMs = parseInt(process.env.AUTOFILL_RPC_TIMEOUT_MS || "1800000", 10);
+
   const askPythonRpc: RpcHelper = (method: string, args: Record<string, any>): Promise<any> => {
     return new Promise((resolve, reject) => {
       const id = `rpc-${Math.random().toString(36).substring(2, 9)}`;
-      
+
       const timer = setTimeout(() => {
         pendingRpcPromises.delete(id);
-        reject(new Error(`RPC timeout for method "${method}" after 600 seconds`));
-      }, 600000);
+        reject(new Error(`RPC timeout for method "${method}" after ${rpcTimeoutMs / 1000} seconds`));
+      }, rpcTimeoutMs);
 
       pendingRpcPromises.set(id, { resolve, reject, timer });
       console.log(`RPC_REQUEST:${JSON.stringify({ id, method, args })}`);
@@ -166,6 +168,27 @@ async function main() {
     const activePage = pages[0];
     await activePage.screenshot({ path: screenshotPath, fullPage: true });
     console.log(`[Runner] Screenshot saved to ${screenshotPath}`);
+
+    if (!payload.submitAllowed) {
+      // No-apply phase: the form is filled and verified, but the application
+      // is never submitted. Report the fill, then close cleanly.
+      console.log("[Runner] Submission disabled in this phase — closing without submitting.");
+      emitStatus({
+        jobId: payload.jobId,
+        status: "awaiting_review",
+        screenshotPath: screenshotPath,
+        message: "Form filled successfully. Submission is disabled in this phase."
+      });
+      rl.close();
+      await stagehand.close();
+      emitStatus({
+        jobId: payload.jobId,
+        status: "skipped",
+        screenshotPath: screenshotPath,
+        message: "Application filled but not submitted (submission disabled)."
+      });
+      process.exit(0);
+    }
 
     if (payload.mode === "auto") {
       console.log("[Runner] Auto mode enabled. Submitting application immediately...");
