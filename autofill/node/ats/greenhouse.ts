@@ -9,6 +9,41 @@ function escapePromptValue(val: string): string {
   return val.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
+/**
+ * Ordered candidate values to try when matching a free-form answer to a
+ * dropdown option: the raw answer, its first clause (split on commas,
+ * periods, semicolons), and a leading Yes/No token. Deduplicated.
+ */
+export function selectCandidates(answer: string): string[] {
+  const candidates: string[] = [];
+  const seen = new Set<string>();
+  const push = (value: string): void => {
+    const t = value.trim();
+    if (t && !seen.has(t.toLowerCase())) {
+      seen.add(t.toLowerCase());
+      candidates.push(t);
+    }
+  };
+  const raw = answer.trim();
+  if (!raw) return candidates;
+  push(raw);
+  const clause = raw.split(/[.,;]\s+|,/, 1)[0].trim();
+  if (clause && clause.length < raw.length) push(clause);
+  const firstToken = raw.split(/\s+/, 1)[0].trim();
+  if (/^(yes|no)$/i.test(firstToken)) push(firstToken);
+  return candidates;
+}
+
+/** Case-insensitive XPath `contains` predicate for a literal text value. */
+function optionContainsXPath(text: string): string {
+  const safe = escapePromptValue(text).replace(/'/g, "\\'");
+  return (
+    'contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "' +
+    safe.toLowerCase() +
+    '")'
+  );
+}
+
 export class GreenhouseAdapter extends ATSAdapter {
   /**
    * Run an AI-powered act() call but never let a single failure abort the whole
@@ -92,14 +127,17 @@ export class GreenhouseAdapter extends ATSAdapter {
       await control.click();
       await randomSleep(300, 600);
       // The menu opens with selectable options; click the one matching the answer.
-      const a = escapePromptValue(answerText).replace(/'/g, "\\'");
-      const menuOption = page
-        .locator(`//div[@id^="react-select"]//div[contains(@role,"option")][contains(., "${a}")]`)
-        .first();
-      if (await menuOption.isVisible().catch(() => false)) {
-        await menuOption.click();
-        await randomSleep(400, 800);
+      for (const candidate of selectCandidates(answerText)) {
+        const menuOption = page
+          .locator(`//div[@id^="react-select"]//div[contains(@role,"option")][${optionContainsXPath(candidate)}]`)
+          .first();
+        if (await menuOption.isVisible().catch(() => false)) {
+          await menuOption.click();
+          await randomSleep(400, 800);
+          return;
+        }
       }
+      console.warn("[GreenhouseAdapter] No manual option match for dropdown; leaving as-is.");
     } catch (err: any) {
       console.warn("[GreenhouseAdapter] Dropdown manual fallback failed:", err?.message || err);
     }
@@ -161,9 +199,14 @@ export class GreenhouseAdapter extends ATSAdapter {
     }
   }
 
-  private async fillQuestionSelect(id: string, answer: string): Promise<void> {
+  /**
+   * Fill a react-select question dropdown. Tries candidate distillations of a
+   * free-form answer against the rendered options deterministically; when no
+   * option matches, asks the LLM to pick the closest option using the real
+   * options visible on the page. Leaves the field blank only if both fail.
+   */
+  private async fillQuestionSelect(id: string, question: string, answer: string): Promise<void> {
     const page = this.getPage();
-    const a = escapePromptValue(answer).replace(/'/g, "\\'");
     try {
       const control = page
         .locator(
@@ -172,15 +215,25 @@ export class GreenhouseAdapter extends ATSAdapter {
         .first();
       await control.click();
       await randomSleep(300, 600);
-      const option = page
-        .locator(
-          `//div[@id^="react-select"]//div[contains(@role,"option")][contains(normalize-space(.), "${a}")]`
-        )
-        .first();
-      if (await option.isVisible().catch(() => false)) {
-        await option.click();
-        await randomSleep(300, 600);
+
+      for (const candidate of selectCandidates(answer)) {
+        const option = page
+          .locator(`//div[@id^="react-select"]//div[contains(@role,"option")][${optionContainsXPath(candidate)}]`)
+          .first();
+        if (await option.isVisible().catch(() => false)) {
+          await option.click();
+          await randomSleep(300, 600);
+          console.log(`[GreenhouseAdapter] Selected option "${candidate}" for #${id}`);
+          return;
+        }
       }
+
+      console.log(`[GreenhouseAdapter] No deterministic option match for #${id}; trying AI selection...`);
+      await this.stagehand.act(
+        `Select the best matching option for the question "${escapePromptValue(question)}". ` +
+          `The candidate's answer is: "${escapePromptValue(answer)}". Click the matching option.`
+      );
+      await randomSleep(400, 800);
     } catch (err: any) {
       console.warn(`[GreenhouseAdapter] fillQuestionSelect failed for #${id}:`, err?.message || err);
     }
@@ -324,7 +377,7 @@ export class GreenhouseAdapter extends ATSAdapter {
             if (target) {
               console.log(`[GreenhouseAdapter] Deterministic fill for "${escapePromptValue(questionText)}" (${target.kind})`);
               if (target.kind === "select") {
-                await this.fillQuestionSelect(target.id, answerText);
+                await this.fillQuestionSelect(target.id, questionText, answerText);
               } else {
                 await this.fillQuestionText(target.id, answerText);
               }

@@ -29,10 +29,10 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import ux
-from rich.prompt import Prompt
+import ux  # noqa: E402
+from rich.prompt import Prompt  # noqa: E402
 
-from src.logging import get_logger
+from src.logging import get_logger  # noqa: E402
 
 logger = get_logger("grill_persona")
 
@@ -49,18 +49,18 @@ IDENTITY_FIELDS = (
 )
 
 WIZARD_QUESTIONS: list[tuple[str, str]] = [
-    ("current_location", "What is your current location?"),
-    ("work_model", "Which work model are you comfortable with? (remote/hybrid/onsite)"),
-    ("relocation", "Are you willing to relocate for this role?"),
+    ("current_location", "Where are you currently based?"),
+    ("work_model", "How do you prefer to work - remote, hybrid, or onsite?"),
+    ("relocation", "Are you open to relocating? Any regions you'd avoid?"),
     ("nationality", "What is your nationality?"),
     ("work_authorization", "Are you legally authorized to work in India?"),
     ("work_authorization", "Are you legally authorized to work in the United States?"),
-    ("visa_sponsorship", "Do you require visa sponsorship?"),
-    ("current_compensation", "What is your current annual cash compensation?"),
-    ("expected_compensation", "What is your expected compensation?"),
-    ("equity", "Do you hold any equity in your current company?"),
-    ("availability", "How soon can you join?"),
-    ("working_hours", "How many hours per week are you available to work?"),
+    ("visa_sponsorship", "Would you need visa sponsorship for roles abroad?"),
+    ("current_compensation", "What is your current compensation? (or say N/A if not earning)"),
+    ("expected_compensation", "What are your salary expectations? (include currency)"),
+    ("equity", "Do you currently hold any equity, RSUs, or ESOPs?"),
+    ("availability", "How soon can you start if selected?"),
+    ("working_hours", "How many hours per week are you available?"),
 ]
 
 
@@ -173,7 +173,7 @@ def grill_answers(data: dict) -> dict:
     for a in stored:
         by_category.setdefault(a["category"], []).append(a)
 
-    ux.section(2, 3, "Personal Q&A", "Enter keeps the current value, if any")
+    ux.section(2, 3, "Personal Q&A", "Free-form answers; dropdowns get closest option")
     answers: list[dict] = []
     seen: set[str] = set()
     for category, question in WIZARD_QUESTIONS:
