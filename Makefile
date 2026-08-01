@@ -12,6 +12,15 @@ test:
 serve:
 	uv run python scripts/serve.py
 
+init-memory:
+	uv run python scripts/init_memory.py
+
+grill-persona:
+	uv run python scripts/grill_persona.py
+
+index-resume:
+	uv run python scripts/index_resume.py
+
 run:
 	uv run python scripts/run.py
 
