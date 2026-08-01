@@ -5,7 +5,7 @@ Runs every CHECK_INTERVAL seconds and repairs any component that died:
   * llama-server embedding service (:8900)          -> relaunch scripts/serve.py
   * firecrawl containers (8)                        -> podman start / compose up
   * pipeline supervisor (scripts/run.py)            -> full relaunch if dead
-  * azure ingest loop (scripts/azure_ingest.py)     -> relaunch with stored creds
+  * azure ingest loop (scripts/azure/ingest.py)     -> relaunch with stored creds
 
 Each component has a per-item cooldown so crash-loops do not thrash.
 Logs to logs/watchdog.log. Single-instance via lockfile.
@@ -143,7 +143,7 @@ class Watchdog:
         )
 
     def heal_ingest(self) -> None:
-        alive = count_of(r"scripts/azure_ingest\.py")
+        alive = count_of(r"scripts/azure/ingest.py")
         if alive > 0:
             return
         if not self.due("ingest"):
@@ -153,7 +153,7 @@ class Watchdog:
         source = f"set -a; . {creds}; set +a;" if creds.exists() else ""
         run_detached(
             f"cd {PROJECT} && {source} PYTHONPATH={PROJECT} nohup uv run --with azure-storage-blob "
-            f"python3 scripts/azure_ingest.py >> {PROJECT / 'logs' / 'ingest.out'} 2>&1 &"
+            f"python3 scripts/azure/ingest.py >> {PROJECT / 'logs' / 'ingest.out'} 2>&1 &"
         )
 
     def cycle(self) -> None:

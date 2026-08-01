@@ -54,6 +54,35 @@ _CDX_DOMAINS: dict[str, tuple[str, str]] = {
     "eightfold": ("*.eightfold.ai/*", r"([a-z0-9-]+)\.eightfold\.ai"),
 }
 
+# Discovery-only ATS families: we harvest their board slugs from the CDX
+# index (feeding the company corpus and future pollers) even though no
+# public JSON API exists to poll them yet.
+_CDX_DISCOVERY: dict[str, tuple[str, str]] = {
+    "workday": ("*.myworkdayjobs.com/*", r"([a-z0-9-]+)\.wd\d?\.myworkdayjobs\.com"),
+    "icims": ("*.icims.com/*", r"([a-z0-9-]+)\.icims\.com"),
+    "jazzhr": ("*.jazzhr.com/*", r"([a-z0-9-]+)\.jazzhr\.com"),
+    "bamboohr": ("*.bamboohr.com/jobs/*", r"([a-z0-9-]+)\.bamboohr\.com"),
+    "jobvite": ("jobs.jobvite.com/*", r"jobs\.jobvite\.com/([a-zA-Z0-9_-]+)"),
+    "bullhorn": ("*.bullhornstaffing.com/*", r"([a-z0-9-]+)\.bullhornstaffing\.com"),
+    "successfactors": (
+        "*.successfactors.*/*",
+        r"([a-z0-9-]+)\.(?:successfactors\.(?:eu|com)|sapsf\.com)",
+    ),
+    "taleo": ("*.taleo.net/*", r"([a-z0-9-]+)\.taleo\.net"),
+    "ukg": ("*.ultipro.com/*", r"([a-z0-9-]+)\.ultipro\.com"),
+    "oraclehcm": ("*.oraclecloud.com/hcmUI/*", r"([a-z0-9-]+)\.oraclecloud\.com"),
+    "peopleadmin": ("*.peopleadmin.com/*", r"([a-z0-9-]+)\.peopleadmin\.com"),
+    "phenom": ("*.phenompeople.com/*", r"([a-z0-9-]+)\.phenompeople\.com"),
+    "cornerstone": ("*.cornerstoneondemand.com/*", r"([a-z0-9-]+)\.cornerstoneondemand\.com"),
+    "plum": ("*.plum.io/*", r"([a-z0-9-]+)\.plum\.io"),
+    "sapling": ("*.saplinghr.com/*", r"([a-z0-9-]+)\.saplinghr\.com"),
+    "bamboohr_2": ("*.bamboohr.com/*", r"([a-z0-9-]+)\.bamboohr\.com"),
+    "adp": ("*.adp.com/jobs/*", r"([a-z0-9-]+)\.adp\.com"),
+    "successfactors_2": ("*.sapsf.com/*", r"([a-z0-9-]+)\.sapsf\.com"),
+    "cerner": ("*.cerner.com/*", r"([a-z0-9-]+)\.cerner\.com"),
+    "dice": ("*.dice.com/jobs/*", r"([a-z0-9-]+)\.dice\.com"),
+}
+
 _ATS_API: dict[str, str] = {
     "greenhouse": "https://boards-api.greenhouse.io/v1/boards/{slug}/jobs",
     "lever": "https://api.lever.co/v0/postings/{slug}?mode=json",
@@ -185,6 +214,7 @@ class Indexer:
             "recruitee": set(),
             "comeet": set(),
             "eightfold": set(),
+            "discovery": set(),
         }
         self.lock = asyncio.Lock()
 
@@ -204,6 +234,25 @@ class Indexer:
         data = {k: sorted(v) for k, v in self.slugs.items()}
         blob = self.container_client.get_blob_client("state/ats_slugs.json")
         blob.upload_blob(json.dumps(data).encode(), overwrite=True)
+
+    async def save_checkpoint(self) -> None:
+        """Write a dated state snapshot so progress survives the relic."""
+        try:
+            data = {k: sorted(v) for k, v in self.slugs.items()}
+            meta = {
+                "ts": int(time.time()),
+                "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "companies": len(self.companies),
+                "seen_jobs": len(self.seen_jobs),
+                "slugs": data,
+            }
+            name = time.strftime("state/checkpoints/%Y%m%d-%H%M%S.json")
+            self.container_client.get_blob_client(name).upload_blob(
+                json.dumps(meta).encode(), overwrite=False
+            )
+            logger.info(f"checkpoint saved: {name}")
+        except Exception as exc:
+            logger.warning(f"checkpoint save failed: {exc}")
 
     async def flush(self) -> None:
         if not self.obs and not self.companies:
@@ -338,8 +387,12 @@ class Indexer:
         }
 
         async def walk_one(platform: str, cid: str) -> None:
-            pattern, slug_re = _CDX_DOMAINS[platform]
+            spec = _CDX_DOMAINS.get(platform) or _CDX_DISCOVERY.get(platform)
+            if spec is None:
+                return
+            pattern, slug_re = spec
             slug_re = re.compile(slug_re, re.IGNORECASE)
+            target = "discovery" if platform in _CDX_DISCOVERY else platform
             page = 0
             errors = 0
             new_since_last_coll = 0
@@ -375,8 +428,8 @@ class Indexer:
                             s = m.group(1).strip().lower()
                             if not s or s in junk or "." in s:
                                 continue
-                            if s not in self.slugs[platform]:
-                                self.slugs[platform].add(s)
+                            if s not in self.slugs[target]:
+                                self.slugs[target].add(s)
                                 added += 1
                         except Exception:
                             continue
@@ -388,7 +441,7 @@ class Indexer:
                     await asyncio.sleep(2)
             logger.info(
                 f"cdx {platform} {cid}: pages={page} errors={errors} "
-                f"clean={clean} +{new_since_last_coll} (total {len(self.slugs[platform])})"
+                f"clean={clean} +{new_since_last_coll} (total {len(self.slugs[target])})"
             )
 
         sem = asyncio.Semaphore(32)
@@ -397,11 +450,12 @@ class Indexer:
             async with sem:
                 await walk_one(p, c)
 
-        tasks = [_gated(p, c) for p in _CDX_DOMAINS for c in candidates]
+        tasks = [_gated(p, c) for p in (*_CDX_DOMAINS, *_CDX_DISCOVERY) for c in candidates]
         await asyncio.gather(*tasks)
-        parts = " ".join(f"{p}={len(self.slugs[p])}" for p in _CDX_DOMAINS)
+        parts = " ".join(f"{p}={len(self.slugs[p])}" for p in (*_CDX_DOMAINS, *_CDX_DISCOVERY))
+        discovery = len(self.slugs.get("discovery", set()))
         total = sum(len(v) for v in self.slugs.values())
-        logger.info(f"CDX harvest done: {parts} (total {total})")
+        logger.info(f"CDX harvest done: {parts} discovery={discovery} (total {total})")
 
     async def harvest_slugs(self, client: AsyncClient) -> None:
         for url in _README_URLS:
@@ -890,7 +944,7 @@ class Indexer:
             srcs = c.get("sources", [])
             try:
                 year = int(c.get("year") or 0)
-            except TypeError, ValueError:
+            except (TypeError, ValueError):
                 year = 0
             if "yc" in srcs and 2021 <= year <= 2026:
                 priority = 0
@@ -1003,7 +1057,10 @@ class Indexer:
         await asyncio.gather(*(check_dns(d) for d in domains))
         logger.info(f"sitemaps: {len(resolved)}/{len(domains)} domains resolved")
 
-        slug_re_cache = {p: re.compile(rx, re.IGNORECASE) for p, (_, rx) in _CDX_DOMAINS.items()}
+        slug_re_cache = {
+            p: re.compile(rx, re.IGNORECASE)
+            for p, (_, rx) in (*_CDX_DOMAINS.items(), *_CDX_DISCOVERY.items())
+        }
 
         async def crawl_domain(domain: str) -> None:
             robots_url = f"https://{domain}/robots.txt"
@@ -1027,10 +1084,11 @@ class Indexer:
                         continue
                     text = r.text[:500_000]
                     for platform, sre in slug_re_cache.items():
+                        target = "discovery" if platform in _CDX_DISCOVERY else platform
                         for m in sre.finditer(text):
                             s = m.group(1).strip().lower()
-                            if s and "." not in s and s not in self.slugs[platform]:
-                                self.slugs[platform].add(s)
+                            if s and "." not in s and s not in self.slugs[target]:
+                                self.slugs[target].add(s)
                 except Exception:
                     continue
 
@@ -1041,7 +1099,7 @@ class Indexer:
                 await crawl_domain(domain)
 
         await asyncio.gather(*(_gated(d) for d in sorted(resolved)))
-        parts = " ".join(f"{p}={len(self.slugs[p])}" for p in _CDX_DOMAINS)
+        parts = " ".join(f"{p}={len(self.slugs[p])}" for p in (*_CDX_DOMAINS, *_CDX_DISCOVERY))
         total = sum(len(v) for v in self.slugs.values())
         logger.info(f"sitemaps done: {parts} (total {total})")
 
@@ -1055,6 +1113,7 @@ class Indexer:
         last_hn_hist = 0.0
         last_remotive = 0.0
         last_arbeitnow = 0.0
+        last_checkpoint = 0.0
         while True:
             async with AsyncClient(
                 headers={"User-Agent": UA}, timeout=15.0, follow_redirects=True
@@ -1087,6 +1146,9 @@ class Indexer:
                     await self.poll_arbeitnow(client)
                     last_arbeitnow = time.monotonic()
             await self.flush()
+            if time.monotonic() - last_checkpoint > 600 or last_checkpoint == 0:
+                await self.save_checkpoint()
+                last_checkpoint = time.monotonic()
             await asyncio.sleep(60)
 
 
