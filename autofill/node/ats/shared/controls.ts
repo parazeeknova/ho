@@ -496,13 +496,18 @@ export class FormControls {
           optionId = await page
             .evaluate(
               (args: { name: string; type: string; want: string }) => {
+                // WARNING: only anonymous arrows here (tsx keepNames wraps
+                // inferred-name arrows in __name(), which throws in page
+                // context). Destructure the helper so it never gains a name.
+                const [norm] = [
+                  (s: string) =>
+                    (s || "").replace(/\s+/g, " ").trim().toLowerCase(),
+                ];
                 const inputs = Array.from(
                   document.querySelectorAll(
                     `input[type="${args.type}"][name="${args.name}"]`
                   )
                 ) as HTMLInputElement[];
-                const norm = (s: string) =>
-                  (s || "").replace(/\s+/g, " ").trim().toLowerCase();
                 for (const inp of inputs) {
                   const wrapLabel = inp.closest("label");
                   const forLabel = inp.id
@@ -564,8 +569,12 @@ export class FormControls {
           (fid: string, want: string) => {
             const scope = document.querySelector(`[data-field-path="${fid}"]`);
             if (!scope) return false;
-            const norm = (s: string) =>
-              (s || "").replace(/\s+/g, " ").trim().toLowerCase();
+            // WARNING: only anonymous arrows here (tsx keepNames wraps
+            // inferred-name arrows in __name(), which throws in page context).
+            const [norm] = [
+              (s: string) =>
+                (s || "").replace(/\s+/g, " ").trim().toLowerCase(),
+            ];
             const candidates = Array.from(
               scope.querySelectorAll(
                 "button, label[for], label:has(input), [role='option'], " +

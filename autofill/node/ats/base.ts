@@ -31,11 +31,16 @@ export abstract class ATSAdapter {
       return null;
     }
     try {
+      // WARNING: only anonymous arrows here (tsx keepNames wraps inferred-name
+      // arrows in __name(), which throws in page context). Destructure so the
+      // visibility helper never gains a name.
       const hit = (await page.evaluate(() => {
-        const vis = (el: Element) => {
-          const r = el.getBoundingClientRect();
-          return r.width > 0 && r.height > 0;
-        };
+        const [vis] = [
+          (el: Element): boolean => {
+            const r = el.getBoundingClientRect();
+            return r.width > 0 && r.height > 0;
+          },
+        ];
         for (const fr of Array.from(
           document.querySelectorAll(
             'iframe[src*="recaptcha"], iframe[src*="hcaptcha"], ' +

@@ -1509,29 +1509,34 @@ export class GenericControls extends FormControls {
       const page = this.getPage();
       try {
         const v = await page.evaluate((fid: string) => {
-          const find = (root: Element | null): string => {
-            if (!root) return "";
-            const sv = root.querySelector('[class*="select__single-value"]');
-            if (sv && (sv.textContent || "").trim()) {
-              return (sv.textContent || "").replace(/\s+/g, " ").trim();
-            }
-            const multi = Array.from(root.querySelectorAll('[class*="select__multi-value"]'));
-            if (multi.length) {
-              return multi
-                .map((m) => (m.textContent || "").replace(/\s+/g, " ").trim())
-                .filter(Boolean)
-                .join(", ");
-            }
-            const selected = root.querySelector('[aria-selected="true"]');
-            if (selected && (selected.textContent || "").trim()) {
-              return (selected.textContent || "").replace(/\s+/g, " ").trim();
-            }
-            // NO raw input.value fallback: a dropdown is only "committed" when
-            // a real suggestion was picked (which renders a committed marker).
-            // Typed-but-unselected text must read as empty so the sweep/reverify
-            // re-resolves it instead of accepting an uncommitted value.
-            return "";
-          };
+          // WARNING: only anonymous arrows here (tsx keepNames wraps any arrow
+          // with an inferred name in __name(), which throws in page context).
+          // Destructure the helper so it never gains a name.
+          const [find] = [
+            (root: Element | null): string => {
+              if (!root) return "";
+              const sv = root.querySelector('[class*="select__single-value"]');
+              if (sv && (sv.textContent || "").trim()) {
+                return (sv.textContent || "").replace(/\s+/g, " ").trim();
+              }
+              const multi = Array.from(root.querySelectorAll('[class*="select__multi-value"]'));
+              if (multi.length) {
+                return multi
+                  .map((m) => (m.textContent || "").replace(/\s+/g, " ").trim())
+                  .filter(Boolean)
+                  .join(", ");
+              }
+              const selected = root.querySelector('[aria-selected="true"]');
+              if (selected && (selected.textContent || "").trim()) {
+                return (selected.textContent || "").replace(/\s+/g, " ").trim();
+              }
+              // NO raw input.value fallback: a dropdown is only "committed" when
+              // a real suggestion was picked (which renders a committed marker).
+              // Typed-but-unselected text must read as empty so the sweep/reverify
+              // re-resolves it instead of accepting an uncommitted value.
+              return "";
+            },
+          ];
           const scope = document.querySelector(`[data-field-path="${fid}"]`);
           if (scope) {
             const direct = find(scope);

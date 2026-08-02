@@ -1401,7 +1401,7 @@ export class WorkdayControlStack extends FormControls {
           const row = checked.closest("label") || checked.closest("[role='radio'], [role='checkbox'], [class*='option']");
           const rowText = row ? (row.textContent || "").replace(/\s+/g, " ").trim() : "";
           const lab = checked.id
-            ? (document.querySelector(`label[for="${cssEscape(checked.id)}"]`)?.textContent || "")
+            ? (document.querySelector(`label[for="${CSS.escape(checked.id)}"]`)?.textContent || "")
             : "";
           return (rowText || lab.trim() || checked.getAttribute("aria-label") || checked.value || "").trim();
         }, cssEscape(field.optionTargets[0]?.name || field.name || field.id))) as string;
