@@ -509,11 +509,18 @@ async def _load_ungated_observations(store: MemoryStore, limit: int = 400) -> li
                             'intern|new grad|junior|entry|graduate'
                              THEN 0 ELSE 1 END
                     ),
-                    -- Junior/entry-level software roles before senior ones so the
+                    -- Junior/entry-level SOFTWARE roles before senior ones so the
                     -- gate doesn't reject the entire batch as title_senior.
+                    -- Requires BOTH a junior signal AND a tech keyword so non-tech
+                    -- "Marketing intern" / "Veterinary internist" postings don't
+                    -- eat the sweep budget only to be rejected by the gate.
                     CASE WHEN lower(o.title) ~
                         'junior|new grad|entry|graduate|intern|associate|mid[- ]level|'
                         'level 1|level 2|early[- ]career|recent grad|i\b|ii\b'
+                        AND lower(o.title) ~
+                        'software|engineer|developer|full.?stack|backend|frontend|devops|sre|'
+                        'data|machine|ml|ai|python|java|golang|rust|quant|platform|infra|'
+                        'cloud|security|ios|android|mobile|embedded|front.?end|back.?end'
                         AND lower(o.title) !~
                         'senior|staff|principal|lead|head|manager|director|vp|principal|architect'
                          THEN 0 ELSE 1 END,
@@ -540,11 +547,18 @@ async def _load_ungated_observations(store: MemoryStore, limit: int = 400) -> li
                             'intern|new grad|junior|entry|graduate'
                              THEN 0 ELSE 1 END
                     ),
-                    -- Junior/entry-level before senior so the gate doesn't reject
-                    -- the whole batch as title_senior.
+                    -- Junior/entry-level SOFTWARE roles before senior ones so the
+                    -- gate doesn't reject the entire batch as title_senior.
+                    -- Requires BOTH a junior signal AND a tech keyword so non-tech
+                    -- "Marketing intern" / "Veterinary internist" postings don't
+                    -- eat the sweep budget only to be rejected by the gate.
                     CASE WHEN lower(o.title) ~
                         'junior|new grad|entry|graduate|intern|associate|mid[- ]level|'
                         'level 1|level 2|early[- ]career|recent grad|i\b|ii\b'
+                        AND lower(o.title) ~
+                        'software|engineer|developer|full.?stack|backend|frontend|devops|sre|'
+                        'data|machine|ml|ai|python|java|golang|rust|quant|platform|infra|'
+                        'cloud|security|ios|android|mobile|embedded|front.?end|back.?end'
                         AND lower(o.title) !~
                         'senior|staff|principal|lead|head|manager|director|vp|principal|architect'
                          THEN 0 ELSE 1 END,
