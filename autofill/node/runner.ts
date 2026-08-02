@@ -7,6 +7,8 @@ import { ATSAdapter, RpcHelper } from "./ats/base.js";
 import { GreenhouseAdapter } from "./ats/greenhouse.js";
 import { AshbyAdapter } from "./ats/ashby.js";
 import { LeverAdapter } from "./ats/lever.js";
+import { WorkdayAdapter } from "./ats/workday.js";
+import { GenericAdapter } from "./ats/generic.js";
 
 interface AdapterRegistration {
   pattern: RegExp;
@@ -17,12 +19,25 @@ const adapterRegistry: AdapterRegistration[] = [
   { pattern: /greenhouse\.io/, factory: (s) => new GreenhouseAdapter(s) },
   { pattern: /jobs\.ashbyhq\.com/, factory: (s) => new AshbyAdapter(s) },
   { pattern: /jobs\.lever\.co/, factory: (s) => new LeverAdapter(s) },
+  { pattern: /myworkdayjobs\.com/, factory: (s) => new WorkdayAdapter(s) },
+  // The GenericAdapter is the intelligent fallback for ANY unknown URL: it
+  // classifies the form's shape (single form / wizard / JD-page / gate) and
+  // drives the shared fill machinery. Known ATS regexes above always win.
+  { pattern: /.*/, factory: (s) => new GenericAdapter(s) },
 ];
 
 function getAdapterForUrl(url: string, stagehand: Stagehand): ATSAdapter {
+  // Debug override to force the generic adapter against a known platform.
+  if (process.env.AUTOFILL_FORCE_GENERIC === "1") {
+    console.warn("[Runner] AUTOFILL_FORCE_GENERIC=1 — forcing GenericAdapter.");
+    return new GenericAdapter(stagehand);
+  }
   const entry = adapterRegistry.find((reg) => reg.pattern.test(url));
   if (!entry) {
     throw new Error(`Unsupported ATS platform for URL: ${url}`);
+  }
+  if (entry.pattern.source === ".*") {
+    console.log(`[Runner] No specialized adapter for ${url}; using GenericAdapter.`);
   }
   return entry.factory(stagehand);
 }
@@ -91,6 +106,11 @@ async function main() {
       baseURL: "https://api.generalcompute.com/v1",
       openaiEndpointFormat: "chat"
     },
+    // Deterministic act(action) fills must never self-heal via an LLM — a
+    // self-heal can silently re-target a DIFFERENT element (and the committed
+    // value check would then read the wrong field). The generic adapter's
+    // observe fallback relies on exact selector execution.
+    selfHeal: false,
     localBrowserLaunchOptions: {
       headless: false,
       args: ["--disable-blink-features=AutomationControlled"]
@@ -155,8 +175,45 @@ async function main() {
 
     const adapter = getAdapterForUrl(payload.url, stagehand);
 
+    // Anti-bot watchdog: if a captcha/challenge blocks the form, abort loudly
+    // (status failed, error CAPTCHA_DETECTED) instead of silently grinding
+    // through fill/RPC timeouts. The Python worker turns this into a Telegram
+    // notification to the user. Polled while the fill runs.
+    const captchaWatchMs = parseInt(process.env.AUTOFILL_CAPTCHA_WATCH_MS || "8000", 10);
+    let captchaMessage: string | null = null;
+    const captchaTimer = setInterval(async () => {
+      if (captchaMessage) return;
+      try {
+        const hit = await adapter.detectCaptcha();
+        if (hit) {
+          captchaMessage = hit;
+          clearInterval(captchaTimer);
+        }
+      } catch (_) {}
+    }, captchaWatchMs);
+
     // Execute filling process with RPC helper
-    await adapter.fill(payload, askPythonRpc);
+    try {
+      await adapter.fill(payload, askPythonRpc);
+    } catch (fillErr: any) {
+      if (captchaMessage) {
+        const err = new Error(`CAPTCHA_DETECTED: ${captchaMessage} blocked the application form`);
+        console.error("[Runner] Captcha detected:", err.message);
+        emitStatus({
+          jobId: payload.jobId,
+          status: "failed",
+          error: err.message,
+        });
+        try {
+          rl.close();
+          await stagehand.close();
+        } catch (_) {}
+        process.exit(1);
+      }
+      throw fillErr;
+    } finally {
+      clearInterval(captchaTimer);
+    }
 
     // Save screenshot safely
     const screenshotDir = path.resolve("./artifacts/screenshots");
@@ -169,7 +226,7 @@ async function main() {
     if (pages.length === 0) {
       throw new Error("No active browser pages available for taking screenshot.");
     }
-    const activePage = pages[0];
+    const activePage = adapter.getActivePage();
     await activePage.screenshot({ path: screenshotPath, fullPage: true });
     console.log(`[Runner] Screenshot saved to ${screenshotPath}`);
 
