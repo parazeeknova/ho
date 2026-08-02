@@ -33,6 +33,7 @@ export {
   editDistance,
   normalizeOptionText,
   selectCandidates,
+  translateToDate,
   xpathStringLiteral,
 } from "./shared/matching.js";
 export type { FormField, JsonFieldSource } from "./shared/model.js";
@@ -258,7 +259,7 @@ export class GreenhouseAdapter extends ATSAdapter {
           id: string;
           kind: string;
           options: string[];
-          targets: Array<{ text: string; name: string; value: string }>;
+          targets: Array<{ text: string; name: string; value: string; id?: string; button?: boolean }>;
         }> = [];
         // WARNING: only anonymous arrows may be used here. tsx's keepNames
         // wraps ANY arrow/function with an inferred name in __name(), and
@@ -301,7 +302,7 @@ export class GreenhouseAdapter extends ATSAdapter {
             const name = inputs[0].name || "";
             if (!name) return;
             const options: string[] = [];
-            const targets: Array<{ text: string; name: string; value: string }> = [];
+            const targets: Array<{ text: string; name: string; value: string; id?: string; button?: boolean }> = [];
             for (const input of inputs) {
               const wrapLabel = input.closest("label");
               const forLabel = input.id
@@ -316,7 +317,7 @@ export class GreenhouseAdapter extends ATSAdapter {
               );
               if (!text) continue;
               options.push(text);
-              targets.push({ text, name: input.name || name, value: input.value || "" });
+              targets.push({ text, name: input.name || name, value: input.value || "", id: input.id || "" });
             }
             if (!options.length) return;
             push(labelText, anchor, single ? "radio" : "checkbox", options, targets);
