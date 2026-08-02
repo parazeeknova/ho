@@ -26,7 +26,7 @@ import re
 from typing import Any
 
 from autofill.rag import ASK_USER, is_scoped_question, qualify_question
-from autofill.telegram import TelegramNotConfiguredError
+from autofill.telegram import TelegramNotConfiguredError, edit_distance
 
 # Sent RPC error marker that aborts a fill: the job was deferred overnight.
 DEFER_MARKER = "AUTOFILL_DEFER"
@@ -87,8 +87,10 @@ def _candidates(answer: str) -> list[str]:
 
 def match_option(answer: str, options: list[str]) -> str | None:
     """Mirror the Node ``chooseOption``: exact first, then unambiguous
-    substring, never against a decline option. Returns None when nothing
-    matches confidently — callers must ask rather than guess."""
+    substring, never against a decline option, then a conservative edit-distance
+    fallback that forgives a small typo (only when exactly one option is within
+    tolerance). Returns None when nothing matches confidently — callers must
+    ask rather than guess."""
     eligible = [o for o in (options or []) if not is_decline_option(o)]
     for cand in _candidates(answer):
         nc = _norm(cand)
@@ -101,6 +103,17 @@ def match_option(answer: str, options: list[str]) -> str | None:
             subs = [o for o in eligible if nc in _norm(o)]
             if len(subs) == 1:
                 return subs[0]
+        # Edit-distance: a small typo against a single token of exactly one
+        # option ("bachlors" -> "Bachelor's Degree", but "degre" matches both
+        # degree tokens so it stays ambiguous).
+        threshold = max(1, min(2, len(nc) // 4))
+        near = []
+        for o in eligible:
+            tokens = [t for t in _norm(o).split() if t]
+            if any(t and edit_distance(nc, t) <= threshold for t in tokens):
+                near.append(o)
+        if len(near) == 1:
+            return near[0]
     return None
 
 
@@ -117,7 +130,8 @@ async def resolve_question(
     """Resolve one screener question. Returns ``(answer, source)``.
 
     ``answer`` is the value to fill, ``source`` is one of ``"kb"``
-    (learned/rules/LLM), ``"telegram"`` (user answered), ``"decline-option"``
+    (deterministic persona/learned/rules), ``"llm"`` (grounded LLM with
+    resume/persona/JD), ``"telegram"`` (user answered), ``"decline-option"``
     (a dropped prompt was mapped to the form's own decline option — still a
     committed value, never blank) or ``"decline"`` (user skipped and the form
     offers no decline option). Raises ``DeferredError`` (overnight) or
@@ -132,27 +146,33 @@ async def resolve_question(
     if not q:
         return ("", "decline")
 
-    if kind == "select":
-        # Dropdowns are resolved without the LLM: the option list is ground
-        # truth, so the KB answer is only usable when it maps onto a real option.
-        kb = await rag.kb_answer(q, job_context=job_context) if rag is not None else None
-        if isinstance(kb, str) and kb.strip():
-            picked = match_option(kb, list(options or []))
+    # Tier 2: deterministic KB (persona / learned / rules) — no LLM.
+    kb = await rag.kb_answer(q, job_context=job_context) if rag is not None else None
+    if isinstance(kb, str) and kb.strip():
+        if kind in ("select", "multi") and options:
+            picked = match_option(kb, list(options))
             if picked:
                 return (picked, "kb")
-    else:
-        # Semantic KB first — deterministic persona answers (e.g. current
-        # location) are preferred over an LLM guess for open-ended questions.
-        kb = await rag.kb_answer(q, job_context=job_context) if rag is not None else None
-        if isinstance(kb, str) and kb.strip():
+            # KB value doesn't map to a real option: fall through to the LLM.
+        else:
             return (kb.strip(), "kb")
-        answer = (
-            (await rag.answer_questions([q], job_context=job_context)).get(q, ASK_USER)
-            if rag is not None
-            else ASK_USER
-        )
-        if answer != ASK_USER and (answer or "").strip():
-            return (answer.strip(), "kb")
+
+    # Tier 3: grounded LLM (persona + resume + JD, with options for selects).
+    # Select answers are validated against the real options inside
+    # answer_questions — a non-option is never filled. Only what survives to
+    # __ASK_USER__ reaches Telegram below.
+    spec: dict[str, Any] = {
+        "question": q,
+        "kind": kind,
+        "options": list(options or []),
+    }
+    answer = (
+        (await rag.answer_questions([spec], job_context=job_context)).get(q, ASK_USER)
+        if rag is not None
+        else ASK_USER
+    )
+    if answer != ASK_USER and (answer or "").strip():
+        return (answer.strip(), "llm")
 
     if overnight:
         raise DeferredError(q, kind=kind, options=options)
@@ -181,6 +201,10 @@ async def resolve_question(
 
     if kind in ("select", "multi") and options:
         picked = await bridge.ask_options(display_q, list(options), timeout=timeout)
+    elif kind in ("select", "multi"):
+        # Dropdown whose options could not be read: still ask as a dropdown so
+        # the user replies with an option label, never a free-form guess.
+        picked = await bridge.ask_dropdown(display_q, timeout=timeout)
     else:
         picked = await bridge.ask(display_q, timeout=timeout)
 
