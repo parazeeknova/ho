@@ -34,6 +34,12 @@ const SYSTEM_SKIP = new Set([
  * hydrated from the JS bundle, and questions must be enumerated from the live
  * DOM after hydration.
  *
+ * Two views: the posting page (job description) and the application form at
+ * the posting URL + "/application". When a bare posting URL is given, the JD
+ * is captured from the posting view FIRST (it feeds rpc("job_context", ...)),
+ * then the Apply button is clicked — which may open the form in a NEW TAB —
+ * and that tab is adopted as the active page for the rest of the fill.
+ *
  * DOM shapes (verified against live postings):
  *  - every question lives in a div carrying `data-field-path="<questionId>"`;
  *  - short answers are `input#<fieldId>` and long answers `textarea#<fieldId>`
@@ -50,6 +56,7 @@ const SYSTEM_SKIP = new Set([
  */
 export class AshbyAdapter extends ATSAdapter {
   protected controls!: AshbyControlStack;
+  private jobCtx: { title: string; company: string; location: string; description: string } | null = null;
 
   constructor(stagehand: Stagehand) {
     super(stagehand);
@@ -58,6 +65,71 @@ export class AshbyAdapter extends ATSAdapter {
 
   protected getPage(): any {
     return this.controls.getPage();
+  }
+
+  /** The Ashby form may live in a second tab; screenshot the adopted page. */
+  getActivePage(): any {
+    return this.controls.getPage();
+  }
+
+  /**
+   * Extract the job posting context (title, company, location, description)
+   * from the posting view. Prefers the SPA hydration blob (`window.__appData`,
+   * present on both the posting and application views) and falls back to DOM
+   * selectors and the company slug from the URL. Used to personalize open-ended
+   * answers, matching GreenhouseAdapter's job_context RPC.
+   */
+  private async readJobContext(): Promise<{
+    title: string;
+    company: string;
+    location: string;
+    description: string;
+  }> {
+    const page = this.getPage();
+    try {
+      const appData: any = await page
+        .evaluate(() => (window as any).__appData ?? null)
+        .catch(() => null);
+      const posting = appData?.posting ?? appData?.job ?? null;
+      const html = (posting?.descriptionHtml || posting?.description || "") as string;
+      const description = html
+        .replace(/<[^>]+>/g, " ")
+        .replace(/&nbsp;/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 6000);
+      const title =
+        (posting?.title as string) ||
+        (await page.locator("h1, [data-qa='posting-title']").first().innerText().catch(() => "")) ||
+        (await page.title()).replace(/\s*[|–-].*$/, "").trim();
+      const company =
+        (posting?.companyName || posting?.company || "") as string ||
+        (appData?.organization?.name as string) ||
+        (await page.locator("[data-qa='company-name'], .company-name").first().innerText().catch(() => "")) ||
+        (() => {
+          try {
+            return new URL(page.url()).pathname.split("/").filter(Boolean)[0] || "";
+          } catch {
+            return "";
+          }
+        })();
+      const location =
+        (posting?.locationName || posting?.location || "") as string ||
+        (await page
+          .locator("[data-qa='posting-location'], .location")
+          .first()
+          .innerText()
+          .catch(() => ""));
+      return {
+        title: title.replace(/\s+/g, " ").trim(),
+        company: company.replace(/\s+/g, " ").trim(),
+        location: location.replace(/\s+/g, " ").trim(),
+        description,
+      };
+    } catch (err: any) {
+      console.warn(`[Ashby] readJobContext failed: ${err?.message || err}`);
+      return { title: "", company: "", location: "", description: "" };
+    }
   }
 
   private async waitForForm(): Promise<void> {
@@ -71,19 +143,56 @@ export class AshbyAdapter extends ATSAdapter {
       if (ready) return;
       await randomSleep(800, 1200);
     }
+    throw new Error(
+      "Ashby application form never appeared (no [data-field-path] elements visible)"
+    );
   }
 
+  /**
+   * Land on the application form view. When the current page is a bare posting
+   * (no form in the DOM), capture the job description FIRST — the JD lives on
+   * the posting view and the form view may not render it — then click the Apply
+   * button, which on some postings opens the form in a NEW TAB. That page is
+   * adopted as the active one. Last resort: navigate to the deterministic
+   * "<posting>/application" route directly.
+   */
   private async ensureApplicationView(): Promise<void> {
     const page = this.getPage();
-    let path = "";
+    const cur = page.url();
     try {
-      path = new URL(page.url()).pathname;
-    } catch {}
-    if (/\/application(?:\/|$)/.test(path)) return;
-    const hasForm = await page.locator('[data-field-path]').first().isVisible().catch(() => false);
-    if (!hasForm) {
-      await this.controls.safeAct("click the 'Apply now' button to open the application form");
-      await randomSleep(1200, 2000);
+      if (/\/application(?:\/|$)/.test(new URL(cur).pathname)) return;
+    } catch {
+      // Unparseable URL; fall through to the DOM check.
+    }
+    if (await page.locator('[data-field-path]').first().isVisible().catch(() => false)) {
+      return; // form embedded on the job page itself
+    }
+    // The posting view is the only reliable source for the JD — grab it now,
+    // before the Apply click hands control to the form view.
+    this.jobCtx = await this.readJobContext();
+
+    await this.controls.safeAct("click the 'Apply now' button to open the application form");
+    if (!(await this.controls.focusPage(/\/application(?:\/|$)/))) {
+      // The tab may not carry /application (custom embeds); adopt any page
+      // that now shows the form.
+      let adopted = false;
+      for (const p of this.stagehand.context.pages()) {
+        if (await p.locator('[data-field-path]').first().isVisible().catch(() => false)) {
+          this.controls.adoptPage(p);
+          adopted = true;
+          break;
+        }
+      }
+      if (!adopted) {
+        // Last resort: Ashby deterministically serves the form at <posting>/application.
+        try {
+          const applyUrl = new URL(cur);
+          applyUrl.pathname = applyUrl.pathname.replace(/\/+$/, "") + "/application";
+          await page.goto(applyUrl, { waitUntil: "domcontentloaded" }).catch(() => {});
+        } catch {
+          // Never throw here; waitForForm reports the failure.
+        }
+      }
     }
   }
 
@@ -92,8 +201,8 @@ export class AshbyAdapter extends ATSAdapter {
     console.log(`[Ashby] Navigating to ${url}...`);
     const page = this.getPage();
     await page.goto(url);
-    await this.waitForForm();
     await this.ensureApplicationView();
+    await this.waitForForm();
 
     console.log("[Ashby] Filling deterministic profile fields...");
     const nameVal = [profile.firstName, profile.lastName].join(" ").trim();
@@ -113,6 +222,16 @@ export class AshbyAdapter extends ATSAdapter {
     }
 
     if (rpc) {
+      // Job context first so open-ended answers are personalized to the role.
+      // Prefer the JD captured from the posting view; on an /application link
+      // fall back to reading __appData/DOM from the form page itself.
+      const jobCtx = this.jobCtx ?? (await this.readJobContext());
+      await rpc("job_context", jobCtx);
+      console.log(
+        `[Ashby] Job context: ${jobCtx.title || "?"} @ ${jobCtx.company || "?"}` +
+          (jobCtx.location ? ` (${jobCtx.location})` : "")
+      );
+
       const screener = new Screener(this.controls, "AshbyAdapter", profile, rpc);
       const filled: string[] = [];
       const blanked: Array<{ label: string; reason: string }> = [];
@@ -237,7 +356,7 @@ export class AshbyAdapter extends ATSAdapter {
           kind: string;
           required: boolean;
           options: string[];
-          targets: Array<{ text: string; name: string; value: string }>;
+          targets: Array<{ text: string; name: string; value: string; id?: string; button?: boolean }>;
         }> = [];
         // WARNING: only anonymous arrows may be defined inside this evaluate.
         // tsx's keepNames wraps any arrow with an inferred name in __name(),
@@ -267,7 +386,7 @@ export class AshbyAdapter extends ATSAdapter {
           if (!label) continue;
 
           const textInput = el.querySelector(
-            'input[type="text"], input[type="email"], input[type="tel"], input:not([type]), input[type="number"]'
+            'input[type="text"], input[type="email"], input[type="tel"], input[type="url"], input:not([type]), input[type="number"]'
           );
           const textarea = el.querySelector("textarea");
           const combobox = el.querySelector(
@@ -283,12 +402,19 @@ export class AshbyAdapter extends ATSAdapter {
 
           let kind = "";
           if (combobox && !radios.length && !checks.length) kind = "combobox";
+          else if (textInput || textarea) {
+            // A react-datepicker (custom calendar) is a date field, not free
+            // text: free-form answers like "immediately" must be translated to
+            // a real date before filling.
+            kind = el.querySelector(".react-datepicker-wrapper, .react-datepicker")
+              ? "date"
+              : "text";
+          }
           else if (radios.length) kind = "radio";
           else if (checks.length) kind = "checkbox";
-          else if (textInput || textarea) kind = "text";
           if (!kind) continue;
 
-          if (kind === "combobox" || kind === "text") {
+          if (kind === "combobox" || kind === "text" || kind === "date") {
             out.push({ label, id, kind, required, options: [], targets: [] });
             continue;
           }
@@ -298,7 +424,7 @@ export class AshbyAdapter extends ATSAdapter {
           // render as buttons); read the option text from a wrapping or
           // sibling label, an option row, an li, or an aria-label.
           const options: string[] = [];
-          const targets: Array<{ text: string; name: string; value: string }> = [];
+          const targets: Array<{ text: string; name: string; value: string; id?: string; button?: boolean }> = [];
           for (const inEl of [...radios, ...checks]) {
             const input = inEl as HTMLInputElement;
             const row = input.closest("label") || input.closest("[class*='option']") || input.closest("li");
@@ -307,16 +433,25 @@ export class AshbyAdapter extends ATSAdapter {
               : "";
             const text = collect(row) || labFor || input.getAttribute("aria-label") || "";
             if (text && !targets.some((t) => t.text === text)) {
-              targets.push({ text, name: input.name || "", value: input.value || "" });
+              targets.push({ text, name: input.name || "", value: input.value || "", id: input.id || "" });
             }
           }
-          // Fall back to option rows when the input has no textual label.
+          // Fall back to option rows when the input has no textual label. The
+          // yes/no toggle rows (a hidden checkbox rendered as Yes/No BUTTONS)
+          // have no input text — record each button as a clickable target.
           if (targets.length === 0) {
             for (const row of Array.from(
-              el.querySelectorAll("[class*='option'] label, [class*='option'] span, li")
+              el.querySelectorAll(
+                "[class*='option'] label, [class*='option'] span, li, button[class*='option']"
+              )
             )) {
               const t = collect(row as HTMLElement);
-              if (t && !options.includes(t)) options.push(t);
+              if (!t || options.includes(t)) continue;
+              options.push(t);
+              const isBtn = (row as HTMLElement).tagName === "BUTTON";
+              if (isBtn) {
+                targets.push({ text: t, name: "", value: "", id: "", button: true });
+              }
             }
           }
           if ((kind === "radio" || kind === "checkbox") && !targets.length && !options.length) continue;
@@ -344,7 +479,7 @@ export class AshbyAdapter extends ATSAdapter {
           kind: r.kind as FormField["kind"],
           required: !!r.required,
           options: r.options ?? [],
-          optionTargets: (r.targets ?? []).map((t: any) => ({ text: t.text, name: t.name, value: t.value })),
+          optionTargets: (r.targets ?? []).map((t: any) => ({ text: t.text, name: t.name, value: t.value, id: t.id ?? "", button: !!t.button })),
           name: r.id,
         })
       );
@@ -373,42 +508,32 @@ export class AshbyControlStack extends FormControls {
     return `div[data-field-path="${f.id}"]`;
   }
 
-  /** Click the option row whose normalized text exactly matches the answer. */
+  /** Click the option row whose normalized text exactly matches the answer.
+   *  The shared base handles label[for] clicks, visually-hidden inputs,
+   *  force-checks, and generic scope-based button/label/option clicks. The
+   *  only Ashby-specific addition is the lone-checkbox consent-gate case. */
   override async clickGroupOption(
     field: FormField,
     answer: string,
     formSelector = "#application-form"
   ): Promise<boolean> {
+    if (await super.clickGroupOption(field, answer, formSelector)) return true;
+    // Fallback: a lone underlying checkbox (consent gates) with no issue UI
+    // row. Only safe when there is exactly ONE — never with a multi-select.
     const page = this.getPage();
-    const want = norm(answer);
     try {
-      const hit = await page.evaluate((fid: string, d: string) => {
-        const scope = document.querySelector(`div[data-field-path="${fid}"]`);
-        if (!scope) return false;
-        const rows = Array.from(
-          scope.querySelectorAll(
-            "[class*='option'] label, [class*='option'] span, button[class*='option'], li, label[for]"
-          )
-        );
-        for (const row of rows) {
-          const t = (row as HTMLElement).textContent || "";
-          if (t.replace(/\s+/g, " ").trim().toLowerCase() === d) {
-            (row as HTMLElement).click();
-            return true;
-          }
-        }
-        // Fallback: a lone underlying checkbox (consent gates) with no issue UI
-        // row. Only safe when there is exactly ONE — never with a multi-select.
-        const lone = scope.querySelectorAll('input[type="checkbox"]');
-        if (lone.length === 1) {
-          (lone[0] as HTMLInputElement).click();
-          return true;
-        }
-        return false;
-      }, field.id, want);
-      if (!hit) return false;
-      await randomSleep(250, 450);
-      return await this.optionChecked(field);
+      return page
+        .evaluate((fid: string) => {
+          const scope = document.querySelector(`div[data-field-path="${fid}"]`);
+          if (!scope) return false;
+          const lone = scope.querySelectorAll('input[type="checkbox"]');
+          if (lone.length !== 1) return false;
+          const box = lone[0] as HTMLInputElement;
+          if (box.checked) return true;
+          box.click();
+          return box.checked;
+        }, field.id)
+        .catch(() => false);
     } catch {
       return false;
     }
@@ -421,19 +546,6 @@ export class AshbyControlStack extends FormControls {
       if (await this.clickGroupOption({ ...field }, pick)) clicked++;
     }
     return clicked > 0;
-  }
-
-  private async optionChecked(f: FormField): Promise<boolean> {
-    const page = this.getPage();
-    return page
-      .evaluate((fid: string) => {
-        const scope = document.querySelector(`div[data-field-path="${fid}"]`);
-        if (!scope) return false;
-        return Array.from(
-          scope.querySelectorAll('input[type="radio"], input[type="checkbox"]')
-        ).some((i) => (i as HTMLInputElement).checked);
-      }, f.id)
-      .catch(() => false);
   }
 
   /** The committed, human-readable value of a question (verification + audit). */
@@ -453,24 +565,9 @@ export class AshbyControlStack extends FormControls {
       }
     }
     if (field.kind === "radio" || field.kind === "checkbox") {
-      const page = this.getPage();
-      try {
-        return (await page.evaluate((fid: string) => {
-          const scope = document.querySelector(`div[data-field-path="${fid}"]`);
-          if (!scope) return "";
-          const checked = scope.querySelector(
-            'input[type="radio"]:checked, input[type="checkbox"]:checked'
-          ) as HTMLInputElement | null;
-          if (!checked) return "";
-          const row = checked.closest("label") || checked.closest("[class*='option']");
-          const rowText = row ? (row.textContent || "").replace(/\s+/g, " ").trim() : "";
-          const lab = checked.id ? (document.querySelector(`label[for="${checked.id}"]`)?.textContent || "") : "";
-          const active = scope.querySelector('button[class*="active"]')?.textContent || "";
-          return (rowText || lab.trim() || active.replace(/\s+/g, " ").trim() || checked.value || "").trim();
-        }, field.id)) as string;
-      } catch {
-        return "";
-      }
+      // The shared scope reader handles checked inputs AND active toggle
+      // buttons — board-agnostic, no Ashby-specific selectors needed.
+      return this.readScopedGroupValue(field);
     }
     return super.readFieldValue(field);
   }
