@@ -529,10 +529,10 @@ async def _load_ungated_observations(store: MemoryStore, limit: int = 400) -> li
     try:
         scores = await store.learned_title_scores()
         score_sql = "(0.0)"
-        # Only drain titles that contain at least one keyword with a known,
-        # non-trivial historical pass-rate. This filters out the long tail of
-        # non-technical / obscure titles that the gate would reject anyway,
-        # so the LLM budget is spent on roles that actually have a chance.
+        # Inclusion filter: only drain titles that contain at least one LEARNED
+        # keyword (any pass-rate). This keeps the budget off the pure noise tail
+        # (obscure/non-technical titles with zero known signal) while still
+        # covering ~100k roles — using only the strong subset starved the sweeps.
         known_kw_filter = "TRUE"
         if scores:
             # Build a SQL CASE scoring a title by its known keyword pass-rates.
@@ -547,13 +547,13 @@ async def _load_ungated_observations(store: MemoryStore, limit: int = 400) -> li
             )
             if arms:
                 score_sql = f"(CASE {arms} ELSE 0.05 END)"
-                # Hard inclusion: only drain titles that contain a strong,
-                # alphanumeric keyword with a decent historical pass-rate.
-                strong = [kw for kw, sc in known if sc >= 0.5 and kw.replace("-", "").isalnum()]
-                if strong:
-                    # Use ILIKE OR-chain to avoid regex-escaping pitfalls.
+                # Inclusion uses ALL learned keywords (not just strong >=0.5) so
+                # the sweep budget reaches the whole relearnt pool; strong ones
+                # still rank first via score_sql.
+                safe = [kw for kw, _ in known if kw and kw.replace("-", "").isalnum()]
+                if safe:
                     conds = " OR ".join(
-                        f"lower(o.title) LIKE '%{kw}%'" for kw in strong[:60]
+                        f"lower(o.title) LIKE '%{kw}%'" for kw in safe[:120]
                     )
                     known_kw_filter = f"({conds})"
 
@@ -588,6 +588,15 @@ async def _load_ungated_observations(store: MemoryStore, limit: int = 400) -> li
                 "CASE WHEN o.last_seen > extract(epoch from now()) - 3*86400 "
                 "THEN 0 ELSE 1 END"
             )
+            # Content-rich: prefer obs whose raw_json actually carries a JD body
+            # (text/lists/description/...), so the sweep doesn't grind on thin
+            # listing-metadata-only rows that need a slow firecrawl rescrape.
+            rich_content = (
+                "(o.raw_json IS NOT NULL AND (o.raw_json ? 'text' OR "
+                "o.raw_json ? 'lists' OR o.raw_json ? 'description' OR "
+                "o.raw_json ? 'content' OR o.raw_json ? 'descriptionPlain' OR "
+                "o.raw_json ? 'overview' OR o.raw_json ? 'jobAd'))"
+            )
 
             if centroid is not None:
                 import numpy as np
@@ -606,6 +615,7 @@ async def _load_ungated_observations(store: MemoryStore, limit: int = 400) -> li
                     LEFT JOIN obs_embeddings e ON e.url_hash = md5(o.url)
                     WHERE r.canonical_id IS NULL
                       AND {known_kw_filter}
+                      AND {rich_content}
                     ORDER BY {hard_block} ASC,
                              {score_sql} DESC,
                              {fresh_bonus} ASC,
@@ -625,6 +635,7 @@ async def _load_ungated_observations(store: MemoryStore, limit: int = 400) -> li
                     LEFT JOIN radar_candidates r ON r.direct_apply_url = o.url
                     WHERE r.canonical_id IS NULL
                       AND {known_kw_filter}
+                      AND {rich_content}
                     ORDER BY {hard_block} ASC,
                              {score_sql} DESC,
                              {fresh_bonus} ASC,
@@ -670,6 +681,11 @@ async def _load_ungated_observations(store: MemoryStore, limit: int = 400) -> li
             raw_markdown=_json_to_markdown(raw_json),
             observed_at=float(r["last_seen"] or 0),
         )
+        # Skip obs with no usable JD text: they'd require a slow firecrawl
+        # rescrape before gating, which stalls the whole sweep. The corpus has
+        # plenty of obs with real content already stored.
+        if len(obs.raw_markdown) < 100:
+            continue
         # Cheap gate pre-check: skip anything the title/url gates would reject,
         # so the sweep budget never lands on roles doomed to rejection.
         if not prefilter_observation(obs, set(), {}):
