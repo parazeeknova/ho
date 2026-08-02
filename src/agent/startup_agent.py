@@ -21,6 +21,24 @@ from src.llm.context import ContextManager
 from src.logging import get_logger
 
 console = Console()
+
+_PLACEHOLDER_COMPANY_RX = re.compile(
+    r"not.?specified|unknown|n\.?a\.?|tbd|placeholder|no.?company|"
+    r"^company$|^job listing$|^-+$",
+    re.I,
+)
+
+
+def _company_domain(company: str) -> str:
+    """Best-effort domain for a company, or '' when the name is a placeholder.
+
+    Prevents fabricating emails like ``careers@notspecifiedinjoblisting.com``
+    when the OSINT layer could not identify a real company.
+    """
+    name = (company or "").strip()
+    if not name or _PLACEHOLDER_COMPANY_RX.search(name):
+        return ""
+    return name.lower().replace(" ", "").strip() + ".com"
 logger = get_logger("startup_agent")
 
 FOUNDER_POST_SCHEMA: dict[str, Any] = {
@@ -399,8 +417,9 @@ class StartupAgent:
             if wiki_founders:
                 job["founders"] = wiki_founders
             if job.get("founders"):
-                domain = company.lower().replace(" ", "").strip() + ".com"
-                await self._finalize_founders(job, company, domain)
+                domain = _company_domain(company)
+                if domain:
+                    await self._finalize_founders(job, company, domain)
             return job
 
         prompt = (
@@ -477,9 +496,11 @@ class StartupAgent:
             job["founders"] = wiki_founders
 
         # Email triangulation fallback + LinkedIn profile resolution for
-        # founders missing direct contact data.
-        domain = company.lower().replace(" ", "").strip() + ".com"
-        await self._finalize_founders(job, company, domain)
+        # founders missing direct contact data. Only when the company name
+        # resolves to a plausible domain (never placeholder names).
+        domain = _company_domain(company)
+        if domain:
+            await self._finalize_founders(job, company, domain)
 
         fi = extracted.get("funding_info")
         if isinstance(fi, dict) and any(fi.values()):

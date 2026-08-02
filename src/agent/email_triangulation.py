@@ -50,14 +50,23 @@ async def check_domain_dns(domain: str) -> bool:
     if not domain:
         return False
     clean_domain = domain.lower().replace("www.", "").strip().split("/")[0]
+    # Reject obvious placeholder/garbage domains (e.g. "not specified in job
+    # listing") before any DNS call so we never ship a fabricated email.
+    placeholder_rx = re.compile(
+        r"not.?specified|unknown|n\.?a\.?|tbd|placeholder|example\.com|"
+        r"\.\.|^\W|no[- ]?company|nocompany",
+        re.I,
+    )
+    if placeholder_rx.search(clean_domain):
+        return False
     if not re.match(r"^[a-z0-9-]+(\.[a-z0-9-]+)+$", clean_domain):
         return False
     loop = asyncio.get_event_loop()
     try:
-        await loop.getaddrinfo(clean_domain, 80, socket.AF_INET)
+        await loop.getaddrinfo(clean_domain, 80, family=socket.AF_INET)
         return True
     except Exception:
-        return True
+        return False
 
 
 async def triangulate_founder_email(founder_name: str, domain: str) -> dict[str, Any] | None:
