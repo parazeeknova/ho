@@ -157,6 +157,18 @@ async def resolve_question(
         else:
             return (kb.strip(), "kb")
 
+    # Visa-sponsorship deterministic policy: when the persona has no
+    # country-scoped answer, decide from the job/home country —
+    #   unknown job country        -> Yes / H1-B
+    #   job country != home        -> Yes / H1-B
+    #   job country == home        -> No
+    # This replaces the Telegram prompt on visa questions whenever the policy
+    # can decide. (The LLM never answers scoped visa questions.)
+    if kind in ("select", "multi") and options and rag is not None:
+        visa_pick = rag.resolve_visa_policy(q, list(options), job_context)
+        if visa_pick is not None:
+            return (visa_pick, "kb")
+
     # Tier 3: grounded LLM (persona + resume + JD, with options for selects).
     # Select answers are validated against the real options inside
     # answer_questions — a non-option is never filled. Only what survives to
