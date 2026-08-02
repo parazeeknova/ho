@@ -174,11 +174,26 @@ class Watchdog:
             log(f"cycle error: {exc}")
 
     def heal_embed_backfill(self) -> None:
-        """Keep the corpus embedding backfill alive (it is not covered elsewhere)."""
+        """Keep the corpus embedding backfill alive (it is not covered elsewhere).
+
+        Only relaunch when the corpus actually has unembedded observations left;
+        once the whole corpus is embedded the process exits cleanly and there is
+        nothing more for it to do until fresh jobs are ingested.
+        """
         alive = count_of(r"scripts/embed_obs.py")
         if alive > 0:
             return
         if not self.due("embed_backfill", 900):
+            return
+        try:
+            code, out = sh(
+                f"cd {PROJECT} && PYTHONPATH={PROJECT} "
+                f"nohup uv run python3 scripts/embed_pending.py 2>/dev/null",
+                timeout=30,
+            )
+            if code != 0:
+                return  # no unembedded work (or DB unreachable); stay quiet
+        except Exception:
             return
         log("embed backfill dead, relaunching")
         zlib = "/nix/store/61a1nwx3w6rqyaisj5rn1sal1981apm7-zlib-1.3.2/lib"
