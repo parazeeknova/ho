@@ -17,6 +17,8 @@ Generic vendor roots are never used.
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import re
 from urllib.parse import urljoin, urlparse
 
@@ -36,6 +38,113 @@ _CAREERS_PATHS = (
     "/open-positions",
     "/openings",
 )
+
+_ATS_PLATFORM_DOMAINS = {
+    "greenhouse": "boards.greenhouse.io",
+    "lever": "jobs.lever.co",
+    "ashby": "jobs.ashbyhq.com",
+    "workable": "apply.workable.com",
+    "smartrecruiters": "jobs.smartrecruiters.com",
+    "workday": "myworkdayjobs.com",
+    "rippling": "app.rippling.com",
+    "teamtailor": ".teamtailor.com",
+    "recruitee": ".recruitee.com",
+    "comeet": ".comeet.com",
+    "jobscore": ".jobscore.com",
+    "jazzhr": ".jazzhr.com",
+    "bamboohr": ".bamboohr.com",
+    "applytojob": ".applytojob.com",
+}
+
+
+def _azure_conn_str() -> str | None:
+    """Build the Azure blob connection string from env, or None if not configured."""
+    import os
+
+    account = os.environ.get("AZURE_STORAGE_ACCOUNT")
+    key = os.environ.get("AZURE_STORAGE_KEY")
+    if not account or not key:
+        return None
+    return (
+        "DefaultEndpointsProtocol=https;"
+        f"AccountName={account};AccountKey={key};EndpointSuffix=core.windows.net"
+    )
+
+
+def _board_url_from_platform(slug: str, platform: str) -> str:
+    """Rebuild a board careers URL from an Azure company record's platform."""
+    domain = _ATS_PLATFORM_DOMAINS.get((platform or "").lower())
+    if not domain:
+        return ""
+    if domain.startswith("."):
+        return f"https://{slug}{domain}"
+    if domain in ("boards.greenhouse.io", "jobs.lever.co", "jobs.ashbyhq.com"):
+        return f"https://{domain}/{slug}"
+    return f"https://{domain}/{slug}"
+
+
+async def discover_from_azure(limit: int = 4000) -> list[dict[str, str]]:
+    """Discover companies from the Azure relic's company index blob.
+
+    Reads the NEWEST ``companies/`` blob in the relic's container and returns
+    every record as a discovery candidate. The blob already carries the ATS
+    platform + careers URL, so no ATS probing is needed — the relic verified
+    them on the crawl side.
+    """
+    companies: list[dict[str, str]] = []
+    conn = _azure_conn_str()
+    if not conn:
+        logger.info("azure discovery: AZURE_STORAGE_ACCOUNT/KEY not configured, skipping")
+        return companies
+    container = os.environ.get("AZURE_CONTAINER", "radar-index")
+    try:
+        from azure.storage.blob import BlobServiceClient
+
+        svc = BlobServiceClient.from_connection_string(conn)
+        cc = svc.get_container_client(container)
+        blobs = [
+            b
+            for b in cc.list_blobs()
+            if b.name.startswith("companies/") and b.name.endswith(".jsonl")
+        ]
+        if not blobs:
+            logger.info("azure discovery: no companies blobs found")
+            return companies
+        newest = max(blobs, key=lambda b: b.last_modified)
+        data = cc.get_blob_client(newest.name).download_blob().readall().decode()
+        for line in data.splitlines():
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+            except Exception:
+                continue
+            slug = (rec.get("slug") or "").strip()
+            platform = (rec.get("platform") or "").strip()
+            careers_url = (rec.get("careers_url") or "").strip()
+            if not slug:
+                continue
+            board_url = careers_url or _board_url_from_platform(slug, platform)
+            if not board_url.startswith("http"):
+                continue
+            companies.append(
+                {
+                    "name": slug,
+                    "website": board_url,
+                    "ats_url": board_url,
+                    "source": "azure",
+                    "platform": platform,
+                }
+            )
+            if len(companies) >= limit:
+                break
+    except Exception as exc:
+        logger.warning(f"azure discovery failed: {exc}")
+    logger.info(
+        f"azure discovery: {len(companies)} companies from newest companies blob"
+    )
+    return companies
+
 
 ATS_SIGNATURES = {
     "greenhouse": "boards.greenhouse.io",

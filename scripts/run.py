@@ -536,6 +536,15 @@ def main() -> None:
 
     env = os.environ.copy()
     env.setdefault("OVERNIGHT_LOOP", "true")
+    # Load Azure relic creds (AZURE_STORAGE_ACCOUNT/KEY) so the orchestrator's
+    # Azure-only company discovery can read the relic's companies blobs.
+    _wd_env = Path(__file__).resolve().parent / ".watchdog.env"
+    if _wd_env.exists():
+        for _line in _wd_env.read_text().splitlines():
+            _line = _line.strip()
+            if _line and not _line.startswith("#") and "=" in _line:
+                _k, _v = _line.split("=", 1)
+                env.setdefault(_k.strip(), _v.strip().strip('"').strip("'"))
     # Full-force LLM matching: force the queue throttles so the workers
     # blast through the corpus (the cloud provider quota allows it).
     env["LLM_QUEUE_RPM"] = "240"

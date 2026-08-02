@@ -57,6 +57,7 @@ from src.radar.sources.discovery import (
 from src.radar.sources.discovery import (
     _resolve_company_domain,
     detect_ats_for_company,
+    discover_from_azure,
     discover_from_betalist,
     discover_from_dealroom,
     discover_from_hackernews,
@@ -152,6 +153,58 @@ async def _discover_new_companies() -> list[dict[str, Any]]:
     logger.info("Starting company discovery sweep")
     _DISCOVERY_METRICS["sweeps"] = _DISCOVERY_METRICS.get("sweeps", 0) + 1
     results: list[dict[str, Any]] = []
+
+    cfg = get_config()
+    discovery_source = cfg.radar.discovery_source if cfg else "all"
+
+    # Azure-relic-only discovery: the relic's company index is the single
+    # source of truth for new companies. No local adapters, no search crawler.
+    if discovery_source == "azure":
+        try:
+            azure_companies = await discover_from_azure(limit=6000)
+            for c in azure_companies:
+                c.setdefault("discovered_from", "azure")
+            results.extend(azure_companies)
+            logger.info(f"Azure discovery: {len(azure_companies)} companies")
+        except Exception as e:
+            logger.warning("Azure discovery failed", exception=str(e))
+            _DISCOVERY_METRICS["failed_azure"] = _DISCOVERY_METRICS.get("failed_azure", 0) + 1
+        if not results:
+            logger.warning("Azure discovery returned nothing; no local adapters as fallback")
+        _DISCOVERY_METRICS["companies_found"] = _DISCOVERY_METRICS.get("companies_found", 0) + len(
+            results
+        )
+        # Skip companies already registered as sources in a prior sweep so a
+        # full 6k blob doesn't re-persist known boards every discovery pass.
+        known_slugs: set[str] = set()
+        for sid in get_all_checkpoints():
+            if sid.startswith("discovered:"):
+                parts = sid.split(":", 2)
+                if len(parts) >= 2:
+                    known_slugs.add(parts[1])
+        fresh: list[dict[str, Any]] = []
+        skipped = 0
+        for c in results:
+            name_slug = c.get("name", "").lower().replace(" ", "-")[:40]
+            if name_slug in known_slugs:
+                skipped += 1
+                continue
+            fresh.append(c)
+        # Cap new sources per discovery pass so a fresh 6k blob doesn't flood
+        # the poller with thousands of boards at once. Each sweep will add up
+        # to AZURE_DISCOVERY_BATCH new boards; subsequent sweeps continue.
+        batch_cap = int(os.environ.get("AZURE_DISCOVERY_BATCH", "300"))
+        fresh = fresh[:batch_cap]
+        results = fresh
+        logger.info(
+            f"Azure discovery: {len(results)} new companies ({skipped} already registered)"
+        )
+        _DISCOVERY_METRICS["sources_added"] = _DISCOVERY_METRICS.get("sources_added", 0) + len(
+            results
+        )
+        logger.info(f"Discovery: {len(results)} companies from Azure relic")
+        return results
+
     adapters = [
         ("dealroom", discover_from_dealroom, 50),
         ("yc", discover_from_yc, 30),
