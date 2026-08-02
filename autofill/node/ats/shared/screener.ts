@@ -18,6 +18,20 @@ export interface BlankEntry {
   reason: string;
 }
 
+// Deferral count shared across every adapter run in this process. A question
+// deferred overnight leaves its field blank, so submission must never happen
+// for that job — the runner reads this after fill() to decide whether to
+// abort instead of submitting an incomplete application.
+let deferredFieldCount = 0;
+
+export function resetDeferredFieldCount(): void {
+  deferredFieldCount = 0;
+}
+
+export function getDeferredFieldCount(): number {
+  return deferredFieldCount;
+}
+
 /**
  * Resolve and fill one question field via the shared resolution chain:
  * identity/profile value → checkbox structural rules → async location
@@ -156,6 +170,7 @@ export class Screener {
       // and prompted the user. Skip this field, keep it out of the final
       // sweep, and continue filling the rest of the form.
       if (/(AUTOFILL_DEFER|DEFER)/.test(rpcErr?.message || String(rpcErr))) {
+        deferredFieldCount += 1;
         console.warn(
           `[${this.controls.tagName}] Question "${escapePromptValue(field.label)}" deferred for user input; ` +
             "leaving blank and continuing."

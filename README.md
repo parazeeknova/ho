@@ -37,6 +37,20 @@ persona knowledge base, it prompts the user on Telegram (`TELEGRAM_BOT_TOKEN` /
 Without Telegram configured, such a question fails the run loudly instead of
 submitting blank answers.
 
+### Overnight mode
+
+When `OVERNIGHT_LOOP=true`, no human is present to answer questions or review
+forms. Fully-fillable jobs are filled and **submitted automatically**
+(`submitAllowed`); a job that hits an unknown question is never submitted — the
+question is recorded, the job is marked `deferred`, and it is listed in the
+morning digest for you to answer and resume (`python -m autofill resume`).
+
+As a safety net, the overnight worker arms an activity watchdog
+(`AUTOFILL_ACTIVITY_TIMEOUT_MS`, default 360000 = 6 min): if the browser stops
+making observable progress (a stuck fill or submit), the runner aborts the job
+instead of hanging until the hour-long DB lease. Any runner/status/RPC activity
+resets the idle timer, so a healthy run is never cut off.
+
 ### Workday portals
 
 Workday career sites are multi-step wizards gated behind a sign-in / account

@@ -9,6 +9,8 @@ import { AshbyAdapter } from "./ats/ashby.js";
 import { LeverAdapter } from "./ats/lever.js";
 import { WorkdayAdapter } from "./ats/workday.js";
 import { GenericAdapter } from "./ats/generic.js";
+import { ActivityWatchdog } from "./utils/activity.js";
+import { getDeferredFieldCount, resetDeferredFieldCount } from "./ats/shared/screener.js";
 
 interface AdapterRegistration {
   pattern: RegExp;
@@ -169,6 +171,60 @@ async function main() {
     });
   };
 
+  // Overnight safety: an activity watchdog kills a run whose browser stops
+  // making progress (stuck fill). The worker enables it (overnight only) via
+  // AUTOFILL_ACTIVITY_TIMEOUT_MS; anything that counts as observable progress
+  // — status events, RPC traffic, adapter logs — resets the idle timer, so a
+  // healthy run is never aborted. A hung Stagehand act/observe emits nothing,
+  // so the run dies here instead of hanging until the hour-long DB lease.
+  const activityTimeoutMs = parseInt(process.env.AUTOFILL_ACTIVITY_TIMEOUT_MS || "0", 10);
+  let watchdog: ActivityWatchdog | null = null;
+  if (activityTimeoutMs > 0) {
+    watchdog = new ActivityWatchdog(activityTimeoutMs, () => {
+      const err = new Error(
+        `STUCK_TIMEOUT: no runner/browser activity for ${Math.round(activityTimeoutMs / 1000)}s`
+      );
+      console.error("[Runner] Activity watchdog fired; aborting stuck run:", err.message);
+      emitStatus({
+        jobId: payload.jobId,
+        status: "failed",
+        error: err.message,
+      });
+      watchdog?.stop();
+      try {
+        rl.close();
+      } catch (_) {}
+      // Best-effort browser close with a hard fallback: a hung browser must
+      // not prevent the process from dying.
+      const forceExit = setTimeout(() => process.exit(1), 5000);
+      Promise.resolve(stagehand.close())
+        .catch(() => {})
+        .then(() => {
+          clearTimeout(forceExit);
+          process.exit(1);
+        });
+    });
+    // Any console output from the runner or the adapters is observable
+    // progress, so treat every log line as activity.
+    const touch = () => watchdog?.touch();
+    const origLog = console.log;
+    const origWarn = console.warn;
+    const origError = console.error;
+    console.log = (...args: any[]) => {
+      touch();
+      origLog(...args);
+    };
+    console.warn = (...args: any[]) => {
+      touch();
+      origWarn(...args);
+    };
+    console.error = (...args: any[]) => {
+      touch();
+      origError(...args);
+    };
+    watchdog.start();
+  }
+
   try {
     await stagehand.init();
     console.log("[Runner] Stagehand initialized successfully.");
@@ -235,6 +291,7 @@ async function main() {
       // is never submitted. The browser stays open (bounded by
       // AUTOFILL_REVIEW_HOLD_MS) so a human can inspect the filled answers;
       // any action — or the hold timeout — closes without submitting.
+      watchdog?.stop();
       console.log(
         "[Runner] Submission disabled — browser window remaining open for review. " +
           "Any action (or the hold timeout) closes without submitting."
@@ -264,7 +321,29 @@ async function main() {
     }
 
     if (payload.mode === "auto") {
+      if (getDeferredFieldCount() > 0) {
+        // A question was deferred (overnight, no human): its field is blank.
+        // Never submit an incomplete application — abort for the morning
+        // digest / resume flow instead. The worker marks the job deferred
+        // (the skipped event is kept deferred when questions are pending).
+        console.log(
+          "[Runner] Deferred question(s) remain; not submitting. " +
+            "Job stays deferred for the morning digest / resume flow."
+        );
+        emitStatus({
+          jobId: payload.jobId,
+          status: "skipped",
+          screenshotPath: screenshotPath,
+          message: "Deferred questions remain; application not submitted."
+        });
+        watchdog?.stop();
+        rl.close();
+        await stagehand.close();
+        process.exit(0);
+      }
       console.log("[Runner] Auto mode enabled. Submitting application immediately...");
+      // The watchdog stays armed through submit so a stuck submit is also
+      // killed, then disarms once the outcome is reported.
       await adapter.submit();
       emitStatus({
         jobId: payload.jobId,
@@ -272,11 +351,13 @@ async function main() {
         screenshotPath: screenshotPath,
         message: "Application filled and submitted automatically."
       });
+      watchdog?.stop();
       rl.close();
       await stagehand.close();
       process.exit(0);
     } else {
       // Review mode: Emit awaiting_review and await action from single dispatcher
+      watchdog?.stop();
       emitStatus({
         jobId: payload.jobId,
         status: "awaiting_review",
@@ -314,6 +395,7 @@ async function main() {
       process.exit(0);
     }
   } catch (err: any) {
+    watchdog?.stop();
     console.error("[Runner] Execution error:", err);
     emitStatus({
       jobId: payload.jobId,
