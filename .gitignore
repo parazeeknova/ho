@@ -36,7 +36,5 @@ devenv.local.yaml
 # pre-commit
 .pre-commit-config.yaml
 scripts/.watchdog.env
-scripts/.r2.env
-backups/
-directory/
+azure_dump/
 intel/
