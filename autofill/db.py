@@ -147,7 +147,24 @@ class AutofillDB:
         screenshot_path: str | None = None,
         error: str | None = None,
     ) -> bool:
-        """Update status and payload of a job."""
+        """Update status and payload of a job.
+
+        Guarded: a terminal status (``deferred``, ``submitted``) is never
+        overwritten by a later non-terminal transition, so a deferred job that
+        still reaches the review step keeps its deferred status and stays in
+        the morning digest.
+        """
+        if status not in ("deferred", "submitted"):
+            current = await self.get_job(job_id)
+            if current and current.get("status") in ("deferred", "submitted"):
+                logger.info(
+                    "Skipping status update: job is terminal",
+                    job_id=job_id,
+                    current=current.get("status"),
+                    requested=status,
+                )
+                return False
+
         updates = ["status = $2", "updated_at = NOW()"]
         args: list[Any] = [job_id, status]
 
@@ -193,17 +210,39 @@ class AutofillDB:
         ``deferred`` is a terminal status for the claim loop, so the job is
         never re-processed automatically; it is picked up again via the
         morning digest and ``resume`` flow.
+
+        Pending questions are ACCUMULATED, never replaced: a form can raise
+        several unknown questions, and each deferral must keep every question
+        so the digest and resume flow see the full list.
         """
-        updates = ["status = 'deferred'", "updated_at = NOW()"]
-        args: list[Any] = [job_id]
-        if questions is not None:
-            args.append(json.dumps(questions))
-            updates.append(f"pending_questions = ${len(args)}::jsonb")
-        if reason:
-            args.append(reason)
-            updates.append(f"error = ${len(args)}")
-        query = f"UPDATE autofill_queue SET {', '.join(updates)} WHERE job_id = $1"
         async with self._pool.acquire() as conn:
+            if questions:
+                existing = await conn.fetchval(
+                    "SELECT pending_questions FROM autofill_queue WHERE job_id = $1",
+                    job_id,
+                )
+                existing_list: list[Any] = []
+                if isinstance(existing, str) and existing.strip():
+                    existing_list = json.loads(existing)
+                elif isinstance(existing, list):
+                    existing_list = existing
+                merged = list(existing_list)
+                seen_q = {str(q.get("question") if isinstance(q, dict) else q) for q in merged}
+                for q in questions:
+                    qtext = str(q.get("question") if isinstance(q, dict) else q)
+                    if qtext and qtext not in seen_q:
+                        merged.append(q)
+                        seen_q.add(qtext)
+
+            updates = ["status = 'deferred'", "updated_at = NOW()"]
+            args: list[Any] = [job_id]
+            if questions:
+                args.append(json.dumps(merged))
+                updates.append(f"pending_questions = ${len(args)}::jsonb")
+            if reason:
+                args.append(reason)
+                updates.append(f"error = ${len(args)}")
+            query = f"UPDATE autofill_queue SET {', '.join(updates)} WHERE job_id = $1"
             result = await conn.execute(query, *args)
             updated = "UPDATE 1" in result
             if updated:

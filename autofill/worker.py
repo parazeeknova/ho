@@ -23,6 +23,7 @@ from autofill.resume import resolve_resume_path
 from autofill.telegram import (
     TelegramNotConfiguredError,
     TelegramQuestionBridge,
+    TelegramSendError,
 )
 from src.logging import get_logger
 from src.memory.pgvector_store import MemoryStore
@@ -72,22 +73,31 @@ class AutofillWorker:
         self._summary_task = asyncio.create_task(self._daily_summary_loop())
         try:
             while self._running:
-                async with self.semaphore:
-                    job = await self.db.claim_next_job(lease_seconds=3600)
-                    if not job:
-                        await asyncio.sleep(2)
-                        continue
+                # The slot is acquired BEFORE claiming and only released when
+                # the runner exits, so max_concurrent bounds the number of
+                # simultaneous Stagehand processes — not just claims.
+                await self.semaphore.acquire()
+                job = await self.db.claim_next_job(lease_seconds=3600)
+                if not job:
+                    self.semaphore.release()
+                    await asyncio.sleep(2)
+                    continue
 
-                    logger.info(
-                        "Claimed job for processing", job_id=job["job_id"], link=job["apply_link"]
-                    )
-                    task = asyncio.create_task(self._process_job(job))
-                    self._running_tasks.add(task)
-                    task.add_done_callback(self._running_tasks.discard)
+                logger.info(
+                    "Claimed job for processing", job_id=job["job_id"], link=job["apply_link"]
+                )
+                task = asyncio.create_task(self._process_job(job))
+                self._running_tasks.add(task)
+                task.add_done_callback(self._on_task_done)
         except asyncio.CancelledError:
             logger.info("AutofillWorker loop cancelled.")
         finally:
             self.stop()
+
+    def _on_task_done(self, task: asyncio.Task[None]) -> None:
+        """Release a processing slot once a job's runner has fully exited."""
+        self._running_tasks.discard(task)
+        self.semaphore.release()
 
     def stop(self) -> None:
         """Stop the worker loop and cancel active tasks."""
@@ -165,34 +175,48 @@ class AutofillWorker:
         apply_link = job["apply_link"]
         apply_mode = job.get("apply_mode", "review")
 
+        deferred_pending: list[dict[str, Any]] = []
+        rag: ScreenerRAG | None = None
         try:
-            store = await MemoryStore.create()
-        except Exception as e:
-            logger.warning(
-                "Could not connect to memory store; persona retrieval disabled", error=str(e)
-            )
-            store = None
-        profile = await build_profile(store=store)
-        profile.resumePath = await resolve_resume_path()
-        rag = ScreenerRAG(profile=profile, store=store)
-        bridge = TelegramQuestionBridge()
-        question_timeout = float(os.getenv("AUTOFILL_QUESTION_TIMEOUT", "300"))
-        overnight = is_overnight()
-        run_mode = "auto" if overnight else apply_mode
-        logger.info("Processing job", job_id=job_id, mode=run_mode, overnight=overnight)
-        job_payload = {
-            "jobId": job_id,
-            "url": apply_link,
-            "mode": run_mode,
-            "profile": profile.model_dump(by_alias=False),
-            # No-apply phase: the form is filled and verified but never submitted.
-            "submitAllowed": False,
-        }
-        payload_str = json.dumps(job_payload)
+            try:
+                store = await MemoryStore.create()
+            except Exception as e:
+                logger.warning(
+                    "Could not connect to memory store; persona retrieval disabled",
+                    error=str(e),
+                )
+                store = None
+            profile = await build_profile(store=store)
+            profile.resumePath = await resolve_resume_path()
+            rag = ScreenerRAG(profile=profile, store=store)
+            bridge = TelegramQuestionBridge()
+            question_timeout = float(os.getenv("AUTOFILL_QUESTION_TIMEOUT", "300"))
+            overnight = is_overnight()
+            run_mode = "auto" if overnight else apply_mode
+            logger.info("Processing job", job_id=job_id, mode=run_mode, overnight=overnight)
+            job_payload = {
+                "jobId": job_id,
+                "url": apply_link,
+                "mode": run_mode,
+                "profile": profile.model_dump(by_alias=False),
+                # No-apply phase: the form is filled and verified but never submitted.
+                "submitAllowed": False,
+            }
+            payload_str = json.dumps(job_payload)
 
-        node_dir = os.path.join(os.path.dirname(__file__), "node")
+            node_dir = os.path.join(os.path.dirname(__file__), "node")
 
-        try:
+            process_env = {**os.environ}
+            if overnight:
+                # No human inspects the browser in the overnight worker: hold the
+                # review step only briefly so the queue never stalls. In day mode
+                # a short review hold (AUTOFILL_REVIEW_HOLD_MS) applies so a
+                # human has a moment to review the filled form without stalling
+                # the queue on batch runs.
+                process_env["AUTOFILL_REVIEW_HOLD_MS"] = "3000"
+            else:
+                process_env["AUTOFILL_REVIEW_HOLD_MS"] = "180000"
+
             process = await asyncio.create_subprocess_exec(
                 "npx",
                 "tsx",
@@ -201,9 +225,7 @@ class AutofillWorker:
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                # No human inspects the browser in the background worker: hold
-                # the review step only briefly so the queue never stalls.
-                env={**os.environ, "AUTOFILL_REVIEW_HOLD_MS": "3000"},
+                env=process_env,
             )
 
             if process.stdin:
@@ -309,20 +331,40 @@ class AutofillWorker:
                                     process.stdin.write(f"{rpc_resp}\n".encode())
                                     await process.stdin.drain()
                                 continue
+                            except TelegramSendError as send_err:
+                                # A question that could not be delivered is NOT a
+                                # user decline: abort loudly via the RPC error
+                                # (the screener rethrows real RPC failures)
+                                # rather than filling a decline for a prompt the
+                                # user never saw.
+                                logger.error(
+                                    "Telegram question not sent",
+                                    job_id=job_id,
+                                    error=str(send_err),
+                                )
+                                if process.stdin and not process.stdin.is_closing():
+                                    rpc_resp = json.dumps(
+                                        {
+                                            "type": "RPC_RESPONSE",
+                                            "id": req_id,
+                                            "error": str(send_err),
+                                        }
+                                    )
+                                    process.stdin.write(f"{rpc_resp}\n".encode())
+                                    await process.stdin.drain()
+                                continue
                             except DeferredError as deferred:
                                 pending = {
                                     "question": deferred.question,
                                     "kind": deferred.kind,
                                     "options": deferred.options,
                                 }
-                                await self._defer_job(
-                                    job_id,
-                                    apply_link,
-                                    [pending],
-                                    bridge,
-                                    role=job.get("role"),
-                                    company=job.get("company"),
-                                )
+                                # Accumulate: a form can raise several unknown
+                                # questions. They are recorded once, together,
+                                # after the runner exits (see below), so the
+                                # digest lists every question — never only the
+                                # last one.
+                                deferred_pending.append(pending)
                                 if process.stdin and not process.stdin.is_closing():
                                     rpc_resp = json.dumps(
                                         {
@@ -360,19 +402,29 @@ class AutofillWorker:
                         logger.info("Received IPC status event", job_id=job_id, status=status)
 
                         if status == "awaiting_review":
-                            await self.db.update_status(
-                                job_id,
-                                status="awaiting_review",
-                                filled_payload=filled_fields,
-                                screenshot_path=screenshot_path,
-                            )
-                            if job_payload.get("submitAllowed", True):
-                                # Submission path: wait for a human decision.
-                                decision = await self._wait_for_human_decision(job_id)
-                                if process.stdin and not process.stdin.is_closing():
-                                    action_payload = json.dumps({"action": decision})
-                                    process.stdin.write(f"{action_payload}\n".encode())
-                                    await process.stdin.drain()
+                            if deferred_pending:
+                                # The runner keeps filling after a deferral and
+                                # still reaches the review step. Never clobber
+                                # the deferred status: it is terminal for the
+                                # claim loop and drives the morning digest.
+                                logger.info(
+                                    "Job has deferred questions; keeping status deferred",
+                                    job_id=job_id,
+                                )
+                            else:
+                                await self.db.update_status(
+                                    job_id,
+                                    status="awaiting_review",
+                                    filled_payload=filled_fields,
+                                    screenshot_path=screenshot_path,
+                                )
+                                if job_payload.get("submitAllowed", True):
+                                    # Submission path: wait for a human decision.
+                                    decision = await self._wait_for_human_decision(job_id)
+                                    if process.stdin and not process.stdin.is_closing():
+                                        action_payload = json.dumps({"action": decision})
+                                        process.stdin.write(f"{action_payload}\n".encode())
+                                        await process.stdin.drain()
 
                         elif status == "submitted":
                             await self.db.update_status(
@@ -381,9 +433,22 @@ class AutofillWorker:
                                 filled_payload=filled_fields,
                                 screenshot_path=screenshot_path,
                             )
+                        elif status == "skipped":
+                            if deferred_pending:
+                                logger.info(
+                                    "Job skipped after deferral; keeping status deferred",
+                                    job_id=job_id,
+                                )
+                            else:
+                                await self.db.update_status(
+                                    job_id,
+                                    status="skipped",
+                                    filled_payload=filled_fields,
+                                    screenshot_path=screenshot_path,
+                                )
                         elif status == "failed":
                             error_msg = event.get("error", "Runner failed")
-                            if DEFER_MARKER in error_msg:
+                            if DEFER_MARKER in error_msg or deferred_pending:
                                 # Abort of a deferred job: the row is already
                                 # marked deferred; never overwrite with failed.
                                 logger.info(
@@ -394,6 +459,19 @@ class AutofillWorker:
                                 await self.db.update_status(
                                     job_id, status="failed", error=error_msg
                                 )
+                                if "CAPTCHA_DETECTED" in error_msg:
+                                    # A bot-detection challenge blocked the form:
+                                    # the fill could not proceed. Alert the user
+                                    # so they know the application needs manual
+                                    # attention instead of silently failing.
+                                    await self._notify_captcha(
+                                        bridge,
+                                        job_id,
+                                        apply_link,
+                                        error_msg,
+                                        role=job.get("role"),
+                                        company=job.get("company"),
+                                    )
 
                     except json.JSONDecodeError:
                         logger.error("Failed to parse status event JSON", raw=event_raw)
@@ -401,11 +479,45 @@ class AutofillWorker:
             await process.wait()
             stderr_task.cancel()
 
+            if deferred_pending:
+                # Record every unknown question once, together, so the morning
+                # digest and resume flow see the full list.
+                await self._defer_job(
+                    job_id,
+                    apply_link,
+                    deferred_pending,
+                    bridge,
+                    role=job.get("role"),
+                    company=job.get("company"),
+                )
+            elif process.returncode != 0:
+                # Runner exited abnormally without a status event (startup
+                # failure, schema error, browser crash). Fail the job loudly
+                # instead of leaving it stuck in 'filling' until the lease.
+                await self.db.update_status(
+                    job_id,
+                    status="failed",
+                    error=f"Runner exited with code {process.returncode}",
+                )
+
         except Exception as e:
             logger.exception("Error processing job", job_id=job_id, error=str(e))
-            await self.db.update_status(job_id, status="failed", error=str(e))
+            if deferred_pending:
+                # Questions were collected before the crash — record them so the
+                # digest/resume still sees the full list.
+                await self._defer_job(
+                    job_id,
+                    apply_link,
+                    deferred_pending,
+                    bridge,
+                    role=job.get("role"),
+                    company=job.get("company"),
+                )
+            else:
+                await self.db.update_status(job_id, status="failed", error=str(e))
         finally:
-            await rag.close()
+            if rag is not None:
+                await rag.close()
 
     async def _defer_job(
         self,
@@ -428,6 +540,44 @@ class AutofillWorker:
                 + "\n".join(self._format_pending(q) for q in questions[:6])
             )
             await bridge.send(text)
+
+    async def _notify_captcha(
+        self,
+        bridge: TelegramQuestionBridge,
+        job_id: str,
+        apply_link: str,
+        error_msg: str,
+        role: Any = None,
+        company: Any = None,
+    ) -> None:
+        """Alert the user that a captcha/challenge blocked the application form.
+
+        The fill was aborted with status failed (error CAPTCHA_DETECTED); unlike
+        a deferred question this is terminal — the form cannot be completed by
+        automation, so the user needs to know it failed and why.
+        """
+        if not bridge.is_configured:
+            logger.warning(
+                "Captcha blocked fill but Telegram not configured",
+                job_id=job_id,
+                error=error_msg,
+            )
+            return
+        role_str = str(role or "Position")
+        company_str = str(company or "Company")
+        text = (
+            f"🛡️ <b>Captcha blocked</b>: {company_str} — {role_str}\n"
+            f'<a href="{apply_link}">Open posting →</a>\n'
+            f"The application form is behind a bot-detection challenge "
+            f"({error_msg.split(':', 1)[-1].strip()}). Automation could not "
+            f"fill it — the job was marked <b>failed</b>.\n"
+            f"Submit it manually or retry later."
+        )
+        ok = await bridge.send(text)
+        if ok:
+            logger.info("Captcha-blocked notification sent", job_id=job_id)
+        else:
+            logger.warning("Captcha-blocked notification send failed", job_id=job_id)
 
     @staticmethod
     def _format_pending(entry: dict[str, Any]) -> str:
