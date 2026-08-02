@@ -1977,6 +1977,26 @@ async def _run_radar_pipeline() -> None:
             if ta.is_configured:
                 await ta.send_sweep_summary(sweep, accepted, len(all_obs), elapsed)
 
+            # Auto-backup: snapshot volumes after each sweep, keep latest 10.
+            # Runs detached so it never blocks the next sweep cycle.
+            if os.environ.get("AUTO_BACKUP", "true").lower() != "false":
+                try:
+                    import subprocess as _sp
+
+                    _root = os.path.dirname(
+                        os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+                    )
+                    _sp.Popen(
+                        f"cd {_root} && PYTHONPATH={_root} "
+                        f"nohup uv run python scripts/auto_backup.py "
+                        f">> logs/auto_backup.log 2>&1 &",
+                        shell=True,
+                        start_new_session=True,
+                    )
+                    logger.info(f"Sweep {sweep}: auto-backup triggered (keep 10)")
+                except Exception as bexc:
+                    logger.warning(f"auto-backup trigger failed: {bexc}")
+
             gc.collect()
             if os.environ.get("OVERNIGHT_LOOP", "true").lower() != "true":
                 break

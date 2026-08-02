@@ -145,3 +145,7 @@ restore:
 
 restore-dir:
 	uv run python scripts/checkpoint_restore.py --dir $(CKPT)
+
+# Auto-backup: snapshot volumes + prune to latest 10 (also runs per-sweep).
+autobackup:
+	uv run python scripts/auto_backup.py

@@ -14,7 +14,9 @@
 #   ./scripts/local_crawler.sh --ingest   # ingest only
 #   ./scripts/local_crawler.sh --no-tor   # crawl without the Tor proxy
 set -euo pipefail
-cd "$(dirname "$0")/.."
+PROJECT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$PROJECT"
+export PYTHONPATH="${PYTHONPATH:-$PROJECT}"
 
 export CRAWL_OUT="${CRAWL_OUT:-$PWD/crawler_out}"
 export CRAWL_PROXY="${CRAWL_PROXY:-socks5://127.0.0.1:9050}"
@@ -23,22 +25,20 @@ if [[ "${1:-}" == "--no-tor" ]]; then
   export CRAWL_PROXY=""
 fi
 
-DEPS="--with azure-storage-blob --with 'httpx[socks]'"
-
 if [[ "${1:-}" == "--ingest" ]]; then
   echo ">>> Local ingest only (from $CRAWL_OUT)"
-  exec uv run $DEPS python scripts/azure/ingest.py
+  exec env PYTHONPATH="$PROJECT" uv run --with azure-storage-blob --with "httpx[socks]" python scripts/azure/ingest.py
 fi
 
 if [[ "${1:-}" == "--crawl" ]]; then
   echo ">>> Local crawler only -> $CRAWL_OUT (proxy: ${CRAWL_PROXY:-none})"
-  exec uv run $DEPS python scripts/azure/crawl_worker.py
+  exec env PYTHONPATH="$PROJECT" uv run --with azure-storage-blob --with "httpx[socks]" python scripts/azure/crawl_worker.py
 fi
 
 echo ">>> Local crawler (proxy: ${CRAWL_PROXY:-none}) + ingest"
-uv run $DEPS python scripts/azure/crawl_worker.py &
+env PYTHONPATH="$PROJECT" uv run --with azure-storage-blob --with "httpx[socks]" python scripts/azure/crawl_worker.py &
 CRAWLPID=$!
 trap "kill $CRAWLPID 2>/dev/null || true" EXIT
 sleep 3
-uv run $DEPS python scripts/azure/ingest.py
+env PYTHONPATH="$PROJECT" uv run --with azure-storage-blob --with "httpx[socks]" python scripts/azure/ingest.py
 wait $CRAWLPID
