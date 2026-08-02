@@ -18,6 +18,7 @@ import asyncio
 import json
 import os
 import time
+from pathlib import Path
 
 from azure.storage.blob import BlobServiceClient
 
@@ -182,16 +183,33 @@ async def _bulk_persist_observations(store, obs_list: list[JobObservation]) -> i
     return len(rows)
 
 
+def _local_blobs(root: Path, prefix: str) -> list[tuple[str, Path]]:
+    """Local mode: list (name, path) JSONL files under root for a prefix."""
+    out: list[tuple[str, Path]] = []
+    base = root / prefix
+    if not base.exists():
+        return out
+    for p in sorted(base.glob("*.jsonl")):
+        out.append((f"{prefix}{p.name}", p))
+    return out
+
+
 async def _ingest(store) -> None:
-    conn_str = (
-        "DefaultEndpointsProtocol=https;"
-        f"AccountName={os.environ['AZURE_STORAGE_ACCOUNT']};"
-        f"AccountKey={os.environ['AZURE_STORAGE_KEY']};"
-        "EndpointSuffix=core.windows.net"
-    )
-    container = os.environ.get("AZURE_CONTAINER", "radar-index")
-    svc = BlobServiceClient.from_connection_string(conn_str)
-    cc = svc.get_container_client(container)
+    local_root = os.environ.get("CRAWL_OUT", "").strip()
+    cc = None
+    if local_root:
+        root = Path(local_root)
+        root.mkdir(parents=True, exist_ok=True)
+    else:
+        conn_str = (
+            "DefaultEndpointsProtocol=https;"
+            f"AccountName={os.environ['AZURE_STORAGE_ACCOUNT']};"
+            f"AccountKey={os.environ['AZURE_STORAGE_KEY']};"
+            "EndpointSuffix=core.windows.net"
+        )
+        container = os.environ.get("AZURE_CONTAINER", "radar-index")
+        svc = BlobServiceClient.from_connection_string(conn_str)
+        cc = svc.get_container_client(container)
 
     async with store._pool.acquire() as conn:
         done = {r["blob"] for r in await conn.fetch("SELECT blob FROM azure_ingest_marker")}
@@ -205,11 +223,18 @@ async def _ingest(store) -> None:
         ("founders/", "osint"),
         ("signals/", "osint"),
     ):
-        for blob in cc.list_blobs(name_starts_with=prefix):
-            if blob.name in done:
+        if local_root:
+            blobs = _local_blobs(root, prefix)
+        else:
+            blobs = [(b.name, None) for b in cc.list_blobs(name_starts_with=prefix)]  # type: ignore[union-attr]
+        for name, path in blobs:
+            if name in done:
                 continue
             try:
-                data = cc.get_blob_client(blob.name).download_blob().readall()
+                if local_root:
+                    data = path.read_bytes()  # type: ignore[union-attr]
+                else:
+                    data = cc.get_blob_client(name).download_blob().readall()  # type: ignore[union-attr]
                 records = [json.loads(line) for line in data.decode().splitlines() if line.strip()]
                 if handler == "obs":
                     batch: list[JobObservation] = []
@@ -236,11 +261,11 @@ async def _ingest(store) -> None:
                 async with store._pool.acquire() as conn:
                     await conn.execute(
                         "INSERT INTO azure_ingest_marker (blob, ingested_at) VALUES ($1, $2)",
-                        blob.name,
+                        name,
                         time.time(),
                     )
             except Exception as exc:
-                logger.warning(f"ingest {blob.name}: {exc}")
+                logger.warning(f"ingest {name}: {exc}")
     if obs_rows or comp_rows or osint_rows:
         logger.info(
             f"Ingested {obs_rows} observations, {comp_rows} company rows, {osint_rows} osint rows"

@@ -116,6 +116,23 @@ azure-funding:
 analytics:
 	uv run python scripts/analytics.py
 
+# Local crawl worker + ingest (routed through Tor via torproxy).
+# Writes to crawler_out/ and pulls into Postgres. No cloud needed.
+crawl:
+	./scripts/local_crawler.sh
+
+crawl-only:
+	./scripts/local_crawler.sh --crawl
+
+crawl-ingest:
+	./scripts/local_crawler.sh --ingest
+
+crawl-notor:
+	./scripts/local_crawler.sh --no-tor
+
+tor-up:
+	docker compose -f docker-compose.yaml up -d torproxy
+
 # Local volume checkpoint backup / restore (snapshots under checkpoints/).
 backup:
 	uv run python scripts/checkpoint_backup.py

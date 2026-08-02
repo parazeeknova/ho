@@ -38,4 +38,5 @@ devenv.local.yaml
 scripts/.watchdog.env
 azure_dump/
 checkpoints/
+crawler_out/
 intel/

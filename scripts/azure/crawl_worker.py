@@ -23,6 +23,7 @@ import json
 import os
 import re
 import time
+from pathlib import Path
 from typing import Any
 
 from azure.storage.blob import BlobServiceClient
@@ -192,15 +193,20 @@ def _slug_variants(name: str) -> list[str]:
 
 class Indexer:
     def __init__(self) -> None:
-        conn_str = (
-            "DefaultEndpointsProtocol=https;"
-            f"AccountName={os.environ['AZURE_STORAGE_ACCOUNT']};"
-            f"AccountKey={os.environ['AZURE_STORAGE_KEY']};"
-            "EndpointSuffix=core.windows.net"
-        )
-        self.container = os.environ.get("AZURE_CONTAINER", "radar-index")
-        self.client = BlobServiceClient.from_connection_string(conn_str)
-        self.container_client = self.client.get_container_client(self.container)
+        """Local or Azure-backed crawl indexer.
+
+        - ``CRAWL_OUT`` set -> local mode: blobs are written as files under
+          that directory (``crawler_out/`` by default) so the local ingest
+          can consume them with no cloud account.
+        - ``CRAWL_PROXY`` set -> route HTTP through a SOCKS5 proxy (e.g.
+          ``socks5://127.0.0.1:9050`` for the torproxy container) so board
+          scrapes don't expose the public IP.
+        - else -> Azure Blob mode (AZURE_STORAGE_ACCOUNT/KEY required).
+        """
+        self.local_out = os.environ.get("CRAWL_OUT", "").strip()
+        self.proxy = os.environ.get("CRAWL_PROXY", "").strip()
+        self.client = None
+        self.container_client = None
         self.obs: list[dict[str, Any]] = []
         self.companies: dict[str, dict[str, Any]] = {}
         self.seen_jobs: set[str] = set()
@@ -217,23 +223,64 @@ class Indexer:
             "discovery": set(),
         }
         self.lock = asyncio.Lock()
+        if self.local_out:
+            self.local_path = Path(self.local_out)
+            self.local_path.mkdir(parents=True, exist_ok=True)
+            return
+        conn_str = (
+            "DefaultEndpointsProtocol=https;"
+            f"AccountName={os.environ['AZURE_STORAGE_ACCOUNT']};"
+            f"AccountKey={os.environ['AZURE_STORAGE_KEY']};"
+            "EndpointSuffix=core.windows.net"
+        )
+        self.container = os.environ.get("AZURE_CONTAINER", "radar-index")
+        self.client = BlobServiceClient.from_connection_string(conn_str)
+        self.container_client = self.client.get_container_client(self.container)
 
     # ── state ────────────────────────────────────────────────────────
 
+    def _write_blob(self, name: str, body: bytes, overwrite: bool = False) -> None:
+        """Write a blob to either the local out dir or Azure."""
+        if self.local_out:
+            dest = self.local_path / name
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            if dest.exists() and not overwrite:
+                return
+            dest.write_bytes(body)
+            return
+        if self.container_client is None:
+            raise RuntimeError("no blob backend configured (set CRAWL_OUT or AZURE creds)")
+        blob = self.container_client.get_blob_client(name)
+        blob.upload_blob(body, overwrite=overwrite)
+
+    def _read_blob(self, name: str) -> bytes | None:
+        """Read a blob from local out dir or Azure. None if missing."""
+        if self.local_out:
+            dest = self.local_path / name
+            if dest.exists():
+                return dest.read_bytes()
+            return None
+        if self.container_client is None:
+            return None
+        try:
+            return self.container_client.get_blob_client(name).download_blob().readall()
+        except Exception:
+            return None
+
     async def load_state(self) -> None:
         try:
-            blob = self.container_client.get_blob_client("state/ats_slugs.json")
-            data = json.loads(blob.download_blob().readall())
-            for k in self.slugs:
-                self.slugs[k].update(data.get(k, []))
-            logger.info(f"Loaded slug state: {sum(len(v) for v in self.slugs.values())} slugs")
+            data = self._read_blob("state/ats_slugs.json")
+            if data:
+                payload = json.loads(data)
+                for k in self.slugs:
+                    self.slugs[k].update(payload.get(k, []))
+                logger.info(f"Loaded slug state: {sum(len(v) for v in self.slugs.values())} slugs")
         except Exception:
             logger.info("No slug state blob yet")
 
     async def save_state(self) -> None:
         data = {k: sorted(v) for k, v in self.slugs.items()}
-        blob = self.container_client.get_blob_client("state/ats_slugs.json")
-        blob.upload_blob(json.dumps(data).encode(), overwrite=True)
+        self._write_blob("state/ats_slugs.json", json.dumps(data).encode(), overwrite=True)
 
     async def save_checkpoint(self) -> None:
         """Write a dated state snapshot so progress survives the relic."""
@@ -247,9 +294,7 @@ class Indexer:
                 "slugs": data,
             }
             name = time.strftime("state/checkpoints/%Y%m%d-%H%M%S.json")
-            self.container_client.get_blob_client(name).upload_blob(
-                json.dumps(meta).encode(), overwrite=False
-            )
+            self._write_blob(name, json.dumps(meta).encode(), overwrite=False)
             logger.info(f"checkpoint saved: {name}")
         except Exception as exc:
             logger.warning(f"checkpoint save failed: {exc}")
@@ -265,21 +310,19 @@ class Indexer:
                 # ingest always reads a completed blob cleanly.
                 seq = int(time.time() * 1000) % 100000
                 blob_name = f"obs/{hour}_{seq}.jsonl"
-                self.container_client.get_blob_client(blob_name).upload_blob(body, overwrite=False)
+                self._write_blob(blob_name, body, overwrite=False)
                 freshers = [o for o in self.obs if o.get("fresher")]
                 if freshers:
                     fbody = "\n".join(json.dumps(o) for o in freshers).encode()
                     fseq = int(time.time() * 1000) % 100000
                     fblob = f"freshers/{hour}_{fseq}.jsonl"
-                    self.container_client.get_blob_client(fblob).upload_blob(fbody, overwrite=False)
+                    self._write_blob(fblob, fbody, overwrite=False)
                     logger.info(f"Uploaded {len(freshers)} fresher observations to {fblob}")
                 logger.info(f"Uploaded {len(self.obs)} observations to {blob_name}")
                 self.obs = []
             if self.companies:
                 body = "\n".join(json.dumps(c) for c in self.companies.values()).encode()
-                self.container_client.get_blob_client(f"companies/{hour}.jsonl").upload_blob(
-                    body, overwrite=True
-                )
+                self._write_blob(f"companies/{hour}.jsonl", body, overwrite=True)
                 logger.info(f"Uploaded {len(self.companies)} companies to companies/{hour}.jsonl")
             await self.save_state()
 
@@ -1086,9 +1129,10 @@ class Indexer:
         are the most likely to still be operating with a live board.
         """
         try:
-            blob = self.container_client.get_blob_client("directory/companies.jsonl")
-            data = blob.download_blob().readall()
-            companies = [json.loads(line) for line in data.decode().splitlines() if line.strip()]
+            raw = self._read_blob("directory/companies.jsonl")
+            if raw is None:
+                raise FileNotFoundError("no directory blob")
+            companies = [json.loads(line) for line in raw.decode().splitlines() if line.strip()]
         except Exception as exc:
             logger.info(f"directory: no companies.jsonl yet ({exc})")
             return
@@ -1166,9 +1210,10 @@ class Indexer:
         import socket as _socket
 
         try:
-            blob = self.container_client.get_blob_client("directory/companies.jsonl")
-            data = blob.download_blob().readall()
-            companies = [json.loads(line) for line in data.decode().splitlines() if line.strip()]
+            raw = self._read_blob("directory/companies.jsonl")
+            if raw is None:
+                raise FileNotFoundError("no directory blob")
+            companies = [json.loads(line) for line in raw.decode().splitlines() if line.strip()]
         except Exception as exc:
             logger.info(f"sitemaps: no directory blob yet ({exc})")
             return
@@ -1259,6 +1304,17 @@ class Indexer:
         total = sum(len(v) for v in self.slugs.values())
         logger.info(f"sitemaps done: {parts} (total {total})")
 
+    def _new_client(self) -> AsyncClient:
+        """Build an AsyncClient, routing through SOCKS5 when CRAWL_PROXY is set."""
+        kwargs: dict[str, Any] = {
+            "headers": {"User-Agent": UA},
+            "timeout": 15.0,
+            "follow_redirects": True,
+        }
+        if self.proxy:
+            kwargs["proxy"] = self.proxy
+        return AsyncClient(**kwargs)
+
     async def run(self) -> None:
         await self.load_state()
         last_ats = 0.0
@@ -1291,9 +1347,7 @@ class Indexer:
         asyncio.create_task(_checkpoint_loop())
         asyncio.create_task(_flush_loop())
         while True:
-            async with AsyncClient(
-                headers={"User-Agent": UA}, timeout=15.0, follow_redirects=True
-            ) as client:
+            async with self._new_client() as client:
                 now = time.monotonic()
                 if now - last_dir > 3600 or last_dir == 0:
                     await self.resolve_directory_slugs(client)
