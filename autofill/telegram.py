@@ -65,6 +65,14 @@ class TelegramNotConfiguredError(RuntimeError):
     """Raised when a user prompt is required but Telegram is not configured."""
 
 
+class TelegramSendError(RuntimeError):
+    """Raised when a question message could not be delivered to Telegram.
+
+    A send failure is NOT a user decline: the prompt never reached the user, so
+    ``resolve_question`` must never map it to Skip or to a decline option.
+    """
+
+
 # Internal sentinel distinguishing "user hit Skip" from "no pick yet".
 _SKIP_SENTINEL = object()
 
@@ -116,7 +124,10 @@ class TelegramQuestionBridge:
         await self._fast_forward()
         msg_id = await self._send_question(question)
         if msg_id is None:
-            return None
+            raise TelegramSendError(f"Telegram question not sent: {question}")
+        # Only the anchor message carries the Skip button and force-reply for a
+        # plain question; replies to it (or plain messages) are the answer.
+        self._option_msg_ids = {msg_id}
 
         deadline = time.monotonic() + timeout
         while True:
@@ -127,9 +138,9 @@ class TelegramQuestionBridge:
             updates = await self._fetch_updates(timeout=min(_MAX_POLL_TIMEOUT, remaining + 1))
             for upd in updates:
                 self._last_update_id = max(self._last_update_id, upd.get("update_id", 0))
-                if self._is_skip_callback(upd, msg_id):
+                if self._is_skip_callback(upd):
                     return None
-                reply = self._extract_reply(upd, msg_id)
+                reply = self._extract_reply_any(upd)
                 if reply is not None:
                     return reply
             await asyncio.sleep(min(1.0, max(0.05, remaining)))
@@ -235,26 +246,12 @@ class TelegramQuestionBridge:
                 "Telegram fast-forward failed", source="autofill.telegram", exception=str(e)
             )
 
-    def _is_skip_callback(self, upd: dict[str, Any], msg_id: int) -> bool:
+    def _is_skip_callback(self, upd: dict[str, Any]) -> bool:
         cb = upd.get("callback_query") or {}
         cb_msg = cb.get("message") or {}
-        return cb.get("data") == "skip" and cb_msg.get("message_id") == msg_id
-
-    def _extract_reply(self, upd: dict[str, Any], msg_id: int) -> str | None:
-        msg = upd.get("message") or {}
-        if not msg:
-            return None
-        user = msg.get("from") or {}
-        if user.get("is_bot"):
-            return None
-        chat = msg.get("chat") or {}
-        if str(chat.get("id", "")) not in self._chat_ids:
-            return None
-        reply_to = (msg.get("reply_to_message") or {}).get("message_id")
-        if reply_to is not None and reply_to != msg_id:
-            return None
-        text = (msg.get("text") or "").strip()
-        return text or None
+        # Accept a Skip on ANY message we sent for the current question (anchor,
+        # continuation chunk, or hint) — each carries its own Skip button.
+        return cb.get("data") == "skip" and cb_msg.get("message_id") in self._option_msg_ids
 
     def _extract_reply_any(self, upd: dict[str, Any]) -> str | None:
         """Like ``_extract_reply`` but accepts a reply to ANY of the chunk
@@ -307,7 +304,7 @@ class TelegramQuestionBridge:
         numbered = len(opts) > 7
         msg_id = await self._send_options(question, opts, numbered)
         if msg_id is None:
-            return None
+            raise TelegramSendError(f"Telegram options not sent: {question}")
 
         deadline = time.monotonic() + timeout
         hinted = False
@@ -328,7 +325,7 @@ class TelegramQuestionBridge:
                 # couldn't match to any option: send a one-time hint and keep
                 # waiting. The answer never silently becomes a bad fill.
                 if self._extract_reply_any(upd) is not None and not hinted:
-                    await self._send_hint(msg_id, opts, numbered)
+                    await self._send_hint(opts, numbered)
                     hinted = True
             await asyncio.sleep(min(1.0, max(0.05, remaining)))
 
@@ -353,8 +350,10 @@ class TelegramQuestionBridge:
         )
         return await self.ask(msg, timeout=timeout)
 
-    async def _send_hint(self, msg_id: int, opts: list[str], numbered: bool) -> None:
-        """Send a one-time hint after a reply matched no option."""
+    async def _send_hint(self, opts: list[str], numbered: bool) -> None:
+        """Send a one-time hint after a reply matched no option. The hint is a
+        force-reply with its own Skip button, so replies to it and its Skip are
+        both tracked as part of the current question."""
         if not opts:
             text = "That didn't match any option. Please reply again."
         elif numbered:
@@ -371,18 +370,15 @@ class TelegramQuestionBridge:
             "chat_id": self._primary_chat_id,
             "text": text,
             "disable_web_page_preview": True,
-            "reply_to_message_id": msg_id,
             "reply_markup": {
                 "force_reply": True,
                 "input_field_placeholder": "Reply again...",
                 "inline_keyboard": [[{"text": "Skip", "callback_data": "skip"}]],
             },
         }
-        try:
-            async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
-                await client.post(TELEGRAM_SEND.format(token=self.bot_token), json=payload)
-        except Exception as e:
-            logger.warning("Telegram send hint error", exception=str(e))
+        hint_id = await self._send_raw(payload)
+        if hint_id is not None:
+            self._option_msg_ids.add(hint_id)
 
     async def _send_options(self, question: str, opts: list[str], numbered: bool) -> int | None:
         self._option_msg_ids.clear()
@@ -412,7 +408,12 @@ class TelegramQuestionBridge:
                 return None
             self._option_msg_ids.add(msg_id)
             for _, text in chunks[1:]:
-                await self.send(text)
+                # Continuation chunks are plain messages, but a user may reply
+                # to them — track their ids so the reply is accepted as the
+                # answer (never dropped as a stranger message).
+                chunk_id = await self._send_chunk(text)
+                if chunk_id is not None:
+                    self._option_msg_ids.add(chunk_id)
             return msg_id
 
         keyboard = [[{"text": o, "callback_data": f"opt:{i}"}] for i, o in enumerate(opts)]
@@ -431,6 +432,15 @@ class TelegramQuestionBridge:
         if msg_id is not None:
             self._option_msg_ids.add(msg_id)
         return msg_id
+
+    async def _send_chunk(self, text: str) -> int | None:
+        """Send a plain continuation message and return its message id."""
+        payload: dict[str, Any] = {
+            "chat_id": self._primary_chat_id,
+            "text": text,
+            "disable_web_page_preview": True,
+        }
+        return await self._send_raw(payload)
 
     async def _send_raw(self, payload: dict[str, Any]) -> int | None:
         try:
@@ -482,10 +492,15 @@ class TelegramQuestionBridge:
         """Return a picked option text, ``_SKIP_SENTINEL`` for Skip, or None."""
         cb = upd.get("callback_query") or {}
         cb_msg = cb.get("message") or {}
+        # A Skip on ANY message we sent for this question (anchor, chunk, or
+        # hint) is honored — each carries its own Skip button.
+        if (
+            cb.get("data") == "skip"
+            and (cb.get("message_id") in self._option_msg_ids or cb_msg.get("message_id") in self._option_msg_ids)
+        ):
+            return _SKIP_SENTINEL
         if cb.get("message_id") == msg_id or cb_msg.get("message_id") == msg_id:
             data = cb.get("data") or ""
-            if data == "skip":
-                return _SKIP_SENTINEL
             # Numbered messages have no opt: buttons, so an opt: callback there
             # can only be stale/forged — ignore it.
             if data.startswith("opt:") and not numbered:

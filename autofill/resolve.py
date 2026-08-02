@@ -26,7 +26,11 @@ import re
 from typing import Any
 
 from autofill.rag import ASK_USER, is_scoped_question, qualify_question
-from autofill.telegram import TelegramNotConfiguredError, edit_distance
+from autofill.telegram import (
+    TelegramNotConfiguredError,
+    TelegramSendError,
+    edit_distance,
+)
 
 # Sent RPC error marker that aborts a fill: the job was deferred overnight.
 DEFER_MARKER = "AUTOFILL_DEFER"
@@ -134,8 +138,9 @@ async def resolve_question(
     resume/persona/JD), ``"telegram"`` (user answered), ``"decline-option"``
     (a dropped prompt was mapped to the form's own decline option — still a
     committed value, never blank) or ``"decline"`` (user skipped and the form
-    offers no decline option). Raises ``DeferredError`` (overnight) or
-    ``TelegramNotConfiguredError`` (day, prompting unavailable).
+    offers no decline option). Raises ``DeferredError`` (overnight),
+    ``TelegramNotConfiguredError`` (day, prompting unavailable) or
+    ``TelegramSendError`` (day, the question could not be delivered).
 
     ``job_context`` carries the extracted job description (title, company,
     location, description) so open-ended answers personalise to the role and

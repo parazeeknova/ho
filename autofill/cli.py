@@ -22,6 +22,7 @@ from autofill.resume import resolve_resume_path
 from autofill.telegram import (
     TelegramNotConfiguredError,
     TelegramQuestionBridge,
+    TelegramSendError,
 )
 from autofill.worker import is_overnight, run_worker
 from src.memory.pgvector_store import MemoryStore
@@ -197,6 +198,19 @@ async def _stream_runner(
                                         "type": "RPC_RESPONSE",
                                         "id": req_id,
                                         "error": str(tg_err),
+                                    }
+                                )
+                                process.stdin.write(f"{rpc_resp}\n".encode())
+                                await process.stdin.drain()
+                            continue
+                        except TelegramSendError as send_err:
+                            print(f"\n[Python CLI] ERROR: {send_err}")
+                            if process.stdin:
+                                rpc_resp = json.dumps(
+                                    {
+                                        "type": "RPC_RESPONSE",
+                                        "id": req_id,
+                                        "error": str(send_err),
                                     }
                                 )
                                 process.stdin.write(f"{rpc_resp}\n".encode())
