@@ -157,6 +157,11 @@ async def _discover_new_companies() -> list[dict[str, Any]]:
     cfg = get_config()
     discovery_source = cfg.radar.discovery_source if cfg else "all"
 
+    # Discovery disabled entirely (relic retired, no local adapters wanted).
+    if discovery_source == "none":
+        logger.info("Discovery disabled (DISCOVERY_SOURCE=none)")
+        return results
+
     # Azure-relic-only discovery: the relic's company index is the single
     # source of truth for new companies. No local adapters, no search crawler.
     if discovery_source == "azure":
@@ -524,10 +529,16 @@ async def _load_ungated_observations(store: MemoryStore, limit: int = 400) -> li
     try:
         scores = await store.learned_title_scores()
         score_sql = "(0.0)"
+        # Only drain titles that contain at least one keyword with a known,
+        # non-trivial historical pass-rate. This filters out the long tail of
+        # non-technical / obscure titles that the gate would reject anyway,
+        # so the LLM budget is spent on roles that actually have a chance.
+        known_kw_filter = "TRUE"
         if scores:
             # Build a SQL CASE scoring a title by its known keyword pass-rates.
-            # Only alphanumeric keywords are safe to embed in LIKE; punctuation
-            # tokens (ci/cd, ui/ux, founder's) are skipped to avoid syntax errors.
+            # Only alphanumeric keywords are safe to embed; punctuation tokens
+            # (ci/cd, ui/ux, founder's, data/robot) are skipped to avoid syntax
+            # errors from escaped quotes/slashes.
             known = sorted(scores.items(), key=lambda kv: -kv[1])[:150]
             arms = " ".join(
                 f"WHEN lower(o.title) LIKE '%{kw}%' THEN {sc:.3f}"
@@ -536,6 +547,15 @@ async def _load_ungated_observations(store: MemoryStore, limit: int = 400) -> li
             )
             if arms:
                 score_sql = f"(CASE {arms} ELSE 0.05 END)"
+                # Hard inclusion: only drain titles that contain a strong,
+                # alphanumeric keyword with a decent historical pass-rate.
+                strong = [kw for kw, sc in known if sc >= 0.5 and kw.replace("-", "").isalnum()]
+                if strong:
+                    # Use ILIKE OR-chain to avoid regex-escaping pitfalls.
+                    conds = " OR ".join(
+                        f"lower(o.title) LIKE '%{kw}%'" for kw in strong[:60]
+                    )
+                    known_kw_filter = f"({conds})"
 
         async with store._pool.acquire() as conn:
             centroid: list[float] | None = None
@@ -561,6 +581,13 @@ async def _load_ungated_observations(store: MemoryStore, limit: int = 400) -> li
                 "'senior|staff|principal|lead|head|director|vp\\b|chief|architect' "
                 "THEN 1 ELSE 0 END"
             )
+            # Freshness boost: recent postings (<3 days) rank above old ones so
+            # the budget isn't spent on stale listings the gate would reject as
+            # source_stale.
+            fresh_bonus = (
+                "CASE WHEN o.last_seen > extract(epoch from now()) - 3*86400 "
+                "THEN 0 ELSE 1 END"
+            )
 
             if centroid is not None:
                 import numpy as np
@@ -578,8 +605,10 @@ async def _load_ungated_observations(store: MemoryStore, limit: int = 400) -> li
                     LEFT JOIN radar_candidates r ON r.direct_apply_url = o.url
                     LEFT JOIN obs_embeddings e ON e.url_hash = md5(o.url)
                     WHERE r.canonical_id IS NULL
+                      AND {known_kw_filter}
                     ORDER BY {hard_block} ASC,
                              {score_sql} DESC,
+                             {fresh_bonus} ASC,
                              affinity DESC NULLS LAST,
                              o.last_seen DESC
                     LIMIT $1
@@ -595,8 +624,10 @@ async def _load_ungated_observations(store: MemoryStore, limit: int = 400) -> li
                     FROM job_observations o
                     LEFT JOIN radar_candidates r ON r.direct_apply_url = o.url
                     WHERE r.canonical_id IS NULL
+                      AND {known_kw_filter}
                     ORDER BY {hard_block} ASC,
                              {score_sql} DESC,
+                             {fresh_bonus} ASC,
                              o.last_seen DESC
                     LIMIT $1
                     """,

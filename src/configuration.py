@@ -273,7 +273,8 @@ class RadarConfig:
         default_factory=lambda: _env_float("RADAR_SOURCE_MIN_CONFIDENCE", 0.3)
     )
     # Discovery source for new companies. "azure" = only the Azure relic's
-    # company index blobs; "all" = local adapters (dealroom/YC/VC/HN/etc).
+    # company index blobs; "all" = local adapters (dealroom/YC/VC/HN/etc);
+    # "none" = disable company discovery entirely.
     discovery_source: str = field(
         default_factory=lambda: _env_str("DISCOVERY_SOURCE", "all").lower()
     )

@@ -1531,7 +1531,7 @@ class MemoryStore:
                 return {"count": 0, "avg": 0, "median": 0, "error": "salary_stats_failed"}
 
     async def learned_title_scores(
-        self, min_obs: int = 3, top_k: int = 200
+        self, min_obs: int = 8, top_k: int = 200
     ) -> dict[str, float]:
         """Learn a per-keyword gate-pass score from historical candidates.
 
@@ -1540,9 +1540,11 @@ class MemoryStore:
         rejected. Returns a map of keyword -> pass-rate in [0,1]. Tokens with
         fewer than ``min_obs`` observations are omitted (unreliable signal).
 
-        The drain uses this to order never-gated observations by *learned* pass
-        probability instead of hand-maintained regex tiers, so it self-adapts as
-        the corpus and the gate evolve.
+        ``min_obs`` defaults to 8 so that one-off keywords (e.g. a single
+        "restaurant" or "music" role that happened to pass) don't pollute the
+        signal. The drain uses this to order never-gated observations by
+        *learned* pass probability instead of hand-maintained regex tiers, so it
+        self-adapts as the corpus and the gate evolve.
         """
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(

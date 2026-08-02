@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import heapq
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -521,7 +522,14 @@ async def _dequeue() -> tuple[int, int, JobCandidate] | None:
 
 def _apply_llm_result(candidate: JobCandidate, result: dict[str, Any]) -> None:
     candidate.normalized_role = str(result.get("role", candidate.normalized_role))
-    candidate.normalized_company = str(result.get("company", candidate.normalized_company))
+    # Never let a placeholder company name from the LLM overwrite a real one
+    # extracted from the source/URL. Placeholders have no apply target.
+    llm_company = str(result.get("company", "") or "").strip()
+    _placeholder = re.match(
+        r"^(not\s*specified|unknown|n/?a|n\.?a\.?|tbd|company|-+)$", llm_company, re.I
+    )
+    if llm_company and not _placeholder:
+        candidate.normalized_company = llm_company
     candidate.match_percent = int(result.get("match_percent", 0))
     candidate.shortlist_probability = int(result.get("shortlist_probability", 0))
     candidate.matching_skills = result.get("matching_skills", []) or []
