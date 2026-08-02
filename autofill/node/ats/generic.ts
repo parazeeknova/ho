@@ -351,8 +351,16 @@ export class GenericAdapter extends ATSAdapter {
             return t;
           })
           .filter(Boolean);
+        // Only inputs inside a real <form> or the <main> content region count
+        // as form controls. A JD page's header/nav search box is neither — if
+        // it counted, formDetected would suppress the Apply click and the walk
+        // would treat the JD page as the form.
         const controls = Array.from(
-          document.querySelectorAll("input, select, textarea")
+          document.querySelectorAll(
+            "form input, form select, form textarea, " +
+              "main input, main select, main textarea, " +
+              "[role='main'] input, [role='main'] select, [role='main'] textarea"
+          )
         ).filter((el) => {
           const e = el as HTMLInputElement;
           if (e.type === "hidden" || e.type === "file") return false;
@@ -439,10 +447,14 @@ export class GenericAdapter extends ATSAdapter {
       await this.waitForFormOrWizard();
       probe = await this.probeFlow();
       if (classifyFlow(probe) === "apply") {
-        // The click did not navigate — adopt a form tab if one opened.
+        // The click did not navigate — adopt a form tab if one opened. Probe
+        // each candidate WITHOUT permanently retargeting the active page until
+        // one qualifies; a page that is still loading or a modal must not
+        // strand the walk on the wrong tab.
         let adopted = false;
+        const previous = this.getPage();
         for (const p of this.stagehand.context.pages()) {
-          if (p === this.getPage()) continue;
+          if (p === previous) continue;
           this.controls.adoptPage(p);
           const kind = classifyFlow(await this.probeFlow());
           if (kind === "form" || kind === "wizard" || kind === "gate") {
@@ -451,6 +463,7 @@ export class GenericAdapter extends ATSAdapter {
           }
         }
         if (!adopted) {
+          this.controls.adoptPage(previous);
           console.warn("[Generic] Apply click did not reveal a form; proceeding to the walk.");
         }
       }
@@ -893,20 +906,26 @@ export class GenericAdapter extends ATSAdapter {
           push(label, e.id || e.name || singlePath(e), e.name || "", "select", required, options);
         }
 
-        // Radio/checkbox groups grouped by input name.
+        // Radio/checkbox groups grouped by input name. Unnamed radios/checks
+        // (very common for a lone consent checkbox like "I agree to the privacy
+        // policy") must NOT be dropped — each is treated as its own singleton
+        // group keyed by its element path, so the structural accept/leave logic
+        // still sees it instead of silently losing a required gate.
         const seenGroups = new Set<string>();
         for (const el of Array.from(
           document.querySelectorAll('input[type="radio"], input[type="checkbox"]')
         )) {
           const e = el as HTMLInputElement;
           if (inNav(e)) continue;
-          const name = e.name || "";
-          if (!name || seenGroups.has(name)) continue;
-          seenGroups.add(name);
           const type = e.type;
-          const group = Array.from(
-            document.querySelectorAll(`input[type="${type}"][name="${qesc(name)}"]`)
-          ) as HTMLInputElement[];
+          const name = e.name || "";
+          if (name && seenGroups.has(name)) continue;
+          if (name) seenGroups.add(name);
+          const group: HTMLInputElement[] = name
+            ? (Array.from(
+                document.querySelectorAll(`input[type="${type}"][name="${qesc(name)}"]`)
+              ) as HTMLInputElement[])
+            : [e];
           const targets: Array<{ text: string; name: string; value: string; id?: string }> = [];
           const options: string[] = [];
           let anyVisible = false;
