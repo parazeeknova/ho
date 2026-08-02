@@ -13,7 +13,14 @@ export interface FormField {
   label: string;
   /** Primary element id (text/select) or a stable group anchor (radio/checkbox). */
   id: string;
-  kind: "text" | "select" | "multi" | "radio" | "checkbox";
+  kind:
+    | "text"
+    | "select"
+    | "multi"
+    | "radio"
+    | "checkbox"
+    /** Ashby (and similar boards) render dropdowns as async comboboxes. */
+    | "combobox";
   required: boolean;
   options: string[];
   /** Radio/checkbox option click targets (text + input name/value). */

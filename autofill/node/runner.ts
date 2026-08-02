@@ -5,6 +5,7 @@ import * as readline from "readline";
 import { JobPayloadSchema, ActionCallbackSchema, StatusEvent } from "./types.js";
 import { ATSAdapter, RpcHelper } from "./ats/base.js";
 import { GreenhouseAdapter } from "./ats/greenhouse.js";
+import { AshbyAdapter } from "./ats/ashby.js";
 
 interface AdapterRegistration {
   pattern: RegExp;
@@ -13,6 +14,7 @@ interface AdapterRegistration {
 
 const adapterRegistry: AdapterRegistration[] = [
   { pattern: /greenhouse\.io/, factory: (s) => new GreenhouseAdapter(s) },
+  { pattern: /jobs\.ashbyhq\.com/, factory: (s) => new AshbyAdapter(s) },
 ];
 
 function getAdapterForUrl(url: string, stagehand: Stagehand): ATSAdapter {
