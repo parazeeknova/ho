@@ -555,17 +555,21 @@ async def _load_ungated_observations(store: MemoryStore, limit: int = 400) -> li
                     WHERE r.canonical_id IS NULL
                     ORDER BY (
                         -- Tier 0: junior/entry-level SOFTWARE roles (gate-passable
-                        -- with early-career override). Requires BOTH a junior signal
-                        -- AND a tech keyword so "Marketing intern" doesn't rank here.
+                        -- with early-career override). Requires a strong engineering
+                        -- keyword (NOT generic "AI"/"data" which appear in non-tech
+                        -- titles like "Data Center Risk Associate") plus a junior
+                        -- signal, so the budget never wastes on gate-rejects.
                         CASE WHEN lower(o.title) ~
                             'junior|new grad|entry|graduate|intern|associate|mid[- ]level|'
                             'level 1|level 2|early[- ]career|recent grad|i\b|ii\b'
                             AND lower(o.title) ~
                             'software|engineer|developer|full.?stack|backend|frontend|devops|sre|'
-                            'data|machine|ml|ai|python|java|golang|rust|quant|platform|infra|'
-                            'cloud|security|ios|android|mobile|embedded|front.?end|back.?end'
+                            'ml|machine learning|python|java|golang|rust|quant|platform|infra|'
+                            'cloud|security|ios|android|mobile|embedded|front.?end|back.?end|'
+                            'swe|systems engineer|networking|database administrator'
                             AND lower(o.title) !~
-                            'senior|staff|principal|lead|head|manager|director|vp|principal|architect'
+                            'senior|staff|principal|lead|head|manager|director|vp|principal|architect|'
+                            'risk|operations|account|recruit|sales|marketing|design|analyst|specialist'
                              THEN 0
                         -- Tier 1: non-senior software roles (pass the gate once the
                         -- junior pool is drained; keeps the sweeps from going empty).
@@ -600,10 +604,12 @@ async def _load_ungated_observations(store: MemoryStore, limit: int = 400) -> li
                             'level 1|level 2|early[- ]career|recent grad|i\b|ii\b'
                             AND lower(o.title) ~
                             'software|engineer|developer|full.?stack|backend|frontend|devops|sre|'
-                            'data|machine|ml|ai|python|java|golang|rust|quant|platform|infra|'
-                            'cloud|security|ios|android|mobile|embedded|front.?end|back.?end'
+                            'ml|machine learning|python|java|golang|rust|quant|platform|infra|'
+                            'cloud|security|ios|android|mobile|embedded|front.?end|back.?end|'
+                            'swe|systems engineer|networking|database administrator'
                             AND lower(o.title) !~
-                            'senior|staff|principal|lead|head|manager|director|vp|principal|architect'
+                            'senior|staff|principal|lead|head|manager|director|vp|principal|architect|'
+                            'risk|operations|account|recruit|sales|marketing|design|analyst|specialist'
                              THEN 0
                         -- Tier 1: non-senior software roles (pass the gate).
                         WHEN lower(o.title) ~
