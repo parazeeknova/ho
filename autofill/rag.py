@@ -230,7 +230,10 @@ _PERSONAL_RULES: list[tuple[re.Pattern, str]] = [
     ),
     (
         re.compile(
-            r"how soon.*join|when can you (start|join)|start date|availability|notice period", re.I
+            r"how soon.*join|when can you (start|join)|start date|availability|"
+            r"available to (start|join|begin)|earliest date|can you (start|begin)|"
+            r"notice period",
+            re.I,
         ),
         "start_date",
     ),
@@ -247,13 +250,49 @@ _PERSONAL_RULES: list[tuple[re.Pattern, str]] = [
 # These still require the configured min-salary / are safe defaults.
 _EXPECTED_COMP_KEYS = {"expected_comp"}
 
+# Start-availability questions. When the candidate's configured answer is a
+# free-text response (e.g. "Immeditely"), it is normalized so a typo never
+# lands in the form: "immeditely"/"immediate"/"asap" -> "Immediately",
+# "2 weeks"/"two weeks" -> "2 weeks", "1 month"/"one month" -> "1 month".
+_START_DATE_KEYS = {"start_date"}
+
+
+def _normalize_start_date(answer: str) -> str | None:
+    """Clean a free-text start-availability answer. Returns the normalized
+    value, or the input unchanged when nothing maps confidently."""
+    a = (answer or "").strip()
+    if not a:
+        return a
+    low = a.lower()
+    if low in (
+        "immeditely",
+        "immediatley",
+        "immediate",
+        "immediately",
+        "asap",
+        "right away",
+        "now",
+    ):
+        return "Immediately"
+    m = re.match(r"^(?:in\s+|within\s+)?(\d+|one|two|three|a)\s+(day|week|month|weeks|months|days)\b", low)
+    if m:
+        num = m.group(1)
+        unit = m.group(2).lower()
+        n = {"one": "1", "two": "2", "three": "3", "a": "1"}.get(num, num)
+        # Normalize the unit to singular, then pluralize only when n != 1.
+        singular = {"days": "day", "weeks": "week", "months": "month"}.get(unit, unit)
+        if n != "1" and not singular.endswith("s"):
+            singular += "s"
+        return f"{n} {singular}"
+    return a
+
 # Countries used to keep work-authorization answers country-specific. Each
 # entry maps a canonical scope key to every pattern that names that country.
 _COUNTRY_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("india", re.compile(r"\bindia\b", re.I)),
-    ("united states", re.compile(r"united states|\busa\b|\bu\.s\.a\b|\bu\.s\.\b", re.I)),
+    ("united states", re.compile(r"united states|\busa\b|\bu\.s\.a\b|\bu\.s\.?(?!\w)", re.I)),
     ("united kingdom",
-     re.compile(r"\buk\b|\bunited kingdom\b|\bengland\b|\bscotland\b|\bwales\b", re.I)),
+     re.compile(r"\buk\b|\bu\.k\.?(?!\w)|\bunited kingdom\b|\bengland\b|\bscotland\b|\bwales\b", re.I)),
     ("canada", re.compile(r"\bcanada\b", re.I)),
     ("australia", re.compile(r"\baustralia\b|\baus\b", re.I)),
     ("new zealand", re.compile(r"\bnew zealand\b|\bnz\b", re.I)),
@@ -731,11 +770,11 @@ class ScreenerRAG:
 
         exact = self.exact_answer(q)
         if exact is not None:
-            return exact
+            return _normalize_start_date(exact) if key in _START_DATE_KEYS else exact
 
         persona_ans = await self._lookup_persona(q, q_lower)
         if persona_ans is not None:
-            return persona_ans
+            return _normalize_start_date(persona_ans) if key in _START_DATE_KEYS else persona_ans
 
         cfg = get_config()
         min_salary = getattr(cfg.candidate, "min_salary", "Flexible / Open to discussion")
@@ -744,6 +783,7 @@ class ScreenerRAG:
             _, key = matched_rule
             if key in _EXPECTED_COMP_KEYS:
                 return min_salary
+            # start_date answers are normalized in the exact/persona tiers above.
             return None
 
         if _SENSITIVE_QUESTION_RE.search(q_lower):

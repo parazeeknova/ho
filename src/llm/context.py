@@ -52,6 +52,7 @@ class ContextManager:
         schema: dict[str, Any] | None = None,
         max_tokens: int | None = None,
         interactive: bool = False,
+        system_prompt: str | None = None,
     ) -> str:
         current_prompt = prompt
         if len(current_prompt) > 120000:
@@ -66,9 +67,13 @@ class ContextManager:
         est_tokens = len(current_prompt) // 3 + _mt
 
         def _call_llm() -> str:
+            messages: list[dict[str, str]] = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": current_prompt})
             kwargs: dict[str, Any] = {
                 "model": self.model,
-                "messages": [{"role": "user", "content": current_prompt}],
+                "messages": messages,
                 "max_tokens": _mt,
             }
             if schema is not None:
@@ -130,6 +135,7 @@ class ContextManager:
         limit: int = 16000,
         max_tokens: int | None = None,
         interactive: bool = False,
+        system_prompt: str | None = None,
     ) -> dict[str, Any] | list[Any]:
         full = prompt
         if content:
@@ -139,6 +145,7 @@ class ContextManager:
             schema=schema,
             max_tokens=max_tokens,
             interactive=interactive,
+            system_prompt=system_prompt,
         )
         raw = _strip_markdown(raw)
         try:
