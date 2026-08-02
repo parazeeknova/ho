@@ -507,19 +507,36 @@ def _json_to_markdown(raw_json: Any) -> str:
 
 
 async def _load_ungated_observations(store: MemoryStore, limit: int = 400) -> list[JobObservation]:
-    """Pull the freshest observations that have never gone through the gates.
+    """Pull never-gated observations ordered by LEARNED gate-pass probability.
 
     Rows in job_observations without a matching radar_candidates row were
-    ingested (Azure dumps, historic corpus) but never gated. The sweep's
-    live source polling only re-surfaces a few thousand postings, so this
-    drains the stored corpus a batch at a time into the gate + matcher.
+    ingested (Azure dumps, historic corpus) but never gated. The sweep's live
+    source polling only re-surfaces a few thousand postings, so this drains the
+    stored corpus a batch at a time into the gate + matcher.
 
-    Software-role titles are drained first; when the resume embedding
-    centroid is available, never-gated observations are further ordered by
-    cosine affinity to the candidate so the LLM budget lands on the
-    closest-fit jobs first instead of burning calls on 0-match noise.
+    Ordering is learned, not hand-maintained: for each keyword in the title we
+    look up how often that keyword historically passed the gate (from
+    radar_candidates eligibility), then sort by that learned pass-rate, then by
+    resume affinity, then freshness. This self-adapts as the corpus and gate
+    evolve, so the sweep budget never collapses after the obvious junior roles
+    are drained.
     """
     try:
+        scores = await store.learned_title_scores()
+        score_sql = "(0.0)"
+        if scores:
+            # Build a SQL CASE scoring a title by its known keyword pass-rates.
+            # Only alphanumeric keywords are safe to embed in LIKE; punctuation
+            # tokens (ci/cd, ui/ux, founder's) are skipped to avoid syntax errors.
+            known = sorted(scores.items(), key=lambda kv: -kv[1])[:150]
+            arms = " ".join(
+                f"WHEN lower(o.title) LIKE '%{kw}%' THEN {sc:.3f}"
+                for kw, sc in known
+                if kw and kw.replace("-", "").isalnum()
+            )
+            if arms:
+                score_sql = f"(CASE {arms} ELSE 0.05 END)"
+
         async with store._pool.acquire() as conn:
             centroid: list[float] | None = None
             try:
@@ -537,6 +554,14 @@ async def _load_ungated_observations(store: MemoryStore, limit: int = 400) -> li
             except Exception:
                 centroid = None
 
+            # Known-bad seniority keywords must still sink to the bottom even if
+            # a learned token is present (a "Senior" role is never a junior win).
+            hard_block = (
+                "CASE WHEN lower(o.title) ~ "
+                "'senior|staff|principal|lead|head|director|vp\\b|chief|architect' "
+                "THEN 1 ELSE 0 END"
+            )
+
             if centroid is not None:
                 import numpy as np
 
@@ -545,7 +570,7 @@ async def _load_ungated_observations(store: MemoryStore, limit: int = 400) -> li
                 if qn > 0:
                     q = q / qn
                 rows = await conn.fetch(
-                    """
+                    f"""
                     SELECT o.url, o.source, o.title, o.snippet, o.last_seen, o.raw_json,
                            (CASE WHEN e.embedding IS NULL THEN NULL
                                  ELSE 1 - (e.embedding <=> $2::vector) END) AS affinity
@@ -553,37 +578,10 @@ async def _load_ungated_observations(store: MemoryStore, limit: int = 400) -> li
                     LEFT JOIN radar_candidates r ON r.direct_apply_url = o.url
                     LEFT JOIN obs_embeddings e ON e.url_hash = md5(o.url)
                     WHERE r.canonical_id IS NULL
-                    ORDER BY (
-                        -- Tier 0: junior/entry-level SOFTWARE roles (gate-passable
-                        -- with early-career override). Requires a strong engineering
-                        -- keyword (NOT generic "AI"/"data" which appear in non-tech
-                        -- titles like "Data Center Risk Associate") plus a junior
-                        -- signal, so the budget never wastes on gate-rejects.
-                        CASE WHEN lower(o.title) ~
-                            'junior|new grad|entry|graduate|intern|associate|mid[- ]level|'
-                            'level 1|level 2|early[- ]career|recent grad|i\b|ii\b'
-                            AND lower(o.title) ~
-                            'software|engineer|developer|full.?stack|backend|frontend|devops|sre|'
-                            'ml|machine learning|python|java|golang|rust|quant|platform|infra|'
-                            'cloud|security|ios|android|mobile|embedded|front.?end|back.?end|'
-                            'swe|systems engineer|networking|database administrator'
-                            AND lower(o.title) !~
-                            'senior|staff|principal|lead|head|manager|director|vp|principal|architect|'
-                            'risk|operations|account|recruit|sales|marketing|design|analyst|specialist'
-                             THEN 0
-                        -- Tier 1: non-senior software roles (pass the gate once the
-                        -- junior pool is drained; keeps the sweeps from going empty).
-                        WHEN lower(o.title) ~
-                            'software|engineer|developer|full.?stack|backend|frontend|devops|sre|'
-                            'data|machine|ml|ai|python|java|golang|rust|quant|platform|infra|'
-                            'cloud|security|ios|android|mobile|embedded|front.?end|back.?end|'
-                            'robotics|hardware|systems|networking|database|analytics'
-                            AND lower(o.title) !~
-                            'senior|staff|principal|lead|head|manager|director|vp|principal|architect'
-                             THEN 1
-                        ELSE 2 END
-                    ),
-                    affinity DESC NULLS LAST, o.last_seen DESC
+                    ORDER BY {hard_block} ASC,
+                             {score_sql} DESC,
+                             affinity DESC NULLS LAST,
+                             o.last_seen DESC
                     LIMIT $1
                     """,
                     limit,
@@ -591,44 +589,38 @@ async def _load_ungated_observations(store: MemoryStore, limit: int = 400) -> li
                 )
             else:
                 rows = await conn.fetch(
-                    """
+                    f"""
                     SELECT o.url, o.source, o.title, o.snippet, o.last_seen, o.raw_json,
                            NULL AS affinity
                     FROM job_observations o
                     LEFT JOIN radar_candidates r ON r.direct_apply_url = o.url
                     WHERE r.canonical_id IS NULL
-                    ORDER BY (
-                        -- Tier 0: junior/entry-level SOFTWARE roles (gate-passable).
-                        CASE WHEN lower(o.title) ~
-                            'junior|new grad|entry|graduate|intern|associate|mid[- ]level|'
-                            'level 1|level 2|early[- ]career|recent grad|i\b|ii\b'
-                            AND lower(o.title) ~
-                            'software|engineer|developer|full.?stack|backend|frontend|devops|sre|'
-                            'ml|machine learning|python|java|golang|rust|quant|platform|infra|'
-                            'cloud|security|ios|android|mobile|embedded|front.?end|back.?end|'
-                            'swe|systems engineer|networking|database administrator'
-                            AND lower(o.title) !~
-                            'senior|staff|principal|lead|head|manager|director|vp|principal|architect|'
-                            'risk|operations|account|recruit|sales|marketing|design|analyst|specialist'
-                             THEN 0
-                        -- Tier 1: non-senior software roles (pass the gate).
-                        WHEN lower(o.title) ~
-                            'software|engineer|developer|full.?stack|backend|frontend|devops|sre|'
-                            'data|machine|ml|ai|python|java|golang|rust|quant|platform|infra|'
-                            'cloud|security|ios|android|mobile|embedded|front.?end|back.?end|'
-                            'robotics|hardware|systems|networking|database|analytics'
-                            AND lower(o.title) !~
-                            'senior|staff|principal|lead|head|manager|director|vp|principal|architect'
-                             THEN 1
-                        ELSE 2 END
-                    ),
-                    o.last_seen DESC
+                    ORDER BY {hard_block} ASC,
+                             {score_sql} DESC,
+                             o.last_seen DESC
                     LIMIT $1
                     """,
                     limit,
                 )
-    except Exception:
-        return []
+    except Exception as exc:
+        logger.warning(f"Learned drain failed ({exc}); falling back to freshness")
+        try:
+            async with store._pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT o.url, o.source, o.title, o.snippet, o.last_seen, o.raw_json
+                    FROM job_observations o
+                    LEFT JOIN radar_candidates r ON r.direct_apply_url = o.url
+                    WHERE r.canonical_id IS NULL
+                    ORDER BY o.last_seen DESC
+                    LIMIT $1
+                    """,
+                    limit,
+                )
+        except Exception:
+            return []
+    from src.radar.core.gates import prefilter_observation
+
     out: list[JobObservation] = []
     for r in rows:
         if not r["url"] or not r["url"].startswith("http"):
@@ -639,16 +631,21 @@ async def _load_ungated_observations(store: MemoryStore, limit: int = 400) -> li
                 raw_json = json.loads(raw_json)
             except Exception:
                 raw_json = None
-        out.append(
-            JobObservation(
-                url=r["url"],
-                source=r["source"] or "corpus",
-                title=r["title"] or "",
-                snippet=r["snippet"] or "",
-                raw_markdown=_json_to_markdown(raw_json),
-                observed_at=float(r["last_seen"] or 0),
-            )
+        obs = JobObservation(
+            url=r["url"],
+            source=r["source"] or "corpus",
+            title=r["title"] or "",
+            snippet=r["snippet"] or "",
+            raw_markdown=_json_to_markdown(raw_json),
+            observed_at=float(r["last_seen"] or 0),
         )
+        # Cheap gate pre-check: skip anything the title/url gates would reject,
+        # so the sweep budget never lands on roles doomed to rejection.
+        if not prefilter_observation(obs, set(), {}):
+            continue
+        out.append(obs)
+        if len(out) >= limit:
+            break
     return out
 
 

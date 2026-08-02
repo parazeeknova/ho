@@ -690,6 +690,37 @@ _GATE_HANDLERS: dict[str, Any] = {
 }
 
 
+def prefilter_observation(
+    obs: JobObservation, known_hashes: set[str], last_seen: dict[str, float]
+) -> bool:
+    """Cheap title/url pre-check for the corpus drain (no scrape required).
+
+    Runs the synchronous gates that only need the URL + title/snippet, so the
+    drain can order never-gated observations by *learned* pass probability while
+    hard-excluding anything these gates would reject. Returns True if the
+    observation survives (candidate may still fail later gates on full content).
+    """
+    try:
+        candidate = JobCandidate(
+            canonical_id=f"prefilter:{obs.url}",
+            source=obs.source,
+            direct_apply_url=obs.url,
+            normalized_company=_extract_company(obs),
+            normalized_role=obs.title or "",
+            normalized_location="Remote",
+        )
+        for gate_name in ("url_quality", "title_seniority", "role_family"):
+            handler = _GATE_HANDLERS.get(gate_name)
+            if handler is None:
+                continue
+            result = handler(obs, candidate, known_hashes, last_seen)
+            if isinstance(result, RejectionReason):
+                return False
+    except Exception:
+        return False
+    return True
+
+
 _REJECTION_DESCRIPTIONS: dict[RejectionReason, str] = {
     RejectionReason.URL_BAD: "URL is malformed or points to non-job content",
     RejectionReason.URL_DUPLICATE: "URL hash already seen in this sweep",

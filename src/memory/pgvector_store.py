@@ -1530,6 +1530,47 @@ class MemoryStore:
             except Exception:
                 return {"count": 0, "avg": 0, "median": 0, "error": "salary_stats_failed"}
 
+    async def learned_title_scores(
+        self, min_obs: int = 3, top_k: int = 200
+    ) -> dict[str, float]:
+        """Learn a per-keyword gate-pass score from historical candidates.
+
+        For each space-separated token in ``normalized_role``, count how often a
+        candidate with that token passed the gate (accepted/near_miss) vs was
+        rejected. Returns a map of keyword -> pass-rate in [0,1]. Tokens with
+        fewer than ``min_obs`` observations are omitted (unreliable signal).
+
+        The drain uses this to order never-gated observations by *learned* pass
+        probability instead of hand-maintained regex tiers, so it self-adapts as
+        the corpus and the gate evolve.
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT lower(normalized_role) AS role, eligibility
+                FROM radar_candidates
+                WHERE normalized_role IS NOT NULL AND normalized_role != ''
+                """
+            )
+        counts: dict[str, int] = {}
+        passes: dict[str, int] = {}
+        for r in rows:
+            tokens = set((r["role"] or "").split())
+            ok = r["eligibility"] in ("accepted", "near_miss")
+            for tok in tokens:
+                tok = tok.strip("(),/&+-")
+                if len(tok) < 2:
+                    continue
+                counts[tok] = counts.get(tok, 0) + 1
+                if ok:
+                    passes[tok] = passes.get(tok, 0) + 1
+        scores: dict[str, float] = {}
+        for tok, cnt in counts.items():
+            if cnt >= min_obs:
+                scores[tok] = passes.get(tok, 0) / cnt
+        ranked = sorted(scores.items(), key=lambda kv: (-kv[1], -counts[kv[0]]))
+        return dict(ranked[:top_k])
+
 
 def _row_to_radar_candidate(row: asyncpg.Record) -> dict[str, Any]:
     jsonb_cols = (
