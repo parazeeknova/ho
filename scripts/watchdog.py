@@ -117,9 +117,6 @@ class Watchdog:
 
     def heal_containers(self) -> dict[str, str]:
         statuses: dict[str, str] = {}
-        # A backup holds neo4j stopped on purpose; do not fight it.
-        if (PROJECT / "logs" / "backup.lock").exists():
-            return statuses
         for name in CONTAINERS:
             code, out = sh(f"podman ps -a --filter name={name} --format '{{{{.Status}}}}'")
             status = (out or "missing").split()[0] if out else "missing"
@@ -249,7 +246,7 @@ class Watchdog:
         )
 
     def cycle_ingest_only(self) -> None:
-        """Heal only the local DB + ingest + backup timer, never the pipeline."""
+        """Heal only the local DB + ingest, never the pipeline."""
         try:
             # Postgres is the ingest's dependency; keep it running.
             code, out = sh("podman ps --format '{{.Names}}'")
@@ -262,8 +259,6 @@ class Watchdog:
             self.heal_intel_loop()
             self.heal_smart_intel()
             self.heal_overnight_monitor()
-            # Ensure the R2 backup timer stays armed.
-            sh("systemctl --user start ho-backup.timer 2>/dev/null")
         except Exception as exc:
             log(f"cycle error: {exc}")
 

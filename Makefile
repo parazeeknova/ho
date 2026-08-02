@@ -15,8 +15,8 @@ serve:
 run:
 	uv run python scripts/run.py
 
-# Run the full pipeline with NO cloud (Azure/R2) - for machines without
-# cloud creds. Same as run but skips cloud restore/sync.
+# Run the full pipeline with NO cloud (Azure) - for machines without
+# cloud creds. Same as run but skips cloud sync.
 ncrun:
 	uv run python scripts/run.py --no-cloud
 

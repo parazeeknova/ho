@@ -45,29 +45,39 @@ def _searxng_search(q: str) -> list[str]:
 
 
 def _extract(snippets: list[str], company: str) -> list[dict[str, Any]]:
-    """Very lightweight founder extraction from search snippets (token-free).
+    """Lightweight founder extraction from search snippets (token-free).
 
-    Looks for "<Name> co-founder/CEO/CTO ..." patterns plus any LinkedIn /
-    GitHub / email that co-occurs. The LLM-backed enrichment runs locally.
+    Only accepts a proper "First Last" name (two capitalised words) that
+    directly precedes a founder/exec title. Loose matches like "board of
+    dire" or "by creative dire" are rejected by requiring the title to be an
+    exact keyword and the name to be exactly two clean words.
     """
     out: list[dict[str, Any]] = []
     seen_names: set[str] = set()
-    title_re = re.compile(
-        r"(?P<name>[A-Z][a-z]+(?:\s[A-Z][a-z]+)+)\s*[-–,|]?\s*(?P<title>co-?founder|founder|ceo|cto|cmo|cpo|chief\s+\w+)",
+    name_re = re.compile(
+        r"\b([A-Z][a-z]{2,})\s+([A-Z][a-z]{2,})\s*[-–,|]?\s*"
+        r"(co-?founder|founder|ceo|cto|cmo|cpo|chief\s+\w+|"
+        r"president|coo|chief executive|vice president)\b",
         re.I,
     )
     for s in snippets:
         text = re.sub(r"\s+", " ", s)
-        for m in title_re.finditer(text):
-            name = m.group("name").strip()
-            if len(name) < 6 or len(name) > 40 or name.lower() in ("jobs board",):
+        for m in name_re.finditer(text):
+            first, last = m.group(1), m.group(2)
+            name = f"{first} {last}"
+            # Reject fragments that are actually the tail of a longer phrase.
+            # "Board of Dire" fails because "Dire" is not a capital word; but
+            # guard against accidental article/preposition endings.
+            if last.lower() in ("the", "and", "of", "for", "in", "by", "dire", "executive"):
                 continue
-            if name in seen_names:
+            if len(name) < 6 or len(name) > 40:
                 continue
-            seen_names.add(name)
+            if name.lower() in seen_names:
+                continue
+            seen_names.add(name.lower())
             founder: dict[str, Any] = {
                 "name": name,
-                "title": m.group("title").title(),
+                "title": m.group(3).title(),
                 "company": company,
             }
             ln = _LINKEDIN_RE.search(text)
