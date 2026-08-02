@@ -28,7 +28,6 @@ from typing import Any
 from autofill.rag import ASK_USER, is_scoped_question, qualify_question
 from autofill.telegram import (
     TelegramNotConfiguredError,
-    TelegramSendError,
     edit_distance,
 )
 

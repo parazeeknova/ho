@@ -496,7 +496,10 @@ class TelegramQuestionBridge:
         # hint) is honored — each carries its own Skip button.
         if (
             cb.get("data") == "skip"
-            and (cb.get("message_id") in self._option_msg_ids or cb_msg.get("message_id") in self._option_msg_ids)
+            and (
+                cb.get("message_id") in self._option_msg_ids
+                or cb_msg.get("message_id") in self._option_msg_ids
+            )
         ):
             return _SKIP_SENTINEL
         if cb.get("message_id") == msg_id or cb_msg.get("message_id") == msg_id:
@@ -518,16 +521,20 @@ class TelegramQuestionBridge:
         for o in opts:
             if o.lower() == low:
                 return o
-        # 2) Numbered pick: a bare digit or "#n" (only meaningful for numbered lists).
+        # 2) Numbered pick: a bare digit or "#n" (only meaningful for numbered
+        #    lists). "0" is never a valid pick — int("0")-1 == -1 would wrap to
+        #    the LAST option, so require a positive index.
         if numbered:
             if low.isdigit():
                 try:
-                    return opts[int(low) - 1]
+                    idx = int(low)
+                    return opts[idx - 1] if idx >= 1 else None
                 except IndexError:
                     return None
             if low.startswith("#"):
                 try:
-                    return opts[int(low[1:]) - 1]
+                    idx = int(low[1:])
+                    return opts[idx - 1] if idx >= 1 else None
                 except (ValueError, IndexError):
                     return None
         # 3) Fuzzy text match for answers typed as a normal message that are

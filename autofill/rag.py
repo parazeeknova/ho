@@ -274,7 +274,11 @@ def _normalize_start_date(answer: str) -> str | None:
         "now",
     ):
         return "Immediately"
-    m = re.match(r"^(?:in\s+|within\s+)?(\d+|one|two|three|a)\s+(day|week|month|weeks|months|days)\b", low)
+    m = re.match(
+        r"^(?:in\s+|within\s+)?(\d+|one|two|three|a)\s+"
+        r"(day|week|month|weeks|months|days)\b",
+        low,
+    )
     if m:
         num = m.group(1)
         unit = m.group(2).lower()
@@ -290,9 +294,13 @@ def _normalize_start_date(answer: str) -> str | None:
 # entry maps a canonical scope key to every pattern that names that country.
 _COUNTRY_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("india", re.compile(r"\bindia\b", re.I)),
-    ("united states", re.compile(r"united states|\busa\b|\bu\.s\.a\b|\bu\.s\.?(?!\w)", re.I)),
+    ("united states",
+     re.compile(r"united states|\busa\b|\bu\.s\.a\b|\bu\.s\.?(?!\w)", re.I)),
     ("united kingdom",
-     re.compile(r"\buk\b|\bu\.k\.?(?!\w)|\bunited kingdom\b|\bengland\b|\bscotland\b|\bwales\b", re.I)),
+     re.compile(
+         r"\buk\b|\bu\.k\.?(?!\w)|\bunited kingdom\b|\bengland\b|\bscotland\b|\bwales\b",
+         re.I,
+     )),
     ("canada", re.compile(r"\bcanada\b", re.I)),
     ("australia", re.compile(r"\baustralia\b|\baus\b", re.I)),
     ("new zealand", re.compile(r"\bnew zealand\b|\bnz\b", re.I)),
