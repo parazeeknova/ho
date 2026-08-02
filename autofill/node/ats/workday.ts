@@ -13,7 +13,7 @@ import {
   pickLocationOption,
   selectCandidates,
 } from "./shared/matching.js";
-import { fieldKey, FormField, PRE_FILLED_LABELS } from "./shared/model.js";
+import { fieldKey, FormField, isLocationAutocomplete, PRE_FILLED_LABELS } from "./shared/model.js";
 import { Screener } from "./shared/screener.js";
 
 /** Workday system automation-ids the walker must never treat as a question. */
@@ -1282,7 +1282,10 @@ export class WorkdayAdapter extends ATSAdapter {
       )
       .first();
     if (await submitBtn.isVisible().catch(() => false)) {
-      await submitBtn.click();
+      // The final review screen can wrap Submit in the same invisible
+      // click_filter overlay that swallows trusted Playwright clicks on the
+      // wizard's nav buttons — drive it through the same synthetic dispatch.
+      await this.clickSubmitAction(page, submitBtn);
     } else {
       await this.stagehand.act("Click the Submit Application button");
     }
@@ -1550,8 +1553,14 @@ export class WorkdayControlStack extends FormControls {
         }
       }
       if (opts.length) {
+        // Only a genuine async location autocomplete may fall back to a ranked
+        // first suggestion (pickLocationOption). For any real question a blind
+        // first-option guess is never acceptable — an unmatched answer stays
+        // blank and is surfaced by the reverify instead of mis-committed.
+        const isLocation = isLocationAutocomplete(field);
         const picked =
-          chooseOption(selectCandidates(answer), opts) ?? pickLocationOption(answer, opts);
+          chooseOption(selectCandidates(answer), opts) ??
+          (isLocation ? pickLocationOption(answer, opts) : null);
         if (picked && (await this.clickVisibleOption(picked))) {
           await this.closeMenu();
           await randomSleep(300, 500);
