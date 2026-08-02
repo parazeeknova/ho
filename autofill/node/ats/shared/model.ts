@@ -6,6 +6,10 @@ export interface GroupOption {
   text: string;
   name: string;
   value: string;
+  /** The underlying input's id (used to click its label[for] precisely). */
+  id?: string;
+  /** True when the option is a toggle BUTTON (Ashby yes/no rows), not an input. */
+  button?: boolean;
 }
 
 /** A single form question captured by an adapter's DOM walker. */
@@ -19,8 +23,10 @@ export interface FormField {
     | "multi"
     | "radio"
     | "checkbox"
-    /** Ashby (and similar boards) render dropdowns as async comboboxes. */
-    | "combobox";
+    | "combobox"
+    /** A date picker (react-datepicker): value must be a real date, and
+     *  free-text answers like "immediately" are translated to a date. */
+    | "date";
   required: boolean;
   options: string[];
   /** Radio/checkbox option click targets (text + input name/value). */
@@ -164,16 +170,51 @@ export const PROFILE_FILLS: Record<string, keyof Profile> = {
   "preferred first name": "preferredName",
   linkedin: "linkedin",
   "linkedin profile": "linkedin",
+  "linkedin url": "linkedin",
   github: "github",
+  "github profile": "github",
+  "github url": "github",
   website: "website",
+  portfolio: "website",
+  "portfolio url": "website",
+  "your website": "website",
 };
 
 /** Identity fields filled deterministically from the profile (never asked). */
 export const IDENTITY_FILLS: Record<string, keyof Profile> = {
   "first name": "firstName",
+  "legal first name": "firstName",
+  "firstname": "firstName",
+  "given name": "firstName",
+  "given name(s)": "firstName",
+  "given names": "firstName",
   "last name": "lastName",
+  "legal last name": "lastName",
+  "lastname": "lastName",
+  "surname": "lastName",
+  "family name": "lastName",
+  "family name(s)": "lastName",
+  "family names": "lastName",
+  "legal name": "lastName",
+  "local given name(s)": "firstName",
+  "local given name": "firstName",
+  "local family name(s)": "lastName",
+  "local family name": "lastName",
   email: "email",
+  "email address": "email",
+  "email address (username)": "email",
+  "e-mail address": "email",
+  "email id": "email",
+  "your email": "email",
+  "what is your email address?": "email",
   phone: "phone",
+  "phone number": "phone",
+  "mobile phone": "phone",
+  "mobile phone number": "phone",
+  "cell phone": "phone",
+  "contact number": "phone",
+  "primary phone number": "phone",
+  "phone (e.g. +91 99999 99999)": "phone",
 };
 
 /** Questions answered by the fixed deterministic identity fills before the walk. */

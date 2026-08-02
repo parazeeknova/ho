@@ -131,6 +131,55 @@ export function cssEscape(text: string): string {
 }
 
 /**
+ * Translate a free-text availability answer into a concrete Date. Handles
+ * "immediately"/"asap"/"now" (today), "in N days/weeks/months",
+ * "within N ...", and "N day(s)/week(s)/month(s)". Returns null when the
+ * answer is not date-like (callers leave the field blank rather than guess).
+ */
+export function translateToDate(answer: string): Date | null {
+  const a = (answer || "").trim();
+  if (!a) return null;
+  const low = a.toLowerCase();
+  if (/^(immediately|immeditely|immediate|asap|now|right away|today)$/.test(low)) {
+    return new Date();
+  }
+  const m = low.match(
+    /^(?:in\s+|within\s+)?(\d+|one|two|three|a)\s+(day|week|month|days|weeks|months|wk|wks|mo)\b/
+  );
+  if (m) {
+    const n = { one: 1, two: 2, three: 3, a: 1 }[m[1]] ?? parseInt(m[1], 10);
+    if (Number.isFinite(n) && n > 0) {
+      const unit = m[2].toLowerCase();
+      const d = new Date();
+      if (/day/.test(unit)) d.setDate(d.getDate() + n);
+      else if (/week|wk/.test(unit)) d.setDate(d.getDate() + n * 7);
+      else if (/month|mo/.test(unit)) d.setMonth(d.getMonth() + n);
+      return d;
+    }
+  }
+  // A value that is already an ISO or MM/DD/YYYY date.
+  const iso = a.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (iso) return new Date(+iso[1], +iso[2] - 1, +iso[3]);
+  const md = a.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})/);
+  if (md) {
+    const yy = md[3].length === 2 ? 2000 + +md[3] : +md[3];
+    return new Date(yy, +md[1] - 1, +md[2]);
+  }
+  return null;
+}
+
+/**
+ * CSS selector targeting an element by id. The bare `#id` form is invalid CSS
+ * when the id starts with a digit (very common for ATS question ids like
+ * `3e05737b-…`), which makes `querySelector('#3e…')` throw and locators
+ * silently match nothing. The attribute form `[id="…"]` is valid for ANY id,
+ * so it is always used instead.
+ */
+export function cssIdLocator(id: string): string {
+  return `[id="${cssEscape(id)}"]`;
+}
+
+/**
  * Pick the best location suggestion for a free-form answer. Exact matches
  * win; otherwise the first ranked suggestion that shares the answer's
  * leading token(s) is chosen (e.g. "Bhopal, India" -> "Bhopal, Madhya
