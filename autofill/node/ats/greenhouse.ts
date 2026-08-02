@@ -200,6 +200,35 @@ export function parseRemixQuestionsModel(html: string): JsonFieldSource[] | null
 }
 
 /**
+ * Parse the job posting header (title, company, location) from the embedded
+ * `window.__remixContext` JSON (Remix boards only). The location here
+ * (`job_post_location`, e.g. "Remote / Boston / Salt Lake City / San Francisco
+ * / New York") is authoritative and board-agnostic — no CSS-class dependence
+ * and no hydration race. Returns null on legacy boards (no __remixContext).
+ */
+export function parseRemixJobContext(
+  html: string
+): { title: string; company: string; location: string } | null {
+  try {
+    const m = html.match(/window\.__remixContext = (\{.*?\});/);
+    if (!m) return null;
+    const ctx = JSON.parse(m[1]);
+    const loader = Object.values(ctx?.state?.loaderData ?? {}).find(
+      (v: any) => v && typeof v === "object" && v.jobPost
+    ) as any;
+    const jp = loader?.jobPost;
+    if (!jp) return null;
+    return {
+      title: String(jp?.title || "").replace(/\s+/g, " ").trim(),
+      company: String(jp?.company_name || "").replace(/\s+/g, " ").trim(),
+      location: String(jp?.job_post_location || "").replace(/\s+/g, " ").trim(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Merge the board's JSON question model (authoritative) with the DOM
  * enumeration (ground truth for what is actually rendered).
  *
@@ -421,6 +450,16 @@ export class GreenhouseAdapter extends ATSAdapter {
   }> {
     const page = this.getPage();
     try {
+      // Fetch the raw page HTML once and parse the authoritative Remix JSON.
+      // The JSON location (job_post_location) is board-agnostic and immune to
+      // CSS-class drift or hydration races, so it is used first; the DOM
+      // selectors remain the fallback for legacy boards without __remixContext.
+      const fetched = await fetch(page.url(), {
+        headers: { "user-agent": "Mozilla/5.0" },
+      });
+      const html = await fetched.text();
+      const remix = parseRemixJobContext(html);
+
       const read = async (selector: string): Promise<string> => {
         try {
           return (await page.locator(selector).first().innerText())
@@ -430,29 +469,34 @@ export class GreenhouseAdapter extends ATSAdapter {
           return "";
         }
       };
-      // Both legacy (.app-title, #job-description) and the newer Remix board
-      // (.job__title, .job__location, .job__description) are covered. The
-      // Remix title block stacks the location under the role, so split before
-      // whitespace is collapsed and take the first line as the role title.
-      const titleBlock =
-        (await page
-          .locator(".job__title, .app-title, .job-post h1, .job-post-title h1, h1")
-          .first()
-          .innerText()
-          .catch(() => "")) ||
-        (await page.title()).replace(/\s*[|–-].*$/, "").trim();
-      const title =
-        titleBlock
-          .split("\n")
-          .map((line) => line.trim())
-          .filter(Boolean)[0]
-          ?.replace(/\s+/g, " ") ?? "";
+
+      // Title: JSON first, else DOM (legacy .app-title / Remix .job__title).
+      let title = remix?.title ?? "";
+      if (!title) {
+        const titleBlock =
+          (await page
+            .locator(".job__title, .app-title, .job-post h1, .job-post-title h1, h1")
+            .first()
+            .innerText()
+            .catch(() => "")) ||
+          (await page.title()).replace(/\s*[|–-].*$/, "").trim();
+        title =
+          titleBlock
+            .split("\n")
+            .map((line) => line.trim())
+            .filter(Boolean)[0]
+            ?.replace(/\s+/g, " ") ?? "";
+      }
+
       const company =
+        remix?.company ||
         (await read(".company-name, .job-post .company, [data-company]")) ||
         this.companyFromUrl();
-      const location = await read(
-        ".job__location, .location, .job-location, .job-post .metadata"
-      );
+
+      // Location: JSON job_post_location first, else DOM below the heading.
+      const location =
+        remix?.location || (await read(".job__location, .location, .job-location, .job-post .metadata"));
+
       const description = (
         await read(
           "#job-description, .job__description, .job-description, #content .job-post, #content"
@@ -1530,6 +1574,66 @@ export class GreenhouseAdapter extends ATSAdapter {
   }
 
   /**
+   * Upload the resume file to the resume field and verify it actually attached.
+   *
+   * The locator is re-resolved to ``#resume`` on every attempt because a
+   * successful upload makes the board CONSUME the input (it disappears from
+   * the DOM) — a stale ``input[type="file"]`` locator would then silently point
+   * at the cover-letter input. A thrown ``setInputFiles`` (some boards route
+   * hidden inputs through an internal upload helper) never crashes the run; the
+   * failure is retried, and a definitive ``false`` is returned so the final
+   * audit can surface "resume not attached" instead of a partial form.
+   */
+  private async uploadResume(page: any, resumePath: string): Promise<boolean> {
+    const baseName = resumePath.split(/[\\/]/).pop() || "";
+    console.log(`[GreenhouseAdapter] Uploading resume from ${resumePath}...`);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const resumeInput = page.locator('input#resume[type="file"]').first();
+      if ((await resumeInput.count()) === 0) {
+        // Already consumed by a previous attempt — the resume is attached.
+        console.log("[GreenhouseAdapter] Resume already registered (input consumed).");
+        return true;
+      }
+      try {
+        await resumeInput.setInputFiles(resumePath);
+      } catch (err: any) {
+        console.warn(
+          `[GreenhouseAdapter] Resume setInputFiles threw (attempt ${attempt + 1}): ${err?.message || err}`
+        );
+      }
+      await randomSleep(1500, 2200);
+      const registered = await this.isResumeAttached(page, baseName);
+      if (registered) {
+        console.log("[GreenhouseAdapter] Resume uploaded and registered.");
+        return true;
+      }
+      console.warn(
+        `[GreenhouseAdapter] Resume upload not confirmed (attempt ${attempt + 1}); retrying...`
+      );
+    }
+    return false;
+  }
+
+  /** Whether the resume is attached: input consumed, has files, or its filename
+   * appears in the upload area (any of the three board renderings). */
+  private async isResumeAttached(page: any, fileName = ""): Promise<boolean> {
+    return page
+      .evaluate((name: string) => {
+        const input = document.querySelector(
+          'input#resume[type="file"]'
+        ) as HTMLInputElement | null;
+        if (!input) return true; // consumed by the board = attached
+        if (input.files && input.files.length > 0) return true;
+        const area = document.querySelector(
+          ".file-upload, [class*='file-upload'], [id^='upload-label-']"
+        );
+        const text = area ? (area.textContent || "") : "";
+        return !!name && text.includes(name);
+      }, fileName)
+      .catch(() => false);
+  }
+
+  /**
    * Locate the cover letter field across board flavors. Legacy boards expose a
    * visible textarea; the Remix board renders a file upload whose "Enter
    * manually" button (exact data-testid "cover_letter-text") reveals the
@@ -1595,32 +1699,13 @@ export class GreenhouseAdapter extends ATSAdapter {
       "phone"
     );
 
-    // Resume Upload Handling
+    // Resume Upload Handling. A failed setInputFiles must never crash the run,
+    // and the generic "first file input" must never steal the cover-letter
+    // field after #resume is consumed — so the locator is re-resolved to
+    // #resume on every attempt and each attempt is verified.
+    let resumeAttached = false;
     if (profile.resumePath && fs.existsSync(profile.resumePath)) {
-      const baseName = profile.resumePath.split(/[\\/]/).pop() || "";
-      console.log(`[GreenhouseAdapter] Uploading resume from ${profile.resumePath}...`);
-      const fileInput = page.locator('input#resume[type="file"], input[type="file"]').first();
-      if (await fileInput.count() > 0) {
-        for (let attempt = 0; attempt < 2; attempt++) {
-          await fileInput.setInputFiles(profile.resumePath);
-          await randomSleep(1200, 2000);
-          // The board consumes the file input on upload (it disappears and the
-          // filename is shown in the upload area) — verify that, retry once.
-          const registered = await page.evaluate((fileName) => {
-            const stillThere = !!document.querySelector('input#resume[type="file"]');
-            const area = document.querySelector(
-              ".file-upload, [class*='file-upload'], [id^='upload-label-']"
-            );
-            const text = area ? (area.textContent || "") : "";
-            return !stillThere || text.includes(fileName);
-          }, baseName).catch(() => false);
-          if (registered) {
-            console.log("[GreenhouseAdapter] Resume uploaded and registered.");
-            break;
-          }
-          console.warn(`[GreenhouseAdapter] Resume upload not confirmed (attempt ${attempt + 1}); retrying...`);
-        }
-      }
+      resumeAttached = await this.uploadResume(page, profile.resumePath);
     }
 
     // Per-field screener walk driven by the merged inventory (board JSON model
@@ -1819,6 +1904,52 @@ export class GreenhouseAdapter extends ATSAdapter {
         }
       } else {
         console.log("[GreenhouseAdapter] Final sweep complete: no required field is blank.");
+      }
+
+      // Definitive reverify: rescan the ENTIRE form one last time and report
+      // EVERY field still empty — required or optional — except fields the user
+      // deliberately skipped. This is the pre-completion checkpoint the user
+      // asked for: it catches anything the walk and sweep missed (including a
+      // resume that failed to attach), so the review hold shows the true state.
+      const reverifyDom = await this.collectQuestions();
+      const reverifyInventory = this.mergeInventory(jsonModel, reverifyDom);
+      const stillBlank: Array<{ label: string; reason: string }> = [];
+      for (const field of reverifyInventory) {
+        if (PRE_FILLED_LABELS.has(normalizeOptionText(field.label))) continue;
+        if (userSkippedKeys.has(fieldKey(field))) continue; // manual skip
+        const value = await this.readFieldValue(field);
+        if (value) continue;
+        const reason = [...blanked, ...sweepBlanks].find(
+          (b) => normalizeOptionText(b.label) === normalizeOptionText(field.label)
+        )?.reason;
+        stillBlank.push({
+          label: field.label,
+          reason: reason || "empty after final reverify (no answer committed)",
+        });
+      }
+      if (stillBlank.length > 0) {
+        console.warn(
+          `[GreenhouseAdapter] REVERIFY: ${stillBlank.length} field(s) still unfilled after completion:`
+        );
+        for (const sb of stillBlank) {
+          console.warn(
+            `[GreenhouseAdapter]   unfilled: ${escapePromptValue(sb.label)} (${sb.reason})`
+          );
+        }
+      } else {
+        console.log(
+          "[GreenhouseAdapter] REVERIFY: every field is filled (only manual skips excluded)."
+        );
+      }
+
+      // Resume reverify: if the resume failed to attach, surface it clearly
+      // instead of silently submitting a form without a CV.
+      if (profile.resumePath && !resumeAttached && !(await this.isResumeAttached(page))) {
+        console.warn(
+          "[GreenhouseAdapter] REVERIFY: resume is NOT attached after the final pass."
+        );
+      } else if (profile.resumePath) {
+        console.log("[GreenhouseAdapter] REVERIFY: resume is attached.");
       }
     }
 
