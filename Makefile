@@ -35,7 +35,7 @@ fc-up:
 	podman run -d --name firecrawl_rabbitmq_1 \
 		--network firecrawl_default \
 		--network-alias rabbitmq \
-		--restart unless-stopped \
+		--restart no \
 		--entrypoint /bin/bash \
 		rabbitmq:3-management \
 		-c "rm -f /var/lib/rabbitmq/.erlang.cookie; exec docker-entrypoint.sh rabbitmq-server"; \
@@ -111,3 +111,20 @@ azure-founder:
 
 azure-funding:
 	uv run --with azure-storage-blob python scripts/azure/funding_tracker.py
+
+# Local analytics: storage + containers + volumes + DB numbers.
+analytics:
+	uv run python scripts/analytics.py
+
+# Local volume checkpoint backup / restore (snapshots under checkpoints/).
+backup:
+	uv run python scripts/checkpoint_backup.py
+
+backup-list:
+	@ls -dt checkpoints/*/ 2>/dev/null || echo "no checkpoints yet"
+
+restore:
+	uv run python scripts/checkpoint_restore.py
+
+restore-dir:
+	uv run python scripts/checkpoint_restore.py --dir $(CKPT)

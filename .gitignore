@@ -37,4 +37,5 @@ devenv.local.yaml
 .pre-commit-config.yaml
 scripts/.watchdog.env
 azure_dump/
+checkpoints/
 intel/

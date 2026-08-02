@@ -39,7 +39,7 @@ services:
     ports:
       - "3002:3002"
     command: node dist/src/harness.js --start-docker
-    restart: unless-stopped
+    restart: "no"
     ulimits:
       nofile:
         soft: 65535
@@ -62,7 +62,7 @@ services:
     cpus: 6.0
     mem_limit: 6G
     memswap_limit: 6G
-    restart: unless-stopped
+    restart: "no"
     tmpfs:
       - /tmp/.cache:noexec,nosuid,size=1g
     logging:
@@ -75,7 +75,7 @@ services:
   redis:
     image: redis:alpine
     command: redis-server --bind 0.0.0.0
-    restart: unless-stopped
+    restart: "no"
     ports:
       - "6379:6379"
     logging:
@@ -87,7 +87,7 @@ services:
 
   nuq-postgres:
     image: ghcr.io/firecrawl/nuq-postgres:latest
-    restart: unless-stopped
+    restart: "no"
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -113,7 +113,7 @@ services:
 
   searxng:
     image: searxng/searxng:latest
-    restart: unless-stopped
+    restart: "no"
     ports:
       - "8080:8080"
     environment:
@@ -137,12 +137,12 @@ services:
   # can bypass CAPTCHA blocks from datacenter IPs.
   torproxy:
     image: dperson/torproxy
-    restart: unless-stopped
+    restart: "no"
     network_mode: "host"
 
   agent-memory-db:
     image: pgvector/pgvector:pg18
-    restart: unless-stopped
+    restart: "no"
     ports:
       - "5433:5432"
     environment:
@@ -170,7 +170,7 @@ services:
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs
-    restart: unless-stopped
+    restart: "no"
     logging:
       driver: "json-file"
       options:
