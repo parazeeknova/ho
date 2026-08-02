@@ -100,3 +100,14 @@ intel:
 
 intel-telegram:
 	uv run python scripts/radar_intel.py --telegram
+
+smart-intel:
+	uv run python scripts/smart_intel.py --write
+
+# Azure relic intelligence workers (portable to any VPS). Set
+# AZURE_STORAGE_ACCOUNT/KEY/CONTAINER in the environment first.
+azure-founder:
+	uv run --with azure-storage-blob python scripts/azure/founder_miner.py
+
+azure-funding:
+	uv run --with azure-storage-blob python scripts/azure/funding_tracker.py
