@@ -36,3 +36,14 @@ persona knowledge base, it prompts the user on Telegram (`TELEGRAM_BOT_TOKEN` /
 300s). The answer is applied to the form and learned into the persona KB.
 Without Telegram configured, such a question fails the run loudly instead of
 submitting blank answers.
+
+### Workday portals
+
+Workday career sites are multi-step wizards gated behind a sign-in / account
+creation screen, and most tenants (Intel, Salesforce, …) do not offer a guest
+apply path. The adapter always clicks "Apply Manually" when offered. Because
+Workday accounts are **per-tenant** (the same email/password won't already
+exist on most companies' sites), it then **creates an account** on the tenant
+using `WORKDAY_EMAIL` / `WORKDAY_PASSWORD`, and falls back to signing in with
+those credentials when the account already exists. Set both variables in
+`.env` so Workday applications can proceed.
