@@ -554,29 +554,31 @@ async def _load_ungated_observations(store: MemoryStore, limit: int = 400) -> li
                     LEFT JOIN obs_embeddings e ON e.url_hash = md5(o.url)
                     WHERE r.canonical_id IS NULL
                     ORDER BY (
-                        -- Software roles first: the matcher budget should go to
-                        -- relevant jobs, not the flood of non-software postings.
+                        -- Tier 0: junior/entry-level SOFTWARE roles (gate-passable
+                        -- with early-career override). Requires BOTH a junior signal
+                        -- AND a tech keyword so "Marketing intern" doesn't rank here.
                         CASE WHEN lower(o.title) ~
-                            'software|engineer|developer|full.?stack|backend|frontend|'
-                            'devops|sre|data|machine|ml|ai|python|java|golang|rust|'
-                            'intern|new grad|junior|entry|graduate'
-                             THEN 0 ELSE 1 END
+                            'junior|new grad|entry|graduate|intern|associate|mid[- ]level|'
+                            'level 1|level 2|early[- ]career|recent grad|i\b|ii\b'
+                            AND lower(o.title) ~
+                            'software|engineer|developer|full.?stack|backend|frontend|devops|sre|'
+                            'data|machine|ml|ai|python|java|golang|rust|quant|platform|infra|'
+                            'cloud|security|ios|android|mobile|embedded|front.?end|back.?end'
+                            AND lower(o.title) !~
+                            'senior|staff|principal|lead|head|manager|director|vp|principal|architect'
+                             THEN 0
+                        -- Tier 1: non-senior software roles (pass the gate once the
+                        -- junior pool is drained; keeps the sweeps from going empty).
+                        WHEN lower(o.title) ~
+                            'software|engineer|developer|full.?stack|backend|frontend|devops|sre|'
+                            'data|machine|ml|ai|python|java|golang|rust|quant|platform|infra|'
+                            'cloud|security|ios|android|mobile|embedded|front.?end|back.?end|'
+                            'robotics|hardware|systems|networking|database|analytics'
+                            AND lower(o.title) !~
+                            'senior|staff|principal|lead|head|manager|director|vp|principal|architect'
+                             THEN 1
+                        ELSE 2 END
                     ),
-                    -- Junior/entry-level SOFTWARE roles before senior ones so the
-                    -- gate doesn't reject the entire batch as title_senior.
-                    -- Requires BOTH a junior signal AND a tech keyword so non-tech
-                    -- "Marketing intern" / "Veterinary internist" postings don't
-                    -- eat the sweep budget only to be rejected by the gate.
-                    CASE WHEN lower(o.title) ~
-                        'junior|new grad|entry|graduate|intern|associate|mid[- ]level|'
-                        'level 1|level 2|early[- ]career|recent grad|i\b|ii\b'
-                        AND lower(o.title) ~
-                        'software|engineer|developer|full.?stack|backend|frontend|devops|sre|'
-                        'data|machine|ml|ai|python|java|golang|rust|quant|platform|infra|'
-                        'cloud|security|ios|android|mobile|embedded|front.?end|back.?end'
-                        AND lower(o.title) !~
-                        'senior|staff|principal|lead|head|manager|director|vp|principal|architect'
-                         THEN 0 ELSE 1 END,
                     affinity DESC NULLS LAST, o.last_seen DESC
                     LIMIT $1
                     """,
@@ -592,29 +594,28 @@ async def _load_ungated_observations(store: MemoryStore, limit: int = 400) -> li
                     LEFT JOIN radar_candidates r ON r.direct_apply_url = o.url
                     WHERE r.canonical_id IS NULL
                     ORDER BY (
-                        -- Software roles first: the matcher budget should go to
-                        -- relevant jobs, not the flood of non-software postings.
+                        -- Tier 0: junior/entry-level SOFTWARE roles (gate-passable).
                         CASE WHEN lower(o.title) ~
-                            'software|engineer|developer|full.?stack|backend|frontend|'
-                            'devops|sre|data|machine|ml|ai|python|java|golang|rust|'
-                            'intern|new grad|junior|entry|graduate'
-                             THEN 0 ELSE 1 END
+                            'junior|new grad|entry|graduate|intern|associate|mid[- ]level|'
+                            'level 1|level 2|early[- ]career|recent grad|i\b|ii\b'
+                            AND lower(o.title) ~
+                            'software|engineer|developer|full.?stack|backend|frontend|devops|sre|'
+                            'data|machine|ml|ai|python|java|golang|rust|quant|platform|infra|'
+                            'cloud|security|ios|android|mobile|embedded|front.?end|back.?end'
+                            AND lower(o.title) !~
+                            'senior|staff|principal|lead|head|manager|director|vp|principal|architect'
+                             THEN 0
+                        -- Tier 1: non-senior software roles (pass the gate).
+                        WHEN lower(o.title) ~
+                            'software|engineer|developer|full.?stack|backend|frontend|devops|sre|'
+                            'data|machine|ml|ai|python|java|golang|rust|quant|platform|infra|'
+                            'cloud|security|ios|android|mobile|embedded|front.?end|back.?end|'
+                            'robotics|hardware|systems|networking|database|analytics'
+                            AND lower(o.title) !~
+                            'senior|staff|principal|lead|head|manager|director|vp|principal|architect'
+                             THEN 1
+                        ELSE 2 END
                     ),
-                    -- Junior/entry-level SOFTWARE roles before senior ones so the
-                    -- gate doesn't reject the entire batch as title_senior.
-                    -- Requires BOTH a junior signal AND a tech keyword so non-tech
-                    -- "Marketing intern" / "Veterinary internist" postings don't
-                    -- eat the sweep budget only to be rejected by the gate.
-                    CASE WHEN lower(o.title) ~
-                        'junior|new grad|entry|graduate|intern|associate|mid[- ]level|'
-                        'level 1|level 2|early[- ]career|recent grad|i\b|ii\b'
-                        AND lower(o.title) ~
-                        'software|engineer|developer|full.?stack|backend|frontend|devops|sre|'
-                        'data|machine|ml|ai|python|java|golang|rust|quant|platform|infra|'
-                        'cloud|security|ios|android|mobile|embedded|front.?end|back.?end'
-                        AND lower(o.title) !~
-                        'senior|staff|principal|lead|head|manager|director|vp|principal|architect'
-                         THEN 0 ELSE 1 END,
                     o.last_seen DESC
                     LIMIT $1
                     """,
