@@ -1,14 +1,16 @@
-import { Stagehand } from "@browserbasehq/stagehand";
+import { Stagehand, type Action } from "@browserbasehq/stagehand";
 import { randomSleep } from "../../utils/evasion.js";
 import { FormField } from "./model.js";
 import {
   chooseOption,
   cssEscape,
+  cssIdLocator,
   escapePromptValue,
   normalizeOptionText,
   optionExactXPath,
   selectCandidates,
   pickLocationOption,
+  translateToDate,
 } from "./matching.js";
 
 /**
@@ -20,6 +22,13 @@ import {
 export class FormControls {
   protected shellClass: string;
   readonly tagName: string;
+  /** CSS selector for a dropdown's open option elements (default: react-select
+   *  ``div[role="option"]``). Boards like Workday render options as
+   *  ``li[role="option"]`` inside a ``ul`` — the subclass passes its own. */
+  protected optionSelector: string;
+  /** Element tag used by the XPath in ``clickVisibleOption`` (default "div").
+   *  Set to "*" when options can be several tags (e.g. Workday li/div). */
+  protected optionTag: string;
 
   constructor(
     protected stagehand: Stagehand,
@@ -28,15 +37,48 @@ export class FormControls {
       tagName?: string;
       /** CSS class token used to find react-select shells (default "select-shell"). */
       shellClass?: string;
+      /** CSS selector for dropdown options (default "div[role=\"option\"]"). */
+      optionSelector?: string;
+      /** XPath tag for dropdown options (default "div"). */
+      optionTag?: string;
     }
   ) {
     this.tagName = options?.tagName ?? "FormControls";
     this.shellClass = options?.shellClass ?? "select-shell";
+    this.optionSelector = options?.optionSelector ?? 'div[role="option"]';
+    this.optionTag = options?.optionTag ?? "div";
   }
 
   /** The active page (Stagehand may be configured with multiple tabs). */
+  protected activePage: any = null;
+
   getPage(): any {
-    return this.stagehand.context.pages()[0];
+    return this.activePage ?? this.stagehand.context.pages()[0];
+  }
+
+  /** Adopt a specific page (e.g. a form opened in a new tab) as the active one. */
+  adoptPage(page: any): void {
+    this.activePage = page;
+  }
+
+  /** Poll the browser context for a page whose URL matches ``match`` and adopt
+   *  it. Returns false on timeout — callers fall back to a DOM-based scan. */
+  async focusPage(match: RegExp, timeoutMs = 20000): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      for (const p of this.stagehand.context.pages()) {
+        try {
+          if (match.test(p.url())) {
+            this.activePage = p;
+            return true;
+          }
+        } catch {
+          // Page may have been closed mid-poll; skip it.
+        }
+      }
+      await randomSleep(500, 900);
+    }
+    return false;
   }
 
   /**
@@ -116,7 +158,7 @@ export class FormControls {
   /** Whether any option element is currently visible (the open menu's). */
   async hasVisibleOption(): Promise<boolean> {
     const page = this.getPage();
-    const options = page.locator('div[role="option"]');
+    const options = page.locator(this.optionSelector);
     const count = await options.count().catch(() => 0);
     for (let i = 0; i < count; i++) {
       if (await options.nth(i).isVisible().catch(() => false)) return true;
@@ -132,7 +174,7 @@ export class FormControls {
       // portal menus can keep hidden options in the DOM, so we must never
       // blindly take `.first()`.
       const options = page.locator(
-        `//div[contains(@role,"option")][${optionExactXPath(picked)}]`
+        `//${this.optionTag}[contains(@role,"option")][${optionExactXPath(picked)}]`
       );
       const count = await options.count().catch(() => 0);
       for (let i = 0; i < count; i++) {
@@ -151,10 +193,10 @@ export class FormControls {
   async readAnyOptionTexts(): Promise<string[]> {
     const page = this.getPage();
     try {
-      return await page.evaluate(() => {
+      return await page.evaluate((selector: string) => {
         const out: string[] = [];
         const seen = new Set<string>();
-        for (const el of Array.from(document.querySelectorAll('div[role="option"]'))) {
+        for (const el of Array.from(document.querySelectorAll(selector))) {
           const text = ((el as HTMLElement).textContent || "")
             .replace(/\s+/g, " ")
             .trim();
@@ -164,7 +206,7 @@ export class FormControls {
           }
         }
         return out;
-      });
+      }, this.optionSelector);
     } catch {
       return [];
     }
@@ -174,10 +216,10 @@ export class FormControls {
   async readVisibleOptionTexts(): Promise<string[]> {
     const page = this.getPage();
     try {
-      return await page.evaluate(() => {
+      return await page.evaluate((selector: string) => {
         const out: string[] = [];
         const seen = new Set<string>();
-        for (const el of Array.from(document.querySelectorAll('div[role="option"]'))) {
+        for (const el of Array.from(document.querySelectorAll(selector))) {
           const node = el as HTMLElement;
           if (node.offsetParent === null && node.getBoundingClientRect().height === 0) {
             continue; // hidden or detached; only the open menu is visible
@@ -189,7 +231,7 @@ export class FormControls {
           }
         }
         return out;
-      });
+      }, this.optionSelector);
     } catch {
       return [];
     }
@@ -210,7 +252,7 @@ export class FormControls {
     const page = this.getPage();
     try {
       const control = page.locator(this.controlXPathFor(id)).first();
-      const input = page.locator(`#${id}`).first();
+      const input = page.locator(cssIdLocator(id)).first();
       if (!(await control.isVisible().catch(() => false))) return [];
       await this.closeMenu();
       await randomSleep(150, 300);
@@ -273,13 +315,32 @@ export class FormControls {
     }
   }
 
-  /** Read the current value of a plain text input. */
+  /** Read the current value of a plain text input. Falls back to the control
+   *  linked via `label[for="<id>"]` when the input itself has no id (Ashby
+   *  react-datepicker shape). */
   async readInputValue(id: string): Promise<string> {
     const page = this.getPage();
     try {
       return await page.evaluate((inputId: string) => {
-        const input = document.getElementById(inputId) as HTMLInputElement | null;
-        return input ? (input.value || "").trim() : "";
+        const byId = document.getElementById(inputId) as HTMLInputElement | null;
+        if (byId) return (byId.value || "").trim();
+        const label = document.querySelector(`label[for="${inputId}"]`);
+        const control = label
+          ? (label as HTMLLabelElement).control
+          : null;
+        if (control) return ((control as HTMLInputElement).value || "").trim();
+        // Last resort: the field's own container (label's `for` may dangle
+        // when the input has no id — react-datepicker). Read its first control.
+        // The scope itself may BE the control (generic adapter tags the input).
+        const scope = document.querySelector(`[data-field-path="${inputId}"]`);
+        const scoped = scope?.matches(
+          'input[type="text"], input[type="date"], input[type="email"], input[type="tel"], input[type="url"], input:not([type]), textarea'
+        )
+          ? scope
+          : scope?.querySelector(
+              'input[type="text"], input[type="date"], input[type="email"], input[type="tel"], input[type="url"], input:not([type]), textarea'
+            );
+        return scoped ? ((scoped as HTMLInputElement).value || "").trim() : "";
       }, id);
     } catch {
       return "";
@@ -312,10 +373,68 @@ export class FormControls {
     }
   }
 
+  /**
+   * Read the committed value of a radio/checkbox/button-toggle field by
+   * inspecting the field's OWN scope — board-agnostic. Returns:
+   *  - the checked input's label/aria text, or
+   *  - the text of an active/checked toggle button (yes/no rows), or
+   *  - the underlying input's value as a last resort.
+   * Empty string when nothing is committed.
+   */
+  async readScopedGroupValue(field: FormField): Promise<string> {
+    const page = this.getPage();
+    try {
+      return await page.evaluate((fid: string) => {
+        const scope = document.querySelector(`[data-field-path="${fid}"]`);
+        if (!scope) return "";
+        const checked = scope.querySelector(
+          'input[type="radio"]:checked, input[type="checkbox"]:checked'
+        ) as HTMLInputElement | null;
+        if (checked) {
+          const wrapLabel = checked.closest("label");
+          const forLabel = checked.id
+            ? document.querySelector(`label[for="${checked.id}"]`)
+            : null;
+          const label = wrapLabel || forLabel;
+          const txt = (label
+            ? (label.textContent || "")
+            : checked.getAttribute("aria-label") || ""
+          )
+            .replace(/\s+/g, " ")
+            .trim();
+          if (txt) return txt;
+          return checked.value || "";
+        }
+        // Toggle-button rows: an active/checked button (aria-pressed or a
+        // checked/active class) is the committed value.
+        const activeBtn = Array.from(
+          scope.querySelectorAll("button")
+        ).find((b) => {
+          const cls = (b.className || "").toString();
+          return (
+            b.getAttribute("aria-pressed") === "true" ||
+            /(checked|active|selected|_checked_)/.test(cls)
+          );
+        });
+        if (activeBtn) {
+          return (activeBtn.textContent || "").replace(/\s+/g, " ").trim();
+        }
+        return "";
+      }, field.id);
+    } catch {
+      return "";
+    }
+  }
+
   /** Committed value of a field after filling, for verification/audit. */
   async readFieldValue(field: FormField): Promise<string> {
     if (field.kind === "radio" || field.kind === "checkbox") {
-      return this.readGroupValue(field.optionTargets[0]?.name || field.name || field.id);
+      // Board-agnostic scope read first; fall back to the name-based read for
+      // boards whose radios share a group name (Greenhouse/Lever).
+      return (
+        (await this.readScopedGroupValue(field)) ||
+        this.readGroupValue(field.optionTargets[0]?.name || field.name || field.id)
+      );
     }
     if (field.kind === "select" || field.kind === "multi") {
       // Location autocompletes may commit as free text in the input rather
@@ -356,9 +475,58 @@ export class FormControls {
           );
         if (!target) continue;
         const type = field.kind === "checkbox" ? "checkbox" : "radio";
-        const nameAttr = cssEscape(target.name || field.name || field.id);
-        const valueAttr = target.value ? `[value="${cssEscape(target.value)}"]` : "";
-        const base = `input[type="${type}"]${valueAttr}[name="${nameAttr}"]`;
+        // NOTE: do NOT add `[value="..."]` here. For an input without a value
+        // attribute, `input.value` (the property, read by the walker) is the
+        // browser default "on", but there is NO `value` attribute in the DOM —
+        // so `[value="on"]` matches nothing. The name alone identifies the
+        // radio/checkbox group member.
+        //
+        // Prefer the input's captured id: it uniquely identifies the option
+        // (radio groups share one `name`, so a name-only selector always
+        // resolves to the FIRST option and clicking it selects the WRONG one).
+        //
+        // When the input has no id (common for Greenhouse/Lever), disambiguate
+        // the group by matching the option's OWN label text: walk every input
+        // in the group, find the one whose wrapping/sibling label matches the
+        // candidate, and use THAT input's id. This clicks the correct option
+        // (e.g. "No" in a Yes/No group) instead of always the first.
+        const nameSel = cssEscape(target.name || field.name || field.id);
+        let optionId = target.id;
+        if (!optionId) {
+          optionId = await page
+            .evaluate(
+              (args: { name: string; type: string; want: string }) => {
+                const inputs = Array.from(
+                  document.querySelectorAll(
+                    `input[type="${args.type}"][name="${args.name}"]`
+                  )
+                ) as HTMLInputElement[];
+                const norm = (s: string) =>
+                  (s || "").replace(/\s+/g, " ").trim().toLowerCase();
+                for (const inp of inputs) {
+                  const wrapLabel = inp.closest("label");
+                  const forLabel = inp.id
+                    ? document.querySelector(`label[for="${inp.id}"]`)
+                    : null;
+                  const label = wrapLabel || forLabel;
+                  const txt = norm(
+                    label
+                      ? label.textContent || ""
+                      : inp.getAttribute("aria-label") || ""
+                  );
+                  if (txt === args.want) {
+                    return inp.id || "";
+                  }
+                }
+                return "";
+              },
+              { name: nameSel, type, want: nc }
+            )
+            .catch(() => "");
+        }
+        const base = optionId
+          ? `input[type="${type}"][id="${cssEscape(optionId)}"]`
+          : `input[type="${type}"][name="${nameSel}"]`;
         const input = page.locator(base).first();
 
         // 1) Wrapping label (label:has(input)).
@@ -367,24 +535,74 @@ export class FormControls {
           await wrapLabel.click();
           if (await input.isChecked().catch(() => false)) return true;
         }
-        // 2) Sibling label[for=<input id>] — label is NOT an ancestor.
-        if (await input.isVisible().catch(() => false)) {
-          const inputId = await page
-            .evaluate((sel: string) => document.querySelector(sel)?.id || "", base)
-            .catch(() => "");
-          if (inputId) {
-            const forLabel = page.locator(`label[for="${cssEscape(inputId)}"]`).first();
-            if (await forLabel.isVisible().catch(() => false)) {
-              await forLabel.click();
-              if (await input.isChecked().catch(() => false)) return true;
-            }
+        // 2) Sibling label[for=<input id>] — label is NOT an ancestor. The
+        //    native radio/checkbox is often visually hidden (opacity:0 or a
+        //    0px overlay), so `input.isVisible()` may be false — the LABEL is
+        //    the clickable element and must be used regardless. Uses the
+        //    matched option's OWN id so the precise option is clicked.
+        const inputId = await page
+          .evaluate((sel: string) => document.querySelector(sel)?.id || "", base)
+          .catch(() => "");
+        if (inputId) {
+          const forLabel = page.locator(`label[for="${cssEscape(inputId)}"]`).first();
+          if (await forLabel.isVisible().catch(() => false)) {
+            await forLabel.click();
+            if (await input.isChecked().catch(() => false)) return true;
           }
-          // 3) Bare input: force-check it (never rely on a wrapping label).
-          await (input as any).check({ force: true }).catch(() => {});
-          if (await input.isChecked().catch(() => false)) return true;
         }
+        // 3) Bare input: force-check it (never rely on a wrapping label or
+        //    visibility — the input is often the styled/hidden native control).
+        await (input as any).check({ force: true }).catch(() => {});
+        if (await input.isChecked().catch(() => false)) return true;
       }
-      // Fallback: text-based label matching within the form.
+      // Fallback: click a matching visible element within the field's OWN
+      // scope. Board-agnostic — handles toggle-button rows, pill options, and
+      // option rows whose input has no id/name captured. Closes over the
+      // answer and verifies the field actually flipped afterward.
+      const scopeClicked = await page
+        .evaluate(
+          (fid: string, want: string) => {
+            const scope = document.querySelector(`[data-field-path="${fid}"]`);
+            if (!scope) return false;
+            const norm = (s: string) =>
+              (s || "").replace(/\s+/g, " ").trim().toLowerCase();
+            const candidates = Array.from(
+              scope.querySelectorAll(
+                "button, label[for], label:has(input), [role='option'], " +
+                  "[class*='option'], li, span, div[class*='option']"
+              )
+            ).filter((el) => {
+              const txt = norm((el as HTMLElement).textContent || "");
+              // Skip empty and the question label itself (a label whose text
+              // equals the field's own heading is not an option).
+              return txt === want || (txt && want && txt.includes(want));
+            });
+            for (const el of candidates) {
+              const tag = el.tagName;
+              // Prefer leaf nodes: a button, or an element with no option
+              // descendants (avoids double-clicks on containers).
+              if (tag === "BUTTON") {
+                (el as HTMLElement).click();
+                return true;
+              }
+              if (!el.querySelector("button, [class*='option']")) {
+                (el as HTMLElement).click();
+                return true;
+              }
+            }
+            return false;
+          },
+          field.id,
+          normalizeOptionText(answer)
+        )
+        .catch(() => false);
+      if (scopeClicked) {
+        await randomSleep(250, 450);
+        return !!(await this.readScopedGroupValue(field));
+      }
+      // Fallback: text-based label matching within the form. Walks EVERY radio
+      // in the group — not just the first — so an id-less group where the
+      // answer is the second (or later) option still clicks the right one.
       const formLabel = page
         .locator(
           `${formSelector} label:has(input[type='radio'], input[type='checkbox']):has-text("${cssEscape(answer)}")`
@@ -392,7 +610,11 @@ export class FormControls {
         .first();
       if (await formLabel.isVisible().catch(() => false)) {
         await formLabel.click();
-        return true;
+        // Verify the chosen option (not the group's first) actually committed.
+        const committed = await this.readFieldValue(field);
+        return (
+          !!committed && normalizeOptionText(committed) === normalizeOptionText(answer)
+        );
       }
       return false;
     } catch {
@@ -412,13 +634,122 @@ export class FormControls {
   }
 
   /**
+   * Resolve the real control for a field, handling the Ashby DOM shapes:
+   * (a) the input itself carries id == field id, (b) the input has NO id and
+   * the field id lives on the label's `for` attribute, or (c) neither — the
+   * label's `for` points at a nonexistent id (react-datepicker with id="")
+   * and the control must be found inside the field's own `[data-field-path]`
+   * scope. Returns `{ byId }`, `{ byLabel }`, or `{ byScope }`.
+   */
+  private async resolveTextControl(field: FormField): Promise<any | null> {
+    const page = this.getPage();
+    const id = field.id;
+    return page
+      .evaluate((fid: string) => {
+        const byId = document.getElementById(fid);
+        if (
+          byId &&
+          (byId instanceof HTMLInputElement ||
+            byId instanceof HTMLTextAreaElement ||
+            byId instanceof HTMLSelectElement)
+        ) {
+          return { byId: true };
+        }
+        const label = document.querySelector(`label[for="${fid}"]`);
+        const control = label ? (label as HTMLLabelElement).control : null;
+        if (
+          control &&
+          (control instanceof HTMLInputElement ||
+            control instanceof HTMLTextAreaElement ||
+            control instanceof HTMLSelectElement)
+        ) {
+          return { byLabel: true, type: (control as HTMLInputElement).type || control.tagName.toLowerCase() };
+        }
+        // Last resort: the field's own container. The input may carry no id
+        // at all (and the label's `for` dangles) — grab the first text-like
+        // control inside the `[data-field-path="<fid>"]` scope. The scope
+        // itself may BE the control (generic adapter tags the input).
+        const scope = document.querySelector(`[data-field-path="${fid}"]`);
+        if (scope) {
+          const first = scope.matches(
+            'input[type="text"], input[type="date"], input[type="email"], input[type="tel"], input[type="url"], input:not([type]), textarea'
+          )
+            ? scope
+            : scope.querySelector(
+                'input[type="text"], input[type="date"], input[type="email"], input[type="tel"], input[type="url"], input:not([type]), textarea'
+              );
+          if (
+            first instanceof HTMLInputElement ||
+            first instanceof HTMLTextAreaElement
+          ) {
+            return { byScope: true, type: (first as HTMLInputElement).type || first.tagName.toLowerCase() };
+          }
+        }
+        return null;
+      }, id)
+      .catch(() => null);
+  }
+
+  /**
    * Fill a plain text field. Refuses to type into a combobox/select-shell
    * disguised as a text field, and silently skips file inputs (resume handled
-   * by the adapter's dedicated upload path).
+   * by the adapter's dedicated upload path). Handles the react-datepicker
+   * shape (input without an id, linked via label[for]) by filling through the
+   * label-associated control.
    */
   async fillTextById(id: string, answer: string): Promise<void> {
     const page = this.getPage();
-    const loc = page.locator(`#${id}`).first();
+    const field: FormField = { label: id, id, kind: "text", required: false, options: [], optionTargets: [] };
+    const target = await this.resolveTextControl(field);
+    if (process.env.DEBUG_FILL) {
+      console.log(`[DEBUG_FILL] fillTextById #${id} resolveTextControl=${JSON.stringify(target)} answer="${answer}"`);
+    }
+    if (!target) return;
+    if (target.byLabel || target.byScope) {
+      // The control has no id of its own; drive it through the label's
+      // associated control (or the scope's first control) with a native value
+      // setter + input event so the framework (react-datepicker) observes it.
+      await page
+        .evaluate(
+          (fid: string, value: string) => {
+            const label = document.querySelector(`label[for="${fid}"]`);
+            let control = label
+              ? (label as HTMLLabelElement).control
+              : null;
+            const isControl =
+              control instanceof HTMLInputElement ||
+              control instanceof HTMLTextAreaElement;
+            if (!isControl) {
+              const scope = document.querySelector(`[data-field-path="${fid}"]`);
+              const inScope = scope?.matches(
+                'input[type="text"], input[type="date"], input[type="email"], input[type="tel"], input[type="url"], input:not([type]), textarea'
+              )
+                ? scope
+                : (scope?.querySelector(
+                    'input[type="text"], input[type="date"], input[type="email"], input[type="tel"], input[type="url"], input:not([type]), textarea'
+                  ) as HTMLElement | null) ?? null;
+              control = (inScope as HTMLElement | null) ?? null;
+            }
+            if (!control) return false;
+            if ((control as HTMLInputElement).type === "file") return false;
+            const setter = Object.getOwnPropertyDescriptor(
+              (control as HTMLInputElement).constructor.prototype,
+              "value"
+            )?.set;
+            if (setter) setter.call(control, value);
+            else (control as HTMLInputElement).value = value;
+            control.dispatchEvent(new Event("input", { bubbles: true }));
+            control.dispatchEvent(new Event("change", { bubbles: true }));
+            return true;
+          },
+          id,
+          String(answer ?? "")
+        )
+        .catch(() => {});
+      await randomSleep(200, 500);
+      return;
+    }
+    const loc = page.locator(cssIdLocator(id)).first();
     if (!(await loc.isVisible().catch(() => false))) return;
     const type = await page
       .evaluate((inputId: string) => {
@@ -553,7 +884,7 @@ export class FormControls {
   async fillAsyncAutocomplete(id: string, answer: string): Promise<boolean> {
     const page = this.getPage();
     try {
-      const input = page.locator(`#${id}`).first();
+      const input = page.locator(cssIdLocator(id)).first();
       if (!(await input.isVisible().catch(() => false))) return false;
       await this.closeMenu();
       await randomSleep(150, 300);
@@ -629,7 +960,9 @@ export class FormControls {
       }
       // Native <select> fallback.
       const page = this.getPage();
-      const sel = page.locator(`#${field.id} select, select#${field.id}`).first();
+      const sel = page
+        .locator(`${cssIdLocator(field.id)} select, select${cssIdLocator(field.id)}`)
+        .first();
       if (await sel.isVisible().catch(() => false)) {
         const picked = chooseOption(selectCandidates(answer), optionTexts ?? []);
         if (picked) {
@@ -653,7 +986,166 @@ export class FormControls {
     if (field.kind === "checkbox") {
       return this.clickGroupMulti(field, answer);
     }
+    if (field.kind === "date") {
+      return this.fillDate(field.id, String(answer ?? ""));
+    }
     await this.fillTextById(field.id, String(answer ?? ""));
     return !!(await this.readInputValue(field.id));
+  }
+
+  /**
+   * Fill a date-picker field (react-datepicker). The answer is usually a
+   * free-text availability ("immediately", "in 2 weeks", "3 months") which is
+   * translated to a concrete MM/DD/YYYY value that react-datepicker parses.
+   * Returns true when a date value commits.
+   */
+  async fillDate(id: string, answer: string): Promise<boolean> {
+    const date = translateToDate(answer);
+    if (!date) return false;
+    const page = this.getPage();
+    const target = await this.resolveTextControl({ label: id, id, kind: "date", required: false, options: [], optionTargets: [] } as any);
+    if (!target) return false;
+    const value = `${date.getMonth() + 1}/${date.getDate()}/${date.getFullYear()}`;
+    const ok = await page
+      .evaluate(
+        (fid: string, v: string) => {
+          const byId = document.getElementById(fid);
+          let control = byId;
+          if (!control) {
+            const label = document.querySelector(`label[for="${fid}"]`);
+            control = label ? (label as HTMLLabelElement).control : null;
+          }
+          if (!control) {
+            const scope = document.querySelector(`[data-field-path="${fid}"]`);
+            control = (
+              (scope?.matches('input[type="text"], input:not([type])')
+                ? scope
+                : scope?.querySelector('input[type="text"], input:not([type])')) as HTMLElement | null
+            ) || null;
+          }
+          if (!control) return false;
+          const setter = Object.getOwnPropertyDescriptor(
+            HTMLInputElement.prototype,
+            "value"
+          )?.set;
+          if (setter) setter.call(control, v);
+          else (control as HTMLInputElement).value = v;
+          control.dispatchEvent(new Event("input", { bubbles: true }));
+          control.dispatchEvent(new Event("change", { bubbles: true }));
+          control.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+          return true;
+        },
+        id,
+        value
+      )
+      .catch(() => false);
+    await randomSleep(300, 600);
+    if (!ok) return false;
+    const committed = await this.readInputValue(id);
+    if (!committed) {
+      // react-datepicker may keep the calendar open; commit by typing again.
+      const input = page.locator(this.fieldScopeInputSelector(id)).first();
+      if (await input.isVisible().catch(() => false)) {
+        await input.fill(value);
+        await randomSleep(300, 600);
+      }
+    }
+    console.log(`[${this.tagName}] Filled date #${id} with "${value}" (from "${answer}")`);
+    return !!(await this.readInputValue(id));
+  }
+
+  /** CSS selector for the first text/date input inside a field's scope. */
+  private fieldScopeInputSelector(id: string): string {
+    return `[data-field-path="${id}"] input[type="text"], ` +
+      `[data-field-path="${id}"] input:not([type])`;
+  }
+
+  /**
+   * Deterministic fill through a Stagehand observe() Action. The Action
+   * carries a selector that act({ ...action, method: "fill", arguments:
+   * [value] }) resolves with NO extra LLM inference — the generic adapter uses
+   * this as its Tier-2 fallback for exotic form renderers the DOM walker could
+   * not enumerate. Returns true once the action is issued; committed-value
+   * verification is the caller's job (readObservedValue).
+   */
+  async fillObserved(
+    action: { selector: string; description: string },
+    answer: string
+  ): Promise<boolean> {
+    try {
+      await this.stagehand.act(
+        {
+          selector: action.selector,
+          description: action.description || "fill the field",
+          method: "fill",
+          arguments: [String(answer ?? "")],
+        },
+        { page: this.getPage() }
+      );
+      await randomSleep(300, 600);
+      return true;
+    } catch (err: any) {
+      console.warn(
+        `[${this.tagName}] fillObserved failed for ${action.selector}: ${err?.message || err}`
+      );
+      return false;
+    }
+  }
+
+  /**
+   * Read the committed value of an element addressed by an observe() selector
+   * so a filled field can be verified without another LLM call. Resolves
+   * XPath-style selectors ("xpath=…", "/…") and plain CSS selectors.
+   */
+  async readObservedValue(selector: string): Promise<string> {
+    const page = this.getPage();
+    try {
+      // WARNING: only anonymous arrows may be defined inside this evaluate
+      // (tsx keepNames stringifies the callback into the page). Destructure
+      // helpers into an array so none gains a __name() wrapper.
+      return (await page.evaluate((sel: string) => {
+        const [resolve, readVal] = [
+          (): Element | null => {
+            const s = String(sel || "").trim();
+            if (!s) return null;
+            if (s.startsWith("xpath=") || s.startsWith("/")) {
+              try {
+                const xp = s.replace(/^xpath=/i, "");
+                const node = document.evaluate(
+                  xp,
+                  document,
+                  null,
+                  XPathResult.FIRST_ORDERED_NODE_TYPE,
+                  null
+                ).singleNodeValue;
+                return node instanceof Element ? node : null;
+              } catch {
+                return null;
+              }
+            }
+            try {
+              return document.querySelector(s);
+            } catch {
+              return null;
+            }
+          },
+          (el: Element): string => {
+            if (el instanceof HTMLSelectElement) {
+              const opt = el.selectedOptions?.[0];
+              return opt ? (opt.textContent || opt.value || "").trim() : "";
+            }
+            if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+              return (el.value || "").trim();
+            }
+            return (el.textContent || "").replace(/\s+/g, " ").trim();
+          },
+        ];
+        const el = resolve();
+        if (!el) return "";
+        return readVal(el);
+      }, selector)) as string;
+    } catch {
+      return "";
+    }
   }
 }
