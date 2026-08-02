@@ -10,10 +10,10 @@ x-common-env: &common-env
   POSTGRES_HOST: nuq-postgres
   POSTGRES_PORT: 5432
   USE_DB_AUTHENTICATION: false
-  NUM_WORKERS_PER_QUEUE: 8
-  CRAWL_CONCURRENT_REQUESTS: 12
-  MAX_CONCURRENT_JOBS: 6
-  BROWSER_POOL_SIZE: 8
+  NUM_WORKERS_PER_QUEUE: 16
+  CRAWL_CONCURRENT_REQUESTS: 24
+  MAX_CONCURRENT_JOBS: 12
+  BROWSER_POOL_SIZE: 12
   OPENAI_API_KEY: ${OPENAI_API_KEY:-}
   OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
   MODEL_NAME: ${MODEL_NAME:-}
@@ -45,8 +45,8 @@ services:
         soft: 65535
         hard: 65535
     cpus: 12.0
-    mem_limit: 4G
-    memswap_limit: 4G
+    mem_limit: 6G
+    memswap_limit: 6G
     logging:
       driver: "json-file"
       options:
@@ -58,10 +58,10 @@ services:
     image: ghcr.io/firecrawl/playwright-service:latest
     environment:
       PORT: 3000
-      CONCURRENT_WORKERS: 8
-    cpus: 4.0
-    mem_limit: 4G
-    memswap_limit: 4G
+      CONCURRENT_WORKERS: 12
+    cpus: 6.0
+    mem_limit: 6G
+    memswap_limit: 6G
     restart: unless-stopped
     tmpfs:
       - /tmp/.cache:noexec,nosuid,size=1g
