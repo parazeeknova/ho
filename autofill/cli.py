@@ -246,13 +246,11 @@ async def _stream_runner(
                                     if bridge.is_configured:
                                         option_hint = ""
                                         if pending["options"]:
-                                            option_hint = "\n" + " | ".join(
-                                                pending["options"][:6]
-                                            )
+                                            option_hint = "\n" + " | ".join(pending["options"][:6])
                                         text = (
                                             f"⛔ <b>Deferred</b>: "
-                                            f'{payload.get("company", "Company")} — '
-                                            f'{payload.get("role", "Position")}\n'
+                                            f"{payload.get('company', 'Company')} — "
+                                            f"{payload.get('role', 'Position')}\n"
                                             f'<a href="{payload["url"]}">Open posting →</a>\n'
                                             f"Needs your input:\n"
                                             f"• {deferred.question}{option_hint}"
@@ -261,9 +259,7 @@ async def _stream_runner(
                                 finally:
                                     await db.close()
                             except Exception as db_err:
-                                print(
-                                    f"[Python CLI] WARNING: could not record deferral: {db_err}"
-                                )
+                                print(f"[Python CLI] WARNING: could not record deferral: {db_err}")
 
                             if process.stdin:
                                 rpc_resp = json.dumps(
@@ -339,8 +335,9 @@ async def run_apply(url: str, mode: str = "review"):
         "url": url,
         "mode": mode,
         "profile": profile.model_dump(by_alias=False),
-        # No-apply phase: the form is filled and verified but never submitted.
-        "submitAllowed": False,
+        # Overnight (no human): fully-fillable jobs are submitted automatically.
+        # In day mode the form is filled and verified but never submitted.
+        "submitAllowed": overnight,
     }
 
     try:
@@ -422,7 +419,7 @@ async def run_resume(job_id: str, review: bool = False):
             if final_event is None:
                 print("[Python CLI] Runner did not report a final status.")
             elif final_event.get("status") == "skipped":
-                await db.update_status(job_id, status="skipped")
+                await db.update_status(job_id, status="skipped", override_terminal=True)
                 await db.clear_pending_questions(job_id)
                 print("[Python CLI] Fill completed (not submitted). Pending questions cleared.")
             elif final_event.get("status") == "failed":
@@ -431,7 +428,9 @@ async def run_resume(job_id: str, review: bool = False):
                     await db.mark_deferred(job_id, questions=pending)
                     print(f"[Python CLI] Job {job_id} still deferred (questions unanswered).")
                 else:
-                    await db.update_status(job_id, status="failed", error=error_msg)
+                    await db.update_status(
+                        job_id, status="failed", error=error_msg, override_terminal=True
+                    )
                     print(f"[Python CLI] Job {job_id} failed: {error_msg}")
         finally:
             await rag.close()

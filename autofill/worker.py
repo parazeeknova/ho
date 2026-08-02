@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import datetime as _dt
 import json
 import os
@@ -75,9 +76,20 @@ class AutofillWorker:
             while self._running:
                 # The slot is acquired BEFORE claiming and only released when
                 # the runner exits, so max_concurrent bounds the number of
-                # simultaneous Stagehand processes — not just claims.
+                # simultaneous Stagehand processes — not just claims. Any
+                # failure in acquire/claim releases the slot and backs off so
+                # a single transient DB error cannot kill the whole worker.
                 await self.semaphore.acquire()
-                job = await self.db.claim_next_job(lease_seconds=3600)
+                try:
+                    job = await self.db.claim_next_job(lease_seconds=3600)
+                except asyncio.CancelledError:
+                    self.semaphore.release()
+                    raise
+                except Exception as claim_err:
+                    self.semaphore.release()
+                    logger.warning("Claim failed; backing off", error=str(claim_err))
+                    await asyncio.sleep(5)
+                    continue
                 if not job:
                     self.semaphore.release()
                     await asyncio.sleep(2)
@@ -199,8 +211,10 @@ class AutofillWorker:
                 "url": apply_link,
                 "mode": run_mode,
                 "profile": profile.model_dump(by_alias=False),
-                # No-apply phase: the form is filled and verified but never submitted.
-                "submitAllowed": False,
+                # Overnight (no human): fully-fillable jobs are submitted
+                # automatically. In day mode the form is filled and verified
+                # but never submitted (no-apply phase).
+                "submitAllowed": overnight,
             }
             payload_str = json.dumps(job_payload)
 
@@ -214,6 +228,12 @@ class AutofillWorker:
                 # human has a moment to review the filled form without stalling
                 # the queue on batch runs.
                 process_env["AUTOFILL_REVIEW_HOLD_MS"] = "3000"
+                # Overnight safety net: if the browser hangs with no observable
+                # progress (stuck fill/submit), the runner aborts after
+                # AUTOFILL_ACTIVITY_TIMEOUT_MS instead of holding a worker slot
+                # until the hour-long DB lease. Any runner/status/RPC activity
+                # resets the idle timer, so a healthy run is never cut off.
+                process_env["AUTOFILL_ACTIVITY_TIMEOUT_MS"] = "360000"
             else:
                 process_env["AUTOFILL_REVIEW_HOLD_MS"] = "180000"
 
@@ -233,6 +253,12 @@ class AutofillWorker:
                 await process.stdin.drain()
 
             stderr_task = asyncio.create_task(self._read_stderr(process.stderr, job_id))
+
+            # True once a terminal status event (submitted/skipped/failed) was
+            # handled for this run, so the exit-code fallback below never
+            # clobbers a specific error (e.g. CAPTCHA_DETECTED) with a generic
+            # "Runner exited with code N" message.
+            terminal_seen = False
 
             # Job description context extracted by the Node adapter; arrives
             # via the job_context RPC before any question is resolved.
@@ -389,7 +415,22 @@ class AutofillWorker:
                                 await process.stdin.drain()
 
                     except Exception as rpc_err:
+                        # Never leave the Node side hanging on an unexpected
+                        # error: without a response the runner's RPC promise
+                        # only rejects after the 30-min timeout. Send the error
+                        # response so the fill aborts promptly.
                         logger.error("Error handling RPC request", error=str(rpc_err))
+                        if process.stdin and not process.stdin.is_closing():
+                            try:
+                                rpc_resp = json.dumps(
+                                    {"type": "RPC_RESPONSE", "id": req_id, "error": str(rpc_err)}
+                                )
+                                process.stdin.write(f"{rpc_resp}\n".encode())
+                                await process.stdin.drain()
+                            except Exception:
+                                logger.warning(
+                                    "Could not send error response for RPC", job_id=job_id
+                                )
 
                 elif line_str.startswith("STATUS_EVENT:"):
                     event_raw = line_str[len("STATUS_EVENT:") :]
@@ -427,6 +468,7 @@ class AutofillWorker:
                                         await process.stdin.drain()
 
                         elif status == "submitted":
+                            terminal_seen = True
                             await self.db.update_status(
                                 job_id,
                                 status="submitted",
@@ -434,6 +476,7 @@ class AutofillWorker:
                                 screenshot_path=screenshot_path,
                             )
                         elif status == "skipped":
+                            terminal_seen = True
                             if deferred_pending:
                                 logger.info(
                                     "Job skipped after deferral; keeping status deferred",
@@ -456,6 +499,7 @@ class AutofillWorker:
                                     job_id=job_id,
                                 )
                             else:
+                                terminal_seen = True
                                 await self.db.update_status(
                                     job_id, status="failed", error=error_msg
                                 )
@@ -478,6 +522,8 @@ class AutofillWorker:
 
             await process.wait()
             stderr_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await stderr_task
 
             if deferred_pending:
                 # Record every unknown question once, together, so the morning
@@ -490,10 +536,12 @@ class AutofillWorker:
                     role=job.get("role"),
                     company=job.get("company"),
                 )
-            elif process.returncode != 0:
-                # Runner exited abnormally without a status event (startup
-                # failure, schema error, browser crash). Fail the job loudly
-                # instead of leaving it stuck in 'filling' until the lease.
+            elif process.returncode != 0 and not terminal_seen:
+                # Runner exited abnormally WITHOUT a terminal status event
+                # (startup failure, schema error, browser crash). Fail the job
+                # loudly instead of leaving it stuck in 'filling' until the
+                # lease. When a status event already persisted the specific
+                # reason (e.g. CAPTCHA_DETECTED), do not clobber it.
                 await self.db.update_status(
                     job_id,
                     status="failed",

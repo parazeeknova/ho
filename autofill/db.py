@@ -146,15 +146,19 @@ class AutofillDB:
         filled_payload: dict[str, Any] | None = None,
         screenshot_path: str | None = None,
         error: str | None = None,
+        override_terminal: bool = False,
     ) -> bool:
         """Update status and payload of a job.
 
         Guarded: a terminal status (``deferred``, ``submitted``) is never
         overwritten by a later non-terminal transition, so a deferred job that
         still reaches the review step keeps its deferred status and stays in
-        the morning digest.
+        the morning digest. The resume flow (``run_resume``) passes
+        ``override_terminal=True``: after the user answers the deferred
+        questions, clearing ``deferred`` to ``skipped``/``failed`` is exactly
+        what is wanted, not a downgrade.
         """
-        if status not in ("deferred", "submitted"):
+        if not override_terminal and status not in ("deferred", "submitted"):
             current = await self.get_job(job_id)
             if current and current.get("status") in ("deferred", "submitted"):
                 logger.info(
@@ -294,7 +298,9 @@ class AutofillDB:
                 """
                 SELECT job_id, apply_link, role, company, pending_questions, updated_at
                 FROM autofill_queue
-                WHERE status = 'deferred' AND COALESCE(summary_sent, FALSE) = FALSE
+                WHERE status = 'deferred'
+                  AND COALESCE(summary_sent, FALSE) = FALSE
+                  AND jsonb_array_length(COALESCE(pending_questions, '[]'::jsonb)) > 0
                 ORDER BY updated_at DESC
                 """
             )
