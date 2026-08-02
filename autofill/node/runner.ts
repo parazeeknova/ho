@@ -234,9 +234,16 @@ async function main() {
     // Anti-bot watchdog: if a captcha/challenge blocks the form, abort loudly
     // (status failed, error CAPTCHA_DETECTED) instead of silently grinding
     // through fill/RPC timeouts. The Python worker turns this into a Telegram
-    // notification to the user. Polled while the fill runs.
+    // notification to the user. Polled while the fill runs. A captcha-blocked
+    // fill does NOT throw on its own (the walk just finds no fields), so the
+    // fill is raced against an abort signal: detection rejects the race even
+    // when the adapter would otherwise "complete" with a blank form.
     const captchaWatchMs = parseInt(process.env.AUTOFILL_CAPTCHA_WATCH_MS || "8000", 10);
     let captchaMessage: string | null = null;
+    let rejectCaptcha: ((err: Error) => void) | null = null;
+    const captchaAbort = new Promise<never>((_, reject) => {
+      rejectCaptcha = reject;
+    });
     const captchaTimer = setInterval(async () => {
       if (captchaMessage) return;
       try {
@@ -244,13 +251,18 @@ async function main() {
         if (hit) {
           captchaMessage = hit;
           clearInterval(captchaTimer);
+          rejectCaptcha?.(
+            new Error(`CAPTCHA_DETECTED: ${hit} blocked the application form`)
+          );
         }
       } catch (_) {}
     }, captchaWatchMs);
 
     // Execute filling process with RPC helper
+    resetDeferredFieldCount();
+    const fillPromise = adapter.fill(payload, askPythonRpc);
     try {
-      await adapter.fill(payload, askPythonRpc);
+      await Promise.race([fillPromise, captchaAbort]);
     } catch (fillErr: any) {
       if (captchaMessage) {
         const err = new Error(`CAPTCHA_DETECTED: ${captchaMessage} blocked the application form`);
@@ -260,6 +272,9 @@ async function main() {
           status: "failed",
           error: err.message,
         });
+        // The abandoned fill is still running in the background; stop its
+        // unhandled-rejection noise before tearing the browser down.
+        fillPromise.catch(() => {});
         try {
           rl.close();
           await stagehand.close();
