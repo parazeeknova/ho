@@ -1,7 +1,7 @@
 import { Stagehand } from "@browserbasehq/stagehand";
 import * as fs from "fs";
 import { ATSAdapter, RpcHelper } from "./base.js";
-import { JobPayload, Profile } from "../types.js";
+import { JobPayload } from "../types.js";
 import { randomSleep } from "../utils/evasion.js";
 import { auditBlanks, finalReverify } from "./shared/audit.js";
 import { FormControls } from "./shared/controls.js";
@@ -18,6 +18,11 @@ import { Screener } from "./shared/screener.js";
 
 /**
  * Lever adapter.
+ *
+ * A posting URL may be the JD page (`jobs.lever.co/<org>/<id>`) or the direct
+ * apply form (`.../<id>/apply`). The JD page does not render the form: the
+ * application only appears after clicking `a[data-qa="show-page-apply"]`, which
+ * routes to the /apply URL — waitForForm drives that click when needed.
  *
  * Lever's apply form (`<form id="application-form">`) renders every question as
  * an `<li class="application-question">` with a `.application-label` heading and
@@ -39,6 +44,13 @@ import { Screener } from "./shared/screener.js";
 export class LeverAdapter extends ATSAdapter {
   protected controls!: LeverControlStack;
 
+  private jobCtx: {
+    title: string;
+    company: string;
+    location: string;
+    description: string;
+  } | null = null;
+
   constructor(stagehand: Stagehand) {
     super(stagehand);
     this.controls = new LeverControlStack(stagehand, "LeverAdapter");
@@ -50,6 +62,7 @@ export class LeverAdapter extends ATSAdapter {
 
   private async waitForForm(): Promise<void> {
     const page = this.getPage();
+    let applied = false;
     for (let i = 0; i < 40; i++) {
       const ready = await page
         .locator("#application-form input[name='email'], #application-form input[name='name']")
@@ -57,7 +70,114 @@ export class LeverAdapter extends ATSAdapter {
         .isVisible()
         .catch(() => false);
       if (ready) return;
+      // JD pages do not server-render the application form; it only appears
+      // (navigating to the /apply URL, or expanding in-page) after the
+      // "Apply for this job" link is clicked.
+      if (!applied && (await this.clickJdApply())) {
+        applied = true;
+        console.log("[Lever] Clicked the JD 'Apply' link to reach the application form.");
+      }
       await randomSleep(800, 1200);
+    }
+  }
+
+  private async clickJdApply(): Promise<boolean> {
+    const page = this.getPage();
+    // NOTE: never use `:visible` in these CSS selectors — Playwright's engine
+    // fails to parse it in a comma-combined selector and matches nothing.
+    const link = page
+      .locator('a[data-qa="show-page-apply"], a.template-btn-submit[href$="/apply"]')
+      .first();
+    if (!(await link.isVisible().catch(() => false))) return false;
+    await link.click().catch(() => {});
+    return true;
+  }
+
+  /** Read the posting header + description from the JD page, waiting for the
+   *  Angular app to hydrate, before the apply click navigates to /apply. */
+  private async captureJobContext(): Promise<void> {
+    const page = this.getPage();
+    const onJdPage = await page
+      .locator(".posting-headline h2, a[data-qa='show-page-apply']")
+      .first()
+      .isVisible()
+      .catch(() => false);
+    if (onJdPage) {
+      for (let i = 0; i < 20; i++) {
+        const hydrated = await page
+          .locator(".posting-headline h2, [data-qa='job-description']")
+          .first()
+          .isVisible()
+          .catch(() => false);
+        if (hydrated) break;
+        await randomSleep(400, 700);
+      }
+    }
+    this.jobCtx = await this.readJobContext();
+    console.log(
+      `[Lever] Job context: ${this.jobCtx.title || "?"} @ ${this.jobCtx.company || "?"}` +
+        (this.jobCtx.location ? ` (${this.jobCtx.location})` : "")
+    );
+  }
+
+  private async readJobContext(): Promise<{
+    title: string;
+    company: string;
+    location: string;
+    description: string;
+  }> {
+    const page = this.getPage();
+    try {
+      // WARNING: only anonymous arrows (array-destructured) inside this
+      // evaluate — tsx keepNames wraps inferred-name arrows in __name().
+      const info: any = await page.evaluate(() => {
+        const [txt, clean] = [
+          (sel: string) => {
+            const el = document.querySelector(sel);
+            return el ? (el.textContent || "").replace(/\s+/g, " ").trim() : "";
+          },
+          (s: string) =>
+            (s || "")
+              .replace(/<[^>]+>/g, " ")
+              .replace(/&nbsp;/g, " ")
+              .replace(/\s+/g, " ")
+              .trim()
+              .slice(0, 6000),
+        ];
+        const ogTitle =
+          document.querySelector('meta[property="og:title"]')?.getAttribute("content") || "";
+        const docTitle = document.title;
+        const title =
+          txt(".posting-headline h2, .posting-title h1") ||
+          (ogTitle || docTitle).replace(/^.*?\s*[-–|]\s*/, "").trim();
+        const company = (ogTitle || docTitle).split(/\s*[-–|]\s*/)[0].trim();
+        const location = txt(
+          ".posting-categories .location, [class*='posting-category'][class*='location']"
+        );
+        const descEl = document.querySelector(
+          "[data-qa='job-description'], .posting-description, #posting-description"
+        );
+        const description = clean(descEl ? descEl.textContent || "" : "");
+        return { title, company, location, description, ogTitle, docTitle };
+      });
+      let company = (info?.company ?? "").replace(/\s+/g, " ").trim();
+      if (!company || company === (info?.docTitle ?? "")) {
+        try {
+          company =
+            new URL(page.url()).pathname.split("/").filter(Boolean)[0] || "";
+        } catch {
+          company = "";
+        }
+      }
+      return {
+        title: (info?.title ?? "").replace(/\s+/g, " ").trim(),
+        company: company.trim(),
+        location: (info?.location ?? "").replace(/\s+/g, " ").trim(),
+        description: info?.description ?? "",
+      };
+    } catch (err: any) {
+      console.warn(`[Lever] readJobContext failed: ${err?.message || err}`);
+      return { title: "", company: "", location: "", description: "" };
     }
   }
 
@@ -74,11 +194,17 @@ export class LeverAdapter extends ATSAdapter {
       }
       try {
         // Click the label first so the board associates the upload with the
-        // (clickable) resume drop zone, then set the file.
-        await input.evaluate((el: any) => {
-          const lbl = el.closest("label");
-          if (lbl) (lbl as HTMLElement).click();
-        }).catch(() => {});
+        // (clickable) resume drop zone, then set the file. Use page.evaluate
+        // (locator.evaluate is not exposed by Stagehand's wrapper).
+        await this.getPage()
+          .evaluate(() => {
+            const el = document.querySelector(
+              '#application-form input[type="file"][name="resume"]'
+            );
+            const lbl = el ? el.closest("label") : null;
+            if (lbl) (lbl as HTMLElement).click();
+          })
+          .catch(() => {});
         await randomSleep(300, 600);
         await input.setInputFiles(resumePath);
       } catch (err: any) {
@@ -113,38 +239,38 @@ export class LeverAdapter extends ATSAdapter {
           kind: string;
           required: boolean;
           options: string[];
-          targets: Array<{ text: string; name: string; value: string }>;
+          targets: Array<{ text: string; name: string; value: string; id?: string; button?: boolean }>;
         }> = [];
         // WARNING: only anonymous arrows may be defined inside this evaluate
         // (tsx keepNames wraps inferred-name arrows in __name()). Destructure
         // helpers into an array so none gains a name.
-        const [norm] = [
+        const [norm, isSurvey, VISIBLE] = [
           (t: string) =>
             (t || "").replace(/\s+/g, " ").trim().replace(/^\*+|\*+$/g, ""),
-        ];
-        const isSurvey = (el: Element): boolean => {
-          // All survey/EEO/geography questions live inside a hidden container.
-          let n: Element | null = el;
-          while (n && n !== document.body) {
-            const cls = (n.className || "").toString();
-            const id = (n.getAttribute && n.getAttribute("id")) || "";
-            if (
-              /(survey|eeo|\bonboarding)/i.test(cls + " " + id) ||
-              n === document.querySelector('#survey-job-questions') ||
-              n === document.querySelector(".application-form.hidden")
-            ) {
-              // Hidden survey sections carry their own "hidden" class; only
-              // skip rows that are not visible (optional != include).
-              return !(n as HTMLElement).getClientRects().length;
+          (el: Element): boolean => {
+            // All survey/EEO/geography questions live inside a hidden container.
+            let n: Element | null = el;
+            while (n && n !== document.body) {
+              const cls = (n.className || "").toString();
+              const id = (n.getAttribute && n.getAttribute("id")) || "";
+              if (
+                /(survey|eeo|\bonboarding)/i.test(cls + " " + id) ||
+                n === document.querySelector('#survey-job-questions') ||
+                n === document.querySelector(".application-form.hidden")
+              ) {
+                // Hidden survey sections carry their own "hidden" class; only
+                // skip rows that are not visible (optional != include).
+                return !(n as HTMLElement).getClientRects().length;
+              }
+              n = n.parentElement;
             }
-            n = n.parentElement;
-          }
-          return false;
-        };
-        const VISIBLE = (el: Element): boolean => {
-          const r = el.getBoundingClientRect();
-          return r.height > 0 && r.width > 0;
-        };
+            return false;
+          },
+          (el: Element): boolean => {
+            const r = el.getBoundingClientRect();
+            return r.height > 0 && r.width > 0;
+          },
+        ];
         const entries = Array.from(
           document.querySelectorAll("#application-form li.application-question")
         );
@@ -152,6 +278,10 @@ export class LeverAdapter extends ATSAdapter {
         for (const li of entries) {
           if (!VISIBLE(li)) continue;
           if (isSurvey(li)) continue;
+          // The async location autocomplete (#location-input) is committed only
+          // by picking a dropdown suggestion (fillLeverLocation runs pre-walk);
+          // never let the screener type free text into it.
+          if (li.contains(document.getElementById("location-input"))) continue;
           const labelEl = li.querySelector(":scope > .application-label") || li.querySelector(".application-label");
           const label = norm(labelEl?.textContent || "");
           if (!label) continue;
@@ -162,7 +292,7 @@ export class LeverAdapter extends ATSAdapter {
           if (/(^|\[)(eeo|surveys?|states?)\[/.test(nameAttr) || /^eeo\[/.test(nameAttr)) continue;
           if (/^urls\[/.test(nameAttr)) continue;
 
-          const input = li.querySelector("input[type='text'], input[type='email'], input[type='tel'], input:not([type])") as HTMLInputElement | null;
+          const input = li.querySelector("input[type='text'], input[type='email'], input[type='tel'], input[type='url'], input[type='number'], input[type='date'], input:not([type])") as HTMLInputElement | null;
           const textarea = li.querySelector("textarea") as HTMLTextAreaElement | null;
           const select = li.querySelector("select") as HTMLSelectElement | null;
           const radios = Array.from(li.querySelectorAll('input[type="radio"]')) as HTMLInputElement[];
@@ -188,7 +318,7 @@ export class LeverAdapter extends ATSAdapter {
           else if (select) select.setAttribute("id", id);
 
           let options: string[] = [];
-          const targets: Array<{ text: string; name: string; value: string }> = [];
+          const targets: Array<{ text: string; name: string; value: string; id?: string; button?: boolean }> = [];
           if (select) {
             options = Array.from(select.options)
               .map((o) => norm(o.textContent || ""))
@@ -209,7 +339,7 @@ export class LeverAdapter extends ATSAdapter {
                   : inEl.getAttribute("aria-label") || ""
             );
             if (!text) continue;
-            targets.push({ text, name: inEl.name || "", value: inEl.value || "" });
+            targets.push({ text, name: inEl.name || "", value: inEl.value || "", id: inEl.id || "" });
             if (!options.includes(text)) options.push(text);
           }
           if (kind === "select" && options.length === 0) continue;
@@ -239,6 +369,7 @@ export class LeverAdapter extends ATSAdapter {
             text: t.text,
             name: t.name,
             value: t.value,
+            id: t.id ?? "",
           })),
           name: r.id,
         })
@@ -254,6 +385,7 @@ export class LeverAdapter extends ATSAdapter {
     console.log(`[Lever] Navigating to ${url}...`);
     const page = this.getPage();
     await page.goto(url);
+    await this.captureJobContext();
     await this.waitForForm();
 
     console.log("[Lever] Uploading resume (parseResume autofills standard fields)...");
@@ -305,6 +437,12 @@ export class LeverAdapter extends ATSAdapter {
     }
 
     if (rpc) {
+      // Job context first so open-ended answers are personalized to the role
+      // (matches GreenhouseAdapter / AshbyAdapter job_context RPC).
+      if (this.jobCtx) {
+        await rpc("job_context", this.jobCtx);
+      }
+
       const screener = new Screener(this.controls, "LeverAdapter", profile, rpc);
       const filled: string[] = [];
       const blanked: Array<{ label: string; reason: string }> = [];
@@ -466,10 +604,16 @@ export class LeverControlStack extends FormControls {
       await this.closeMenu();
       await randomSleep(150, 300);
       await input.click().catch(() => {});
-      await input.focus().catch(() => {});
-      await input.pressSequentially(value, { delay: 40 }).catch(async () => {
-        await input.fill(value);
-      });
+      // Stagehand's locator wrapper has no pressSequentially; type via the
+      // page-level keyboard (fires the key/input events the autocomplete needs).
+      const typed = await page.keyboard
+        ?.type(value, { delay: 40 })
+        .then(() => true)
+        .catch(async () => {
+          await input.fill(value).catch(() => {});
+          return false;
+        });
+      if (!typed) await input.fill(value).catch(() => {});
       let rows: string[] = [];
       for (let i = 0; i < 10 && rows.length === 0; i++) {
         await randomSleep(900, 1200);
