@@ -151,9 +151,24 @@ export class Screener {
         options: optionTexts,
       });
     } catch (rpcErr: any) {
-      // RPC failures (Telegram unconfigured, overnight deferral) must abort
-      // loudly — filling a form around an unanswered personal question is worse
-      // than no fill.
+      // A deferred question (overnight, no human) must NOT abort the whole
+      // run: the Python side has already recorded it for the morning digest
+      // and prompted the user. Skip this field, keep it out of the final
+      // sweep, and continue filling the rest of the form.
+      if (/(AUTOFILL_DEFER|DEFER)/.test(rpcErr?.message || String(rpcErr))) {
+        console.warn(
+          `[${this.controls.tagName}] Question "${escapePromptValue(field.label)}" deferred for user input; ` +
+            "leaving blank and continuing."
+        );
+        userSkippedKeys.add(fieldKey(field));
+        blanked.push({
+          label: field.label,
+          reason: "deferred for user input (resume via the CLI)",
+        });
+        return;
+      }
+      // Real RPC failures (Telegram unconfigured, transport) must abort loudly —
+      // filling a form around an unanswered personal question is worse than no fill.
       console.error(
         `[${this.controls.tagName}] RPC answer_question failed for "${escapePromptValue(field.label)}":`,
         rpcErr?.message || rpcErr
