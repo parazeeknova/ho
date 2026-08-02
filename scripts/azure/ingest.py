@@ -198,7 +198,13 @@ async def _ingest(store) -> None:
 
     obs_rows = 0
     comp_rows = 0
-    for prefix, handler in (("obs/", "obs"), ("companies/", "companies")):
+    osint_rows = 0
+    for prefix, handler in (
+        ("obs/", "obs"),
+        ("companies/", "companies"),
+        ("founders/", "osint"),
+        ("signals/", "osint"),
+    ):
         for blob in cc.list_blobs(name_starts_with=prefix):
             if blob.name in done:
                 continue
@@ -220,11 +226,13 @@ async def _ingest(store) -> None:
                         if obs.url.startswith("http"):
                             batch.append(obs)
                     obs_rows += await _bulk_persist_observations(store, batch)
-                else:
+                elif handler == "companies":
                     batch_comp: list[dict] = []
                     for rec in records:
                         batch_comp.append(rec)
                     comp_rows += await _bulk_persist_companies(store, batch_comp)
+                else:  # founders/ + signals/ -> company_osint
+                    osint_rows += await _persist_osint_records(store, records)
                 async with store._pool.acquire() as conn:
                     await conn.execute(
                         "INSERT INTO azure_ingest_marker (blob, ingested_at) VALUES ($1, $2)",
@@ -233,8 +241,10 @@ async def _ingest(store) -> None:
                     )
             except Exception as exc:
                 logger.warning(f"ingest {blob.name}: {exc}")
-    if obs_rows or comp_rows:
-        logger.info(f"Ingested {obs_rows} observations, {comp_rows} company rows")
+    if obs_rows or comp_rows or osint_rows:
+        logger.info(
+            f"Ingested {obs_rows} observations, {comp_rows} company rows, {osint_rows} osint rows"
+        )
 
 
 async def _persist_company(store, rec: dict) -> None:
@@ -313,6 +323,44 @@ async def _bulk_persist_companies(store, rec_list: list[dict]) -> int:
                 last_seen = EXCLUDED.last_seen"""
         )
     return len(rows)
+
+
+async def _persist_osint_records(store, records: list[dict]) -> int:
+    """Merge founder/funding/signal records into company_osint.
+
+    Each record carries a ``company`` (or ``slug``) key; we merge the record
+    into the company's existing OSINT payload under a ``kind`` namespace so
+    founder + funding + signal data from different workers accumulate.
+    """
+    merged: dict[str, dict] = {}
+    for rec in records:
+        if not isinstance(rec, dict):
+            continue
+        company = (rec.get("company") or rec.get("slug") or "").strip()
+        if not company:
+            continue
+        kind = "founders" if rec.get("name") and rec.get("title") else "signals"
+        if company not in merged:
+            merged[company] = {"founders": [], "signals": []}
+        payload = {k: v for k, v in rec.items() if k not in ("company", "slug")}
+        merged[company][kind].append(payload)
+    if not merged:
+        return 0
+    async with store._pool.acquire() as conn:
+        for company, data in merged.items():
+            await conn.execute(
+                """INSERT INTO company_osint (company, data, cached_at, expires_at)
+                   VALUES ($1, $2, $3, $4)
+                   ON CONFLICT (company) DO UPDATE SET
+                       data = company_osint.data || $2,
+                       cached_at = GREATEST(company_osint.cached_at, $3),
+                       expires_at = GREATEST(company_osint.expires_at, $4)""",
+                company,
+                json.dumps(data),
+                time.time(),
+                time.time() + 30 * 86400,
+            )
+    return len(merged)
 
 
 async def main() -> None:

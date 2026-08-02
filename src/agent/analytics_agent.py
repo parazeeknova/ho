@@ -42,6 +42,8 @@ class AnalyticsAgent:
             ("Rejection Breakdown", self._section_radar_rejections),
             ("Salary Statistics", self._section_radar_salaries),
             ("Freshness Lanes", self._section_radar_freshness),
+            ("Funding Hiring Signal", self._section_funding_hiring),
+            ("Repost Signal", self._section_reposts),
         ]
 
         for name, func in section_funcs:
@@ -215,6 +217,56 @@ class AnalyticsAgent:
                 lines.append("  <i>No freshness data yet.</i>")
         except Exception:
             lines.append("  <i>Freshness data unavailable.</i>")
+        lines.append("")
+        return lines
+
+    def _load_smart_intel(self) -> dict:
+        """Load intel/smart_intel.json (written by scripts/smart_intel.py)."""
+        import json
+        from pathlib import Path
+
+        p = Path(__file__).resolve().parent.parent.parent / "intel" / "smart_intel.json"
+        if p.exists():
+            try:
+                return json.loads(p.read_text())
+            except Exception:
+                pass
+        return {}
+
+    async def _section_funding_hiring(self) -> list[str]:
+        """Companies that just raised AND are hiring now (highest-ROI tier)."""
+        lines = ["<b>Funding + Hiring Signal</b>"]
+        data = self._load_smart_intel()
+        fh = data.get("funding_hiring") or []
+        if fh:
+            for idx, c in enumerate(fh[:8], 1):
+                fund = (c.get("funding") or [{}])[0]
+                amount = fund.get("amount_usd")
+                amt = f"${amount/1e6:.1f}M" if amount else ""
+                stage = fund.get("stage", "")
+                roles = ", ".join(r["role"][:24] for r in c.get("hiring_roles", [])[:2])
+                lines.append(
+                    f"  {idx}. {_esc(c['company'])} — raised {amt} {_esc(stage)} "
+                    f"→ hiring: {_esc(roles)}"
+                )
+        else:
+            lines.append("  <i>No funding-hiring signals yet (Azure funding tracker feeding).</i>")
+        lines.append("")
+        return lines
+
+    async def _section_reposts(self) -> list[str]:
+        """Same role reposted repeatedly = active/hungry hiring, apply again."""
+        lines = ["<b>Repost Signal — Re-Hiring Now</b>"]
+        data = self._load_smart_intel()
+        reps = data.get("reposts") or []
+        if reps:
+            for idx, r in enumerate(reps[:8], 1):
+                lines.append(
+                    f"  {idx}. {_esc(r['company'])} — {_esc(r['role'][:30])} "
+                    f"seen {r['seen_times']}x"
+                )
+        else:
+            lines.append("  <i>No repost signal yet.</i>")
         lines.append("")
         return lines
 

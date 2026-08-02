@@ -58,6 +58,7 @@ async def test_handle_resend_unconfigured() -> None:
 
 
 @pytest.mark.asyncio
-async def test_handle_clear_unconfigured() -> None:
+async def test_clear_command_removed() -> None:
+    """The /clear command was removed by royal decree; ensure it's gone."""
     agent = TelegramAgent(bot_token="", chat_id="")
-    await agent._handle_clear("123", 100, "/clear 10")
+    assert not hasattr(agent, "_handle_clear")

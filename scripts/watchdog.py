@@ -218,6 +218,21 @@ class Watchdog:
             f">> {PROJECT / 'logs' / 'intel_loop.out'} 2>&1 &"
         )
 
+    def heal_smart_intel(self) -> None:
+        """Keep the local smart-intel aggregation loop alive."""
+        alive = count_of(r"scripts/smart_intel_loop.py")
+        if alive > 0:
+            return
+        if not self.due("smart_intel", 1800):
+            return
+        log("smart intel loop dead, relaunching")
+        zlib = "/nix/store/61a1nwx3w6rqyaisj5rn1sal1981apm7-zlib-1.3.2/lib"
+        run_detached(
+            f"cd {PROJECT} && PYTHONPATH={PROJECT} LD_LIBRARY_PATH={zlib} "
+            f"nohup uv run python3 -u scripts/smart_intel_loop.py "
+            f">> {PROJECT / 'logs' / 'smart_intel_loop.out'} 2>&1 &"
+        )
+
     def cycle_ingest_only(self) -> None:
         """Heal only the local DB + ingest + backup timer, never the pipeline."""
         try:
@@ -230,6 +245,7 @@ class Watchdog:
             self.heal_ingest()
             self.heal_embed_backfill()
             self.heal_intel_loop()
+            self.heal_smart_intel()
             # Ensure the R2 backup timer stays armed.
             sh("systemctl --user start ho-backup.timer 2>/dev/null")
         except Exception as exc:
