@@ -3,160 +3,39 @@ import * as fs from "fs";
 import { ATSAdapter, RpcHelper } from "./base.js";
 import { JobPayload, Profile } from "../types.js";
 import { randomSleep } from "../utils/evasion.js";
+import {
+  auditBlanks,
+  finalReverify,
+} from "./shared/audit.js";
+import { FormControls } from "./shared/controls.js";
+import { escapePromptValue, normalizeOptionText } from "./shared/matching.js";
+import {
+  fieldKey,
+  FormField,
+  JsonFieldSource,
+  mergeFormInventory,
+  PRE_FILLED_LABELS,
+  unprocessedFields,
+} from "./shared/model.js";
+import { Screener } from "./shared/screener.js";
 
-function escapePromptValue(val: string): string {
-  return val.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-}
-
-/**
- * Ordered candidate values to try when matching a free-form answer to a
- * dropdown option: the raw answer, its first clause (split on commas,
- * periods, semicolons), and a leading Yes/No token. Deduplicated.
- */
-export function selectCandidates(answer: string): string[] {
-  const candidates: string[] = [];
-  const seen = new Set<string>();
-  const push = (value: string): void => {
-    const t = value.trim();
-    if (t && !seen.has(t.toLowerCase())) {
-      seen.add(t.toLowerCase());
-      candidates.push(t);
-    }
-  };
-  const raw = answer.trim();
-  if (!raw) return candidates;
-  push(raw);
-  const clause = raw.split(/[.,;]\s+|,/, 1)[0].trim();
-  if (clause && clause.length < raw.length) push(clause);
-  const firstToken = raw.split(/\s+/, 1)[0].trim();
-  if (/^(yes|no)$/i.test(firstToken)) push(firstToken);
-  return candidates;
-}
-
-/** Case-insensitive XPath equality predicate for a literal text value. */
-function optionExactXPath(text: string): string {
-  const needle = text.toLowerCase();
-  return (
-    'translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz") = ' +
-    xpathStringLiteral(needle)
-  );
-}
-
-/**
- * Build an XPath 1.0 string literal for arbitrary text. XPath has no backslash
- * escapes: single quotes are fine inside a double-quoted literal, and text
- * containing double quotes switches to single quotes (or ``concat`` when it
- * contains both). Never append a backslash — it becomes a literal character.
- */
-export function xpathStringLiteral(text: string): string {
-  if (!text.includes('"')) {
-    return `"${text}"`;
-  }
-  if (!text.includes("'")) {
-    return `'${text}'`;
-  }
-  const parts = text.split('"').map((p) => `'${p}'`);
-  return `concat(${parts.join(', \'"\', ')})`;
-}
-
-export function normalizeOptionText(text: string): string {
-  return text.replace(/\s+/g, " ").trim().toLowerCase();
-}
-
-/**
- * "I don't wish to answer" style options are the user-decline choices of an
- * EEOC-style survey. They are never valid targets for a definite answer, so
- * substring matching must not resolve to them. Covers Greenhouse's
- * "I do not want to answer" phrasing too.
- */
-export function isDeclineOption(text: string): boolean {
-  return /(don'?t wish|do not wish|prefer not|choose not|rather not|not wish|do not want to answer|not want to answer)/i.test(text);
-}
-
-/**
- * Levenshtein edit distance (iterative, unicode-safe). Used to forgive a small
- * typo when matching a typed answer to an option label — never enough to jump
- * between distinct options.
- */
-export function editDistance(a: string, b: string): number {
-  const x = a ?? "";
-  const y = b ?? "";
-  if (x === y) return 0;
-  if (!x.length) return y.length;
-  if (!y.length) return x.length;
-  const prev = Array.from({ length: y.length + 1 }, (_, j) => j);
-  for (let i = 1; i <= x.length; i++) {
-    const curr = [i];
-    for (let j = 1; j <= y.length; j++) {
-      const cost = x[i - 1] === y[j - 1] ? 0 : 1;
-      curr.push(Math.min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost));
-    }
-    prev.splice(0, prev.length, ...curr);
-  }
-  return prev[y.length];
-}
-
-/**
- * Pick the option text that best matches an answer, from a candidate list.
- * Exact matches are preferred; a substring match is only accepted when it is
- * unambiguous within the option list (and never against a decline option);
- * finally a conservative edit-distance match forgives a small typo when
- * exactly one option is within tolerance. Returns null when nothing matches
- * confidently — callers must leave the field blank rather than guess.
- */
-export function chooseOption(candidates: string[], optionTexts: string[]): string | null {
-  const eligible = optionTexts.filter((t) => !isDeclineOption(t));
-  for (const candidate of candidates) {
-    const nc = normalizeOptionText(candidate);
-    const exact = eligible.filter((t) => normalizeOptionText(t) === nc);
-    if (exact.length === 1) return exact[0];
-    if (exact.length === 0) {
-      const subs = eligible.filter((t) => normalizeOptionText(t).includes(nc));
-      if (subs.length === 1) return subs[0];
-    }
-    const threshold = Math.max(1, Math.min(2, Math.floor(nc.length / 4)));
-    const near = eligible.filter((t) => {
-      const tokens = normalizeOptionText(t).split(/\s+/).filter(Boolean);
-      return tokens.some((tok) => tok && editDistance(nc, tok) <= threshold);
-    });
-    if (near.length === 1) return near[0];
-  }
-  return null;
-}
-
-/** CSS attribute-value escaping (values are alphanumeric in practice). */
-function cssEscape(text: string): string {
-  return (text || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-}
-
-export interface GroupOption {
-  text: string;
-  name: string;
-  value: string;
-}
-
-/** A single form question captured by the generic DOM walker. */
-export interface FormField {
-  label: string;
-  /** Primary element id (text/select) or a stable group anchor (radio/checkbox). */
-  id: string;
-  kind: "text" | "select" | "multi" | "radio" | "checkbox";
-  required: boolean;
-  options: string[];
-  /** Radio/checkbox option click targets (text + input name/value). */
-  optionTargets: GroupOption[];
-  /** Canonical field name (snake_case) when known from the board's JSON model. */
-  name?: string;
-}
-
-/** A question as described by the board's embedded JSON model. */
-interface JsonFieldSource {
-  name: string;
-  label: string;
-  kind: string;
-  required: boolean;
-  options: string[];
-}
+// Re-exports to keep greenhouse.test.ts import-compatible with the module as
+// it existed before the shared-machinery extraction.
+export {
+  checkboxAction,
+  fieldKey,
+  isLocationAutocomplete,
+  mergeFormInventory,
+  unprocessedFields,
+} from "./shared/model.js";
+export {
+  chooseOption,
+  editDistance,
+  normalizeOptionText,
+  selectCandidates,
+  xpathStringLiteral,
+} from "./shared/matching.js";
+export type { FormField, JsonFieldSource } from "./shared/model.js";
 
 /**
  * Parse the job page HTML's embedded `window.__remixContext` question model
@@ -201,10 +80,8 @@ export function parseRemixQuestionsModel(html: string): JsonFieldSource[] | null
 
 /**
  * Parse the job posting header (title, company, location) from the embedded
- * `window.__remixContext` JSON (Remix boards only). The location here
- * (`job_post_location`, e.g. "Remote / Boston / Salt Lake City / San Francisco
- * / New York") is authoritative and board-agnostic — no CSS-class dependence
- * and no hydration race. Returns null on legacy boards (no __remixContext).
+ * `window.__CONFIG` JSON (Remix boards only). Location (`job_post_location`)
+ * is board-agnostic — no CSS-class dependence and no hydration race.
  */
 export function parseRemixJobContext(
   html: string
@@ -228,194 +105,20 @@ export function parseRemixJobContext(
   }
 }
 
-/**
- * Merge the board's JSON question model (authoritative) with the DOM
- * enumeration (ground truth for what is actually rendered).
- *
- * The DOM is the BASE inventory: only rendered questions are walked and filled.
- * The JSON model ENRICHES the DOM fields with canonical names, exact option
- * values and required flags (matched by field name, then by normalized label).
- * JSON-only fields are dropped — boards often list questions (e.g. the EEOC
- * Race question) that they never render, and walking phantom fields fails
- * verification loudly for no reason.
- */
-export function mergeFormInventory(
-  jsonFields: JsonFieldSource[] | null,
-  domFields: FormField[]
-): FormField[] {
-  const out: FormField[] = [];
-  const seen = new Set<string>();
-  const add = (f: FormField) => {
-    const key = `${normalizeOptionText(f.label)}|${f.kind}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-    out.push(f);
-  };
-
-  const jsonByName = new Map<string, JsonFieldSource>();
-  const jsonByLabel = new Map<string, JsonFieldSource>();
-  for (const jf of jsonFields ?? []) {
-    if (jf.kind === "input_file") continue; // uploads handled by dedicated paths
-    if (/^resume(_text)?$|^cover_letter(_text)?$/.test(jf.name)) continue;
-    jsonByName.set(jf.name, jf);
-    jsonByLabel.set(normalizeOptionText(jf.label), jf);
-  }
-
-  for (const df of domFields) {
-    const jf =
-      (df.name ? jsonByName.get(df.name) : undefined) ||
-      jsonByLabel.get(normalizeOptionText(df.label));
-    if (jf) {
-      add({
-        ...df,
-        required: df.required || jf.required,
-        options: jf.options.length ? jf.options : df.options,
-        name: jf.name,
-      });
-    } else {
-      add(df);
-    }
-  }
-  return out;
-}
-
-/** Deterministic profile-driven fills keyed by normalized question label. */
-const PROFILE_FILLS: Record<string, keyof Profile> = {
-  "preferred first name": "preferredName",
-  linkedin: "linkedin",
-  "linkedin profile": "linkedin",
-  github: "github",
-  website: "website",
-};
-
-/** Identity fields filled deterministically from the profile (never asked). */
-const IDENTITY_FILLS: Record<string, keyof Profile> = {
-  "first name": "firstName",
-  "last name": "lastName",
-  email: "email",
-  phone: "phone",
-};
-
-/** Questions answered by the fixed deterministic identity fills before the walk. */
-const PRE_FILLED_LABELS = new Set(["first name", "last name", "email", "phone"]);
-
-/**
- * Structural semantics for a checkbox field — label-agnostic so ANY phrasing
- * is handled correctly without a phrase list:
- *  - "accept": a REQUIRED checkbox with a single option is an acceptance/consent
- *    gate (privacy policy, code of conduct, "I agree…"). It gates submission,
- *    so agreeing is the only way to apply.
- *  - "leave": an OPTIONAL checkbox with a single option is an opt-in preference
- *    (marketing, newsletters). Never presume consent; leave it unchecked.
- *  - "ask": a multi-option checkbox is a real multi-select question and must be
- *    resolved normally (profile/KB/Telegram), never auto-accepted.
- */
-export type CheckboxAction = "accept" | "leave" | "ask";
-
-export function checkboxAction(field: FormField): CheckboxAction {
-  if (field.kind !== "checkbox") return "ask";
-  const single = field.optionTargets.length <= 1;
-  if (!single) return "ask"; // multi-option = real multi-select question
-  return field.required ? "accept" : "leave";
-}
-/**
- * True only for a genuine async location autocomplete — a react-select that
- * has NO static options (a geocoder loads them after typing) and whose label is
- * about the candidate's current city (Location (City), Candidate Location, What
- * is your current location?). A pick-list that merely mentions location (e.g.
- * "…willing to relocate to the job's location?") is NOT one — it has options
- * and must be answered by selecting, never by typing.
- */
-export function isLocationAutocomplete(field: FormField): boolean {
-  if (field.kind === "radio" || field.kind === "checkbox") return false;
-  if (field.kind !== "select" && field.kind !== "multi") return false;
-  if (field.options.length > 0) return false; // static pick-list
-  if (field.optionTargets.length > 0) return false;
-  const label = normalizeOptionText(field.label);
-  const isLocationSubject =
-    /\bcurrent location\b/.test(label) ||
-    /\bcandidate location\b/.test(label) ||
-    /\b(?:city|location)\b/.test(label);
-  if (!isLocationSubject) return false;
-  // A willingness/relocation question ("…willing to relocate to the job's
-  // location?", "Are you currently living in…") is NOT a city autocomplete —
-  // it is a yes/no pick-list.
-  if (/relocat|willing|are you currently|are you open|job's location|job’s location/.test(label)) {
-    return false;
-  }
-  return true;
-}
-
-/** Stable identity for a form field across rescans (label + kind + id). */
-export function fieldKey(f: FormField): string {
-  return `${normalizeOptionText(f.label)}|${f.kind}|${f.id}`;
-}
-
-/**
- * The subset of ``fields`` that has not been processed yet, as a pure
- * diff over the processed-key set. Used by the iterative re-scan walk so
- * fields revealed only after an interaction (conditional questions, e.g.
- * Race after answering "Are you Hispanic/Latino?") are picked up in a later
- * pass while already-processed fields are never re-asked or re-filled.
- */
-export function unprocessedFields(
-  fields: FormField[],
-  processedKeys: ReadonlySet<string>
-): FormField[] {
-  return fields.filter((f) => !processedKeys.has(fieldKey(f)));
-}
-
 export class GreenhouseAdapter extends ATSAdapter {
-  /**
-   * Run an AI-powered act() call but never let a single failure abort the whole
-   * form fill (e.g. a field that doesn't exist on this job's form). Values are
-   * passed through Stagehand's `variables` so they are never parsed as prompt text.
-   */
-  private async safeAct(
-    instruction: string,
-    variables?: Record<string, string>
-  ): Promise<void> {
-    try {
-      await this.stagehand.act(instruction, variables ? { variables } : {});
-    } catch (err: any) {
-      console.warn(
-        `[GreenhouseAdapter] act() failed (continuing): ${err?.message || err}`
-      );
-    }
+  protected controls: FormControls;
+
+  constructor(stagehand: Stagehand) {
+    super(stagehand);
+    this.controls = new FormControls(stagehand, { tagName: "GreenhouseAdapter" });
   }
 
-  /**
-   * Prefer a deterministic locator fill; fall back to an AI-driven act() using
-   * %variables% so arbitrary profile text (quotes, newlines) is handled safely.
-   */
-  private async fillField(
-    selector: string,
-    value: string | undefined | null,
-    actPrompt: string,
-    variableName: string
-  ): Promise<void> {
-    if (!value) return;
-    const locator = this.getPage().locator(selector).first();
-    if (await locator.isVisible().catch(() => false)) {
-      await locator.fill(value);
-      await randomSleep(100, 300);
-    } else {
-      await this.safeAct(actPrompt, { [variableName]: value });
-      await randomSleep(200, 500);
-    }
+  protected getPage(): any {
+    return this.controls.getPage();
   }
 
-  private getPage() {
-    return this.stagehand.context.pages()[0];
-  }
-
-  /** Close an open react-select menu without depending on keyboard typing. */
-  private async closeMenu(): Promise<void> {
-    try {
-      await (this.getPage() as any).keyboard?.press("Escape");
-    } catch {
-      // Menu may already be closed; harmless.
-    }
+  private warn(msg: string): void {
+    console.warn(`[GreenhouseAdapter] ${msg}`);
   }
 
   private async ensureApplicationForm(): Promise<void> {
@@ -428,7 +131,7 @@ export class GreenhouseAdapter extends ATSAdapter {
     }
     // Some Greenhouse postings only reveal the application form after clicking Apply.
     console.log("[GreenhouseAdapter] Application form not visible; clicking Apply...");
-    await this.safeAct("click the 'Apply for this job' or 'Apply now' button");
+    await this.controls.safeAct("click the 'Apply for this job' or 'Apply now' button");
     await randomSleep(800, 1500);
   }
 
@@ -436,11 +139,6 @@ export class GreenhouseAdapter extends ATSAdapter {
    * Extract the job posting context (title, company, location, description)
    * from the live page. Used to personalize open-ended answers and to scope
    * country-dependent questions (work authorization, visa) to the JD's country.
-   *
-   * NOTE: must not read the DOM via page.evaluate(fn) with named inner helper
-   * functions — tsx transpiles with keepNames, which wraps them in __name(),
-   * and the stringified function then throws ReferenceError inside the page.
-   * Locator/read APIs (Node-side) avoid that entirely.
    */
   private async readJobContext(): Promise<{
     title: string;
@@ -450,10 +148,7 @@ export class GreenhouseAdapter extends ATSAdapter {
   }> {
     const page = this.getPage();
     try {
-      // Fetch the raw page HTML once and parse the authoritative Remix JSON.
-      // The JSON location (job_post_location) is board-agnostic and immune to
-      // CSS-class drift or hydration races, so it is used first; the DOM
-      // selectors remain the fallback for legacy boards without __remixContext.
+      // Prefer the authoritative Remix JSON, fall back to DOM selectors.
       const fetched = await fetch(page.url(), {
         headers: { "user-agent": "Mozilla/5.0" },
       });
@@ -470,12 +165,12 @@ export class GreenhouseAdapter extends ATSAdapter {
         }
       };
 
-      // Title: JSON first, else DOM (legacy .app-title / Remix .job__title).
+      // Title: JSON first, else DOM (.app-title / .job__title).
       let title = remix?.title ?? "";
       if (!title) {
         const titleBlock =
           (await page
-            .locator(".job__title, .app-title, .job-post h1, .job-post-title h1, h1")
+            .locator(".board_title, .app-title, .job-post h1, .job-post-title h1, h1")
             .first()
             .innerText()
             .catch(() => "")) ||
@@ -483,7 +178,7 @@ export class GreenhouseAdapter extends ATSAdapter {
         title =
           titleBlock
             .split("\n")
-            .map((line) => line.trim())
+            .map((line: string) => line.trim())
             .filter(Boolean)[0]
             ?.replace(/\s+/g, " ") ?? "";
       }
@@ -493,9 +188,10 @@ export class GreenhouseAdapter extends ATSAdapter {
         (await read(".company-name, .job-post .company, [data-company]")) ||
         this.companyFromUrl();
 
-      // Location: JSON job_post_location first, else DOM below the heading.
+      // Location: JSON first, else DOM below the heading.
       const location =
-        remix?.location || (await read(".job__location, .location, .job-location, .job-post .metadata"));
+        remix?.location ||
+        (await read(".job__location, .location, .job-location, .job-post .metadata"));
 
       const description = (
         await read(
@@ -504,15 +200,22 @@ export class GreenhouseAdapter extends ATSAdapter {
       ).slice(0, 6000);
       return { title, company, location, description };
     } catch (err: any) {
-      console.warn("[GreenhouseAdapter] readJobContext failed:", err?.message || err);
+      this.warn(`readJobContext failed: ${err?.message || err}`);
       return { title: "", company: "", location: "", description: "" };
     }
   }
 
-  /** Best-effort company name from the board URL token (job-boards.greenhouse.io/<token>/...). */
+  /** Best-effort company name from the board URL token. */
+  private mergeInventory(
+    jsonFields: JsonFieldSource[] | null,
+    domFields: FormField[]
+  ): FormField[] {
+    return mergeFormInventory(jsonFields, domFields);
+  }
+
   private companyFromUrl(): string {
     try {
-      const token = new URL(this.stagehand.context.pages()[0].url()).pathname
+      const token = new URL(this.controls.getPage().url()).pathname
         .split("/")
         .filter(Boolean)[0];
       return token ? token.replace(/[-_]+/g, " ") : "";
@@ -523,11 +226,7 @@ export class GreenhouseAdapter extends ATSAdapter {
 
   /**
    * Fetch the job page HTML and parse the embedded `window.__remixContext`
-   * question model (Remix boards only). This is the authoritative question
-   * inventory: exact field names, types, required flags and option values —
-   * no menu-opening needed just to read options. Returns null on legacy boards
-   * (no __remixContext) or any fetch/parse failure; the caller falls back to
-   * pure DOM enumeration.
+   * question model (Remix boards only). Returns null on legacy boards.
    */
   private async fetchQuestionsModel(): Promise<JsonFieldSource[] | null> {
     try {
@@ -538,9 +237,7 @@ export class GreenhouseAdapter extends ATSAdapter {
       const html = await res.text();
       return parseRemixQuestionsModel(html);
     } catch (err: any) {
-      console.warn(
-        `[GreenhouseAdapter] fetchQuestionsModel failed: ${err?.message || err}`
-      );
+      this.warn(`fetchQuestionsModel failed: ${err?.message || err}`);
       return null;
     }
   }
@@ -550,9 +247,7 @@ export class GreenhouseAdapter extends ATSAdapter {
    * reading the Greenhouse form's labels and their associated inputs. Covers:
    *   - label[for] inputs/selects (legacy boards),
    *   - radio/checkbox groups inside fieldset / role=group / eeoc wrappers,
-   *   - bare radio/checkbox groups grouped by input name (catches questions
-   *     whose group has no container with a legend/label).
-   * This avoids relying on the LLM to map a question's text back to an element.
+   *   - bare radio/checkbox groups grouped by input name.
    */
   private async collectQuestions(): Promise<FormField[]> {
     const page = this.getPage();
@@ -565,19 +260,16 @@ export class GreenhouseAdapter extends ATSAdapter {
           options: string[];
           targets: Array<{ text: string; name: string; value: string }>;
         }> = [];
-        // NOTE: only anonymous arrows may be used here. tsx's keepNames wraps
-        // ANY arrow/function with an inferred name (const assignment, object
-        // property) in __name(), and page.evaluate stringifies the whole
-        // function — the __name identifier then throws inside the page. Arrows
-        // held in a destructured array have no inferred name, so they survive.
+        // WARNING: only anonymous arrows may be used here. tsx's keepNames
+        // wraps ANY arrow/function with an inferred name in __name(), and
+        // page.evaluate stringifies the whole function — the __name identifier
+        // then throws inside the page. Only a destructured array avoids it.
         const [norm, hidden, push, addGroup] = [
           (t: string) =>
             (t || "")
               .replace(/\s+/g, " ")
               .trim()
               .replace(/^\*+|\*+$/g, ""),
-          // Skip elements inside visually-hidden / hidden containers (a11y-only
-          // labels for toggles like the cover letter textarea).
           (el: Element): boolean => {
             let n: Element | null = el;
             while (n && n !== document.body) {
@@ -631,7 +323,7 @@ export class GreenhouseAdapter extends ATSAdapter {
           },
         ];
 
-        // 1) label[for] -> text/select/multi inputs (existing behaviour).
+        // 1) label[for] -> text/select/multi inputs.
         document
           .querySelectorAll(
             "#application-form label, .application--questions label, label.select__label"
@@ -655,7 +347,7 @@ export class GreenhouseAdapter extends ATSAdapter {
               const isMulti =
                 input.getAttribute("aria-multiselectable") === "true" ||
                 (shell
-                  ? /(^|\s)multi(\s|$)|select__multi|--is-multi/.test(shell.className)
+                  ? /(^|\s)multi(\s|$)|select__multi|--is-multi/.test(shell.className as string)
                   : false);
               push(text, forId, isMulti ? "multi" : "select");
             } else {
@@ -715,9 +407,7 @@ export class GreenhouseAdapter extends ATSAdapter {
             bareSeen.add(name);
             const q = i.type === "radio" ? "radio" : "checkbox";
             const groupInputs = Array.from(
-              document.querySelectorAll(
-                `input[type="${q}"][name="${name}"]`
-              )
+              document.querySelectorAll(`input[type="${q}"][name="${name}"]`)
             ) as HTMLInputElement[];
             if (!groupInputs.length) return;
             let labelText = "";
@@ -764,825 +454,13 @@ export class GreenhouseAdapter extends ATSAdapter {
       }
       return uniq;
     } catch (err: any) {
-      console.warn(`[GreenhouseAdapter] collectQuestions failed:`, err?.message || err);
+      this.warn(`collectQuestions failed: ${err?.message || err}`);
       return [];
     }
-  }
-
-  /**
-   * Merge the board's JSON question model (authoritative) with the DOM
-   * enumeration (ground truth for what is actually rendered). JSON supplies
-   * canonical names, options, and required flags; the DOM supplies the
-   * selector/kind and catches rendered questions absent from the JSON model.
-   */
-  private mergeInventory(
-    jsonFields: JsonFieldSource[] | null,
-    domFields: FormField[]
-  ): FormField[] {
-    return mergeFormInventory(jsonFields, domFields);
-  }
-
-  private normalise(text: string): string {
-    return text.replace(/\s+/g, " ").trim().replace(/^\*+|\*+$/g, "").toLowerCase();
-  }
-
-  private async fillQuestionText(id: string, answer: string): Promise<void> {
-    const page = this.getPage();
-    const loc = page.locator(`#${id}`).first();
-    if (await loc.isVisible().catch(() => false)) {
-      const type = await page
-        .evaluate((inputId) => {
-          const el = document.getElementById(inputId) as HTMLInputElement | null;
-          return el?.type ?? null;
-        }, id)
-        .catch(() => null);
-      if (type === "file") return; // file inputs crash fill(); resume handled elsewhere
-      // Never type into a combobox/select-shell disguised as a text field: a
-      // dropdown is answered by selecting an option, not by typing into it.
-      const isCombobox = await page
-        .evaluate((inputId) => {
-          const el = document.getElementById(inputId) as HTMLInputElement | null;
-          return !!(
-            el &&
-            (el.getAttribute("role") === "combobox" ||
-              el.closest('[class*="select-shell"]'))
-          );
-        }, id)
-        .catch(() => false);
-      if (isCombobox) {
-        console.warn(
-          `[GreenhouseAdapter] Refusing to type into combobox #${id}; selecting an option instead.`
-        );
-        return;
-      }
-      await loc.fill(answer);
-      await randomSleep(200, 500);
-    }
-  }
-
-  /**
-   * Ensure the react-select menu for a field is open. Escape first so a stale
-   * menu from a previous field can't make the control click *toggle* the menu
-   * shut; then click the control and verify with Playwright's strict
-   * visibility (hidden stale options must not count as "open").
-   */
-  private async ensureMenuOpen(id: string): Promise<boolean> {
-    const page = this.getPage();
-    const shellXPath = `//div[contains(@class,"select-shell")][.//input[@id="${id}"]]`;
-    const control = page
-      .locator(`${shellXPath}//div[contains(@class,"select__control")]`)
-      .first();
-    if (!(await control.isVisible().catch(() => false))) {
-      return false;
-    }
-    await this.closeMenu();
-    await randomSleep(150, 300);
-    for (let attempt = 0; attempt < 3; attempt++) {
-      await control.click();
-      await randomSleep(300, 500);
-      if (await this.hasVisibleOption()) return true;
-    }
-    return false;
-  }
-
-  /** Whether any option element is currently visible (the open menu's). */
-  private async hasVisibleOption(): Promise<boolean> {
-    const page = this.getPage();
-    const options = page.locator('div[role="option"]');
-    const count = await options.count().catch(() => 0);
-    for (let i = 0; i < count; i++) {
-      if (await options.nth(i).isVisible().catch(() => false)) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  /** Click the visible option whose text exactly matches ``picked``. */
-  private async clickVisibleOption(picked: string): Promise<boolean> {
-    const page = this.getPage();
-    try {
-      // Walk matches in DOM order and click the first visible one: closed
-      // portal menus can keep hidden options in the DOM, so we must never
-      // blindly take `.first()`.
-      const options = page.locator(
-        `//div[contains(@role,"option")][${optionExactXPath(picked)}]`
-      );
-      const count = await options.count().catch(() => 0);
-      for (let i = 0; i < count; i++) {
-        const option = options.nth(i);
-        if (!(await option.isVisible().catch(() => false))) {
-          continue;
-        }
-        await option.click();
-        return true;
-      }
-      return false;
-    } catch {
-      return false;
-    }
-  }
-
-  /**
-   * Fill a react-select question dropdown. The option menu renders portaled
-   * outside the field's own select-shell, so options are located page-wide and
-   * filtered to visible ones (only one menu can be open at a time, so this is
-   * unambiguous). ``optionTexts`` is the option list read by
-   * ``readSelectOptions``; the picked option must come from that list so the
-   * click is an exact-text match, never a substring guess.
-   */
-  private async fillQuestionSelect(
-    id: string,
-    question: string,
-    answer: string,
-    optionTexts: string[]
-  ): Promise<boolean> {
-    const page = this.getPage();
-    try {
-      if (!(await this.ensureMenuOpen(id))) {
-        return false;
-      }
-
-      const picked = chooseOption(selectCandidates(answer), optionTexts);
-      if (!picked) {
-        console.warn(
-          `[GreenhouseAdapter] No matching option for #${id} ` +
-            `(answer "${escapePromptValue(answer)}"); leaving blank.`
-        );
-        await this.closeMenu();
-        return false;
-      }
-
-      let clicked = await this.clickVisibleOption(picked);
-      if (!clicked) {
-        // A stale open menu can satisfy ensureMenuOpen while the real menu
-        // is closed; close and reopen deterministically, then retry once.
-        console.warn(
-          `[GreenhouseAdapter] Option "${picked}" not visible on first try for #${id}; reopening...`
-        );
-        await this.closeMenu();
-        await randomSleep(150, 300);
-        if (await this.ensureMenuOpen(id)) {
-          clicked = await this.clickVisibleOption(picked);
-        }
-      }
-      if (!clicked) {
-        console.warn(
-          `[GreenhouseAdapter] Picked option "${picked}" not visible for #${id} ` +
-            `(answer "${escapePromptValue(answer)}")`
-        );
-        await this.closeMenu();
-        return false;
-      }
-      await randomSleep(300, 600);
-      console.log(`[GreenhouseAdapter] Selected option "${picked}" for #${id}`);
-      return true;
-    } catch (err: any) {
-      console.warn(`[GreenhouseAdapter] fillQuestionSelect failed for #${id}:`, err?.message || err);
-      return false;
-    }
-  }
-
-  /**
-   * Fill a react-select multi-select: one exact match per comma-separated
-   * pick, clicking each while the menu stays open.
-   */
-  private async fillQuestionMulti(
-    id: string,
-    question: string,
-    answer: string,
-    optionTexts: string[]
-  ): Promise<boolean> {
-    const page = this.getPage();
-    try {
-      if (!(await this.ensureMenuOpen(id))) {
-        return false;
-      }
-
-      const picks = answer
-        .split(",")
-        .map((p) => p.trim())
-        .filter(Boolean);
-      let clicked = 0;
-      for (const pick of picks) {
-        const picked = chooseOption(selectCandidates(pick), optionTexts);
-        if (!picked) {
-          console.warn(
-            `[GreenhouseAdapter] No matching multi option for #${id} ` +
-              `(answer "${escapePromptValue(pick)}")`
-          );
-          continue;
-        }
-        if (await this.clickVisibleOption(picked)) {
-          clicked += 1;
-          await randomSleep(200, 400);
-        } else {
-          console.warn(`[GreenhouseAdapter] Multi option "${picked}" not visible for #${id}`);
-        }
-        // Multi-select menus normally stay open; if a pick closed it, reopen.
-        await this.ensureMenuOpen(id);
-      }
-      await this.closeMenu();
-      console.log(`[GreenhouseAdapter] Selected ${clicked} option(s) for #${id}`);
-      return clicked > 0;
-    } catch (err: any) {
-      console.warn(`[GreenhouseAdapter] fillQuestionMulti failed for #${id}:`, err?.message || err);
-      return false;
-    }
-  }
-
-  /**
-   * Read the real option texts of a dropdown by opening its menu. The menu is
-   * portaled outside the field's select-shell, so options are collected
-   * document-wide and filtered to visible ones — only the open menu is
-   * visible at click time, which makes this unambiguous.
-   *
-   * Async react-selects (geocoders, country pickers) load options only after a
-   * keystroke, so when the initial menu is empty we type "a" to trigger the
-   * loader and re-read, retrying up to 3 times. As a last resort, any
-   * ``[role=option]`` present in the DOM is collected even if the menu looks
-   * closed.
-   */
-  private async readSelectOptions(id: string): Promise<string[]> {
-    const page = this.getPage();
-    try {
-      const shellXPath = `//div[contains(@class,"select-shell")][.//input[@id="${id}"]]`;
-      const control = page
-        .locator(`${shellXPath}//div[contains(@class,"select__control")]`)
-        .first();
-      const input = page.locator(`#${id}`).first();
-      if (!(await control.isVisible().catch(() => false))) {
-        return [];
-      }
-      await this.closeMenu();
-      await randomSleep(150, 300);
-      await control.click();
-      await randomSleep(300, 600);
-      let opts = await this.readVisibleOptionTexts();
-      if (opts.length === 0 && (await input.isVisible().catch(() => false))) {
-        // Trigger async loaders by typing a probe character.
-        for (let attempt = 0; attempt < 3 && opts.length === 0; attempt++) {
-          await input.fill("a");
-          await randomSleep(1200, 1800);
-          opts = await this.readVisibleOptionTexts();
-        }
-        if (opts.length === 0) {
-          await input.fill("");
-        }
-      }
-      if (opts.length === 0) {
-        // Some boards render options without a visible menu (or the menu
-        // portal hasn't focused); fall back to any option in the DOM.
-        opts = await this.readAnyOptionTexts();
-      }
-      await this.closeMenu();
-      return opts;
-    } catch (err: any) {
-      console.warn(`[GreenhouseAdapter] readSelectOptions failed for #${id}:`, err?.message || err);
-      return [];
-    }
-  }
-
-  /** Any ``[role=option]`` text in the DOM, regardless of menu visibility. */
-  private async readAnyOptionTexts(): Promise<string[]> {
-    const page = this.getPage();
-    try {
-      return await page.evaluate(() => {
-        const out: string[] = [];
-        const seen = new Set<string>();
-        for (const el of Array.from(document.querySelectorAll('div[role="option"]'))) {
-          const text = ((el as HTMLElement).textContent || "")
-            .replace(/\s+/g, " ")
-            .trim();
-          if (text && !seen.has(text)) {
-            seen.add(text);
-            out.push(text);
-          }
-        }
-        return out;
-      });
-    } catch {
-      return [];
-    }
-  }
-
-  /** Option texts of whatever menu is currently open (visible only). */
-  private async readVisibleOptionTexts(): Promise<string[]> {
-    const page = this.getPage();
-    try {
-      return await page.evaluate(() => {
-        const out: string[] = [];
-        const seen = new Set<string>();
-        for (const el of Array.from(document.querySelectorAll('div[role="option"]'))) {
-          const node = el as HTMLElement;
-          if (node.offsetParent === null && node.getBoundingClientRect().height === 0) {
-            continue; // hidden or detached; only the open menu is visible
-          }
-          const text = (node.textContent || "").replace(/\s+/g, " ").trim();
-          if (text && !seen.has(text)) {
-            seen.add(text);
-            out.push(text);
-          }
-        }
-        return out;
-      });
-    } catch {
-      return [];
-    }
-  }
-
-  /** Read the currently displayed value of a react-select field. */
-  private async readSelectValue(id: string): Promise<string> {
-    const page = this.getPage();
-    try {
-      return await page.evaluate((inputId) => {
-        const input = document.getElementById(inputId) as HTMLInputElement | null;
-        if (!input) return "";
-        const shell = input.closest('[class*="select-shell"]');
-        if (shell) {
-          const multi = Array.from(shell.querySelectorAll('div[class*="select__multi-value"]'));
-          if (multi.length > 0) {
-            return multi
-              .map((m) => (m.textContent || "").replace(/\s+/g, " ").trim())
-              .filter(Boolean)
-              .join(", ");
-          }
-          const sv = shell.querySelector('div[class*="select__single-value"]');
-          if (sv?.textContent) {
-            return (sv.textContent || "").replace(/\s+/g, " ").trim();
-          }
-        }
-        return (input.value || "").trim();
-      }, id);
-    } catch {
-      return "";
-    }
-  }
-
-  /** Read the current value of a plain text input. */
-  private async readInputValue(id: string): Promise<string> {
-    const page = this.getPage();
-    try {
-      return await page.evaluate((inputId) => {
-        const input = document.getElementById(inputId) as HTMLInputElement | null;
-        return input ? (input.value || "").trim() : "";
-      }, id);
-    } catch {
-      return "";
-    }
-  }
-
-  /** Read the checked option text of a radio/checkbox group. */
-  private async readGroupValue(name: string): Promise<string> {
-    const page = this.getPage();
-    try {
-      return await page.evaluate((groupName) => {
-        const checked = document.querySelector(
-          `input[type="radio"][name="${groupName}"]:checked, input[type="checkbox"][name="${groupName}"]:checked`
-        ) as HTMLInputElement | null;
-        if (!checked) return "";
-        // Wrapping label first, then a sibling label[for], then aria/value.
-        const wrapLabel = checked.closest("label");
-        const forLabel = checked.id
-          ? document.querySelector(`label[for="${checked.id}"]`)
-          : null;
-        const label = wrapLabel || forLabel;
-        return (label
-          ? label.textContent || ""
-          : checked.getAttribute("aria-label") || checked.value || ""
-        )
-          .replace(/\s+/g, " ")
-          .trim();
-      }, name);
-    } catch {
-      return "";
-    }
-  }
-
-  /** Committed value of a field after filling, for verification/audit. */
-  private async readFieldValue(field: FormField): Promise<string> {
-    if (field.kind === "radio" || field.kind === "checkbox") {
-      return this.readGroupValue(field.optionTargets[0]?.name || field.name || field.id);
-    }
-    if (field.kind === "select" || field.kind === "multi") {
-      // Location autocompletes may commit as free text in the input rather
-      // than a selected option, so fall back to the raw input value.
-      return (
-        (await this.readSelectValue(field.id)) ||
-        (await this.readInputValue(field.id))
-      );
-    }
-    return this.readInputValue(field.id);
-  }
-
-  /**
-   * Click the radio/checkbox option matching ``answer``. Exact matches on the
-   * collected option texts (via input name+value) are preferred; a text-based
-   * label match inside the application form is the last resort. Handles all
-   * three label renderings: wrapping ``label:has(input)``, a sibling
-   * ``label[for=<input-id>]`` (used by checkbox/fieldset groups), and a bare
-   * visible input. The checked state is verified after every attempt.
-   */
-  private async clickGroupOption(field: FormField, answer: string): Promise<boolean> {
-    const page = this.getPage();
-    try {
-      const picks = selectCandidates(answer);
-      const targets = field.optionTargets;
-      for (const cand of picks) {
-        const nc = normalizeOptionText(cand);
-        const target =
-          targets.find((t) => normalizeOptionText(t.text) === nc) ||
-          targets.find(
-            (t) =>
-              normalizeOptionText(t.text).includes(nc) ||
-              nc.includes(normalizeOptionText(t.text))
-          );
-        if (!target) continue;
-        const type = field.kind === "checkbox" ? "checkbox" : "radio";
-        const nameAttr = cssEscape(target.name || field.name || field.id);
-        const valueAttr = target.value ? `[value="${cssEscape(target.value)}"]` : "";
-        const base = `input[type="${type}"]${valueAttr}[name="${nameAttr}"]`;
-        const input = page.locator(base).first();
-
-        // 1) Wrapping label (label:has(input)).
-        const wrapLabel = page.locator(`label:has(${base})`).first();
-        if (await wrapLabel.isVisible().catch(() => false)) {
-          await wrapLabel.click();
-          if (await input.isChecked().catch(() => false)) return true;
-        }
-        // 2) Sibling label[for=<input id>] — label is NOT an ancestor.
-        if (await input.isVisible().catch(() => false)) {
-          const inputId = await page
-            .evaluate((sel) => document.querySelector(sel)?.id || "", base)
-            .catch(() => "");
-          if (inputId) {
-            const forLabel = page
-              .locator(`label[for="${cssEscape(inputId)}"]`)
-              .first();
-            if (await forLabel.isVisible().catch(() => false)) {
-              await forLabel.click();
-              if (await input.isChecked().catch(() => false)) return true;
-            }
-          }
-          // 3) Bare input: force-check it (never rely on a wrapping label).
-          await (input as any).check({ force: true }).catch(() => {});
-          if (await input.isChecked().catch(() => false)) return true;
-        }
-      }
-      // Fallback: text-based label matching within the form.
-      const formLabel = page
-        .locator(
-          `#application-form label:has(input[type='radio'], input[type='checkbox']):has-text("${cssEscape(answer)}")`
-        )
-        .first();
-      if (await formLabel.isVisible().catch(() => false)) {
-        await formLabel.click();
-        return true;
-      }
-      return false;
-    } catch {
-      return false;
-    }
-  }
-
-  /** Click every checkbox option matching a comma-separated answer. */
-  private async clickGroupMulti(field: FormField, answer: string): Promise<boolean> {
-    let clicked = 0;
-    for (const pick of answer.split(",").map((p) => p.trim()).filter(Boolean)) {
-      if (await this.clickGroupOption({ ...field, kind: "checkbox" }, pick)) {
-        clicked += 1;
-      }
-    }
-    return clicked > 0;
-  }
-
-  /**
-   * Fill a typed field using the kind-aware dispatcher. Select/multi go through
-   * the react-select machinery; when that fails and the field has radio/checkbox
-   * targets (mis-detected kind), fall back to group clicking.
-   */
-  private async fillByKind(
-    field: FormField,
-    answer: string,
-    optionTexts?: string[]
-  ): Promise<boolean> {
-    if (field.kind === "select") {
-      const ok = await this.fillQuestionSelect(field.id, field.label, answer, optionTexts ?? []);
-      if (ok) return true;
-      if (field.optionTargets.length) {
-        return this.clickGroupOption({ ...field, kind: "radio" }, answer);
-      }
-      // Native <select> fallback.
-      const page = this.getPage();
-      const sel = page.locator(`#${field.id} select, select#${field.id}`).first();
-      if (await sel.isVisible().catch(() => false)) {
-        const picked = chooseOption(selectCandidates(answer), optionTexts ?? []);
-        if (picked) {
-          await (sel as any).selectOption({ label: picked });
-          return true;
-        }
-      }
-      return false;
-    }
-    if (field.kind === "multi") {
-      const ok = await this.fillQuestionMulti(field.id, field.label, answer, optionTexts ?? []);
-      if (ok) return true;
-      if (field.optionTargets.length) {
-        return this.clickGroupMulti({ ...field, kind: "checkbox" }, answer);
-      }
-      return false;
-    }
-    if (field.kind === "radio") {
-      return this.clickGroupOption(field, answer);
-    }
-    if (field.kind === "checkbox") {
-      return this.clickGroupMulti(field, answer);
-    }
-    await this.fillQuestionText(field.id, answer);
-    return !!(await this.readInputValue(field.id));
-  }
-
-  /**
-   * Pick the best location suggestion for a free-form answer. Exact matches
-   * win; otherwise the first ranked suggestion that shares the answer's
-   * leading token(s) is chosen (e.g. "Bhopal, India" -> "Bhopal, Madhya
-   * Pradesh, India").
-   */
-  private pickLocationOption(answer: string, opts: string[]): string | null {
-    if (!opts.length) return null;
-    const exact = opts.find((o) => normalizeOptionText(o) === normalizeOptionText(answer));
-    if (exact) return exact;
-    const tokens = answer
-      .toLowerCase()
-      .split(/[\s,]+/)
-      .filter((t) => t.length > 2);
-    for (const tok of tokens) {
-      const start = opts.find((o) => normalizeOptionText(o).startsWith(tok));
-      if (start) return start;
-      const contains = opts.find((o) => normalizeOptionText(o).includes(tok));
-      if (contains) return contains;
-    }
-    return opts[0];
-  }
-
-  /**
-   * Fill an async location autocomplete (react-select backed by a geocoder).
-   * Typing here is only a trigger to reveal suggestions; the committed value
-   * MUST be a selected option — raw typed text is never accepted as an answer
-   * (a dropdown is never filled by typing into it). When no suggestion can be
-   * selected, returns false so the walker blanks the field with a reason.
-   */
-  private async fillAsyncAutocomplete(id: string, answer: string): Promise<boolean> {
-    const page = this.getPage();
-    try {
-      const input = page.locator(`#${id}`).first();
-      if (!(await input.isVisible().catch(() => false))) return false;
-      await this.closeMenu();
-      await randomSleep(150, 300);
-      await input.click();
-      await randomSleep(200, 400);
-      await input.fill(answer);
-
-      const poll = async (): Promise<string[]> => {
-        let opts: string[] = [];
-        for (let i = 0; i < 6; i++) {
-          await randomSleep(900, 1200);
-          opts = await this.readVisibleOptionTexts();
-          if (opts.length) break;
-        }
-        return opts;
-      };
-
-      let opts = await poll();
-      if (!opts.length) {
-        // Geocoders often return nothing for "City, Country"; retry with the
-        // leading city token ("Bhopal, India" -> "Bhopal").
-        const shortQuery = answer
-          .split(/[\s,]+/)
-          .filter((t) => t && t.length > 1)[0];
-        if (shortQuery && shortQuery !== answer.trim()) {
-          await input.fill(shortQuery);
-          opts = await poll();
-        }
-      }
-      if (opts.length) {
-        const picked = this.pickLocationOption(answer, opts);
-        if (picked && (await this.clickVisibleOption(picked))) {
-          await this.closeMenu();
-          await randomSleep(300, 500);
-          // Verify a real option was selected — never the raw typed text.
-          const committed = await this.readSelectValue(id);
-          if (committed) {
-            console.log(
-              `[GreenhouseAdapter] Picked location suggestion "${picked}" for #${id}`
-            );
-            return true;
-          }
-        }
-      }
-      // No selectable suggestion: blank with a reason, never commit free text.
-      await this.closeMenu();
-      console.warn(
-        `[GreenhouseAdapter] No selectable location suggestion for #${id} ` +
-          `(answer "${escapePromptValue(answer)}"); leaving blank.`
-      );
-      return false;
-    } catch (err: any) {
-      console.warn(`[GreenhouseAdapter] fillAsyncAutocomplete failed for #${id}:`, err?.message || err);
-      return false;
-    }
-  }
-
-  /**
-   * Resolve and fill one question field via the shared resolution chain:
-   * identity/profile value → checkbox structural rules → async location
-   * autocomplete → RPC answer (KB/Telegram) → kind-aware fill → committed-value
-   * verification. Records results in ``filled``/``blanked``; a user-declined
-   * skip is remembered in ``userSkippedKeys`` so the final sweep never re-asks
-   * a manually-skipped field.
-   */
-  private async processQuestion(
-    field: FormField,
-    profile: Profile,
-    rpc: RpcHelper,
-    filled: string[],
-    blanked: Array<{ label: string; reason: string }>,
-    userSkippedKeys: Set<string>
-  ): Promise<void> {
-    const key = normalizeOptionText(field.label);
-
-    // Identity + profile-driven fields are filled deterministically from the
-    // profile — never resolved via RPC or asked.
-    const profileKey = PROFILE_FILLS[key] ?? IDENTITY_FILLS[key];
-    if (profileKey) {
-      const pv = (profile as any)?.[profileKey];
-      if (pv) {
-        const ok = await this.fillByKind(field, String(pv));
-        if (!ok) {
-          const reason = `profile value "${escapePromptValue(String(pv))}" could not be committed`;
-          console.warn(
-            `[GreenhouseAdapter] Leaving "${escapePromptValue(field.label)}" blank (${reason})`
-          );
-          blanked.push({ label: field.label, reason });
-          return;
-        }
-        filled.push(field.label);
-        await randomSleep(150, 300);
-        return;
-      }
-    }
-
-    // Structural checkbox semantics — label-agnostic, so any phrasing works:
-    //  - required single-option checkbox = an acceptance/consent gate (privacy
-    //    policy, code of conduct, "I agree…"): it gates submission, so agree.
-    //  - optional single-option checkbox = an opt-in preference (marketing,
-    //    newsletters): never presume consent, leave unchecked.
-    //  - multi-option checkbox = a real multi-select question: resolve normally.
-    if (field.kind === "checkbox") {
-      const action = checkboxAction(field);
-      if (action === "leave") {
-        console.log(
-          `[GreenhouseAdapter] Optional opt-in checkbox "${escapePromptValue(field.label)}" left unchecked.`
-        );
-        return;
-      }
-      if (action === "accept") {
-        const option = field.optionTargets[0]?.text ?? "yes";
-        const ok = await this.clickGroupOption(field, option);
-        const committed = await this.readFieldValue(field);
-        if (ok && committed) {
-          console.log(
-            `[GreenhouseAdapter] Accepted required checkbox "${escapePromptValue(field.label)}".`
-          );
-          filled.push(field.label);
-          await randomSleep(150, 300);
-          return;
-        }
-        const reason = "required acceptance checkbox could not be checked";
-        console.warn(
-          `[GreenhouseAdapter] Leaving "${escapePromptValue(field.label)}" blank (${reason})`
-        );
-        blanked.push({ label: field.label, reason });
-        return;
-      }
-      // multi-option checkbox: fall through to normal resolution.
-    }
-
-    // The ONLY place typing is allowed is a genuine async location autocomplete
-    // (no static options + anchored label). Everything else is answered by
-    // selecting an option, never by typing into the field.
-    const isAsyncLocation = isLocationAutocomplete(field);
-    if (isAsyncLocation && (profile as any)?.location) {
-      const ans = String((profile as any).location);
-      let ok = await this.fillAsyncAutocomplete(field.id, ans);
-      if (!ok) {
-        ok = await this.fillAsyncAutocomplete(field.id, ans);
-      }
-      if (!ok) {
-        const reason = `location "${escapePromptValue(ans)}" had no selectable suggestion`;
-        console.warn(
-          `[GreenhouseAdapter] Leaving "${escapePromptValue(field.label)}" blank (${reason})`
-        );
-        blanked.push({ label: field.label, reason });
-        return;
-      }
-      console.log(
-        `[GreenhouseAdapter] Location filled for "${escapePromptValue(field.label)}": "${escapePromptValue(ans)}"`
-      );
-      filled.push(field.label);
-      await randomSleep(150, 300);
-      return;
-    }
-
-    let optionTexts = field.options.slice();
-    if ((field.kind === "select" || field.kind === "multi") && optionTexts.length === 0) {
-      optionTexts = await this.readSelectOptions(field.id);
-      if (optionTexts.length === 0) {
-        console.warn(
-          `[GreenhouseAdapter] Could not read options for #${field.id} ` +
-            `("${escapePromptValue(field.label)}"); resolving without them.`
-        );
-      }
-    }
-
-    const rpcKind =
-      field.kind === "radio"
-        ? "select"
-        : field.kind === "checkbox"
-          ? "multi"
-          : field.kind;
-
-    let result: any;
-    try {
-      result = await rpc("answer_question", {
-        question: field.label,
-        kind: rpcKind,
-        options: optionTexts,
-      });
-    } catch (rpcErr: any) {
-      // RPC failures (Telegram unconfigured, overnight deferral) must
-      // abort loudly — filling a form around an unanswered personal
-      // question is worse than no fill.
-      console.error(
-        `[GreenhouseAdapter] RPC answer_question failed for "${escapePromptValue(field.label)}":`,
-        rpcErr?.message || rpcErr
-      );
-      throw rpcErr;
-    }
-
-    const answer: string = (result?.answer ?? "").toString().trim();
-    if (!answer) {
-      // User dismissed (source "decline"): honor the manual skip — record it
-      // so the final sweep never re-asks or re-fills this field.
-      userSkippedKeys.add(fieldKey(field));
-      blanked.push({
-        label: field.label,
-        reason: `declined (source ${result?.source ?? "unknown"})`,
-      });
-      return;
-    }
-
-    let ok: boolean;
-    if (isAsyncLocation) {
-      ok = await this.fillAsyncAutocomplete(field.id, answer);
-      if (!ok) {
-        ok = await this.fillAsyncAutocomplete(field.id, answer);
-      }
-      const committed = await this.readSelectValue(field.id);
-      ok = ok && !!committed;
-    } else {
-      ok = await this.fillByKind(field, answer, optionTexts);
-      if (!ok) {
-        // One retry, then verify the committed value.
-        ok = await this.fillByKind(field, answer, optionTexts);
-      }
-      const committed = await this.readFieldValue(field);
-      ok = ok && !!committed;
-    }
-
-    if (!ok) {
-      const reason = `answer "${escapePromptValue(answer)}" could not be committed`;
-      console.warn(
-        `[GreenhouseAdapter] Leaving "${escapePromptValue(field.label)}" blank (${reason})`
-      );
-      blanked.push({ label: field.label, reason });
-      await this.closeMenu();
-      return;
-    }
-    filled.push(field.label);
-    await randomSleep(150, 300);
   }
 
   /**
    * Upload the resume file to the resume field and verify it actually attached.
-   *
-   * The locator is re-resolved to ``#resume`` on every attempt because a
-   * successful upload makes the board CONSUME the input (it disappears from
-   * the DOM) — a stale ``input[type="file"]`` locator would then silently point
-   * at the cover-letter input. A thrown ``setInputFiles`` (some boards route
-   * hidden inputs through an internal upload helper) never crashes the run; the
-   * failure is retried, and a definitive ``false`` is returned so the final
-   * audit can surface "resume not attached" instead of a partial form.
    */
   private async uploadResume(page: any, resumePath: string): Promise<boolean> {
     const baseName = resumePath.split(/[\\/]/).pop() || "";
@@ -1614,8 +492,7 @@ export class GreenhouseAdapter extends ATSAdapter {
     return false;
   }
 
-  /** Whether the resume is attached: input consumed, has files, or its filename
-   * appears in the upload area (any of the three board renderings). */
+  /** Whether the resume is attached (input consumed, has files, or name shown). */
   private async isResumeAttached(page: any, fileName = ""): Promise<boolean> {
     return page
       .evaluate((name: string) => {
@@ -1634,10 +511,8 @@ export class GreenhouseAdapter extends ATSAdapter {
   }
 
   /**
-   * Locate the cover letter field across board flavors. Legacy boards expose a
-   * visible textarea; the Remix board renders a file upload whose "Enter
-   * manually" button (exact data-testid "cover_letter-text") reveals the
-   * textarea. Returns null when the form has no cover letter field.
+   * Locate the cover letter field across board flavors (visible textarea or a
+   * file upload with an "Enter manually" toggle).
    */
   private async findCoverLetterField(): Promise<any> {
     const page = this.getPage();
@@ -1645,13 +520,9 @@ export class GreenhouseAdapter extends ATSAdapter {
       "textarea#cover_letter_text, textarea[name*='cover_letter'], textarea[aria-label*='cover letter' i], #job_application_cover_letter";
     let ta = page.locator(textareaSel).first();
     if (await ta.isVisible().catch(() => false)) return ta;
-    // Exact testid, no :has-text, no comma-list: Stagehand's locator→XPath
-    // conversion can't handle those, which silently made isVisible() return
-    // false before and skipped the whole field.
     const manual = page.locator('button[data-testid="cover_letter-text"]').first();
     if (await manual.isVisible().catch(() => false)) {
       await manual.click();
-      // The textarea is rendered by React only after the toggle; poll for it.
       for (let i = 0; i < 8; i++) {
         await randomSleep(400, 700);
         ta = page.locator(textareaSel).first();
@@ -1672,51 +543,40 @@ export class GreenhouseAdapter extends ATSAdapter {
 
     await this.ensureApplicationForm();
 
+    const controls = this.controls;
     console.log("[GreenhouseAdapter] Filling deterministic profile fields...");
-
-    await this.fillField(
+    await controls.fillField(
       '#first_name',
       profile.firstName,
       "Type %firstName% into the First Name input field",
       "firstName"
     );
-    await this.fillField(
+    await controls.fillField(
       '#last_name',
       profile.lastName,
       "Type %lastName% into the Last Name input field",
       "lastName"
     );
-    await this.fillField(
+    await controls.fillField(
       '#email',
       profile.email,
       "Type %email% into the Email input field",
       "email"
     );
-    await this.fillField(
+    await controls.fillField(
       '#phone',
       profile.phone,
       "Type %phone% into the Phone input field",
       "phone"
     );
 
-    // Resume Upload Handling. A failed setInputFiles must never crash the run,
-    // and the generic "first file input" must never steal the cover-letter
-    // field after #resume is consumed — so the locator is re-resolved to
-    // #resume on every attempt and each attempt is verified.
     let resumeAttached = false;
     if (profile.resumePath && fs.existsSync(profile.resumePath)) {
       resumeAttached = await this.uploadResume(page, profile.resumePath);
     }
 
-    // Per-field screener walk driven by the merged inventory (board JSON model
-    // ∪ DOM enumeration). Every rendered question is resolved one at a time via
-    // the answer_question RPC (profile/KB first, Telegram with options for
-    // unknowns, learned into the KB on every answer). Identity fields filled
-    // deterministically above (or via PROFILE_FILLS) are not re-asked.
     if (rpc) {
-      // Send the extracted job context first so open-ended answers are
-      // personalized to the role and country-scoped questions resolve against
-      // the JD's country.
+      // Job context first so open-ended answers are personalized to the role.
       const jobCtx = await this.readJobContext();
       await rpc("job_context", jobCtx);
       console.log(
@@ -1728,17 +588,15 @@ export class GreenhouseAdapter extends ATSAdapter {
 
       const filled: string[] = [];
       const blanked: Array<{ label: string; reason: string }> = [];
-      // Iterative re-scan: conditional questions (e.g. Race, which renders
-      // only after "Are you Hispanic/Latino?" is answered) appear in the DOM
-      // only after an earlier interaction. Rescan the form each pass, process
-      // only fields not seen before, and converge when nothing new appears.
       const processedKeys = new Set<string>();
-      // Fields the user deliberately skipped (declined). The final sweep must
-      // never re-ask or re-fill these.
       const userSkippedKeys = new Set<string>();
-      const MAX_WALK_PASSES = 30;
+      const screener = new Screener(controls, "GreenhouseAdapter", profile, rpc);
 
-      for (let pass = 0; pass < MAX_WALK_PASSES; pass++) {
+      // Iterative re-scan: conditional questions (e.g. Race, which renders only
+      // after "Are you Hispanic/Latino?" is answered) appear in the DOM only
+      // after an earlier interaction. Rescan each pass, process only new fields,
+      // and converge when nothing new appears.
+      for (let pass = 0; pass < 30; pass++) {
         const domFields = await this.collectQuestions();
         const inventory = this.mergeInventory(jsonModel, domFields);
         const newFields = unprocessedFields(inventory, processedKeys);
@@ -1761,42 +619,21 @@ export class GreenhouseAdapter extends ATSAdapter {
         for (const field of newFields) {
           // Mark BEFORE filling so a re-scan can never re-ask or re-fill.
           processedKeys.add(fieldKey(field));
-          await this.processQuestion(field, profile, rpc, filled, blanked, userSkippedKeys);
+          await screener.process(field, filled, blanked, userSkippedKeys);
         }
 
-        // Let async conditionals (revealed questions, geocoder results) settle
-        // before the next re-scan.
         await randomSleep(900, 1400);
       }
 
-      // Final inventory for the zero-blank audit.
+      // Zero-blank audit after the walk (reports required blanks; records reasons
+      // for optional empties into blanked).
       const finalDom = await this.collectQuestions();
       const inventory = this.mergeInventory(jsonModel, finalDom);
-
-      // Zero-blank audit: no required question may be left empty, and every
-      // blank optional question must have a recorded reason. Required blanks
-      // are reported cleanly (never a thrown exception that kills the run) —
-      // the fill finishes, the review hold shows the state, and the report
-      // lists exactly which required fields are blank and why.
-      const requiredBlanks: Array<{ label: string; reason: string }> = [];
-      for (const field of inventory) {
-        const key = normalizeOptionText(field.label);
-        const value = await this.readFieldValue(field);
-        if (value) continue;
-        const reason = blanked.find(
-          (b) => normalizeOptionText(b.label) === key
-        )?.reason;
-        if (field.required) {
-          requiredBlanks.push({
-            label: field.label,
-            reason: reason || "blank after walk (no answer committed)",
-          });
-          continue;
-        }
-        if (!reason) {
-          blanked.push({ label: field.label, reason: "blank after walk (no answer committed)" });
-        }
-      }
+      const requiredBlanks = await auditBlanks({
+        fields: inventory,
+        readValue: (f) => controls.readFieldValue(f),
+        transcript: blanked,
+      });
 
       console.log(
         `[GreenhouseAdapter] Screener walk complete. Filled: ${filled.length}, blank (declined/unknown): ${blanked.length}.`
@@ -1805,19 +642,14 @@ export class GreenhouseAdapter extends ATSAdapter {
         console.warn(`[GreenhouseAdapter]   blank: ${escapePromptValue(b.label)} (${b.reason})`);
       }
       if (requiredBlanks.length > 0) {
-        console.warn(
-          `[GreenhouseAdapter] ${requiredBlanks.length} REQUIRED field(s) left blank after the walk:`
-        );
+        const warn = (msg: string) => console.warn(`[GreenhouseAdapter] ${msg}`);
+        warn(`${requiredBlanks.length} REQUIRED field(s) left blank after the walk:`);
         for (const rb of requiredBlanks) {
-          console.warn(
-            `[GreenhouseAdapter]   REQUIRED blank: ${escapePromptValue(rb.label)} (${rb.reason})`
-          );
+          warn(`  REQUIRED blank: ${escapePromptValue(rb.label)} (${rb.reason})`);
         }
       }
 
       // Cover letter: LLM-generated, personalized to the job description.
-      // Only generated when the form actually has the field (upload toggle
-      // revealed), so an LLM call is never wasted on forms without one.
       const clField = await this.findCoverLetterField();
       if (clField) {
         const coverLetterResult = await rpc("cover_letter", {});
@@ -1841,13 +673,8 @@ export class GreenhouseAdapter extends ATSAdapter {
         console.log("[GreenhouseAdapter] No cover letter field on this form; skipping generation.");
       }
 
-      // Definitive final sweep: rescan the ENTIRE form and fill ANY input that
-      // is still empty, except fields the user deliberately skipped. This is
-      // the safety net that catches everything a single pass can miss:
-      //  - identity fields whose early fill raced the form hydration,
-      //  - fields that failed to commit on the first attempt,
-      //  - conditional fields revealed by later interactions.
-      // It iterates until no new field fills, so it converges like the walk.
+      // Definitive final sweep: rescan the ENTIRE form and fill ANY input still
+      // empty (except identity fields + manual skips), iterating to convergence.
       const sweepPasses: string[] = [];
       const sweepBlanks: Array<{ label: string; reason: string }> = [];
       for (let pass = 0; pass < 3; pass++) {
@@ -1856,12 +683,12 @@ export class GreenhouseAdapter extends ATSAdapter {
         let touched = 0;
         for (const field of sweptInventory) {
           const key = normalizeOptionText(field.label);
-          if (PRE_FILLED_LABELS.has(key)) continue; // audited separately
-          const value = await this.readFieldValue(field);
-          if (value) continue; // already committed
-          if (userSkippedKeys.has(fieldKey(field))) continue; // manual skip
+          if (PRE_FILLED_LABELS.has(key)) continue;
+          const value = await controls.readFieldValue(field);
+          if (value) continue;
+          if (userSkippedKeys.has(fieldKey(field))) continue;
           touched += 1;
-          await this.processQuestion(field, profile, rpc, sweepPasses, sweepBlanks, userSkippedKeys);
+          await screener.process(field, sweepPasses, sweepBlanks, userSkippedKeys);
         }
         if (touched === 0) break;
       }
@@ -1874,30 +701,19 @@ export class GreenhouseAdapter extends ATSAdapter {
         }
       }
 
-      // Re-run the required-blank audit over the final state so the report
-      // reflects what the sweep actually filled.
+      // Re-run the required-blank audit over the final state.
       const finalDom2 = await this.collectQuestions();
-      const finalInventory2 = this.mergeInventory(jsonModel, finalDom2);
-      requiredBlanks.length = 0;
-      for (const field of finalInventory2) {
-        const key = normalizeOptionText(field.label);
-        const value = await this.readFieldValue(field);
-        if (value) continue;
-        const reason = [...blanked, ...sweepBlanks].find(
-          (b) => normalizeOptionText(b.label) === key
-        )?.reason;
-        if (field.required) {
-          requiredBlanks.push({
-            label: field.label,
-            reason: reason || "blank after final sweep (no answer committed)",
-          });
-        }
-      }
-      if (requiredBlanks.length > 0) {
+      const finalInventory = this.mergeInventory(jsonModel, finalDom2);
+      const finalRequired = await auditBlanks({
+        fields: finalInventory,
+        readValue: (f) => controls.readFieldValue(f),
+        transcript: [...blanked, ...sweepBlanks],
+      });
+      if (finalRequired.length > 0) {
         console.warn(
-          `[GreenhouseAdapter] ${requiredBlanks.length} REQUIRED field(s) still blank after the final sweep:`
+          `[GreenhouseAdapter] ${finalRequired.length} REQUIRED field(s) still blank after the final sweep:`
         );
-        for (const rb of requiredBlanks) {
+        for (const rb of finalRequired) {
           console.warn(
             `[GreenhouseAdapter]   REQUIRED blank: ${escapePromptValue(rb.label)} (${rb.reason})`
           );
@@ -1906,48 +722,21 @@ export class GreenhouseAdapter extends ATSAdapter {
         console.log("[GreenhouseAdapter] Final sweep complete: no required field is blank.");
       }
 
-      // Definitive reverify: rescan the ENTIRE form one last time and report
-      // EVERY field still empty — required or optional — except fields the user
-      // deliberately skipped. This is the pre-completion checkpoint the user
-      // asked for: it catches anything the walk and sweep missed (including a
-      // resume that failed to attach), so the review hold shows the true state.
-      const reverifyDom = await this.collectQuestions();
-      const reverifyInventory = this.mergeInventory(jsonModel, reverifyDom);
-      const stillBlank: Array<{ label: string; reason: string }> = [];
-      for (const field of reverifyInventory) {
-        if (PRE_FILLED_LABELS.has(normalizeOptionText(field.label))) continue;
-        if (userSkippedKeys.has(fieldKey(field))) continue; // manual skip
-        const value = await this.readFieldValue(field);
-        if (value) continue;
-        const reason = [...blanked, ...sweepBlanks].find(
-          (b) => normalizeOptionText(b.label) === normalizeOptionText(field.label)
-        )?.reason;
-        stillBlank.push({
-          label: field.label,
-          reason: reason || "empty after final reverify (no answer committed)",
-        });
-      }
-      if (stillBlank.length > 0) {
-        console.warn(
-          `[GreenhouseAdapter] REVERIFY: ${stillBlank.length} field(s) still unfilled after completion:`
-        );
-        for (const sb of stillBlank) {
-          console.warn(
-            `[GreenhouseAdapter]   unfilled: ${escapePromptValue(sb.label)} (${sb.reason})`
-          );
-        }
-      } else {
-        console.log(
-          "[GreenhouseAdapter] REVERIFY: every field is filled (only manual skips excluded)."
-        );
-      }
+      // Definitive reverify of every still-empty field (required/optional, minus skips).
+      await finalReverify({
+        tag: "GreenhouseAdapter",
+        collect: async () => {
+          const dom = await this.collectQuestions();
+          return this.mergeInventory(jsonModel, dom);
+        },
+        isEmpty: async (field) => !(await controls.readFieldValue(field)),
+        skippedKeys: userSkippedKeys,
+        reasons: [...blanked, ...sweepBlanks],
+      });
 
-      // Resume reverify: if the resume failed to attach, surface it clearly
-      // instead of silently submitting a form without a CV.
+      // Resume reverify: surface a failed attach instead of submitting without a CV.
       if (profile.resumePath && !resumeAttached && !(await this.isResumeAttached(page))) {
-        console.warn(
-          "[GreenhouseAdapter] REVERIFY: resume is NOT attached after the final pass."
-        );
+        console.warn("[GreenhouseAdapter] REVERIFY: resume is NOT attached after the final pass.");
       } else if (profile.resumePath) {
         console.log("[GreenhouseAdapter] REVERIFY: resume is attached.");
       }
