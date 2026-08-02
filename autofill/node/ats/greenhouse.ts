@@ -35,12 +35,28 @@ export function selectCandidates(answer: string): string[] {
 
 /** Case-insensitive XPath equality predicate for a literal text value. */
 function optionExactXPath(text: string): string {
-  const safe = escapePromptValue(text).replace(/'/g, "\\'");
+  const needle = text.toLowerCase();
   return (
-    'translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz") = "' +
-    safe.toLowerCase() +
-    '"'
+    'translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz") = ' +
+    xpathStringLiteral(needle)
   );
+}
+
+/**
+ * Build an XPath 1.0 string literal for arbitrary text. XPath has no backslash
+ * escapes: single quotes are fine inside a double-quoted literal, and text
+ * containing double quotes switches to single quotes (or ``concat`` when it
+ * contains both). Never append a backslash — it becomes a literal character.
+ */
+export function xpathStringLiteral(text: string): string {
+  if (!text.includes('"')) {
+    return `"${text}"`;
+  }
+  if (!text.includes("'")) {
+    return `'${text}'`;
+  }
+  const parts = text.split('"').map((p) => `'${p}'`);
+  return `concat(${parts.join(', \'"\', ')})`;
 }
 
 export function normalizeOptionText(text: string): string {
@@ -58,11 +74,35 @@ export function isDeclineOption(text: string): boolean {
 }
 
 /**
+ * Levenshtein edit distance (iterative, unicode-safe). Used to forgive a small
+ * typo when matching a typed answer to an option label — never enough to jump
+ * between distinct options.
+ */
+export function editDistance(a: string, b: string): number {
+  const x = a ?? "";
+  const y = b ?? "";
+  if (x === y) return 0;
+  if (!x.length) return y.length;
+  if (!y.length) return x.length;
+  const prev = Array.from({ length: y.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= x.length; i++) {
+    const curr = [i];
+    for (let j = 1; j <= y.length; j++) {
+      const cost = x[i - 1] === y[j - 1] ? 0 : 1;
+      curr.push(Math.min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost));
+    }
+    prev.splice(0, prev.length, ...curr);
+  }
+  return prev[y.length];
+}
+
+/**
  * Pick the option text that best matches an answer, from a candidate list.
  * Exact matches are preferred; a substring match is only accepted when it is
- * unambiguous within the option list (and never against a decline option).
- * Returns null when nothing matches confidently — callers must leave the
- * field blank rather than guess.
+ * unambiguous within the option list (and never against a decline option);
+ * finally a conservative edit-distance match forgives a small typo when
+ * exactly one option is within tolerance. Returns null when nothing matches
+ * confidently — callers must leave the field blank rather than guess.
  */
 export function chooseOption(candidates: string[], optionTexts: string[]): string | null {
   const eligible = optionTexts.filter((t) => !isDeclineOption(t));
@@ -74,6 +114,12 @@ export function chooseOption(candidates: string[], optionTexts: string[]): strin
       const subs = eligible.filter((t) => normalizeOptionText(t).includes(nc));
       if (subs.length === 1) return subs[0];
     }
+    const threshold = Math.max(1, Math.min(2, Math.floor(nc.length / 4)));
+    const near = eligible.filter((t) => {
+      const tokens = normalizeOptionText(t).split(/\s+/).filter(Boolean);
+      return tokens.some((tok) => tok && editDistance(nc, tok) <= threshold);
+    });
+    if (near.length === 1) return near[0];
   }
   return null;
 }
@@ -213,11 +259,63 @@ const PROFILE_FILLS: Record<string, keyof Profile> = {
   website: "website",
 };
 
+/** Identity fields filled deterministically from the profile (never asked). */
+const IDENTITY_FILLS: Record<string, keyof Profile> = {
+  "first name": "firstName",
+  "last name": "lastName",
+  email: "email",
+  phone: "phone",
+};
+
 /** Questions answered by the fixed deterministic identity fills before the walk. */
 const PRE_FILLED_LABELS = new Set(["first name", "last name", "email", "phone"]);
 
-/** Consent/privacy toggles are handled separately, never walked as questions. */
-const CONSENT_RE = /agree|consent|retain|privacy|policy|gdpr|data protection/i;
+/**
+ * Structural semantics for a checkbox field — label-agnostic so ANY phrasing
+ * is handled correctly without a phrase list:
+ *  - "accept": a REQUIRED checkbox with a single option is an acceptance/consent
+ *    gate (privacy policy, code of conduct, "I agree…"). It gates submission,
+ *    so agreeing is the only way to apply.
+ *  - "leave": an OPTIONAL checkbox with a single option is an opt-in preference
+ *    (marketing, newsletters). Never presume consent; leave it unchecked.
+ *  - "ask": a multi-option checkbox is a real multi-select question and must be
+ *    resolved normally (profile/KB/Telegram), never auto-accepted.
+ */
+export type CheckboxAction = "accept" | "leave" | "ask";
+
+export function checkboxAction(field: FormField): CheckboxAction {
+  if (field.kind !== "checkbox") return "ask";
+  const single = field.optionTargets.length <= 1;
+  if (!single) return "ask"; // multi-option = real multi-select question
+  return field.required ? "accept" : "leave";
+}
+/**
+ * True only for a genuine async location autocomplete — a react-select that
+ * has NO static options (a geocoder loads them after typing) and whose label is
+ * about the candidate's current city (Location (City), Candidate Location, What
+ * is your current location?). A pick-list that merely mentions location (e.g.
+ * "…willing to relocate to the job's location?") is NOT one — it has options
+ * and must be answered by selecting, never by typing.
+ */
+export function isLocationAutocomplete(field: FormField): boolean {
+  if (field.kind === "radio" || field.kind === "checkbox") return false;
+  if (field.kind !== "select" && field.kind !== "multi") return false;
+  if (field.options.length > 0) return false; // static pick-list
+  if (field.optionTargets.length > 0) return false;
+  const label = normalizeOptionText(field.label);
+  const isLocationSubject =
+    /\bcurrent location\b/.test(label) ||
+    /\bcandidate location\b/.test(label) ||
+    /\b(?:city|location)\b/.test(label);
+  if (!isLocationSubject) return false;
+  // A willingness/relocation question ("…willing to relocate to the job's
+  // location?", "Are you currently living in…") is NOT a city autocomplete —
+  // it is a yes/no pick-list.
+  if (/relocat|willing|are you currently|are you open|job's location|job’s location/.test(label)) {
+    return false;
+  }
+  return true;
+}
 
 /** Stable identity for a form field across rescans (label + kind + id). */
 export function fieldKey(f: FormField): string {
@@ -462,9 +560,6 @@ export class GreenhouseAdapter extends ATSAdapter {
             anchor: string
           ): void => {
             if (!inputs.length || !labelText) return;
-            // Module-level consts are out of scope inside evaluate, so the
-            // consent regex is inlined here.
-            if (/(agree|consent|retain|privacy|policy|gdpr|data protection)/i.test(labelText)) return;
             if (inputs.some((i) => hidden(i))) return;
             const single = inputs.every((i) => i.type === "radio");
             const name = inputs[0].name || "";
@@ -473,12 +568,17 @@ export class GreenhouseAdapter extends ATSAdapter {
             const targets: Array<{ text: string; name: string; value: string }> = [];
             for (const input of inputs) {
               const wrapLabel = input.closest("label");
+              const forLabel = input.id
+                ? document.querySelector(`label[for="${input.id}"]`)
+                : null;
               const text = norm(
                 wrapLabel
                   ? wrapLabel.textContent || ""
-                  : input.getAttribute("aria-label") || ""
+                  : forLabel
+                    ? forLabel.textContent || ""
+                    : input.getAttribute("aria-label") || ""
               );
-              if (!text || /(agree|consent|retain|privacy|policy|gdpr|data protection)/i.test(text)) continue;
+              if (!text) continue;
               options.push(text);
               targets.push({ text, name: input.name || name, value: input.value || "" });
             }
@@ -653,6 +753,24 @@ export class GreenhouseAdapter extends ATSAdapter {
         }, id)
         .catch(() => null);
       if (type === "file") return; // file inputs crash fill(); resume handled elsewhere
+      // Never type into a combobox/select-shell disguised as a text field: a
+      // dropdown is answered by selecting an option, not by typing into it.
+      const isCombobox = await page
+        .evaluate((inputId) => {
+          const el = document.getElementById(inputId) as HTMLInputElement | null;
+          return !!(
+            el &&
+            (el.getAttribute("role") === "combobox" ||
+              el.closest('[class*="select-shell"]'))
+          );
+        }, id)
+        .catch(() => false);
+      if (isCombobox) {
+        console.warn(
+          `[GreenhouseAdapter] Refusing to type into combobox #${id}; selecting an option instead.`
+        );
+        return;
+      }
       await loc.fill(answer);
       await randomSleep(200, 500);
     }
@@ -834,6 +952,12 @@ export class GreenhouseAdapter extends ATSAdapter {
    * portaled outside the field's select-shell, so options are collected
    * document-wide and filtered to visible ones — only the open menu is
    * visible at click time, which makes this unambiguous.
+   *
+   * Async react-selects (geocoders, country pickers) load options only after a
+   * keystroke, so when the initial menu is empty we type "a" to trigger the
+   * loader and re-read, retrying up to 3 times. As a last resort, any
+   * ``[role=option]`` present in the DOM is collected even if the menu looks
+   * closed.
    */
   private async readSelectOptions(id: string): Promise<string[]> {
     const page = this.getPage();
@@ -842,6 +966,7 @@ export class GreenhouseAdapter extends ATSAdapter {
       const control = page
         .locator(`${shellXPath}//div[contains(@class,"select__control")]`)
         .first();
+      const input = page.locator(`#${id}`).first();
       if (!(await control.isVisible().catch(() => false))) {
         return [];
       }
@@ -849,9 +974,50 @@ export class GreenhouseAdapter extends ATSAdapter {
       await randomSleep(150, 300);
       await control.click();
       await randomSleep(300, 600);
-      return await this.readVisibleOptionTexts();
+      let opts = await this.readVisibleOptionTexts();
+      if (opts.length === 0 && (await input.isVisible().catch(() => false))) {
+        // Trigger async loaders by typing a probe character.
+        for (let attempt = 0; attempt < 3 && opts.length === 0; attempt++) {
+          await input.fill("a");
+          await randomSleep(1200, 1800);
+          opts = await this.readVisibleOptionTexts();
+        }
+        if (opts.length === 0) {
+          await input.fill("");
+        }
+      }
+      if (opts.length === 0) {
+        // Some boards render options without a visible menu (or the menu
+        // portal hasn't focused); fall back to any option in the DOM.
+        opts = await this.readAnyOptionTexts();
+      }
+      await this.closeMenu();
+      return opts;
     } catch (err: any) {
       console.warn(`[GreenhouseAdapter] readSelectOptions failed for #${id}:`, err?.message || err);
+      return [];
+    }
+  }
+
+  /** Any ``[role=option]`` text in the DOM, regardless of menu visibility. */
+  private async readAnyOptionTexts(): Promise<string[]> {
+    const page = this.getPage();
+    try {
+      return await page.evaluate(() => {
+        const out: string[] = [];
+        const seen = new Set<string>();
+        for (const el of Array.from(document.querySelectorAll('div[role="option"]'))) {
+          const text = ((el as HTMLElement).textContent || "")
+            .replace(/\s+/g, " ")
+            .trim();
+          if (text && !seen.has(text)) {
+            seen.add(text);
+            out.push(text);
+          }
+        }
+        return out;
+      });
+    } catch {
       return [];
     }
   }
@@ -931,7 +1097,12 @@ export class GreenhouseAdapter extends ATSAdapter {
           `input[type="radio"][name="${groupName}"]:checked, input[type="checkbox"][name="${groupName}"]:checked`
         ) as HTMLInputElement | null;
         if (!checked) return "";
-        const label = checked.closest("label");
+        // Wrapping label first, then a sibling label[for], then aria/value.
+        const wrapLabel = checked.closest("label");
+        const forLabel = checked.id
+          ? document.querySelector(`label[for="${checked.id}"]`)
+          : null;
+        const label = wrapLabel || forLabel;
         return (label
           ? label.textContent || ""
           : checked.getAttribute("aria-label") || checked.value || ""
@@ -963,7 +1134,10 @@ export class GreenhouseAdapter extends ATSAdapter {
   /**
    * Click the radio/checkbox option matching ``answer``. Exact matches on the
    * collected option texts (via input name+value) are preferred; a text-based
-   * label match inside the application form is the last resort.
+   * label match inside the application form is the last resort. Handles all
+   * three label renderings: wrapping ``label:has(input)``, a sibling
+   * ``label[for=<input-id>]`` (used by checkbox/fieldset groups), and a bare
+   * visible input. The checked state is verified after every attempt.
    */
   private async clickGroupOption(field: FormField, answer: string): Promise<boolean> {
     const page = this.getPage();
@@ -984,15 +1158,31 @@ export class GreenhouseAdapter extends ATSAdapter {
         const nameAttr = cssEscape(target.name || field.name || field.id);
         const valueAttr = target.value ? `[value="${cssEscape(target.value)}"]` : "";
         const base = `input[type="${type}"]${valueAttr}[name="${nameAttr}"]`;
-        const label = page.locator(`label:has(${base})`).first();
-        if (await label.isVisible().catch(() => false)) {
-          await label.click();
-          return true;
-        }
         const input = page.locator(base).first();
+
+        // 1) Wrapping label (label:has(input)).
+        const wrapLabel = page.locator(`label:has(${base})`).first();
+        if (await wrapLabel.isVisible().catch(() => false)) {
+          await wrapLabel.click();
+          if (await input.isChecked().catch(() => false)) return true;
+        }
+        // 2) Sibling label[for=<input id>] — label is NOT an ancestor.
         if (await input.isVisible().catch(() => false)) {
-          await (input as any).check({ force: true });
-          return true;
+          const inputId = await page
+            .evaluate((sel) => document.querySelector(sel)?.id || "", base)
+            .catch(() => "");
+          if (inputId) {
+            const forLabel = page
+              .locator(`label[for="${cssEscape(inputId)}"]`)
+              .first();
+            if (await forLabel.isVisible().catch(() => false)) {
+              await forLabel.click();
+              if (await input.isChecked().catch(() => false)) return true;
+            }
+          }
+          // 3) Bare input: force-check it (never rely on a wrapping label).
+          await (input as any).check({ force: true }).catch(() => {});
+          if (await input.isChecked().catch(() => false)) return true;
         }
       }
       // Fallback: text-based label matching within the form.
@@ -1092,13 +1282,13 @@ export class GreenhouseAdapter extends ATSAdapter {
   }
 
   /**
-   * Fill a location autocomplete (react-select backed by an async geocoder):
-   * open the menu, type the answer, poll for suggestions, click the best match.
-   * When the full answer yields no suggestions (geocoders often need a city
-   * token), retry with a shortened query. Falls back to the typed free text
-   * (never cleared) when nothing can be selected.
+   * Fill an async location autocomplete (react-select backed by a geocoder).
+   * Typing here is only a trigger to reveal suggestions; the committed value
+   * MUST be a selected option — raw typed text is never accepted as an answer
+   * (a dropdown is never filled by typing into it). When no suggestion can be
+   * selected, returns false so the walker blanks the field with a reason.
    */
-  private async fillLocation(id: string, answer: string): Promise<boolean> {
+  private async fillAsyncAutocomplete(id: string, answer: string): Promise<boolean> {
     const page = this.getPage();
     try {
       const input = page.locator(`#${id}`).first();
@@ -1136,46 +1326,207 @@ export class GreenhouseAdapter extends ATSAdapter {
         if (picked && (await this.clickVisibleOption(picked))) {
           await this.closeMenu();
           await randomSleep(300, 500);
-          console.log(`[GreenhouseAdapter] Picked location suggestion "${picked}" for #${id}`);
-          return true;
+          // Verify a real option was selected — never the raw typed text.
+          const committed = await this.readSelectValue(id);
+          if (committed) {
+            console.log(
+              `[GreenhouseAdapter] Picked location suggestion "${picked}" for #${id}`
+            );
+            return true;
+          }
         }
       }
-      // Free-text fallback: the typed value stays committed in the input (never
-      // blur/escape, which would clear it).
-      const committed = (await this.readSelectValue(id)) || (await this.readInputValue(id));
-      console.log(
-        `[GreenhouseAdapter] Location #${id} free-text committed: "${committed}"`
+      // No selectable suggestion: blank with a reason, never commit free text.
+      await this.closeMenu();
+      console.warn(
+        `[GreenhouseAdapter] No selectable location suggestion for #${id} ` +
+          `(answer "${escapePromptValue(answer)}"); leaving blank.`
       );
-      return !!committed;
+      return false;
     } catch (err: any) {
-      console.warn(`[GreenhouseAdapter] fillLocation failed for #${id}:`, err?.message || err);
+      console.warn(`[GreenhouseAdapter] fillAsyncAutocomplete failed for #${id}:`, err?.message || err);
       return false;
     }
   }
 
-  private async consentToPrivacy(): Promise<void> {
-    const page = this.getPage();
-    try {
-      // Deterministic: click Greenhouse consent checkboxes by label text.
-      for (const hint of ["agree to allow", "retain my data", "consent"]) {
-        const box = page
-          .locator(
-            `//div[contains(@class,"field-wrapper")][contains(., "${hint}")]//input[@type="checkbox"]`
-          )
-          .first();
-        if (await box.isVisible().catch(() => false)) {
-          if (!(await box.isChecked().catch(() => false))) {
-            await box.click();
-          }
-          await randomSleep(200, 400);
+  /**
+   * Resolve and fill one question field via the shared resolution chain:
+   * identity/profile value → checkbox structural rules → async location
+   * autocomplete → RPC answer (KB/Telegram) → kind-aware fill → committed-value
+   * verification. Records results in ``filled``/``blanked``; a user-declined
+   * skip is remembered in ``userSkippedKeys`` so the final sweep never re-asks
+   * a manually-skipped field.
+   */
+  private async processQuestion(
+    field: FormField,
+    profile: Profile,
+    rpc: RpcHelper,
+    filled: string[],
+    blanked: Array<{ label: string; reason: string }>,
+    userSkippedKeys: Set<string>
+  ): Promise<void> {
+    const key = normalizeOptionText(field.label);
+
+    // Identity + profile-driven fields are filled deterministically from the
+    // profile — never resolved via RPC or asked.
+    const profileKey = PROFILE_FILLS[key] ?? IDENTITY_FILLS[key];
+    if (profileKey) {
+      const pv = (profile as any)?.[profileKey];
+      if (pv) {
+        const ok = await this.fillByKind(field, String(pv));
+        if (!ok) {
+          const reason = `profile value "${escapePromptValue(String(pv))}" could not be committed`;
+          console.warn(
+            `[GreenhouseAdapter] Leaving "${escapePromptValue(field.label)}" blank (${reason})`
+          );
+          blanked.push({ label: field.label, reason });
+          return;
         }
+        filled.push(field.label);
+        await randomSleep(150, 300);
+        return;
       }
-    } catch (err: any) {
-      console.warn("[GreenhouseAdapter] Consent checkbox deterministic fill failed:", err?.message || err);
-      // Best-effort LLM fallback.
-      await this.safeAct("check all the 'I agree to allow' consent and data retention checkboxes");
-      await randomSleep(300, 600);
     }
+
+    // Structural checkbox semantics — label-agnostic, so any phrasing works:
+    //  - required single-option checkbox = an acceptance/consent gate (privacy
+    //    policy, code of conduct, "I agree…"): it gates submission, so agree.
+    //  - optional single-option checkbox = an opt-in preference (marketing,
+    //    newsletters): never presume consent, leave unchecked.
+    //  - multi-option checkbox = a real multi-select question: resolve normally.
+    if (field.kind === "checkbox") {
+      const action = checkboxAction(field);
+      if (action === "leave") {
+        console.log(
+          `[GreenhouseAdapter] Optional opt-in checkbox "${escapePromptValue(field.label)}" left unchecked.`
+        );
+        return;
+      }
+      if (action === "accept") {
+        const option = field.optionTargets[0]?.text ?? "yes";
+        const ok = await this.clickGroupOption(field, option);
+        const committed = await this.readFieldValue(field);
+        if (ok && committed) {
+          console.log(
+            `[GreenhouseAdapter] Accepted required checkbox "${escapePromptValue(field.label)}".`
+          );
+          filled.push(field.label);
+          await randomSleep(150, 300);
+          return;
+        }
+        const reason = "required acceptance checkbox could not be checked";
+        console.warn(
+          `[GreenhouseAdapter] Leaving "${escapePromptValue(field.label)}" blank (${reason})`
+        );
+        blanked.push({ label: field.label, reason });
+        return;
+      }
+      // multi-option checkbox: fall through to normal resolution.
+    }
+
+    // The ONLY place typing is allowed is a genuine async location autocomplete
+    // (no static options + anchored label). Everything else is answered by
+    // selecting an option, never by typing into the field.
+    const isAsyncLocation = isLocationAutocomplete(field);
+    if (isAsyncLocation && (profile as any)?.location) {
+      const ans = String((profile as any).location);
+      let ok = await this.fillAsyncAutocomplete(field.id, ans);
+      if (!ok) {
+        ok = await this.fillAsyncAutocomplete(field.id, ans);
+      }
+      if (!ok) {
+        const reason = `location "${escapePromptValue(ans)}" had no selectable suggestion`;
+        console.warn(
+          `[GreenhouseAdapter] Leaving "${escapePromptValue(field.label)}" blank (${reason})`
+        );
+        blanked.push({ label: field.label, reason });
+        return;
+      }
+      console.log(
+        `[GreenhouseAdapter] Location filled for "${escapePromptValue(field.label)}": "${escapePromptValue(ans)}"`
+      );
+      filled.push(field.label);
+      await randomSleep(150, 300);
+      return;
+    }
+
+    let optionTexts = field.options.slice();
+    if ((field.kind === "select" || field.kind === "multi") && optionTexts.length === 0) {
+      optionTexts = await this.readSelectOptions(field.id);
+      if (optionTexts.length === 0) {
+        console.warn(
+          `[GreenhouseAdapter] Could not read options for #${field.id} ` +
+            `("${escapePromptValue(field.label)}"); resolving without them.`
+        );
+      }
+    }
+
+    const rpcKind =
+      field.kind === "radio"
+        ? "select"
+        : field.kind === "checkbox"
+          ? "multi"
+          : field.kind;
+
+    let result: any;
+    try {
+      result = await rpc("answer_question", {
+        question: field.label,
+        kind: rpcKind,
+        options: optionTexts,
+      });
+    } catch (rpcErr: any) {
+      // RPC failures (Telegram unconfigured, overnight deferral) must
+      // abort loudly — filling a form around an unanswered personal
+      // question is worse than no fill.
+      console.error(
+        `[GreenhouseAdapter] RPC answer_question failed for "${escapePromptValue(field.label)}":`,
+        rpcErr?.message || rpcErr
+      );
+      throw rpcErr;
+    }
+
+    const answer: string = (result?.answer ?? "").toString().trim();
+    if (!answer) {
+      // User dismissed (source "decline"): honor the manual skip — record it
+      // so the final sweep never re-asks or re-fills this field.
+      userSkippedKeys.add(fieldKey(field));
+      blanked.push({
+        label: field.label,
+        reason: `declined (source ${result?.source ?? "unknown"})`,
+      });
+      return;
+    }
+
+    let ok: boolean;
+    if (isAsyncLocation) {
+      ok = await this.fillAsyncAutocomplete(field.id, answer);
+      if (!ok) {
+        ok = await this.fillAsyncAutocomplete(field.id, answer);
+      }
+      const committed = await this.readSelectValue(field.id);
+      ok = ok && !!committed;
+    } else {
+      ok = await this.fillByKind(field, answer, optionTexts);
+      if (!ok) {
+        // One retry, then verify the committed value.
+        ok = await this.fillByKind(field, answer, optionTexts);
+      }
+      const committed = await this.readFieldValue(field);
+      ok = ok && !!committed;
+    }
+
+    if (!ok) {
+      const reason = `answer "${escapePromptValue(answer)}" could not be committed`;
+      console.warn(
+        `[GreenhouseAdapter] Leaving "${escapePromptValue(field.label)}" blank (${reason})`
+      );
+      blanked.push({ label: field.label, reason });
+      await this.closeMenu();
+      return;
+    }
+    filled.push(field.label);
+    await randomSleep(150, 300);
   }
 
   /**
@@ -1297,6 +1648,9 @@ export class GreenhouseAdapter extends ATSAdapter {
       // only after an earlier interaction. Rescan the form each pass, process
       // only fields not seen before, and converge when nothing new appears.
       const processedKeys = new Set<string>();
+      // Fields the user deliberately skipped (declined). The final sweep must
+      // never re-ask or re-fill these.
+      const userSkippedKeys = new Set<string>();
       const MAX_WALK_PASSES = 30;
 
       for (let pass = 0; pass < MAX_WALK_PASSES; pass++) {
@@ -1322,122 +1676,7 @@ export class GreenhouseAdapter extends ATSAdapter {
         for (const field of newFields) {
           // Mark BEFORE filling so a re-scan can never re-ask or re-fill.
           processedKeys.add(fieldKey(field));
-
-          const key = normalizeOptionText(field.label);
-          if (PRE_FILLED_LABELS.has(key)) continue;
-
-        // Location autocompletes resolve from the profile's current location
-        // (persona) and fill through the async autocomplete path.
-        const isLocation = /location|city|address/.test(key);
-        if (isLocation && (profile as any)?.location) {
-          const ans = String((profile as any).location);
-          let ok = await this.fillLocation(field.id, ans);
-          if (!ok) {
-            await this.fillLocation(field.id, ans);
-            ok = await this.readSelectValue(field.id).then((v) => !!v);
-          }
-          if (!ok) {
-            throw new Error(
-              `VERIFICATION_FAILED: field "${escapePromptValue(field.label)}" ` +
-                `(#${field.id}) did not commit location "${escapePromptValue(ans)}"`
-            );
-          }
-          console.log(
-            `[GreenhouseAdapter] Location filled for "${escapePromptValue(field.label)}": "${escapePromptValue(ans)}"`
-          );
-          filled.push(field.label);
-          await randomSleep(150, 300);
-          continue;
-        }
-
-        // Deterministic profile-driven fills (preferred name, linkedin, github, website).
-        const profileKey = PROFILE_FILLS[key];
-        if (profileKey) {
-          const pv = (profile as any)?.[profileKey];
-          if (pv) {
-            const ok = await this.fillByKind(field, String(pv));
-            if (!ok) {
-              throw new Error(
-                `VERIFICATION_FAILED: field "${escapePromptValue(field.label)}" ` +
-                  `did not commit profile value "${escapePromptValue(String(pv))}"`
-              );
-            }
-            filled.push(field.label);
-            await randomSleep(150, 300);
-            continue;
-          }
-          // No profile value: fall through to ask.
-        }
-
-        let optionTexts = field.options.slice();
-        if ((field.kind === "select" || field.kind === "multi") && optionTexts.length === 0) {
-          optionTexts = await this.readSelectOptions(field.id);
-          if (optionTexts.length === 0) {
-            console.warn(
-              `[GreenhouseAdapter] Could not read options for #${field.id} ` +
-                `("${escapePromptValue(field.label)}"); resolving without them.`
-            );
-          }
-        }
-
-        const rpcKind = isLocation
-          ? "text"
-          : field.kind === "radio"
-            ? "select"
-            : field.kind === "checkbox"
-              ? "multi"
-              : field.kind;
-
-        let result: any;
-        try {
-          result = await rpc("answer_question", {
-            question: field.label,
-            kind: rpcKind,
-            options: optionTexts,
-          });
-        } catch (rpcErr: any) {
-          // RPC failures (Telegram unconfigured, overnight deferral) must
-          // abort loudly — filling a form around an unanswered personal
-          // question is worse than no fill.
-          console.error(
-            `[GreenhouseAdapter] RPC answer_question failed for "${escapePromptValue(field.label)}":`,
-            rpcErr?.message || rpcErr
-          );
-          throw rpcErr;
-        }
-
-        const answer: string = (result?.answer ?? "").toString().trim();
-        if (!answer) {
-          // User dismissed and no decline option existed; record for the audit.
-          blanked.push({ label: field.label, reason: `declined (source ${result?.source ?? "unknown"})` });
-          continue;
-        }
-
-        let ok: boolean;
-        if (isLocation) {
-          ok = await this.fillLocation(field.id, answer);
-          if (!ok) {
-            await this.fillLocation(field.id, answer);
-            ok = await this.readSelectValue(field.id).then((v) => !!v);
-          }
-        } else {
-          ok = await this.fillByKind(field, answer, optionTexts);
-          if (!ok) {
-            // One retry, then verify the committed value.
-            ok = await this.fillByKind(field, answer, optionTexts);
-          }
-          const committed = await this.readFieldValue(field);
-          ok = ok && !!committed;
-        }
-
-        if (!ok) {
-          throw new Error(
-            `VERIFICATION_FAILED: field "${escapePromptValue(field.label)}" ` +
-              `(#${field.id}) did not commit answer "${escapePromptValue(answer)}"`
-          );
-        }
-        filled.push(field.label);
-        await randomSleep(150, 300);
+          await this.processQuestion(field, profile, rpc, filled, blanked, userSkippedKeys);
         }
 
         // Let async conditionals (revealed questions, geocoder results) settle
@@ -1450,20 +1689,24 @@ export class GreenhouseAdapter extends ATSAdapter {
       const inventory = this.mergeInventory(jsonModel, finalDom);
 
       // Zero-blank audit: no required question may be left empty, and every
-      // blank optional question must have a recorded reason.
+      // blank optional question must have a recorded reason. Required blanks
+      // are reported cleanly (never a thrown exception that kills the run) —
+      // the fill finishes, the review hold shows the state, and the report
+      // lists exactly which required fields are blank and why.
+      const requiredBlanks: Array<{ label: string; reason: string }> = [];
       for (const field of inventory) {
         const key = normalizeOptionText(field.label);
-        if (PRE_FILLED_LABELS.has(key)) continue;
         const value = await this.readFieldValue(field);
         if (value) continue;
         const reason = blanked.find(
           (b) => normalizeOptionText(b.label) === key
         )?.reason;
         if (field.required) {
-          throw new Error(
-            `VERIFICATION_FAILED: required field "${escapePromptValue(field.label)}" ` +
-              `is blank after the walk${reason ? ` (${reason})` : ""}`
-          );
+          requiredBlanks.push({
+            label: field.label,
+            reason: reason || "blank after walk (no answer committed)",
+          });
+          continue;
         }
         if (!reason) {
           blanked.push({ label: field.label, reason: "blank after walk (no answer committed)" });
@@ -1475,6 +1718,16 @@ export class GreenhouseAdapter extends ATSAdapter {
       );
       for (const b of blanked) {
         console.warn(`[GreenhouseAdapter]   blank: ${escapePromptValue(b.label)} (${b.reason})`);
+      }
+      if (requiredBlanks.length > 0) {
+        console.warn(
+          `[GreenhouseAdapter] ${requiredBlanks.length} REQUIRED field(s) left blank after the walk:`
+        );
+        for (const rb of requiredBlanks) {
+          console.warn(
+            `[GreenhouseAdapter]   REQUIRED blank: ${escapePromptValue(rb.label)} (${rb.reason})`
+          );
+        }
       }
 
       // Cover letter: LLM-generated, personalized to the job description.
@@ -1502,10 +1755,72 @@ export class GreenhouseAdapter extends ATSAdapter {
       } else {
         console.log("[GreenhouseAdapter] No cover letter field on this form; skipping generation.");
       }
-    }
 
-    // Consent checkboxes
-    await this.consentToPrivacy();
+      // Definitive final sweep: rescan the ENTIRE form and fill ANY input that
+      // is still empty, except fields the user deliberately skipped. This is
+      // the safety net that catches everything a single pass can miss:
+      //  - identity fields whose early fill raced the form hydration,
+      //  - fields that failed to commit on the first attempt,
+      //  - conditional fields revealed by later interactions.
+      // It iterates until no new field fills, so it converges like the walk.
+      const sweepPasses: string[] = [];
+      const sweepBlanks: Array<{ label: string; reason: string }> = [];
+      for (let pass = 0; pass < 3; pass++) {
+        const sweptDom = await this.collectQuestions();
+        const sweptInventory = this.mergeInventory(jsonModel, sweptDom);
+        let touched = 0;
+        for (const field of sweptInventory) {
+          const key = normalizeOptionText(field.label);
+          if (PRE_FILLED_LABELS.has(key)) continue; // audited separately
+          const value = await this.readFieldValue(field);
+          if (value) continue; // already committed
+          if (userSkippedKeys.has(fieldKey(field))) continue; // manual skip
+          touched += 1;
+          await this.processQuestion(field, profile, rpc, sweepPasses, sweepBlanks, userSkippedKeys);
+        }
+        if (touched === 0) break;
+      }
+      if (sweepPasses.length > 0) {
+        console.log(
+          `[GreenhouseAdapter] Final sweep filled ${sweepPasses.length} previously-empty field(s):`
+        );
+        for (const label of sweepPasses) {
+          console.log(`[GreenhouseAdapter]   filled: ${escapePromptValue(label)}`);
+        }
+      }
+
+      // Re-run the required-blank audit over the final state so the report
+      // reflects what the sweep actually filled.
+      const finalDom2 = await this.collectQuestions();
+      const finalInventory2 = this.mergeInventory(jsonModel, finalDom2);
+      requiredBlanks.length = 0;
+      for (const field of finalInventory2) {
+        const key = normalizeOptionText(field.label);
+        const value = await this.readFieldValue(field);
+        if (value) continue;
+        const reason = [...blanked, ...sweepBlanks].find(
+          (b) => normalizeOptionText(b.label) === key
+        )?.reason;
+        if (field.required) {
+          requiredBlanks.push({
+            label: field.label,
+            reason: reason || "blank after final sweep (no answer committed)",
+          });
+        }
+      }
+      if (requiredBlanks.length > 0) {
+        console.warn(
+          `[GreenhouseAdapter] ${requiredBlanks.length} REQUIRED field(s) still blank after the final sweep:`
+        );
+        for (const rb of requiredBlanks) {
+          console.warn(
+            `[GreenhouseAdapter]   REQUIRED blank: ${escapePromptValue(rb.label)} (${rb.reason})`
+          );
+        }
+      } else {
+        console.log("[GreenhouseAdapter] Final sweep complete: no required field is blank.");
+      }
+    }
 
     console.log("[GreenhouseAdapter] Form filling completed.");
   }
