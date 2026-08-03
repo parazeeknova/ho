@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import uuid
 from typing import Any
@@ -37,6 +38,23 @@ CREATE INDEX IF NOT EXISTS idx_autofill_queue_link ON autofill_queue(apply_link)
 -- Idempotent migrations for overnight defer + morning digest support.
 ALTER TABLE autofill_queue ADD COLUMN IF NOT EXISTS pending_questions JSONB DEFAULT '[]'::jsonb;
 ALTER TABLE autofill_queue ADD COLUMN IF NOT EXISTS summary_sent BOOLEAN DEFAULT FALSE;
+
+-- Per-job Q&A audit trail: every screener question the autofill answered for
+-- a posting, so we can always reconstruct what was filled and from where.
+-- job_id is deliberately NOT a foreign key (a single CLI run may fill without
+-- a queue row).
+CREATE TABLE IF NOT EXISTS autofill_fills (
+    id          BIGSERIAL PRIMARY KEY,
+    job_id      TEXT NOT NULL,
+    question    TEXT NOT NULL,
+    answer      TEXT,
+    source      TEXT,
+    options     JSONB DEFAULT '[]'::jsonb,
+    created_at  TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    expires_at  TIMESTAMP WITH TIME ZONE DEFAULT NOW() + INTERVAL '2 days'
+);
+CREATE INDEX IF NOT EXISTS idx_autofill_fills_job ON autofill_fills(job_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_autofill_fills_expiry ON autofill_fills(expires_at);
 """
 
 
@@ -349,3 +367,72 @@ class AutofillDB:
         if updated:
             logger.info("Jobs included in morning digest", count=updated, job_ids=job_ids)
         return updated
+
+    async def purge_expired_fills(self) -> int:
+        """Delete autofill_fills rows older than their 2-day TTL.
+
+        Returns the number of rows removed. Called opportunistically on every
+        fill insert and lookup so the audit table never grows unbounded.
+        """
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM autofill_fills WHERE expires_at IS NOT NULL AND expires_at < NOW()"
+            )
+        removed = int(result.split()[-1]) if result else 0
+        if removed:
+            logger.info("Purged expired autofill fills", count=removed)
+        return removed
+
+    async def record_fill(
+        self,
+        job_id: str,
+        question: str,
+        answer: str | None,
+        source: str | None = None,
+        options: list[str] | None = None,
+    ) -> bool:
+        """Persist one screener question + the answer autofill committed for it.
+
+        Best-effort audit trail: raises are left to the caller (the worker
+        swallows them so a store failure never aborts a fill).
+        """
+        if not job_id or not question:
+            return False
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO autofill_fills (job_id, question, answer, source, options)
+                VALUES ($1, $2, $3, $4, $5)
+                """,
+                job_id,
+                question,
+                answer,
+                source,
+                json.dumps(list(options or [])),
+            )
+        with contextlib.suppress(Exception):
+            await self.purge_expired_fills()
+        return True
+
+    async def get_fills(self, job_id: str) -> list[dict[str, Any]]:
+        """All recorded question/answer rows for one job (oldest first)."""
+        with contextlib.suppress(Exception):
+            await self.purge_expired_fills()
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, job_id, question, answer, source, options, created_at
+                FROM autofill_fills
+                WHERE job_id = $1
+                  AND (expires_at IS NULL OR expires_at >= NOW())
+                ORDER BY id ASC
+                """,
+                job_id,
+            )
+        result = []
+        for row in rows:
+            res = dict(row)
+            if isinstance(res.get("options"), str):
+                res["options"] = json.loads(res["options"])
+            result.append(res)
+        return result

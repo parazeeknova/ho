@@ -497,6 +497,28 @@ async def deferred_command():
         await db.close()
 
 
+async def fills_command(job_id: str):
+    """Print every question the autofill answered for one job, with the answer
+    and its source (kb / llm / telegram / deferred / decline)."""
+    db = await AutofillDB.create()
+    try:
+        rows = await db.get_fills(job_id)
+        if not rows:
+            print(f"No recorded fills for {job_id}.")
+            return
+        print(f"{len(rows)} fill(s) recorded for {job_id}:\n")
+        for r in rows:
+            q = r.get("question") or "?"
+            ans = r.get("answer")
+            source = r.get("source") or "?"
+            if source == "deferred":
+                print(f"[deferred] {q}")
+            else:
+                print(f"[{source}] {q}\n    -> {ans or '<blank>'}")
+    finally:
+        await db.close()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Job Application Autofill CLI")
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
@@ -537,6 +559,12 @@ def main():
     # List deferred jobs
     subparsers.add_parser("deferred", help="List jobs deferred for user input")
 
+    # Inspect recorded fills for one job
+    fills_parser = subparsers.add_parser(
+        "fills", help="Show every question autofill answered for a job"
+    )
+    fills_parser.add_argument("job_id", help="Job ID to inspect")
+
     # Worker
     subparsers.add_parser("worker", help="Start the background worker process")
 
@@ -559,6 +587,8 @@ def main():
         asyncio.run(run_resume(args.job_id, review=args.review))
     elif args.command == "deferred":
         asyncio.run(deferred_command())
+    elif args.command == "fills":
+        asyncio.run(fills_command(args.job_id))
     elif args.command == "worker":
         asyncio.run(run_worker())
     else:
