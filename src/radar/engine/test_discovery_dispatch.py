@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
+
 import pytest
 
 from src.radar.engine import orchestrator as orch
@@ -9,7 +11,7 @@ from src.radar.sources.sources import _LAST_SNAPSHOT_URLS, _SOURCE_CHECKPOINTS
 
 
 @pytest.fixture(autouse=True)
-def _clean_sources(monkeypatch: pytest.MonkeyPatch) -> None:
+def _clean_sources(monkeypatch: pytest.MonkeyPatch) -> Generator[None]:
     _SOURCE_CHECKPOINTS.clear()
     _LAST_SNAPSHOT_URLS.clear()
     monkeypatch.delenv("DISCOVERY_FOUNDER_MINE_LIMIT", raising=False)
