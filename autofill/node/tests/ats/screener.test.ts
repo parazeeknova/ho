@@ -1,15 +1,15 @@
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { Screener } from "./shared/screener.js";
+import { Screener } from "../../ats/shared/screener.js";
 import {
   getDeferredFieldCount,
   resetDeferredFieldCount,
   getBlankedRequiredCount,
   resetBlankedRequiredCount,
   setBlankedRequiredCount,
-} from "./shared/screener.js";
-import { valuesConsistent } from "./shared/matching.js";
-import type { FormField } from "./shared/model.js";
+} from "../../ats/shared/screener.js";
+import { valuesConsistent } from "../../ats/shared/matching.js";
+import type { FormField } from "../../ats/shared/model.js";
 
 const textField = (label: string): FormField => ({
   label,

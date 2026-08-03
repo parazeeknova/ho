@@ -66,6 +66,10 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 pythonpath = ["."]
+# Per-package tests/ dirs hold same-basename files (test_queue.py,
+# test_overnight.py appear in multiple packages); importlib mode loads each
+# module by file path so they never collide.
+addopts = "--import-mode=importlib"
 markers = [
     "asyncio: mark a test as an async test",
 ]

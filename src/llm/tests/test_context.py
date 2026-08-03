@@ -83,7 +83,36 @@ class TestContextManager:
             schema=schema,
             max_tokens=None,
             interactive=False,
+            system_prompt=None,
         )
+
+    @pytest.mark.asyncio
+    async def test_chat_sends_system_prompt(self, mocker) -> None:
+        ctx = ContextManager()
+        fake = mocker.MagicMock()
+        fake.chat.completions.create.return_value = mocker.MagicMock(
+            choices=[mocker.MagicMock(message=mocker.MagicMock(content="ok"))]
+        )
+        ctx._client = fake
+        result = await ctx.chat("user text", system_prompt="system text")
+        assert result == "ok"
+        messages = fake.chat.completions.create.call_args.kwargs["messages"]
+        assert messages == [
+            {"role": "system", "content": "system text"},
+            {"role": "user", "content": "user text"},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_chat_without_system_prompt_sends_user_only(self, mocker) -> None:
+        ctx = ContextManager()
+        fake = mocker.MagicMock()
+        fake.chat.completions.create.return_value = mocker.MagicMock(
+            choices=[mocker.MagicMock(message=mocker.MagicMock(content="ok"))]
+        )
+        ctx._client = fake
+        await ctx.chat("user text")
+        messages = fake.chat.completions.create.call_args.kwargs["messages"]
+        assert messages == [{"role": "user", "content": "user text"}]
 
     @pytest.mark.asyncio
     async def test_maybe_flush(self) -> None:

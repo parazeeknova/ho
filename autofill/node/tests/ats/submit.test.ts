@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { verifySubmitOutcome } from "./audit.js";
+import { verifySubmitOutcome } from "../../ats/shared/audit.js";
+import { ATSAdapter } from "../../ats/base.js";
 
 // A minimal fake page that models the outcomes verifySubmitOutcome polls for:
 // URL transitions, error banners, inline confirmation text, and a submit
@@ -90,13 +91,30 @@ describe("verifySubmitOutcome", () => {
     assert.equal(out.retryable, false);
   });
 
-  it("confirms on inline confirmation body text", async () => {
+  it("does NOT confirm on inline body text alone (success = success-page redirect only)", async () => {
     const page = new FakePage();
     page.evaluate = makeEvaluator(page) as any;
     page.bodyText = "Thank you for applying. Your application has been submitted.";
     page.submitVisible = false;
-    const out = await verifySubmitOutcome(page as any, { tag: "Test" });
+    const out = await verifySubmitOutcome(page as any, { tag: "Test", polls: 2 });
+    assert.equal(out.confirmed, false);
+    assert.equal(out.retryable, false);
+  });
+
+  it("confirms when the submit button is gone AND a success phrase is rendered", async () => {
+    // SPA-style inline success: the form structurally left the submission state
+    // (button gone) and shows a success phrase — stricter than bare body text.
+    const page = new FakePage();
+    page.evaluate = makeEvaluator(page) as any;
+    page.bodyText = "Your application has been submitted.";
+    page.submitVisible = false;
+    const out = await verifySubmitOutcome(page as any, {
+      tag: "Test",
+      submitButtonSelector: "button[type='submit']",
+      polls: 3,
+    });
     assert.equal(out.confirmed, true);
+    assert.equal(out.retryable, false);
   });
 
   it("flags a visible error banner as retryable", async () => {
@@ -151,5 +169,36 @@ describe("verifySubmitOutcome", () => {
     });
     assert.equal(out.confirmed, false);
     assert.equal(out.retryable, false);
+  });
+
+  it("surfaces the Ashby spam-flag banner as a retryable error", async () => {
+    const page = new FakePage();
+    page.evaluate = makeEvaluator(page) as any;
+    page.errors = [
+      "We couldn't submit your application\n\nYour application submission was " +
+        "flagged as possible spam. If you believe this was a mistake, please " +
+        "submit your application again.\n\nLearn more",
+    ];
+    page.submitVisible = true;
+    const out = await verifySubmitOutcome(page as any, {
+      tag: "Ashby",
+      submitButtonSelector: "button[type='submit']",
+    });
+    assert.equal(out.confirmed, false);
+    assert.equal(out.retryable, true);
+    assert.match(out.error ?? "", /flagged as possible spam/);
+  });
+});
+
+describe("ATSAdapter.retryAfterSpamFlag", () => {
+  it("defaults to a no-op false for adapters without spam-flag retry", async () => {
+    class Noop extends ATSAdapter {
+      async fill() {}
+      async submit() {
+        return { confirmed: false, retryable: false };
+      }
+    }
+    const adapter = new Noop({} as any);
+    assert.equal(await adapter.retryAfterSpamFlag(), false);
   });
 });
