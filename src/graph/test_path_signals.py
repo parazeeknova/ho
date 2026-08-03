@@ -12,7 +12,6 @@ from src.graph.graph_store import GraphStore
 def _make_store(queries: list[list[dict]] | None = None) -> tuple[GraphStore, AsyncMock]:
     store = GraphStore.__new__(GraphStore)
     store._driver = None
-    store.logger = None
     mock_run = AsyncMock(side_effect=queries or [[]])
     store._run = mock_run  # type: ignore[method-assign]
     store.get_node = AsyncMock(  # type: ignore[method-assign]
