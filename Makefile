@@ -17,7 +17,7 @@ help:
 	@echo ""
 	@echo "  run            pipeline            MODE=(default|overnight|no-cloud|worker|dev)"
 	@echo "  crawl          crawler + ingest   MODE=(default|crawl|ingest|notor)"
-	@echo "  intel          recommendations    TOP=N  MODE=(telegram|smart)"
+	@echo "  intel          recommendations    TOP=N  MODE=(telegram|smart|planning)"
 	@echo "  accepted       dump candidates    OUTREACH=1 (outreach pack)  ELIG=(accepted|near_miss|rejected|all)  OUT=path"
 	@echo "  analytics      system + DB stats"
 	@echo "  backup / backup-list / restore    volume checkpoints (restore DIR=checkpoints/xxx)"
@@ -51,6 +51,7 @@ crawl:
 intel:
 	@case "$(MODE)" in \
 	  smart) PYTHONPATH=$(CURDIR) uv run python scripts/intel/smart_intel.py --write ;; \
+	  planning) PYTHONPATH=$(CURDIR) uv run python scripts/intel/planning_pass.py --write ;; \
 	  *) PYTHONPATH=$(CURDIR) uv run python scripts/intel/radar_intel.py $(if $(TOP),--top $(TOP)) $(if $(filter telegram,$(MODE)),--telegram) ;; \
 	esac
 
