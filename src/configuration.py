@@ -53,6 +53,11 @@ class HttpConfig:
     connect_timeout: float = field(default_factory=lambda: _env_float("HTTP_CONNECT_TIMEOUT", 10.0))
     max_keepalive: int = field(default_factory=lambda: _env_int("HTTP_MAX_KEEPALIVE", 20))
     max_connections: int = field(default_factory=lambda: _env_int("HTTP_MAX_CONNECTIONS", 100))
+    cache_enabled: bool = field(default_factory=lambda: _env_bool("HTTP_CACHE_ENABLED", True))
+    cache_max_body_bytes: int = field(
+        default_factory=lambda: _env_int("HTTP_CACHE_MAX_BODY_BYTES", 524288)
+    )
+    cache_ttl_default: int = field(default_factory=lambda: _env_int("HTTP_CACHE_TTL_DEFAULT", 900))
 
 
 @dataclass

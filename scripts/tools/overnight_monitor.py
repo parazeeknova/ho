@@ -1,14 +1,16 @@
 """Overnight health monitor: checks the radar pipeline + Azure ingest every N
 seconds and logs a compact health line. Does NOT fix anything; it's the eyes
-for the night shift. Run detached:
-    setsid nohup env PYTHONPATH=$PWD uv run python3 scripts/overnight_monitor.py > logs/monitor.out 2>&1 &
+for the night shift. Run detached::
+
+    setsid nohup env PYTHONPATH=$PWD \\
+        uv run python3 scripts/overnight_monitor.py > logs/monitor.out 2>&1 &
 """
 
 from __future__ import annotations
 
 import asyncio
-import time
 
+from src.http_cache import set_http_cache_store
 from src.logging import get_logger
 from src.memory.pgvector_store import MemoryStore
 
@@ -27,7 +29,7 @@ def count_of(pattern: str) -> int:
             text=True,
             timeout=10,
         )
-        return len([l for l in out.stdout.splitlines() if l.strip()])
+        return len([ln for ln in out.stdout.splitlines() if ln.strip()])
     except Exception:
         return -1
 
@@ -51,11 +53,11 @@ async def check_once(store: MemoryStore) -> dict:
 
 async def main() -> None:
     store = await MemoryStore.create()
+    set_http_cache_store(store)
     ticks = 0
     last_report = 0
     while True:
         try:
-            tick = time.monotonic()
             orch = count_of(r"radar[.]engine[.]orchestrator")
             ingest = count_of(r"scripts/azure/ingest[.]py")
             embed = count_of(r"scripts/embed/embed_obs")
@@ -67,7 +69,11 @@ async def main() -> None:
                 f"queue={stats['queue_pending']} embedded={stats['embedded']} "
                 f"obs={stats['obs']}"
             )
-            if ticks % REPORT_EVERY == 0 or stats["queue_pending"] > 500 or stats["queue_pending"] % 50 == 0:
+            if (
+                ticks % REPORT_EVERY == 0
+                or stats["queue_pending"] > 500
+                or stats["queue_pending"] % 50 == 0
+            ):
                 logger.info("MONITOR " + line)
             if stats["accepted"] != last_report:
                 logger.info(f"MONITOR accepted delta: {stats['accepted']} (was {last_report})")

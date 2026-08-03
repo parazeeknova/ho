@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from src.http_cache import cached_get
 from src.http_client import get_client
 from src.logging import get_logger
 from src.retry import RateLimiter, retry
@@ -90,7 +91,8 @@ class BaseConnector(ABC):
         client = await get_client(f"connector_{self.source_name}", timeout=12.0)
 
         async def _do() -> str:
-            resp = await client.get(
+            resp = await cached_get(
+                client,
                 url,
                 params=params,
                 headers={"User-Agent": random.choice(_USER_AGENTS)},

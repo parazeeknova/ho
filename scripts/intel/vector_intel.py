@@ -30,6 +30,7 @@ from typing import Any
 
 import numpy as np
 
+from src.http_cache import set_http_cache_store
 from src.logging import get_logger
 from src.memory.pgvector_store import MemoryStore
 
@@ -347,6 +348,7 @@ async def job_knn_bridges(
 
 async def run(top_k: int, write: bool) -> None:
     store = await MemoryStore.create()
+    set_http_cache_store(store)
     try:
         names, mat, idx = await build_company_graph(store, top_k=top_k)
         logger.info(f"company graph: {len(names)} companies, {mat.shape[0]}x{mat.shape[1]}")

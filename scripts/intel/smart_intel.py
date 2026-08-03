@@ -24,12 +24,11 @@ import argparse
 import asyncio
 import csv
 import json
-import os
 import time
-from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+from src.http_cache import set_http_cache_store
 from src.logging import get_logger
 from src.memory.pgvector_store import MemoryStore
 
@@ -175,7 +174,9 @@ async def _location_visa(store: MemoryStore) -> dict[str, Any]:
             """
         )
         sponsor = await c.fetchval(
-            "SELECT count(*) FROM radar_candidates WHERE eligibility IN ('accepted','near_miss') AND (extra->>'sponsors_visa')::text = 'true'"
+            "SELECT count(*) FROM radar_candidates "
+            "WHERE eligibility IN ('accepted','near_miss') "
+            "AND (extra->>'sponsors_visa')::text = 'true'"
         )
         tot = await c.fetchval(
             "SELECT count(*) FROM radar_candidates WHERE eligibility IN ('accepted','near_miss')"
@@ -223,11 +224,12 @@ def _write(blob: dict[str, Any]) -> None:
         w.writeheader()
         for row in blob.get("freshness", []):
             w.writerow({k: row.get(k, "") for k in fields})
-    logger.info(f"wrote {OUT_DIR/'smart_intel.json'} + smart_intel.csv")
+    logger.info(f"wrote {OUT_DIR / 'smart_intel.json'} + smart_intel.csv")
 
 
 async def run(write: bool) -> dict[str, Any]:
     store = await MemoryStore.create()
+    set_http_cache_store(store)
     try:
         funding_hiring = await _funding_hiring(store)
         salary = await _salary_intel(store)

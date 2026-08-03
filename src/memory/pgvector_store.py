@@ -389,6 +389,20 @@ CREATE TABLE IF NOT EXISTS embed_cache (
     embedding   vector({VECTOR_DIM}),
     created_at  TIMESTAMP DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS http_cache (
+    url_hash      TEXT PRIMARY KEY,
+    url           TEXT NOT NULL DEFAULT '',
+    status        INT DEFAULT 200,
+    etag          TEXT DEFAULT '',
+    last_modified TEXT DEFAULT '',
+    content_type  TEXT DEFAULT '',
+    body          TEXT DEFAULT '',
+    body_hash     TEXT DEFAULT '',
+    fetched_at    DOUBLE PRECISION DEFAULT 0,
+    ttl_seconds   INT DEFAULT 900
+);
+CREATE INDEX IF NOT EXISTS idx_http_cache_fetched ON http_cache (fetched_at);
 """
 
 
@@ -443,6 +457,7 @@ class MemoryStore:
             await cls._create_hnsw_indexes(conn)
             await cls._prune_llm_queue(conn)
             await cls._prune_embed_cache(conn)
+            await cls._prune_http_cache(conn)
         logger.info("MemoryStore initialized", dsn=cfg.dsn.split("@")[-1])
         return cls(pool)
 
@@ -699,6 +714,83 @@ class MemoryStore:
             await conn.execute(
                 "DELETE FROM embed_cache WHERE created_at < NOW() - ($1::int * INTERVAL '1 day')",
                 older_than_days,
+            )
+
+    # http_cache: shared ETag/response cache for polled endpoints
+
+    async def get_http_cache_row(self, url_hash: str) -> dict[str, Any] | None:
+        """Return the cached response row for a URL hash, or None on miss."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT url_hash, url, status, etag, last_modified, content_type, "
+                "body, body_hash, fetched_at, ttl_seconds "
+                "FROM http_cache WHERE url_hash = $1",
+                url_hash,
+            )
+        return dict(row) if row else None
+
+    async def upsert_http_cache(
+        self,
+        url_hash: str,
+        url: str,
+        status: int,
+        etag: str,
+        last_modified: str,
+        content_type: str,
+        body: str,
+        body_hash: str,
+        ttl_seconds: int,
+    ) -> None:
+        """Insert or refresh a cached response row."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO http_cache
+                    (url_hash, url, status, etag, last_modified, content_type,
+                     body, body_hash, fetched_at, ttl_seconds)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                ON CONFLICT (url_hash) DO UPDATE SET
+                    url = EXCLUDED.url,
+                    status = EXCLUDED.status,
+                    etag = EXCLUDED.etag,
+                    last_modified = EXCLUDED.last_modified,
+                    content_type = EXCLUDED.content_type,
+                    body = EXCLUDED.body,
+                    body_hash = EXCLUDED.body_hash,
+                    fetched_at = EXCLUDED.fetched_at,
+                    ttl_seconds = EXCLUDED.ttl_seconds
+                """,
+                url_hash,
+                url,
+                status,
+                etag,
+                last_modified,
+                content_type,
+                body,
+                body_hash,
+                time.time(),
+                ttl_seconds,
+            )
+
+    async def update_http_cache_fetched(self, url_hash: str, etag: str, last_modified: str) -> None:
+        """Refresh fetched_at/etag without replacing the body (200, unchanged)."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE http_cache SET fetched_at = $2, "
+                "etag = $3, last_modified = $4 WHERE url_hash = $1",
+                url_hash,
+                time.time(),
+                etag,
+                last_modified,
+            )
+
+    @staticmethod
+    async def _prune_http_cache(conn, older_than_days: int = 30) -> None:
+        """Drop cache rows untouched for the TTL so the table stays bounded."""
+        with contextlib.suppress(Exception):
+            await conn.execute(
+                "DELETE FROM http_cache WHERE fetched_at < $1::double precision",
+                time.time() - older_than_days * 86400,
             )
 
     async def unembedded_obs(

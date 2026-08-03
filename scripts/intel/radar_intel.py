@@ -196,9 +196,11 @@ async def main() -> None:
     ap.add_argument("--export", default=str(PROJECT / "intel"))
     args = ap.parse_args()
 
+    from src.http_cache import set_http_cache_store
     from src.memory.pgvector_store import MemoryStore
 
     store = await MemoryStore.create()
+    set_http_cache_store(store)
     graph = SkillGraph()
 
     async with store._pool.acquire() as conn:

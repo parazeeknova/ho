@@ -32,6 +32,7 @@ from src.graph.entity import (
 from src.graph.event_bus import EventBus
 from src.graph.frontier import CrawlFrontier
 from src.graph.graph_store import GraphStore
+from src.http_cache import set_http_cache_store
 from src.http_client import close_all as _close_http_clients
 from src.http_client import get_client
 from src.llm.context import ContextManager
@@ -1482,6 +1483,7 @@ async def _run_radar_pipeline() -> None:
 
     store = await MemoryStore.create()
     await store.purge_fake_job_keys(["techco:backendengineer"])
+    set_http_cache_store(store)
     graph = await GraphStore.create()
     bus = EventBus()
 

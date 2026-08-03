@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from src.http_cache import cached_get
 from src.logging import get_logger
 from src.radar.core.models import JobObservation
 
@@ -68,7 +69,7 @@ async def fetch_ats_jobs(platform: str, slug: str) -> list[dict[str, Any]]:
         if platform == "greenhouse":
             # GET https://boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=true
             api_url = f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=true"
-            resp = await client.get(api_url, headers=headers)
+            resp = await cached_get(client, api_url, headers=headers)
             if resp.status_code == 200:
                 data = resp.json()
                 for item in data.get("jobs", []):
@@ -85,7 +86,7 @@ async def fetch_ats_jobs(platform: str, slug: str) -> list[dict[str, Any]]:
         elif platform == "lever":
             # GET https://api.lever.co/v0/postings/{slug}
             api_url = f"https://api.lever.co/v0/postings/{slug}"
-            resp = await client.get(api_url, headers=headers)
+            resp = await cached_get(client, api_url, headers=headers)
             if resp.status_code == 200:
                 data = resp.json()
                 if isinstance(data, list):
@@ -108,7 +109,7 @@ async def fetch_ats_jobs(platform: str, slug: str) -> list[dict[str, Any]]:
             api_url = (
                 f"https://api.ashbyhq.com/posting-api/job-board/{slug}?includeCompensation=true"
             )
-            resp = await client.get(api_url, headers=headers)
+            resp = await cached_get(client, api_url, headers=headers)
             if resp.status_code == 200:
                 data = resp.json()
                 for item in data.get("jobs", []):
@@ -127,7 +128,7 @@ async def fetch_ats_jobs(platform: str, slug: str) -> list[dict[str, Any]]:
         elif platform == "workable":
             # GET https://apply.workable.com/api/v1/widget/accounts/{slug}
             api_url = f"https://apply.workable.com/api/v1/widget/accounts/{slug}"
-            resp = await client.get(api_url, headers=headers)
+            resp = await cached_get(client, api_url, headers=headers)
             if resp.status_code == 200:
                 data = resp.json()
                 for item in data.get("jobs", []):
@@ -148,7 +149,7 @@ async def fetch_ats_jobs(platform: str, slug: str) -> list[dict[str, Any]]:
         elif platform == "smartrecruiters":
             # GET https://api.smartrecruiters.com/v1/companies/{slug}/postings
             api_url = f"https://api.smartrecruiters.com/v1/companies/{slug}/postings"
-            resp = await client.get(api_url, headers=headers)
+            resp = await cached_get(client, api_url, headers=headers)
             if resp.status_code == 200:
                 data = resp.json()
                 for item in data.get("content", []):
