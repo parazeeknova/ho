@@ -1,16 +1,16 @@
+import type { Profile } from "../../types";
 import { randomSleep } from "../../utils/evasion";
 import type { RpcHelper } from "../base";
-import type { Profile } from "../../types";
 import { FormControls } from "./controls";
+import { escapePromptValue, valuesConsistent } from "./matching";
 import {
   checkboxAction,
   fieldKey,
-  FormField,
+  type FormField,
   IDENTITY_FILLS,
   isLocationAutocomplete,
   PROFILE_FILLS,
 } from "./model";
-import { escapePromptValue, valuesConsistent } from "./matching";
 
 /** A question left blank during resolution, with the reason it was skipped. */
 export interface BlankEntry {
@@ -60,12 +60,17 @@ export function getBlankedRequiredCount(): number {
  * a manually-skipped field.
  */
 export class Screener {
-  constructor(
-    protected controls: FormControls,
-    protected tagName: string,
-    protected profile: Profile,
-    protected rpc: RpcHelper,
-  ) {}
+  protected controls: FormControls;
+  protected tagName: string;
+  protected profile: Profile;
+  protected rpc: RpcHelper;
+
+  constructor(controls: FormControls, tagName: string, profile: Profile, rpc: RpcHelper) {
+    this.controls = controls;
+    this.tagName = tagName;
+    this.profile = profile;
+    this.rpc = rpc;
+  }
 
   async process(
     field: FormField,

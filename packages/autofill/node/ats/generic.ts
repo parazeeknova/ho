@@ -1,9 +1,16 @@
-import { Stagehand, type Action } from "@browserbasehq/stagehand";
 import * as fs from "fs";
-import { ATSAdapter, RpcHelper } from "./base";
-import { JobPayload, Profile } from "../types";
+
+import { Stagehand, type Action } from "@browserbasehq/stagehand";
+
+import { type JobPayload, type Profile } from "../types";
 import { randomSleep } from "../utils/evasion";
-import { auditBlanks, finalReverify, SubmitOutcome, verifySubmitOutcome } from "./shared/audit";
+import { ATSAdapter, type RpcHelper } from "./base";
+import {
+  auditBlanks,
+  finalReverify,
+  type SubmitOutcome,
+  verifySubmitOutcome,
+} from "./shared/audit";
 import { FormControls, sanitizeNumberAnswer } from "./shared/controls";
 import {
   chooseOption,
@@ -15,13 +22,13 @@ import {
 } from "./shared/matching";
 import {
   fieldKey,
-  FormField,
+  type FormField,
   isLocationAutocomplete,
-  JsonFieldSource,
+  type JsonFieldSource,
   mergeFormInventory,
   PRE_FILLED_LABELS,
 } from "./shared/model";
-import { BlankEntry, Screener, setBlankedRequiredCount } from "./shared/screener";
+import { type BlankEntry, Screener, setBlankedRequiredCount } from "./shared/screener";
 
 /**
  * GenericAdapter — the intelligent fallback for ANY job application form.
@@ -649,7 +656,7 @@ export class GenericAdapter extends ATSAdapter {
       try {
         const u = new URL(page.url());
         company = u.hostname.replace(/^(www|careers|jobs)\./, "").split(".")[0] || "";
-        const pathToken = u.pathname.split("/").filter(Boolean)[0] || "";
+        const pathToken = u.pathname.split("/").find(Boolean) || "";
         if (!company) company = pathToken;
       } catch {
         // fall through
@@ -1736,7 +1743,7 @@ export class GenericControls extends FormControls {
           opts = await this.readVisibleOptionTexts();
         }
         if (opts.length === 0) {
-          const short = query.split(/[\s,]+/).filter((t) => t && t.length > 1)[0];
+          const short = query.split(/[\s,]+/).find((t) => t && t.length > 1);
           if (short && short !== query.trim()) {
             await input.fill(short);
             for (let i = 0; i < 6 && opts.length === 0; i++) {

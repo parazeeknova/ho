@@ -1,7 +1,7 @@
-import { FormField, PRE_FILLED_LABELS, fieldKey } from "./model";
-import { BlankEntry } from "./screener";
-import { normalizeOptionText, escapePromptValue } from "./matching";
 import { randomSleep } from "../../utils/evasion";
+import { normalizeOptionText, escapePromptValue } from "./matching";
+import { type FormField, PRE_FILLED_LABELS, fieldKey } from "./model";
+import { type BlankEntry } from "./screener";
 
 /**
  * Adaptive-form audit machinery shared by all adapters. The key insight that

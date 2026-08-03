@@ -1,5 +1,6 @@
 import { Stagehand } from "@browserbasehq/stagehand";
-import { JobPayload } from "../types";
+
+import { type JobPayload } from "../types";
 import type { SubmitOutcome } from "./shared/audit";
 
 export type RpcHelper = (method: string, args: Record<string, any>) => Promise<any>;

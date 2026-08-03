@@ -1,5 +1,6 @@
-import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+
 import { ATSAdapter } from "../../ats/base";
 
 // Runs the real detectCaptcha page.evaluate body against a stubbed DOM so the
@@ -57,14 +58,28 @@ function el(
 }
 
 class FakePage {
+  private iframes: RectEl[];
+  private widgets: RectEl[];
+  private bodyText: string;
+  private pageFrames: FakeFrame[];
+  private viewport: { w: number; h: number };
+  private puzzleEls: RectEl[];
+
   constructor(
-    private iframes: RectEl[],
-    private widgets: RectEl[],
-    private bodyText: string = "",
-    private pageFrames: FakeFrame[] = [],
-    private viewport = { w: 1280, h: 800 },
-    private puzzleEls: RectEl[] = [],
-  ) {}
+    iframes: RectEl[],
+    widgets: RectEl[],
+    bodyText: string = "",
+    pageFrames: FakeFrame[] = [],
+    viewport = { w: 1280, h: 800 },
+    puzzleEls: RectEl[] = [],
+  ) {
+    this.iframes = iframes;
+    this.widgets = widgets;
+    this.bodyText = bodyText;
+    this.pageFrames = pageFrames;
+    this.viewport = viewport;
+    this.puzzleEls = puzzleEls;
+  }
 
   async evaluate(fn: () => any): Promise<any> {
     const prevDoc = (globalThis as any).document;
@@ -109,10 +124,13 @@ class FakePage {
 }
 
 class FakeFrame {
-  constructor(
-    private urlStr: string,
-    private clickable: string[],
-  ) {}
+  private urlStr: string;
+  private clickable: string[];
+
+  constructor(urlStr: string, clickable: string[]) {
+    this.urlStr = urlStr;
+    this.clickable = clickable;
+  }
 
   url() {
     return this.urlStr;
@@ -124,7 +142,11 @@ class FakeFrame {
 }
 
 class FakeLocator {
-  constructor(private isClickable: boolean) {}
+  private isClickable: boolean;
+
+  constructor(isClickable: boolean) {
+    this.isClickable = isClickable;
+  }
 
   first() {
     return this;
@@ -138,8 +160,11 @@ class FakeLocator {
 }
 
 class TestAdapter extends ATSAdapter {
-  constructor(private page: FakePage) {
+  private page: FakePage;
+
+  constructor(page: FakePage) {
     super(null as any);
+    this.page = page;
   }
   getActivePage(): any {
     return this.page;

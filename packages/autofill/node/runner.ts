@@ -1,22 +1,24 @@
-import { Stagehand } from "@browserbasehq/stagehand";
 import * as fs from "fs";
 import * as path from "path";
 import * as readline from "readline";
-import { JobPayloadSchema, ActionCallbackSchema, StatusEvent } from "./types";
-import { ATSAdapter, RpcHelper } from "./ats/base";
-import { GreenhouseAdapter } from "./ats/greenhouse";
+
+import { Stagehand } from "@browserbasehq/stagehand";
+
 import { AshbyAdapter } from "./ats/ashby";
-import { LeverAdapter } from "./ats/lever";
-import { WorkdayAdapter } from "./ats/workday";
+import { ATSAdapter, type RpcHelper } from "./ats/base";
 import { GenericAdapter } from "./ats/generic";
-import { ActivityWatchdog } from "./utils/activity";
-import { applyFingerprint, loadFingerprint } from "./utils/fingerprint";
+import { GreenhouseAdapter } from "./ats/greenhouse";
+import { LeverAdapter } from "./ats/lever";
 import {
   getBlankedRequiredCount,
   getDeferredFieldCount,
   resetBlankedRequiredCount,
   resetDeferredFieldCount,
 } from "./ats/shared/screener";
+import { WorkdayAdapter } from "./ats/workday";
+import { JobPayloadSchema, ActionCallbackSchema, type StatusEvent } from "./types";
+import { ActivityWatchdog } from "./utils/activity";
+import { applyFingerprint, loadFingerprint } from "./utils/fingerprint";
 
 // Rejects when a promise has not settled within `ms`. Used so a best-effort
 // captcha attempt can never stall the run indefinitely.
@@ -504,7 +506,9 @@ async function main() {
         } catch (submitErr: any) {
           if (captchaMessage) {
             clearInterval(captchaTimer);
-            throw new Error(`CAPTCHA_DETECTED: ${captchaMessage} blocked the application form`);
+            throw new Error(`CAPTCHA_DETECTED: ${captchaMessage} blocked the application form`, {
+              cause: submitErr,
+            });
           }
           throw submitErr;
         }
@@ -515,9 +519,9 @@ async function main() {
           // Capture post-submit evidence: the confirmation page.
           let confirmShot = screenshotPath;
           try {
-            const activePage = adapter.getActivePage();
+            const confirmPage = adapter.getActivePage();
             confirmShot = screenshotPath.replace(/\.png$/, "-confirm.png");
-            await activePage.screenshot({ path: confirmShot, fullPage: true });
+            await confirmPage.screenshot({ path: confirmShot, fullPage: true });
             console.log(`[Runner] Confirmation screenshot saved to ${confirmShot}`);
           } catch {
             console.warn("[Runner] Could not capture confirmation screenshot.");
@@ -644,7 +648,9 @@ async function main() {
         } catch (submitErr) {
           if (captchaMessage) {
             clearInterval(captchaTimer);
-            throw new Error(`CAPTCHA_DETECTED: ${captchaMessage} blocked the application form`);
+            throw new Error(`CAPTCHA_DETECTED: ${captchaMessage} blocked the application form`, {
+              cause: submitErr,
+            });
           }
           throw submitErr;
         }

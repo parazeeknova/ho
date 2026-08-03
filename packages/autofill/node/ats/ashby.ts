@@ -1,9 +1,16 @@
-import { Stagehand } from "@browserbasehq/stagehand";
 import * as fs from "fs";
-import { ATSAdapter, RpcHelper } from "./base";
-import { JobPayload, Profile } from "../types";
+
+import { Stagehand } from "@browserbasehq/stagehand";
+
+import { type JobPayload, type Profile } from "../types";
 import { randomSleep } from "../utils/evasion";
-import { auditBlanks, finalReverify, SubmitOutcome, verifySubmitOutcome } from "./shared/audit";
+import { ATSAdapter, type RpcHelper } from "./base";
+import {
+  auditBlanks,
+  finalReverify,
+  type SubmitOutcome,
+  verifySubmitOutcome,
+} from "./shared/audit";
 import { FormControls } from "./shared/controls";
 import {
   chooseOption,
@@ -11,7 +18,7 @@ import {
   pickLocationOption,
   selectCandidates,
 } from "./shared/matching";
-import { fieldKey, FormField, PRE_FILLED_LABELS } from "./shared/model";
+import { fieldKey, type FormField, PRE_FILLED_LABELS } from "./shared/model";
 import { Screener, setBlankedRequiredCount } from "./shared/screener";
 
 const SYSTEM_SKIP = new Set([
@@ -114,7 +121,7 @@ export class AshbyAdapter extends ATSAdapter {
           .catch(() => "")) ||
         (() => {
           try {
-            return new URL(page.url()).pathname.split("/").filter(Boolean)[0] || "";
+            return new URL(page.url()).pathname.split("/").find(Boolean) || "";
           } catch {
             return "";
           }
@@ -591,14 +598,14 @@ export class AshbyAdapter extends ATSAdapter {
           // tsx's keepNames wraps any arrow with an inferred name in __name(),
           // and the identifier then throws when the function is stringified into
           // the page. Destructure helpers into an array so none gains a name.
-          const [norm, collect] = [
+          const [strip, collect] = [
             (t: string) =>
               (t || "")
                 .replace(/\s+/g, " ")
                 .trim()
                 .replace(/^\*+|\*+$/g, ""),
             (row: Element | null): string => {
-              const t = row ? norm((row as HTMLElement).textContent || "") : "";
+              const t = row ? strip((row as HTMLElement).textContent || "") : "";
               return t;
             },
           ];
@@ -612,7 +619,7 @@ export class AshbyAdapter extends ATSAdapter {
             if (el.querySelector('input[type="file"]')) continue;
 
             const labelEl = el.querySelector('label[class*="question"], label');
-            const label = norm(labelEl?.textContent || el.getAttribute("aria-label") || "");
+            const label = strip(labelEl?.textContent || el.getAttribute("aria-label") || "");
             if (!label) continue;
 
             const textInput = el.querySelector(
@@ -706,7 +713,7 @@ export class AshbyAdapter extends ATSAdapter {
           const seen = new Set<string>();
           const uniq: typeof out = [];
           for (const r of out) {
-            const key = norm(r.label).toLowerCase() + "|" + r.kind;
+            const key = strip(r.label).toLowerCase() + "|" + r.kind;
             if (seen.has(key)) continue;
             seen.add(key);
             uniq.push(r);
@@ -878,7 +885,7 @@ export class AshbyControlStack extends FormControls {
         await input.click();
       }
       if (!opts.length) {
-        const short = answer.split(/[\s,]+/).filter((t) => t && t.length > 1)[0];
+        const short = answer.split(/[\s,]+/).find((t) => t && t.length > 1);
         if (short && short !== answer.trim()) {
           await input.fill(short);
           for (let i = 0; i < 6 && opts.length === 0; i++) {
@@ -974,7 +981,7 @@ export class AshbyControlStack extends FormControls {
         opts = await this.readVisibleOptionTexts();
       }
       if (!opts.length) {
-        const short = value.split(/[\s,]+/).filter((t) => t && t.length > 1)[0];
+        const short = value.split(/[\s,]+/).find((t) => t && t.length > 1);
         if (short && short !== value.trim()) {
           await input.fill(short);
           for (let i = 0; i < 6 && opts.length === 0; i++) {

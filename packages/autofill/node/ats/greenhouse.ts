@@ -1,15 +1,22 @@
-import { Stagehand } from "@browserbasehq/stagehand";
 import * as fs from "fs";
-import { ATSAdapter, RpcHelper } from "./base";
-import { JobPayload, Profile } from "../types";
+
+import { Stagehand } from "@browserbasehq/stagehand";
+
+import { type JobPayload, type Profile } from "../types";
 import { randomSleep } from "../utils/evasion";
-import { auditBlanks, finalReverify, SubmitOutcome, verifySubmitOutcome } from "./shared/audit";
+import { ATSAdapter, type RpcHelper } from "./base";
+import {
+  auditBlanks,
+  finalReverify,
+  type SubmitOutcome,
+  verifySubmitOutcome,
+} from "./shared/audit";
 import { FormControls } from "./shared/controls";
 import { escapePromptValue, normalizeOptionText } from "./shared/matching";
 import {
   fieldKey,
-  FormField,
-  JsonFieldSource,
+  type FormField,
+  type JsonFieldSource,
   mergeFormInventory,
   PRE_FILLED_LABELS,
   unprocessedFields,
@@ -214,7 +221,7 @@ export class GreenhouseAdapter extends ATSAdapter {
           titleBlock
             .split("\n")
             .map((line: string) => line.trim())
-            .filter(Boolean)[0]
+            .find(Boolean)
             ?.replace(/\s+/g, " ") ?? "";
       }
 
@@ -250,7 +257,7 @@ export class GreenhouseAdapter extends ATSAdapter {
 
   private companyFromUrl(): string {
     try {
-      const token = new URL(this.controls.getPage().url()).pathname.split("/").filter(Boolean)[0];
+      const token = new URL(this.controls.getPage().url()).pathname.split("/").find(Boolean);
       return token ? token.replace(/[-_]+/g, " ") : "";
     } catch {
       return "";

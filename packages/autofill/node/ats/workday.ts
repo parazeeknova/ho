@@ -1,9 +1,11 @@
-import { Stagehand } from "@browserbasehq/stagehand";
 import * as fs from "fs";
-import { ATSAdapter, RpcHelper } from "./base";
-import { JobPayload, Profile } from "../types";
+
+import { Stagehand } from "@browserbasehq/stagehand";
+
+import { type JobPayload, type Profile } from "../types";
 import { randomSleep } from "../utils/evasion";
-import { auditBlanks, finalReverify, SubmitOutcome } from "./shared/audit";
+import { ATSAdapter, type RpcHelper } from "./base";
+import { auditBlanks, finalReverify, type SubmitOutcome } from "./shared/audit";
 import { FormControls } from "./shared/controls";
 import {
   chooseOption,
@@ -14,7 +16,12 @@ import {
   pickLocationOption,
   selectCandidates,
 } from "./shared/matching";
-import { fieldKey, FormField, isLocationAutocomplete, PRE_FILLED_LABELS } from "./shared/model";
+import {
+  fieldKey,
+  type FormField,
+  isLocationAutocomplete,
+  PRE_FILLED_LABELS,
+} from "./shared/model";
 import { Screener, setBlankedRequiredCount } from "./shared/screener";
 
 /** Workday system automation-ids the walker must never treat as a question. */
@@ -1639,7 +1646,7 @@ export class WorkdayControlStack extends FormControls {
         }
       }
       if (opts.length === 0) {
-        const short = answer.split(/[\s,]+/).filter((t) => t && t.length > 1)[0];
+        const short = answer.split(/[\s,]+/).find((t) => t && t.length > 1);
         if (short && short !== answer.trim()) {
           await input.fill(short);
           for (let i = 0; i < 6 && opts.length === 0; i++) {

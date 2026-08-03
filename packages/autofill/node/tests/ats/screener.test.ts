@@ -1,5 +1,8 @@
-import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
+import { describe, it, beforeEach } from "node:test";
+
+import { valuesConsistent } from "../../ats/shared/matching";
+import type { FormField } from "../../ats/shared/model";
 import { Screener } from "../../ats/shared/screener";
 import {
   getDeferredFieldCount,
@@ -8,8 +11,6 @@ import {
   resetBlankedRequiredCount,
   setBlankedRequiredCount,
 } from "../../ats/shared/screener";
-import { valuesConsistent } from "../../ats/shared/matching";
-import type { FormField } from "../../ats/shared/model";
 
 const textField = (label: string): FormField => ({
   label,

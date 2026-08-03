@@ -12,11 +12,14 @@ export class ActivityWatchdog {
   private lastTouch: number;
   private timer: NodeJS.Timeout | null = null;
 
-  constructor(
-    private readonly timeoutMs: number,
-    private readonly onTimeout: () => void,
-    private readonly intervalMs: number = 1000,
-  ) {
+  private readonly timeoutMs: number;
+  private readonly onTimeout: () => void;
+  private readonly intervalMs: number;
+
+  constructor(timeoutMs: number, onTimeout: () => void, intervalMs: number = 1000) {
+    this.timeoutMs = timeoutMs;
+    this.onTimeout = onTimeout;
+    this.intervalMs = intervalMs;
     this.lastTouch = Date.now();
   }
 

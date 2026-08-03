@@ -1,12 +1,14 @@
-import { Stagehand } from "@browserbasehq/stagehand";
 import * as fs from "fs";
-import { ATSAdapter, RpcHelper } from "./base";
-import { JobPayload, Profile } from "../types";
+
+import { Stagehand } from "@browserbasehq/stagehand";
+
+import { type JobPayload, type Profile } from "../types";
 import { randomSleep } from "../utils/evasion";
-import { auditBlanks, finalReverify, SubmitOutcome } from "./shared/audit";
+import { ATSAdapter, type RpcHelper } from "./base";
+import { auditBlanks, finalReverify, type SubmitOutcome } from "./shared/audit";
 import { FormControls } from "./shared/controls";
 import { escapePromptValue, normalizeOptionText, pickLocationOption } from "./shared/matching";
-import { fieldKey, FormField, PRE_FILLED_LABELS } from "./shared/model";
+import { fieldKey, type FormField, PRE_FILLED_LABELS } from "./shared/model";
 import { Screener, setBlankedRequiredCount } from "./shared/screener";
 
 /**
@@ -157,7 +159,7 @@ export class LeverAdapter extends ATSAdapter {
       let company = (info?.company ?? "").replace(/\s+/g, " ").trim();
       if (!company || company === (info?.docTitle ?? "")) {
         try {
-          company = new URL(page.url()).pathname.split("/").filter(Boolean)[0] || "";
+          company = new URL(page.url()).pathname.split("/").find(Boolean) || "";
         } catch {
           company = "";
         }
@@ -698,7 +700,7 @@ export class LeverControlStack extends FormControls {
         rows = await this.locationRows();
       }
       if (!rows.length) {
-        const shortToken = value.split(/[\s,]+/).filter((t) => t && t.length > 1)[0];
+        const shortToken = value.split(/[\s,]+/).find((t) => t && t.length > 1);
         if (shortToken && shortToken !== value.trim()) {
           await input.fill(shortToken);
           for (let i = 0; i < 8 && rows.length === 0; i++) {

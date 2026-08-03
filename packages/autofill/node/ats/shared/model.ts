@@ -1,5 +1,5 @@
-import { normalizeOptionText } from "./matching";
 import type { Profile } from "../../types";
+import { normalizeOptionText } from "./matching";
 
 /** A single rendered radio/checkbox option and its click target. */
 export interface GroupOption {

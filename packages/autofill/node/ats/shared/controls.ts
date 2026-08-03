@@ -1,4 +1,5 @@
 import { Stagehand } from "@browserbasehq/stagehand";
+
 import {
   humanTypingEnabled,
   humanTypingMaxLength,
@@ -6,7 +7,6 @@ import {
   thinkPause,
   typingDelayMs,
 } from "../../utils/evasion";
-import { FormField } from "./model";
 import {
   chooseOption,
   cssEscape,
@@ -19,6 +19,7 @@ import {
   translateToDate,
   valuesConsistent,
 } from "./matching";
+import { type FormField } from "./model";
 
 /**
  * Coerce an answer for a type=number input to a bare numeric string, or ""
@@ -86,8 +87,10 @@ export class FormControls {
    *  Set to "*" when options can be several tags (e.g. Workday li/div). */
   protected optionTag: string;
 
+  protected stagehand: Stagehand;
+
   constructor(
-    protected stagehand: Stagehand,
+    stagehand: Stagehand,
     options?: {
       /** Log tag prefix used in advisory messages (e.g. the adapter name). */
       tagName?: string;
@@ -99,6 +102,7 @@ export class FormControls {
       optionTag?: string;
     },
   ) {
+    this.stagehand = stagehand;
     this.tagName = options?.tagName ?? "FormControls";
     this.shellClass = options?.shellClass ?? "select-shell";
     this.optionSelector = options?.optionSelector ?? 'div[role="option"]';
@@ -320,7 +324,7 @@ export class FormControls {
       // Pick 1..2 distinct benign targets, shuffled.
       const pick = (() => {
         const n = Math.min(count, targets.length);
-        const shuffled = [...targets].sort(() => Math.random() - 0.5);
+        const shuffled = [...targets].toSorted(() => Math.random() - 0.5);
         return shuffled.slice(0, n);
       })();
       for (const t of pick) {
@@ -907,12 +911,12 @@ export class FormControls {
               const target = document.getElementById(bestId);
               // Scan label[for] manually — interpolating bestId into a CSS
               // selector breaks on ids containing quotes.
-              const forLabels = Array.from(document.querySelectorAll("label[for]")).filter(
+              const targetLabelEl = Array.from(document.querySelectorAll("label[for]")).find(
                 (l) => l.getAttribute("for") === bestId,
               );
               const targetLabel =
                 (target?.closest("label") as HTMLElement | null) ||
-                (forLabels[0] as HTMLElement | null) ||
+                (targetLabelEl as HTMLElement | null) ||
                 target;
               if (targetLabel) (targetLabel as HTMLElement).click();
               return bestId;
@@ -1321,7 +1325,7 @@ export class FormControls {
       if (!opts.length) {
         // Geocoders often return nothing for "City, Country"; retry with the
         // leading city token ("Bhopal, India" -> "Bhopal").
-        const shortQuery = answer.split(/[\s,]+/).filter((t) => t && t.length > 1)[0];
+        const shortQuery = answer.split(/[\s,]+/).find((t) => t && t.length > 1);
         if (shortQuery && shortQuery !== answer.trim()) {
           await input.fill(shortQuery);
           opts = await poll();
