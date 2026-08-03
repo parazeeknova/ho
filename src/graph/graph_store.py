@@ -982,6 +982,43 @@ class GraphStore:
 
         return {}
 
+    async def _set_node_metrics(self, metrics: dict[str, dict[str, Any]]) -> None:
+        """Merge per-node metric values into n.data without APOC.
+
+        n.data is stored as a JSON string; fetch, merge in Python, write
+        back in one batched UNWIND query (avoids N round trips and the
+        apoc.convert.setProperty dependency).
+        """
+        if not metrics:
+            return
+        rows = await self._run(
+            "MATCH (n:GraphNode) WHERE n.id IN $ids RETURN n.id AS id, n.data AS data",
+            {"ids": list(metrics)},
+        )
+        patches: list[dict[str, Any]] = []
+        for r in rows:
+            data = r.get("data")
+            if isinstance(data, str):
+                try:
+                    data = json.loads(data)
+                except Exception:
+                    data = {}
+            if not isinstance(data, dict):
+                data = {}
+            for key, value in metrics.get(r["id"], {}).items():
+                data[key] = value
+            patches.append({"id": r["id"], "data": json.dumps(data)})
+        if not patches:
+            return
+        await self._run(
+            """
+            UNWIND $rows AS row
+            MATCH (n:GraphNode {id: row.id})
+            SET n.data = row.data, n.updated_at = $now
+            """,
+            {"rows": patches, "now": datetime.now(UTC).isoformat()},
+        )
+
     async def update_all_graph_metrics(self) -> dict[str, Any]:
         """Periodically execute all graph algorithms and store results
         in node data properties for use in priority scoring.
@@ -994,23 +1031,14 @@ class GraphStore:
         betweenness = await self.compute_betweenness_centrality()
         embeddings = await self.compute_fastrp_embeddings()
 
+        metric_map: dict[str, dict[str, Any]] = {}
         for node_id, score in pagerank.items():
-            await self._run(
-                "MATCH (n:GraphNode {id: $id}) SET n.data = apoc.convert.setProperty(n.data, 'pagerank', $score), n.updated_at = $now",
-                {"id": node_id, "score": score, "now": datetime.now(UTC).isoformat()},
-            )
-
+            metric_map.setdefault(node_id, {})["pagerank"] = score
         for node_id, component in components.items():
-            await self._run(
-                "MATCH (n:GraphNode {id: $id}) SET n.data = apoc.convert.setProperty(n.data, 'wcc_component', $comp), n.updated_at = $now",
-                {"id": node_id, "comp": component, "now": datetime.now(UTC).isoformat()},
-            )
-
+            metric_map.setdefault(node_id, {})["wcc_component"] = component
         for node_id, score in betweenness.items():
-            await self._run(
-                "MATCH (n:GraphNode {id: $id}) SET n.data = apoc.convert.setProperty(n.data, 'betweenness', $score), n.updated_at = $now",
-                {"id": node_id, "score": score, "now": datetime.now(UTC).isoformat()},
-            )
+            metric_map.setdefault(node_id, {})["betweenness"] = score
+        await self._set_node_metrics(metric_map)
 
         logger.info(
             "Graph metrics updated",
@@ -1191,9 +1219,16 @@ def _unpack(row: dict, key: str) -> dict[str, Any]:
 
 def _edge_row(r: dict) -> GraphEdge:
     rel = _unpack(r, "r")
+    etype = rel.get("type", "") or ""
+    try:
+        edge_type = EdgeType(etype)
+    except ValueError:
+        # Defensive: legacy/foreign relationships with unknown or empty
+        # types must never crash metrics or traversal. Skip them.
+        edge_type = EdgeType.DISCOVERED_FROM
     return GraphEdge(
         source_id=r.get("a.id", ""),
-        edge_type=EdgeType(rel.get("type", "") or ""),
+        edge_type=edge_type,
         target_id=r.get("b.id", ""),
         confidence=Confidence(score=rel.get("confidence_score", 0.5)),
         metadata=_parse_json(rel.get("metadata")),
