@@ -415,6 +415,22 @@ CREATE TABLE IF NOT EXISTS http_cache (
     ttl_seconds   INT DEFAULT 900
 );
 CREATE INDEX IF NOT EXISTS idx_http_cache_fetched ON http_cache (fetched_at);
+
+CREATE TABLE IF NOT EXISTS evidence (
+    company_id    TEXT NOT NULL,
+    company_name  TEXT DEFAULT '',
+    claim         TEXT NOT NULL,
+    evidence_type TEXT NOT NULL DEFAULT 'signal',
+    source        TEXT NOT NULL DEFAULT '',
+    weight        REAL DEFAULT 0.3,
+    contradicts   BOOLEAN DEFAULT FALSE,
+    ref_url       TEXT DEFAULT '',
+    observed_at   DOUBLE PRECISION DEFAULT 0,
+    created_at    TIMESTAMP DEFAULT NOW(),
+    PRIMARY KEY (company_id, claim, source)
+);
+CREATE INDEX IF NOT EXISTS idx_evidence_company_observed
+    ON evidence (company_id, observed_at DESC);
 """
 
 
@@ -804,6 +820,92 @@ class MemoryStore:
                 "DELETE FROM http_cache WHERE fetched_at < $1::double precision",
                 time.time() - older_than_days * 86400,
             )
+
+    # evidence: weighted belief ledger per company (hiring signals)
+
+    async def record_evidence(
+        self,
+        company_id: str,
+        claim: str,
+        source: str,
+        *,
+        company_name: str = "",
+        evidence_type: str = "signal",
+        weight: float = 0.3,
+        contradicts: bool = False,
+        ref_url: str = "",
+    ) -> None:
+        """Upsert one evidence row: (company_id, claim, source) is unique, so
+        repeated observations refresh the timestamp instead of accumulating
+        duplicate rows. Age-based freshness decay handles staleness.
+        """
+        with contextlib.suppress(Exception):
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO evidence
+                        (company_id, company_name, claim, evidence_type, source,
+                         weight, contradicts, ref_url, observed_at)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                    ON CONFLICT (company_id, claim, source) DO UPDATE SET
+                        company_name = EXCLUDED.company_name,
+                        weight = EXCLUDED.weight,
+                        contradicts = EXCLUDED.contradicts,
+                        ref_url = EXCLUDED.ref_url,
+                        observed_at = EXCLUDED.observed_at
+                    """,
+                    company_id,
+                    company_name,
+                    claim,
+                    evidence_type,
+                    source,
+                    weight,
+                    contradicts,
+                    ref_url,
+                    time.time(),
+                )
+
+    async def get_evidence(
+        self, company_id: str, since: float | None = None
+    ) -> list[dict[str, Any]]:
+        """Return evidence rows for a company, most recent first."""
+        async with self._pool.acquire() as conn:
+            if since is not None:
+                rows = await conn.fetch(
+                    "SELECT company_id, company_name, claim, evidence_type, source, "
+                    "weight, contradicts, ref_url, observed_at "
+                    "FROM evidence WHERE company_id = $1 AND observed_at >= $2 "
+                    "ORDER BY observed_at DESC",
+                    company_id,
+                    since,
+                )
+            else:
+                rows = await conn.fetch(
+                    "SELECT company_id, company_name, claim, evidence_type, source, "
+                    "weight, contradicts, ref_url, observed_at "
+                    "FROM evidence WHERE company_id = $1 ORDER BY observed_at DESC",
+                    company_id,
+                )
+        return [dict(r) for r in rows]
+
+    async def evidence_summary(self, company_id: str) -> dict[str, Any]:
+        """Compact belief summary for a company: supporting vs contradicting
+        rows plus an effective confidence via combine_evidence.
+        """
+        rows = await self.get_evidence(company_id)
+        if not rows:
+            return {"rows": [], "support": 0, "contradict": 0, "confidence": 0.5}
+        from src.graph.entity import combine_evidence
+
+        support = sum(1 for r in rows if not r.get("contradicts"))
+        contradict = sum(1 for r in rows if r.get("contradicts"))
+        confidence = combine_evidence(rows)
+        return {
+            "rows": rows,
+            "support": support,
+            "contradict": contradict,
+            "confidence": confidence.score,
+        }
 
     async def unembedded_obs(
         self,

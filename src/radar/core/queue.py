@@ -613,12 +613,32 @@ async def _persist_candidate(store, candidate: JobCandidate) -> None:
             "extra": candidate.extra,
         }
         await store.upsert_radar_candidate(data)
+        if candidate.eligibility == EligibilityState.ACCEPTED:
+            await _record_accepted_evidence(store, candidate)
     except Exception as e:
         logger.warning(
             "Failed to persist radar candidate",
             canonical_id=candidate.canonical_id,
             exception=str(e),
         )
+
+
+async def _record_accepted_evidence(store, candidate: JobCandidate) -> None:
+    """Log a posted_job hiring signal into the evidence ledger (best-effort)."""
+    try:
+        from src.graph.entity import make_company_id
+
+        await store.record_evidence(
+            make_company_id(candidate.normalized_company),
+            claim="posted_job",
+            source=candidate.source or "radar",
+            company_name=candidate.normalized_company,
+            evidence_type="hiring",
+            weight=0.35,
+            ref_url=candidate.direct_apply_url or "",
+        )
+    except Exception:
+        pass
 
 
 def get_queue_status() -> dict[str, Any]:

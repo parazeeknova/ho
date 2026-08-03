@@ -359,7 +359,9 @@ async def _scrape_indexes() -> list[JobObservation]:
         return []
 
 
-async def _poll_board(board: dict[str, str], app: FirecrawlApp) -> list[JobObservation]:
+async def _poll_board(
+    board: dict[str, str], app: FirecrawlApp, store: MemoryStore | None = None
+) -> list[JobObservation]:
     source_id = board["id"]
     board_url = board["url"]
     source_type = board.get("source_type", "discovery_index")
@@ -380,6 +382,7 @@ async def _poll_board(board: dict[str, str], app: FirecrawlApp) -> list[JobObser
         ats_obs = await intercept_ats_board(board_url, source_id)
         if ats_obs is not None:
             record_success(source_id, len(ats_obs), len(ats_obs))
+            await _record_ats_evidence(store, board_url, ats_obs)
             return ats_obs
     except Exception as e:
         logger.debug(f"ATS interceptor fallback for {board_url}: {e}")
@@ -422,6 +425,8 @@ async def _poll_board(board: dict[str, str], app: FirecrawlApp) -> list[JobObser
         logger.info(f"Board {source_id} map took {map_elapsed:.1f}s")
 
     if not direct_urls:
+        if store is not None and is_official and get_checkpoint(source_id).last_snapshot_count > 0:
+            await _record_ats_no_openings(store, board_url)
         record_success(source_id, 0, 0)
         return []
 
@@ -691,6 +696,62 @@ async def _load_ungated_observations(store: MemoryStore, limit: int = 400) -> li
         if len(out) >= limit:
             break
     return out
+
+
+async def _record_ats_evidence(
+    store: MemoryStore | None, board_url: str, obs: list[JobObservation]
+) -> None:
+    """Openings seen on an official ATS board -> hiring evidence."""
+    if store is None or not obs:
+        return
+    try:
+        from src.radar.sources.ats_interceptor import parse_ats_slug
+
+        parsed = parse_ats_slug(board_url)
+        company = parsed[1] if parsed else ""
+        if not company:
+            return
+        await store.record_evidence(
+            make_company_id(company),
+            claim="ats_openings",
+            source="ats_interceptor",
+            company_name=company,
+            evidence_type="hiring",
+            weight=0.4,
+            ref_url=board_url,
+        )
+    except Exception:
+        pass
+
+
+async def _record_ats_no_openings(store: MemoryStore, board_url: str) -> None:
+    """An official ATS board that previously had jobs now shows none."""
+    try:
+        from src.radar.sources.ats_interceptor import parse_ats_slug
+
+        parsed = parse_ats_slug(board_url)
+        company = parsed[1] if parsed else ""
+        if not company:
+            return
+        await store.record_evidence(
+            make_company_id(company),
+            claim="no_openings",
+            source="ats_interceptor",
+            company_name=company,
+            evidence_type="hiring",
+            weight=0.4,
+            contradicts=True,
+            ref_url=board_url,
+        )
+    except Exception:
+        pass
+
+
+async def _poll_board_safe(
+    board: dict[str, str], sem: asyncio.Semaphore, app: FirecrawlApp, store: MemoryStore
+) -> list[JobObservation]:
+    async with sem:
+        return await _poll_board(board, app, store)
 
 
 async def _fetch_postings_and_gate(
@@ -1868,11 +1929,10 @@ async def _run_radar_pipeline() -> None:
             poll_sem = asyncio.Semaphore(12)
             board_results: list[list[JobObservation]] = []
 
-            async def _poll_one(board, sem):
-                async with sem:
-                    return await _poll_board(board, app)
-
-            tasks = [asyncio.create_task(_poll_one(b, poll_sem)) for b in active_sources]
+            tasks = [
+                asyncio.create_task(_poll_board_safe(b, poll_sem, app, store))
+                for b in active_sources
+            ]
             for _board_done, task in enumerate(asyncio.as_completed(tasks), start=1):
                 try:
                     res = await task

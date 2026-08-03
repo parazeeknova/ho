@@ -348,6 +348,28 @@ class StartupAgent:
         )
         with contextlib.suppress(Exception):
             await self.store.put_company_osint(company, payload, degraded=not substance)
+        if substance and (payload.get("funding_info") or payload.get("funding_stage")):
+            await self._record_funding_evidence(company, payload)
+
+    async def _record_funding_evidence(self, company: str, payload: dict[str, Any]) -> None:
+        """A funding round is a strong hiring precursor: log it as evidence."""
+        try:
+            from src.graph.entity import make_company_id
+
+            fi = payload.get("funding_info") or {}
+            if not isinstance(fi, dict):
+                fi = {}
+            await self.store.record_evidence(
+                make_company_id(company),
+                claim="funding_round",
+                source="startup_osint",
+                company_name=company,
+                evidence_type="funding",
+                weight=0.25,
+                ref_url=str(fi.get("url") or ""),
+            )
+        except Exception:
+            pass
 
     async def _finalize_founders(self, job: dict[str, Any], company: str, domain: str) -> None:
         """Email triangulation + real LinkedIn profile search for founders.

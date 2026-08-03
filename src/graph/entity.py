@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import math
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -82,6 +83,51 @@ def merge_confidence(old: Confidence, new: Confidence, source_bonus: int = 1) ->
     raw = old.score * old.source_count + new.score * source_bonus
     old.score = min(1.0, max(0.1, raw / max(1, old.source_count + source_bonus)))
     return old
+
+
+def combine_evidence(rows: list[dict[str, Any]]) -> Confidence:
+    """Combine evidence ledger rows into a single Confidence.
+
+    Supporting rows combine as noisy-OR: p = 1 - prod(1 - w_i * fresh_i)
+    where freshness decays exponentially over 30 days. Contradicting rows
+    multiply the result down by (1 - w_c * fresh_c). The result is clamped
+    to [0.1, 0.95] so a single weak signal never over-commits.
+
+    Row dicts come from MemoryStore.get_evidence: weight, contradicts,
+    observed_at (epoch seconds).
+    """
+    now = time.time()
+    support = 1.0
+    contradict = 1.0
+    source_count = 0
+    last_seen = 0.0
+    for row in rows:
+        weight = float(row.get("weight") or 0.0)
+        observed = float(row.get("observed_at") or 0.0)
+        age_days = max(now - observed, 0.0) / 86400.0
+        freshness = math.exp(-age_days / 30.0)
+        if freshness < 0.05:
+            continue  # too stale to matter
+        source_count += 1
+        last_seen = max(last_seen, observed)
+        if row.get("contradicts"):
+            contradict *= 1.0 - min(weight * freshness, 1.0)
+        else:
+            support *= 1.0 - min(weight * freshness, 1.0)
+
+    score = 1.0 - support
+    score *= contradict
+    score = min(0.95, max(0.1, score))
+
+    if source_count == 0:
+        return Confidence(score=0.5, source_count=0, verification_method="heuristic")
+
+    return Confidence(
+        score=score,
+        source_count=source_count,
+        last_verified=datetime.fromtimestamp(last_seen, tz=UTC) if last_seen else datetime.now(UTC),
+        verification_method="evidence",
+    )
 
 
 def confidence_decay(c: Confidence, max_age_days: int = 30) -> Confidence:
@@ -662,6 +708,7 @@ def compute_uncertainty_score(
     adjacency: dict[str, Any],
     capability_graph: dict | None = None,
     max_age_days: int = 30,
+    evidence_score: float | None = None,
 ) -> NodeUncertaintyScore:
     """Calculate uncertainty and completeness for a node.
 
@@ -672,6 +719,11 @@ def compute_uncertainty_score(
 
     Lower completeness and higher uncertainty mean the node is a priority
     target for information-gathering operations.
+
+    When *evidence_score* (from the evidence ledger, 0..1) is provided, it
+    replaces the node's stored confidence for the uncertainty term: freshly
+    accumulated hiring evidence drops uncertainty even if the graph node
+    itself is still thin.
     """
     patterns = (capability_graph or CAPABILITY_GRAPH).get(node.node_type, [])
     if not patterns:
@@ -700,7 +752,9 @@ def compute_uncertainty_score(
     required_penalty = 0.0
     if required_total > 0:
         required_penalty = (required_total - required_satisfied) / required_total * 0.5
-    uncertainty = (1.0 - node.confidence.score) * (0.5 + required_penalty)
+    confidence = evidence_score if evidence_score is not None else node.confidence.score
+    confidence = min(1.0, max(0.0, confidence))
+    uncertainty = (1.0 - confidence) * (0.5 + required_penalty)
     uncertainty = min(1.0, uncertainty)
 
     age = (datetime.now(UTC) - node.updated_at).days
