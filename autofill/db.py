@@ -193,6 +193,26 @@ class AutofillDB:
                 logger.info("Job status updated", job_id=job_id, status=status)
             return updated
 
+    async def get_all_jobs(self) -> list[dict[str, Any]]:
+        """Every queue row (oldest first), for batch tracking / reconciliation."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT job_id, apply_link, role, company, apply_mode, status,
+                       retries, error, filled_payload, screenshot_path,
+                       created_at, updated_at
+                FROM autofill_queue
+                ORDER BY created_at ASC
+                """
+            )
+        result = []
+        for row in rows:
+            res = dict(row)
+            if isinstance(res.get("filled_payload"), str):
+                res["filled_payload"] = json.loads(res["filled_payload"])
+            result.append(res)
+        return result
+
     async def get_job(self, job_id: str) -> dict[str, Any] | None:
         """Fetch job details by ID."""
         async with self._pool.acquire() as conn:

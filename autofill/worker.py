@@ -7,6 +7,7 @@ import contextlib
 import datetime as _dt
 import json
 import os
+from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
@@ -66,6 +67,50 @@ class AutofillWorker:
         self._running = False
         self._running_tasks: set[asyncio.Task] = set()
         self._summary_task: asyncio.Task[None] | None = None
+        # Debug-run ledger (AUTOFILL_DEBUG_RUN=true): every question + answer
+        # for every company attempted is persisted to a JSON file so the batch
+        # can be reviewed afterwards. TEMP — only meaningful during the debug
+        # batch; no-op when the env flag is unset.
+        self._debug_enabled = os.getenv("AUTOFILL_DEBUG_RUN", "").strip().lower() == "true"
+        self._debug_path = Path(os.getenv("AUTOFILL_DEBUG_PATH", "logs/debug-run.json"))
+        self._debug_lock = asyncio.Lock()
+        self._debug_started = _dt.datetime.now().astimezone().isoformat(timespec="seconds")
+
+    async def _debug_finalize(
+        self, rec: dict[str, Any] | None, status: str, error: str | None = None
+    ) -> None:
+        """Record a job's terminal outcome in the debug ledger (if enabled)."""
+        if not self._debug_enabled or rec is None:
+            return
+        rec["status"] = status
+        rec["error"] = error
+        rec["updated_at"] = _dt.datetime.now().astimezone().isoformat(timespec="seconds")
+        async with self._debug_lock:
+            try:
+                self._debug_path.parent.mkdir(parents=True, exist_ok=True)
+                data: dict[str, Any] = {}
+                if self._debug_path.exists():
+                    try:
+                        data = json.loads(self._debug_path.read_text())
+                    except (OSError, json.JSONDecodeError):
+                        data = {}
+                jobs = data.setdefault("jobs", {})
+                jobs[rec["job_id"]] = rec
+                run = data.setdefault("run", {})
+                run["name"] = "debug"
+                run["mode"] = "autosubmit" if is_overnight() else "review"
+                run["started_at"] = self._debug_started
+                run["updated_at"] = _dt.datetime.now().astimezone().isoformat(timespec="seconds")
+                counts: dict[str, int] = {}
+                for j in jobs.values():
+                    s = str(j.get("status") or "?")
+                    counts[s] = counts.get(s, 0) + 1
+                run["counts"] = counts
+                tmp = self._debug_path.with_suffix(".json.tmp")
+                tmp.write_text(json.dumps(data, indent=2) + "\n")
+                os.replace(tmp, self._debug_path)
+            except Exception as e:
+                logger.warning("Debug ledger flush failed", error=str(e))
 
     async def start(self) -> None:
         """Start the worker polling loop and the daily digest scheduler."""
@@ -189,6 +234,21 @@ class AutofillWorker:
 
         deferred_pending: list[dict[str, Any]] = []
         rag: ScreenerRAG | None = None
+        debug_rec: dict[str, Any] | None = None
+        if self._debug_enabled:
+            debug_rec = {
+                "job_id": job_id,
+                "company": job.get("company"),
+                "role": job.get("role"),
+                "url": apply_link,
+                "status": "in_progress",
+                "error": None,
+                "job_context": {},
+                "questions": [],
+                "filled_fields": None,
+                "screenshot_path": None,
+                "started_at": _dt.datetime.now().astimezone().isoformat(timespec="seconds"),
+            }
         try:
             try:
                 store = await MemoryStore.create()
@@ -233,9 +293,20 @@ class AutofillWorker:
                 # AUTOFILL_ACTIVITY_TIMEOUT_MS instead of holding a worker slot
                 # until the hour-long DB lease. Any runner/status/RPC activity
                 # resets the idle timer, so a healthy run is never cut off.
-                process_env["AUTOFILL_ACTIVITY_TIMEOUT_MS"] = "360000"
+                # TEMP (batch-run 2026-08-02): 5-minute absolute life for the
+                # 100-job trial. REVERT to "360000" after the batch run.
+                process_env["AUTOFILL_ACTIVITY_TIMEOUT_MS"] = "300000"
             else:
-                process_env["AUTOFILL_REVIEW_HOLD_MS"] = "180000"
+                # TEMP (batch-run 2026-08-02): day-mode batch knobs for the
+                # 100-job trial. 2-minute wait after each fill completes, and
+                # an absolute-life safety net: a runner with no observable
+                # progress for 5 minutes is killed instead of holding a worker
+                # slot until the hour-long DB lease. Any runner/status/RPC
+                # activity resets the idle timer, so a healthy run is never cut
+                # off. REVERT both values to "180000" / remove the activity
+                # timeout after the batch run.
+                process_env["AUTOFILL_REVIEW_HOLD_MS"] = "120000"
+                process_env["AUTOFILL_ACTIVITY_TIMEOUT_MS"] = "300000"
 
             process = await asyncio.create_subprocess_exec(
                 "npx",
@@ -297,6 +368,8 @@ class AutofillWorker:
                                 title=job_context.get("title"),
                                 location=job_context.get("location"),
                             )
+                            if debug_rec is not None:
+                                debug_rec["job_context"] = job_context
                             if process.stdin and not process.stdin.is_closing():
                                 rpc_resp = json.dumps(
                                     {"type": "RPC_RESPONSE", "id": req_id, "result": {"ok": True}}
@@ -391,6 +464,16 @@ class AutofillWorker:
                                 # digest lists every question — never only the
                                 # last one.
                                 deferred_pending.append(pending)
+                                if debug_rec is not None:
+                                    debug_rec["questions"].append(
+                                        {
+                                            "question": deferred.question,
+                                            "kind": deferred.kind,
+                                            "options": list(deferred.options or []),
+                                            "answer": None,
+                                            "source": "deferred",
+                                        }
+                                    )
                                 if process.stdin and not process.stdin.is_closing():
                                     rpc_resp = json.dumps(
                                         {
@@ -413,6 +496,17 @@ class AutofillWorker:
                                 )
                                 process.stdin.write(f"{rpc_resp}\n".encode())
                                 await process.stdin.drain()
+                            if debug_rec is not None:
+                                debug_rec["questions"].append(
+                                    {
+                                        "question": question,
+                                        "kind": kind,
+                                        "options": options,
+                                        "answer": answer,
+                                        "source": source,
+                                    }
+                                )
+                            continue
 
                     except Exception as rpc_err:
                         # Never leave the Node side hanging on an unexpected
@@ -475,6 +569,7 @@ class AutofillWorker:
                                 filled_payload=filled_fields,
                                 screenshot_path=screenshot_path,
                             )
+                            await self._debug_finalize(debug_rec, "submitted")
                         elif status == "skipped":
                             terminal_seen = True
                             if deferred_pending:
@@ -489,6 +584,7 @@ class AutofillWorker:
                                     filled_payload=filled_fields,
                                     screenshot_path=screenshot_path,
                                 )
+                                await self._debug_finalize(debug_rec, "skipped")
                         elif status == "failed":
                             error_msg = event.get("error", "Runner failed")
                             if DEFER_MARKER in error_msg or deferred_pending:
@@ -503,6 +599,7 @@ class AutofillWorker:
                                 await self.db.update_status(
                                     job_id, status="failed", error=error_msg
                                 )
+                                await self._debug_finalize(debug_rec, "failed", error=error_msg)
                                 if "CAPTCHA_DETECTED" in error_msg:
                                     # A bot-detection challenge blocked the form:
                                     # the fill could not proceed. Alert the user
@@ -536,6 +633,11 @@ class AutofillWorker:
                     role=job.get("role"),
                     company=job.get("company"),
                 )
+                await self._debug_finalize(
+                    debug_rec,
+                    "deferred",
+                    error="; ".join(q.get("question", "") for q in deferred_pending),
+                )
             elif process.returncode != 0 and not terminal_seen:
                 # Runner exited abnormally WITHOUT a terminal status event
                 # (startup failure, schema error, browser crash). Fail the job
@@ -547,6 +649,14 @@ class AutofillWorker:
                     status="failed",
                     error=f"Runner exited with code {process.returncode}",
                 )
+                await self._debug_finalize(
+                    debug_rec, "failed", error=f"Runner exited with code {process.returncode}"
+                )
+            elif not terminal_seen:
+                # A normal runner exit WITHOUT a terminal status event and
+                # without a non-zero return code leaves the job in 'filling'
+                # (lease-bound). Flag it so the debug review sees it.
+                await self._debug_finalize(debug_rec, "no_terminal_event")
 
         except Exception as e:
             logger.exception("Error processing job", job_id=job_id, error=str(e))
@@ -561,8 +671,10 @@ class AutofillWorker:
                     role=job.get("role"),
                     company=job.get("company"),
                 )
+                await self._debug_finalize(debug_rec, "deferred", error=str(e))
             else:
                 await self.db.update_status(job_id, status="failed", error=str(e))
+                await self._debug_finalize(debug_rec, "failed", error=str(e))
         finally:
             if rag is not None:
                 await rag.close()
@@ -667,7 +779,10 @@ async def run_worker() -> None:
     """CLI Entrypoint to run the background worker."""
     load_dotenv()
     db = await AutofillDB.create()
-    worker = AutofillWorker(db)
+    # Number of simultaneous Stagehand runs (browser processes). Env-driven so
+    # a batch can override the default of 2 (e.g. the 8-run 100-job batch).
+    max_concurrent = int(os.getenv("AUTOFILL_MAX_CONCURRENT", "2"))
+    worker = AutofillWorker(db, max_concurrent=max_concurrent)
     try:
         await worker.start()
     finally:
