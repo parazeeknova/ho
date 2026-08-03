@@ -776,6 +776,84 @@ class GraphStore:
                 }
             )
 
+        # Path-based peer signals: companies sharing an investor, an ATS or
+        # tech stack with the target, where the peer demonstrably posts jobs.
+        # Every query is defensive (sparse graph -> no signal, no crash).
+        try:
+            peers = await self._run(
+                """
+                MATCH (c:GraphNode {id:$id})-[:INVESTED_BY]->(i:GraphNode)
+                      <-[:INVESTED_BY]-(h:GraphNode)
+                WHERE h.id <> $id AND (h)-[:POSTED_JOB]->()
+                RETURN DISTINCT h.id AS peer_id LIMIT 5
+                """,
+                {"id": company_node_id},
+            )
+            if peers:
+                signals.append(
+                    {
+                        "type": "shared_investor",
+                        "weight": min(0.15, 0.06 * len(peers)),
+                        "description": (
+                            f"{len(peers)} investor peers are actively posting jobs "
+                            "(shared backers tend to hire in waves)"
+                        ),
+                        "peer_count": len(peers),
+                    }
+                )
+        except Exception:
+            pass
+
+        try:
+            same_ats = await self._run(
+                """
+                MATCH (c:GraphNode {id:$id})-[:USES_ATS]->(a:GraphNode)
+                      <-[:USES_ATS]-(h:GraphNode)
+                WHERE h.id <> $id AND (h)-[:POSTED_JOB]->()
+                RETURN DISTINCT h.id AS peer_id LIMIT 5
+                """,
+                {"id": company_node_id},
+            )
+            if same_ats:
+                signals.append(
+                    {
+                        "type": "same_ats",
+                        "weight": min(0.10, 0.05 * len(same_ats)),
+                        "description": (
+                            f"Shares its ATS with {len(same_ats)} hiring peers "
+                            "(same tooling usually means same hiring velocity)"
+                        ),
+                        "peer_count": len(same_ats),
+                    }
+                )
+        except Exception:
+            pass
+
+        try:
+            same_tech = await self._run(
+                """
+                MATCH (c:GraphNode {id:$id})-[:USES_TECH]->(t:GraphNode)
+                      <-[:USES_TECH]-(h:GraphNode)
+                WHERE h.id <> $id AND (h)-[:POSTED_JOB]->()
+                RETURN DISTINCT t.id AS tech LIMIT 10
+                """,
+                {"id": company_node_id},
+            )
+            if same_tech:
+                signals.append(
+                    {
+                        "type": "same_tech",
+                        "weight": min(0.08, 0.025 * len(same_tech)),
+                        "description": (
+                            f"{len(same_tech)} shared technologies with hiring peers "
+                            "(stack overlap predicts hiring overlap)"
+                        ),
+                        "tech_count": len(same_tech),
+                    }
+                )
+        except Exception:
+            pass
+
         similar = await self.find_structurally_similar(company_node_id, limit=5)
         if similar:
             hiring_similar = [s for s in similar if s.get("pagerank", 0) > 0.01]
