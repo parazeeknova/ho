@@ -3,7 +3,7 @@ import * as fs from "fs";
 import { ATSAdapter, RpcHelper } from "./base.js";
 import { JobPayload, Profile } from "../types.js";
 import { randomSleep } from "../utils/evasion.js";
-import { auditBlanks, finalReverify } from "./shared/audit.js";
+import { auditBlanks, finalReverify, SubmitOutcome, verifySubmitOutcome } from "./shared/audit.js";
 import { FormControls } from "./shared/controls.js";
 import {
   chooseOption,
@@ -16,7 +16,7 @@ import {
   FormField,
   PRE_FILLED_LABELS,
 } from "./shared/model.js";
-import { Screener } from "./shared/screener.js";
+import { Screener, setBlankedRequiredCount } from "./shared/screener.js";
 
 const SYSTEM_SKIP = new Set([
   "_systemfield_name",
@@ -57,6 +57,7 @@ const SYSTEM_SKIP = new Set([
 export class AshbyAdapter extends ATSAdapter {
   protected controls!: AshbyControlStack;
   private jobCtx: { title: string; company: string; location: string; description: string } | null = null;
+  protected profile!: Profile;
 
   constructor(stagehand: Stagehand) {
     super(stagehand);
@@ -198,6 +199,7 @@ export class AshbyAdapter extends ATSAdapter {
 
   async fill(payload: JobPayload, rpc?: RpcHelper): Promise<void> {
     const { url, profile } = payload;
+    this.profile = profile;
     console.log(`[Ashby] Navigating to ${url}...`);
     const page = this.getPage();
     await page.goto(url);
@@ -290,6 +292,9 @@ export class AshbyAdapter extends ATSAdapter {
         skippedKeys: userSkippedKeys,
         reasons: [...blanked, ...sweepBlanks],
       });
+      // Surface how many required fields are still blank so the runner can
+      // gate auto-submit on an incomplete form.
+      setBlankedRequiredCount(requiredBlanks.length);
 
       if (profile.resumePath && !resumeAttached && !(await this.controls.isResumeAttached())) {
         console.warn("[Ashby] REVERIFY: resume is NOT attached after the final pass.");
@@ -301,9 +306,10 @@ export class AshbyAdapter extends ATSAdapter {
     console.log("[Ashby] Form filling completed.");
   }
 
-  async submit(): Promise<void> {
+  async submit(): Promise<SubmitOutcome> {
     console.log("[Ashby] Submitting application form...");
-    const submitBtn = this.getPage()
+    const page = this.getPage();
+    const submitBtn = page
       .locator("button.ashby-application-form-submit-button")
       .first();
     if (await submitBtn.isVisible().catch(() => false)) {
@@ -312,6 +318,46 @@ export class AshbyAdapter extends ATSAdapter {
       await this.stagehand.act("Click the Submit Application button");
     }
     await randomSleep(500, 1000);
+
+    return verifySubmitOutcome(page, {
+      tag: "Ashby",
+      submitButtonSelector: "button.ashby-application-form-submit-button",
+    });
+  }
+
+  /**
+   * Recheck and re-fill any required field that is still blank, then report
+   * the number that remain blank. Called by the runner after a retryable
+   * submit failure (validation blocked by unfilled fields) so a second submit
+   * attempt starts from a complete form.
+   */
+  async recheckMissingFields(rpc?: RpcHelper): Promise<number> {
+    console.log("[Ashby] Rechecking missing required fields...");
+    const page = this.getPage();
+    const stillBlank: string[] = [];
+    const fields = await this.collectQuestions();
+    for (const f of fields) {
+      if (!f.required) continue;
+      if (await this.hasValue(f)) continue;
+      if (PRE_FILLED_LABELS.has(norm(f.label))) continue;
+      // Try to resolve it via the screener machinery (may itself fail to
+      // commit — that is recorded and re-audited below).
+      const screener = new Screener(this.controls, "AshbyAdapter", this.profile, rpc ?? (async () => ({ answer: "" })));
+      const filled: string[] = [];
+      const blanked: { label: string; reason: string }[] = [];
+      const skipped = new Set<string>();
+      await screener.process(f, filled, blanked, skipped);
+      if (filled.length === 0) {
+        stillBlank.push(f.label);
+      }
+    }
+    const remaining = stillBlank.length;
+    setBlankedRequiredCount(remaining);
+    console.log(
+      `[Ashby] Recheck complete: ${remaining} required field(s) still blank.`
+    );
+    for (const l of stillBlank) console.warn(`[Ashby]   still blank: ${escapePromptValue(l)}`);
+    return remaining;
   }
 
   private async uploadResume(resumePath: string): Promise<boolean> {

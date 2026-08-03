@@ -1,12 +1,13 @@
 import { Stagehand } from "@browserbasehq/stagehand";
 import * as fs from "fs";
 import { ATSAdapter, RpcHelper } from "./base.js";
-import { JobPayload } from "../types.js";
+import { JobPayload, Profile } from "../types.js";
 import { randomSleep } from "../utils/evasion.js";
-import { auditBlanks, finalReverify } from "./shared/audit.js";
+import { auditBlanks, finalReverify, SubmitOutcome } from "./shared/audit.js";
 import { FormControls } from "./shared/controls.js";
 import {
   escapePromptValue,
+  normalizeOptionText,
   pickLocationOption,
 } from "./shared/matching.js";
 import {
@@ -14,7 +15,7 @@ import {
   FormField,
   PRE_FILLED_LABELS,
 } from "./shared/model.js";
-import { Screener } from "./shared/screener.js";
+import { Screener, setBlankedRequiredCount } from "./shared/screener.js";
 
 /**
  * Lever adapter.
@@ -43,6 +44,7 @@ import { Screener } from "./shared/screener.js";
  */
 export class LeverAdapter extends ATSAdapter {
   protected controls!: LeverControlStack;
+  protected profile!: Profile;
 
   private jobCtx: {
     title: string;
@@ -382,6 +384,7 @@ export class LeverAdapter extends ATSAdapter {
 
   async fill(payload: JobPayload, rpc?: RpcHelper): Promise<void> {
     const { url, profile } = payload;
+    this.profile = profile;
     console.log(`[Lever] Navigating to ${url}...`);
     const page = this.getPage();
     await page.goto(url);
@@ -495,13 +498,16 @@ export class LeverAdapter extends ATSAdapter {
         for (const l of sweepFilled) console.log(`[Lever]   filled: ${escapePromptValue(l)}`);
       }
 
-      await finalReverify({
+      const stillBlank = await finalReverify({
         tag: "LeverAdapter",
         collect: () => this.collectQuestions(),
         isEmpty: async (f) => !(await this.hasValue(f)),
         skippedKeys: userSkippedKeys,
         reasons: [...blanked, ...sweepBlanks],
       });
+      // Surface how many required fields are still blank so the runner can
+      // gate auto-submit on an incomplete form.
+      setBlankedRequiredCount(stillBlank.length);
 
       if (profile.resumePath && !resumeAttached && !(await this.controls.isResumeAttached())) {
         console.warn("[Lever] REVERIFY: resume is NOT attached after the final pass.");
@@ -517,11 +523,10 @@ export class LeverAdapter extends ATSAdapter {
     return !!(await this.controls.readFieldValue(f));
   }
 
-  async submit(): Promise<void> {
+  async submit(): Promise<SubmitOutcome> {
     const page = this.getPage();
     console.log("[Lever] Submitting application form...");
     const submitBtn = page.locator("button.template-btn-submit").first();
-    await submitBtn.scrollIntoViewIfNeeded().catch(() => {});
     await submitBtn.click();
     await randomSleep(1200, 2000);
 
@@ -530,7 +535,7 @@ export class LeverAdapter extends ATSAdapter {
       const url = page.url();
       if (/thanks|leverappid|leverapplicationid/i.test(url)) {
         console.log("[Lever] Submitted: redirect confirmed.");
-        return;
+        return { confirmed: true, retryable: false };
       }
       const err = await page
         .locator(".error-message:visible")
@@ -539,12 +544,65 @@ export class LeverAdapter extends ATSAdapter {
         .catch(() => "");
       if (err && !/exceeds? the maximum upload size|too large|100MB/i.test(err)) {
         console.error(`[Lever] Submit error banner: ${escapePromptValue(err)}`);
-        throw new Error(`Lever submit failed (form re-rendered): ${escapePromptValue(err)}`);
+        return {
+          confirmed: false,
+          error: `Lever submit failed (form re-rendered): ${escapePromptValue(err)}`,
+          retryable: true,
+        };
+      }
+      const bodyText = await page
+        .evaluate(() => document.body?.innerText?.slice(0, 4000) ?? "")
+        .catch(() => "");
+      if (
+        /application (has been )?(successfully )?submitted|thank (you|u) for applying|your application has been received|we (have )?received your application|application complete/i.test(
+          bodyText
+        )
+      ) {
+        console.log("[Lever] Submitted: inline confirmation text detected.");
+        return { confirmed: true, retryable: false };
       }
       await randomSleep(1500, 2000);
     }
     console.warn("[Lever] Submit outcome not detected; treating as failed.");
-    throw new Error("Lever submit: no success or error outcome detected after clicking submit");
+    return {
+      confirmed: false,
+      error: "Lever submit: no success or error outcome detected after clicking submit",
+      retryable: false,
+    };
+  }
+
+  /**
+   * Recheck and re-fill any required field that is still blank, then report
+   * how many remain blank. Called by the runner after a retryable submit
+   * failure (validation blocked by unfilled fields).
+   */
+  async recheckMissingFields(rpc?: RpcHelper): Promise<number> {
+    console.log("[Lever] Rechecking missing required fields...");
+    const stillBlank: string[] = [];
+    const fields = await this.collectQuestions();
+    for (const f of fields) {
+      if (!f.required) continue;
+      if (await this.hasValue(f)) continue;
+      if (PRE_FILLED_LABELS.has(normalizeOptionText(f.label))) continue;
+      const screener = new Screener(
+        this.controls,
+        "LeverAdapter",
+        this.profile,
+        rpc ?? (async () => ({ answer: "" }))
+      );
+      const filled: string[] = [];
+      const blanked: { label: string; reason: string }[] = [];
+      const skipped = new Set<string>();
+      await screener.process(f, filled, blanked, skipped);
+      if (filled.length === 0) stillBlank.push(f.label);
+    }
+    const remaining = stillBlank.length;
+    setBlankedRequiredCount(remaining);
+    console.log(`[Lever] Recheck complete: ${remaining} required field(s) still blank.`);
+    for (const l of stillBlank) {
+      console.warn(`[Lever]   still blank: ${escapePromptValue(l)}`);
+    }
+    return remaining;
   }
 }
 

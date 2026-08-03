@@ -3,18 +3,19 @@ import * as fs from "fs";
 import { ATSAdapter, RpcHelper } from "./base.js";
 import { JobPayload, Profile } from "../types.js";
 import { randomSleep } from "../utils/evasion.js";
-import { auditBlanks, finalReverify } from "./shared/audit.js";
+import { auditBlanks, finalReverify, SubmitOutcome } from "./shared/audit.js";
 import { FormControls } from "./shared/controls.js";
 import {
   chooseOption,
   cssEscape,
   cssIdLocator,
   escapePromptValue,
+  normalizeOptionText,
   pickLocationOption,
   selectCandidates,
 } from "./shared/matching.js";
 import { fieldKey, FormField, isLocationAutocomplete, PRE_FILLED_LABELS } from "./shared/model.js";
-import { Screener } from "./shared/screener.js";
+import { Screener, setBlankedRequiredCount } from "./shared/screener.js";
 
 /** Workday system automation-ids the walker must never treat as a question. */
 const SYSTEM_SKIP = new Set([
@@ -121,6 +122,7 @@ export function classifyWorkdayControl(attrs: {
 
 export class WorkdayAdapter extends ATSAdapter {
   protected controls!: WorkdayControlStack;
+  protected profile!: Profile;
   private jobCtx: {
     title: string;
     company: string;
@@ -1111,6 +1113,7 @@ export class WorkdayAdapter extends ATSAdapter {
 
   async fill(payload: JobPayload, rpc?: RpcHelper): Promise<void> {
     const { url, profile } = payload;
+    this.profile = profile;
     console.log(`[Workday] Navigating to ${url}...`);
     const page = this.getPage();
     await page.goto(url);
@@ -1252,13 +1255,16 @@ export class WorkdayAdapter extends ATSAdapter {
       // that only surfaced on later steps.
       await this.fillIdentityFields(profile);
 
-      await finalReverify({
+      const stillBlank = await finalReverify({
         tag: "WorkdayAdapter",
         collect: () => this.collectQuestions(),
         isEmpty: async (f) => !(await this.hasValue(f)),
         skippedKeys: userSkippedKeys,
         reasons: [...blanked, ...sweepBlanks],
       });
+      // Surface how many required fields are still blank so the runner can
+      // gate auto-submit on an incomplete form.
+      setBlankedRequiredCount(stillBlank.length);
 
       if (profile.resumePath && !resumeAttached && !(await this.controls.isResumeAttached())) {
         console.warn("[Workday] REVERIFY: resume is NOT attached after the final pass.");
@@ -1270,7 +1276,7 @@ export class WorkdayAdapter extends ATSAdapter {
     console.log("[Workday] Form filling completed.");
   }
 
-  async submit(): Promise<void> {
+  async submit(): Promise<SubmitOutcome> {
     const page = this.getPage();
     console.log("[Workday] Submitting application form...");
     const submitBtn = page
@@ -1296,7 +1302,7 @@ export class WorkdayAdapter extends ATSAdapter {
       const url = page.url();
       if (/thanks|submitted|confirmation|success/i.test(url)) {
         console.log("[Workday] Submitted: redirect confirmed.");
-        return;
+        return { confirmed: true, retryable: false };
       }
       // Never use `:visible` inside a comma-combined selector (Playwright fails
       // to parse it and matches nothing). Check alert roles and error blocks
@@ -1306,12 +1312,54 @@ export class WorkdayAdapter extends ATSAdapter {
         (await page.locator('.error, .error-message, [class*="error"]').first().innerText().catch(() => ""));
       if (err && !/exceeds? the maximum upload size|too large|100MB/i.test(err)) {
         console.error(`[Workday] Submit error banner: ${escapePromptValue(err)}`);
-        throw new Error(`Workday submit failed (form re-rendered): ${escapePromptValue(err)}`);
+        return {
+          confirmed: false,
+          error: `Workday submit failed (form re-rendered): ${escapePromptValue(err)}`,
+          retryable: true,
+        };
       }
       await randomSleep(1500, 2000);
     }
     console.warn(`[Workday] Submit outcome not detected at ${page.url()}; treating as failed.`);
-    throw new Error("Workday submit: no success or error outcome detected after clicking submit");
+    return {
+      confirmed: false,
+      error: "Workday submit: no success or error outcome detected after clicking submit",
+      retryable: false,
+    };
+  }
+
+  /**
+   * Recheck and re-fill any required field that is still blank, then report
+   * how many remain blank. Called by the runner after a retryable submit
+   * failure (validation blocked by unfilled fields).
+   */
+  async recheckMissingFields(rpc?: RpcHelper): Promise<number> {
+    console.log("[Workday] Rechecking missing required fields...");
+    const stillBlank: string[] = [];
+    const fields = await this.collectQuestions();
+    for (const f of fields) {
+      if (!f.required) continue;
+      if (await this.hasValue(f)) continue;
+      if (PRE_FILLED_LABELS.has(normalizeOptionText(f.label))) continue;
+      const screener = new Screener(
+        this.controls,
+        "WorkdayAdapter",
+        this.profile,
+        rpc ?? (async () => ({ answer: "" }))
+      );
+      const filled: string[] = [];
+      const blanked: { label: string; reason: string }[] = [];
+      const skipped = new Set<string>();
+      await screener.process(f, filled, blanked, skipped);
+      if (filled.length === 0) stillBlank.push(f.label);
+    }
+    const remaining = stillBlank.length;
+    setBlankedRequiredCount(remaining);
+    console.log(`[Workday] Recheck complete: ${remaining} required field(s) still blank.`);
+    for (const l of stillBlank) {
+      console.warn(`[Workday]   still blank: ${escapePromptValue(l)}`);
+    }
+    return remaining;
   }
 }
 

@@ -1,10 +1,10 @@
 import { Stagehand, type Action } from "@browserbasehq/stagehand";
 import * as fs from "fs";
 import { ATSAdapter, RpcHelper } from "./base.js";
-import { JobPayload } from "../types.js";
+import { JobPayload, Profile } from "../types.js";
 import { randomSleep } from "../utils/evasion.js";
-import { auditBlanks, finalReverify } from "./shared/audit.js";
-import { FormControls } from "./shared/controls.js";
+import { auditBlanks, finalReverify, SubmitOutcome, verifySubmitOutcome } from "./shared/audit.js";
+import { FormControls, sanitizeNumberAnswer } from "./shared/controls.js";
 import {
   chooseOption,
   cssEscape,
@@ -21,7 +21,7 @@ import {
   mergeFormInventory,
   PRE_FILLED_LABELS,
 } from "./shared/model.js";
-import { BlankEntry, Screener } from "./shared/screener.js";
+import { BlankEntry, Screener, setBlankedRequiredCount } from "./shared/screener.js";
 
 /**
  * GenericAdapter — the intelligent fallback for ANY job application form.
@@ -293,6 +293,8 @@ export class GenericAdapter extends ATSAdapter {
     description: string;
   } | null = null;
   private gateDeferred = false;
+  private _jsonModel: JsonFieldSource[] | null = null;
+  protected profile!: Profile;
 
   constructor(stagehand: Stagehand) {
     super(stagehand);
@@ -1249,6 +1251,8 @@ export class GenericAdapter extends ATSAdapter {
     );
 
     const jsonModel = await this.fetchJsonQuestions();
+    this._jsonModel = jsonModel;
+    this.profile = profile;
     const screener = new Screener(this.controls, "GenericAdapter", profile, rpc);
     const filled: string[] = [];
     const blanked: BlankEntry[] = [];
@@ -1385,7 +1389,7 @@ export class GenericAdapter extends ATSAdapter {
 
     // Definitive reverify of every still-empty field (required/optional, minus
     // identity fields and manual skips). This is the pre-completion checkpoint.
-    await finalReverify({
+    const stillBlank = await finalReverify({
       tag: "GenericAdapter",
       collect: async () => {
         const dom = await this.collectQuestions();
@@ -1395,6 +1399,11 @@ export class GenericAdapter extends ATSAdapter {
       skippedKeys: userSkippedKeys,
       reasons: [...blanked, ...sweepBlanks],
     });
+    // Surface how many required fields are still blank so the runner can gate
+    // auto-submit on an incomplete form. finalReverify excludes manual skips,
+    // so a field in the report is a real unfilled field; conservatively count
+    // it as required (the runner must not submit with any unknown blank).
+    setBlankedRequiredCount(stillBlank.length);
 
     if (profile.resumePath && !resumeAttached && !(await this.controls.isResumeAttached())) {
       console.warn("[Generic] REVERIFY: resume is NOT attached after the final pass.");
@@ -1405,7 +1414,7 @@ export class GenericAdapter extends ATSAdapter {
     console.log("[Generic] Form filling completed.");
   }
 
-  async submit(): Promise<void> {
+  async submit(): Promise<SubmitOutcome> {
     const page = this.getPage();
     console.log("[Generic] Submitting application form...");
     const submitBtn = page
@@ -1421,28 +1430,47 @@ export class GenericAdapter extends ATSAdapter {
     }
     await randomSleep(1500, 2500);
 
-    // Verify a success/error outcome.
-    for (let i = 0; i < 10; i++) {
-      const url = page.url();
-      if (/thanks|submitted|confirmation|success|applied/i.test(url)) {
-        console.log("[Generic] Submitted: redirect confirmed.");
-        return;
-      }
-      const err =
-        (await page.locator('[role="alert"]').first().innerText().catch(() => "")) ||
-        (await page
-          .locator('.error, .error-message, [class*="error"]')
-          .first()
-          .innerText()
-          .catch(() => ""));
-      if (err && !/exceeds? the maximum upload size|too large|100MB/i.test(err)) {
-        console.error(`[Generic] Submit error banner: ${escapePromptValue(err)}`);
-        throw new Error(`[Generic] Submit failed: ${escapePromptValue(err)}`);
-      }
-      await randomSleep(1500, 2000);
+    return verifySubmitOutcome(page, {
+      tag: "Generic",
+      submitButtonSelector:
+        "button[type='submit'], input[type='submit'], button:has-text('Submit Application'), " +
+        "button:has-text('Submit'), a:has-text('Submit Application')",
+    });
+  }
+
+  /**
+   * Recheck and re-fill any required field that is still blank, then report
+   * how many remain blank. Called by the runner after a retryable submit
+   * failure (validation blocked by unfilled fields).
+   */
+  async recheckMissingFields(rpc?: RpcHelper): Promise<number> {
+    console.log("[Generic] Rechecking missing required fields...");
+    const stillBlank: string[] = [];
+    const dom = await this.collectQuestions();
+    const fields = mergeFormInventory(this._jsonModel ?? null, dom);
+    for (const f of fields) {
+      if (!f.required) continue;
+      if (await this.controls.readFieldValue(f)) continue;
+      if (PRE_FILLED_LABELS.has(normalizeLabel(f.label))) continue;
+      const screener = new Screener(
+        this.controls,
+        "GenericAdapter",
+        this.profile,
+        rpc ?? (async () => ({ answer: "" }))
+      );
+      const filled: string[] = [];
+      const blanked: { label: string; reason: string }[] = [];
+      const skipped = new Set<string>();
+      await screener.process(f, filled, blanked, skipped);
+      if (filled.length === 0) stillBlank.push(f.label);
     }
-    console.error(`[Generic] Submit outcome not detected at ${page.url()}.`);
-    throw new Error("Generic submit: no success or error outcome detected after clicking submit");
+    const remaining = stillBlank.length;
+    setBlankedRequiredCount(remaining);
+    console.log(`[Generic] Recheck complete: ${remaining} required field(s) still blank.`);
+    for (const l of stillBlank) {
+      console.warn(`[Generic]   still blank: ${escapePromptValue(l)}`);
+    }
+    return remaining;
   }
 }
 
@@ -1508,7 +1536,20 @@ export class GenericControls extends FormControls {
           )
           .first();
         if (await input.isVisible().catch(() => false)) {
-          await input.fill(String(answer ?? "")).catch(() => {});
+          const tagType = await page
+            .evaluate(
+              (n: string) =>
+                document.querySelector(`input[name="${n}"]`)?.getAttribute("type") ??
+                null,
+              field.name
+            )
+            .catch(() => null);
+          let value = String(answer ?? "");
+          if (tagType === "number") {
+            value = sanitizeNumberAnswer(value);
+            if (!value) return false;
+          }
+          await input.fill(value).catch(() => {});
           await randomSleep(200, 400);
           return true;
         }
@@ -1771,9 +1812,20 @@ export class GenericControls extends FormControls {
         );
         return false;
       }
-      await sel.selectOption({ label: picked });
+      await sel.selectOption(picked);
       await randomSleep(200, 400);
-      return true;
+      const committed = !!(await page
+        .evaluate((fid: string) => {
+          const el = document.getElementById(fid) as HTMLSelectElement | null;
+          return el ? String(el.value ?? "") : "";
+        }, field.id)
+        .catch(() => ""));
+      if (!committed) {
+        console.warn(
+          `[${this.tagName}] Native select #${field.id} did not commit "${picked}"`
+        );
+      }
+      return committed;
     } catch (err: any) {
       console.warn(`[${this.tagName}] fillGenericSelect failed for #${field.id}: ${err?.message || err}`);
       return false;

@@ -6,6 +6,8 @@ import { randomSleep } from "../utils/evasion.js";
 import {
   auditBlanks,
   finalReverify,
+  SubmitOutcome,
+  verifySubmitOutcome,
 } from "./shared/audit.js";
 import { FormControls } from "./shared/controls.js";
 import { escapePromptValue, normalizeOptionText } from "./shared/matching.js";
@@ -17,7 +19,7 @@ import {
   PRE_FILLED_LABELS,
   unprocessedFields,
 } from "./shared/model.js";
-import { Screener } from "./shared/screener.js";
+import { Screener, setBlankedRequiredCount } from "./shared/screener.js";
 
 // Re-exports to keep greenhouse.test.ts import-compatible with the module as
 // it existed before the shared-machinery extraction.
@@ -108,6 +110,7 @@ export function parseRemixJobContext(
 
 export class GreenhouseAdapter extends ATSAdapter {
   protected controls: FormControls;
+  protected profile!: Profile;
 
   constructor(stagehand: Stagehand) {
     super(stagehand);
@@ -536,6 +539,7 @@ export class GreenhouseAdapter extends ATSAdapter {
 
   async fill(payload: JobPayload, rpc?: RpcHelper): Promise<void> {
     const { url, profile } = payload;
+    this.profile = profile;
 
     console.log(`[GreenhouseAdapter] Navigating to ${url}...`);
     const page = this.getPage();
@@ -722,6 +726,9 @@ export class GreenhouseAdapter extends ATSAdapter {
       } else {
         console.log("[GreenhouseAdapter] Final sweep complete: no required field is blank.");
       }
+      // Surface how many required fields are still blank so the runner can
+      // gate auto-submit on an incomplete form.
+      setBlankedRequiredCount(finalRequired.length);
 
       // Definitive reverify of every still-empty field (required/optional, minus skips).
       await finalReverify({
@@ -746,9 +753,55 @@ export class GreenhouseAdapter extends ATSAdapter {
     console.log("[GreenhouseAdapter] Form filling completed.");
   }
 
-  async submit(): Promise<void> {
+  async submit(): Promise<SubmitOutcome> {
     console.log("[GreenhouseAdapter] Submitting application form...");
+    const page = this.getPage();
     await this.stagehand.act("Click the Submit Application button");
     await randomSleep(500, 1000);
+
+    return verifySubmitOutcome(page, {
+      tag: "Greenhouse",
+      successUrlRe: /thanks|submitted|confirmation|success|applied|complete/i,
+      submitButtonSelector:
+        "input[type='submit'], button[type='submit'], button:has-text('Submit Application')",
+    });
+  }
+
+  /**
+   * Recheck and re-fill any required field that is still blank, then report
+   * how many remain blank. Called by the runner after a retryable submit
+   * failure (validation blocked by unfilled fields).
+   */
+  async recheckMissingFields(rpc?: RpcHelper): Promise<number> {
+    console.log("[GreenhouseAdapter] Rechecking missing required fields...");
+    const stillBlank: string[] = [];
+    const controls = this.controls;
+    const fields = await this.collectQuestions();
+    const inventory = this.mergeInventory(null, fields);
+    for (const f of inventory) {
+      if (!f.required) continue;
+      if (await controls.readFieldValue(f)) continue;
+      if (PRE_FILLED_LABELS.has(normalizeOptionText(f.label))) continue;
+      const screener = new Screener(
+        controls,
+        "GreenhouseAdapter",
+        this.profile,
+        rpc ?? (async () => ({ answer: "" }))
+      );
+      const filled: string[] = [];
+      const blanked: { label: string; reason: string }[] = [];
+      const skipped = new Set<string>();
+      await screener.process(f, filled, blanked, skipped);
+      if (filled.length === 0) stillBlank.push(f.label);
+    }
+    const remaining = stillBlank.length;
+    setBlankedRequiredCount(remaining);
+    console.log(
+      `[GreenhouseAdapter] Recheck complete: ${remaining} required field(s) still blank.`
+    );
+    for (const l of stillBlank) {
+      console.warn(`[GreenhouseAdapter]   still blank: ${escapePromptValue(l)}`);
+    }
+    return remaining;
   }
 }
