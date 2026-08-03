@@ -159,11 +159,17 @@ CREATE TABLE IF NOT EXISTS resume_embeddings (
     embedding    vector({VECTOR_DIM})
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_resume_embeddings_hash
-    ON resume_embeddings (content_hash);
-
 ALTER TABLE resume_embeddings
 ADD COLUMN IF NOT EXISTS content_hash TEXT NOT NULL DEFAULT '';
+
+-- Backfill content hashes for rows created before the column existed, so
+-- the unique index below can be built on non-empty hashes.
+UPDATE resume_embeddings
+SET content_hash = encode(sha256(convert_to(content, 'UTF8')), 'hex')
+WHERE content_hash = '';
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_resume_embeddings_hash
+    ON resume_embeddings (content_hash);
 
 CREATE TABLE IF NOT EXISTS discovered_domains (
     domain          TEXT PRIMARY KEY,
