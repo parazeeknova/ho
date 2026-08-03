@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Generator
 
 import pytest
 
@@ -19,7 +20,7 @@ LANES = ("high", "medium", "low")
 
 
 @pytest.fixture(autouse=True)
-def _clean_state() -> None:
+def _clean_state() -> Generator[None]:
     src_sources._SOURCE_CHECKPOINTS.clear()
     src_sources._LAST_SNAPSHOT_URLS.clear()
     yield
