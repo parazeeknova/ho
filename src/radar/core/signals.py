@@ -38,6 +38,153 @@ _NO_SPONSOR_PATS = [
     r"\bno\s+(?:visa|h1b|h-1b)\b",
 ]
 
+# US location detection for location-eligibility filtering and card warnings.
+_US_STATE_CODES = {
+    "al",
+    "ak",
+    "az",
+    "ar",
+    "ca",
+    "co",
+    "ct",
+    "de",
+    "fl",
+    "ga",
+    "hi",
+    "id",
+    "il",
+    "in",
+    "ia",
+    "ks",
+    "ky",
+    "la",
+    "me",
+    "md",
+    "ma",
+    "mi",
+    "mn",
+    "ms",
+    "mo",
+    "mt",
+    "ne",
+    "nv",
+    "nh",
+    "nj",
+    "nm",
+    "ny",
+    "nc",
+    "nd",
+    "oh",
+    "ok",
+    "or",
+    "pa",
+    "ri",
+    "sc",
+    "sd",
+    "tn",
+    "tx",
+    "ut",
+    "vt",
+    "va",
+    "wa",
+    "wv",
+    "wi",
+    "wy",
+    "dc",
+    "pr",
+}
+_US_CITIES = {
+    "new york",
+    "san francisco",
+    "los angeles",
+    "seattle",
+    "austin",
+    "boston",
+    "chicago",
+    "denver",
+    "portland",
+    "phoenix",
+    "san diego",
+    "dallas",
+    "houston",
+    "miami",
+    "atlanta",
+    "washington",
+    "philadelphia",
+    "detroit",
+    "minneapolis",
+    "raleigh",
+    "nashville",
+    "salt lake city",
+    "pittsburgh",
+    "boulder",
+    "madison",
+    "boise",
+    "charlotte",
+    "tampa",
+    "orlando",
+    "cincinnati",
+    "cleveland",
+    "kansas city",
+    "st. louis",
+    "milwaukee",
+    "indianapolis",
+    "columbus",
+    "san jose",
+    "santa clara",
+    "mountain view",
+    "palo alto",
+    "sunnyvale",
+    "redwood city",
+    "bellevue",
+    "irvine",
+    "santa monica",
+    "menlo park",
+    "cambridge",
+    "jersey city",
+    "brooklyn",
+}
+_US_MARKERS = {
+    "united states",
+    "u.s.",
+    "u.s.a",
+    "usa",
+    "us only",
+    "us remote",
+    "remote (us)",
+    "remote us",
+    "us based",
+}
+
+
+def is_us_location(location: str) -> bool:
+    """Heuristic: does a normalized location string point at the US?
+
+    Triggers on explicit markers ("united states", "usa", "remote (us)"),
+    a standalone US state code (e.g. "San Francisco, CA"), or a major US
+    city when the string is short (avoiding false positives on ambiguous
+    long descriptions).
+    """
+    if not location:
+        return False
+    loc = location.lower().strip()
+    if len(loc) > 120:
+        loc = loc[:120]
+    for marker in _US_MARKERS:
+        if marker in loc:
+            return True
+    if re.search(r"\bus\b", loc):
+        return True
+    tokens = re.findall(r"\b([a-z]{2})\b", loc)
+    for tok in tokens:
+        if tok in _US_STATE_CODES:
+            return True
+    if len(loc) < 60:
+        for city in _US_CITIES:
+            if city in loc:
+                return True
+    return False
+
 
 def extract_signals(markdown: str, title: str = "") -> dict:
     """Extract all deterministic signals from raw posting text."""

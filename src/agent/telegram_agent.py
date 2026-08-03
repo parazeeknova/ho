@@ -791,6 +791,22 @@ class TelegramAgent:
         raw_link = job.get("apply_link") or job.get("direct_apply_url") or job.get("url") or ""
         apply_link = str(raw_link).strip()
 
+        # Location-eligibility warnings: this candidate needs visa sponsorship
+        # to attend onsite roles, so flag them loudly on the card itself.
+        from src.radar.core.signals import is_us_location
+
+        loc_raw = str(job.get("location") or "Remote").strip()
+        is_remote_role = bool(job.get("is_remote")) or "remote" in loc_raw.lower()
+        is_us = is_us_location(loc_raw)
+        warnings: list[str] = []
+        if not is_remote_role:
+            warnings.append("⚠ Onsite role - requires visa/relocation, may be rejected")
+        if is_us and not job.get("sponsors_visa"):
+            warnings.append("⚠ US role - visa sponsorship not confirmed")
+        warning_block = ""
+        if warnings:
+            warning_block = "\n" + "\n".join(f"<b>{w}</b>" for w in warnings)
+
         comp_desc = html.escape(
             str(
                 job.get("company_description")
@@ -823,6 +839,8 @@ class TelegramAgent:
         else:
             lines.append(f"<i>Newly surfaced</i>{badges_str}")
         lines.append(f"📍 {location}")
+        if warning_block:
+            lines.append(warning_block)
         if salary_str:
             lines.append(f"💰 {salary_str}")
 

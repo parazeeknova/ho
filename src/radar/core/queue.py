@@ -561,6 +561,32 @@ def _apply_llm_result(candidate: JobCandidate, result: dict[str, Any]) -> None:
         candidate.eligibility = EligibilityState.REJECTED
         candidate.rejection_reason = RejectionReason.MATCHER_NO_MATCH
 
+    _apply_location_eligibility(candidate)
+
+
+def _apply_location_eligibility(candidate: JobCandidate) -> None:
+    """Reject US onsite roles: this candidate cannot attend them without
+    visa sponsorship, so recommending them wastes both sides' time.
+
+    US remote roles pass (the visa-sponsorship question is carried on the
+    card as a warning when unconfirmed). Only applies when the matcher
+    actually produced a location; unknown locations are not penalized.
+    """
+    from src.radar.core.signals import is_us_location
+
+    if candidate.eligibility not in (EligibilityState.ACCEPTED, EligibilityState.NEAR_MISS):
+        return
+    if not get_config().radar.us_only_remote:
+        return
+    location = candidate.normalized_location or ""
+    if not location or location.lower() in ("unknown", "n/a", "not specified"):
+        return
+    if candidate.is_remote:
+        return
+    if is_us_location(location):
+        candidate.eligibility = EligibilityState.REJECTED
+        candidate.rejection_reason = RejectionReason.US_ONSITE
+
 
 def _build_group_key(candidate: JobCandidate) -> str:
     from src.radar.core.models import make_canonical_id

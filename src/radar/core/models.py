@@ -51,6 +51,7 @@ class RejectionReason(Enum):
     MATCHER_LOW_SCORE = "matcher_low_score"
     VECTOR_GATE = "vector_gate"
     NO_SPONSORSHIP = "no_sponsorship"
+    US_ONSITE = "us_onsite"
     UNKNOWN = "unknown"
 
 

@@ -284,6 +284,9 @@ class RadarConfig:
     discovery_source: str = field(
         default_factory=lambda: _env_str("DISCOVERY_SOURCE", "all").lower()
     )
+    # US roles are only reachable for this candidate when remote; onsite US
+    # postings (which require visa sponsorship to attend) are rejected.
+    us_only_remote: bool = field(default_factory=lambda: _env_bool("RADAR_US_ONLY_REMOTE", True))
 
 
 @dataclass

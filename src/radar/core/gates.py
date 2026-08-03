@@ -736,6 +736,7 @@ _REJECTION_DESCRIPTIONS: dict[RejectionReason, str] = {
     RejectionReason.SALARY_BELOW_MIN: "Salary is below candidate minimum",
     RejectionReason.CLEARANCE_REQUIRED: "Requires security clearance or citizenship",
     RejectionReason.NO_SPONSORSHIP: "Company explicitly does not sponsor visas",
+    RejectionReason.US_ONSITE: "US onsite role - needs visa sponsorship, remote-only policy",
     RejectionReason.SOURCE_STALE: "Source has not produced fresh content",
     RejectionReason.SOURCE_LOW_CONFIDENCE: "Source quality score is too low",
     RejectionReason.MATCHER_NO_MATCH: "LLM matcher returned NO_MATCH verdict",
