@@ -1,6 +1,6 @@
 {
   "name": "Aman Aziz",
-  "version": 132,
+  "version": 135,
   "identity": {
     "firstName": "Aman",
     "lastName": "Aziz",
@@ -36,6 +36,12 @@
       "category": "work_authorization",
       "question": "Are you legally authorized to work in India?",
       "answer": "Yes"
+    },
+    {
+      "category": "authorization",
+      "question": "Are you authorized to work in the country? (India)",
+      "answer": "Yes, only in India",
+      "country": "india"
     },
     {
       "category": "work_authorization",
@@ -120,18 +126,12 @@
     {
       "category": "authorization",
       "question": "Are you legally authorized to work in the country where the job is located?",
-      "answer": "No"
+      "answer": "No, I am only authorized to work in India"
     },
     {
       "category": "visa",
       "question": "Will you now or in the future require company sponsorship to retain or extend your work authorization in the country where the job is located?",
       "answer": "Yes"
-    },
-    {
-      "category": "authorization",
-      "question": "Are you authorized to work in the country? (India)",
-      "answer": "Yes",
-      "country": "india"
     },
     {
       "category": "general",
@@ -269,87 +269,9 @@
       "answer": "LinkedIn"
     },
     {
-      "category": "authorization",
-      "question": "Are you authorized to work in the country? (India)",
-      "answer": "Yes",
-      "country": "india"
-    },
-    {
-      "category": "authorization",
-      "question": "Are you authorized to work in the country? (India)",
-      "answer": "Yes",
-      "country": "india"
-    },
-    {
-      "category": "authorization",
-      "question": "Are you authorized to work in the country? (India)",
-      "answer": "Yes",
-      "country": "india"
-    },
-    {
-      "category": "authorization",
-      "question": "Are you authorized to work in the country? (India)",
-      "answer": "Yes",
-      "country": "india"
-    },
-    {
-      "category": "authorization",
-      "question": "Are you authorized to work in the country? (India)",
-      "answer": "No",
-      "country": "india"
-    },
-    {
-      "category": "authorization",
-      "question": "Are you authorized to work in the country? (India)",
-      "answer": "No",
-      "country": "india"
-    },
-    {
-      "category": "authorization",
-      "question": "Are you authorized to work in the country? (India)",
-      "answer": "No",
-      "country": "india"
-    },
-    {
-      "category": "authorization",
-      "question": "Are you authorized to work in the country? (India)",
-      "answer": "No",
-      "country": "india"
-    },
-    {
-      "category": "authorization",
-      "question": "Are you authorized to work in the country? (India)",
-      "answer": "No",
-      "country": "india"
-    },
-    {
-      "category": "authorization",
-      "question": "Are you authorized to work in the country? (India)",
-      "answer": "No",
-      "country": "india"
-    },
-    {
       "category": "general",
       "question": "Graduation Date",
       "answer": "18/05/27"
-    },
-    {
-      "category": "authorization",
-      "question": "Are you authorized to work in the country? (India)",
-      "answer": "No",
-      "country": "india"
-    },
-    {
-      "category": "authorization",
-      "question": "Are you authorized to work in the country? (India)",
-      "answer": "No",
-      "country": "india"
-    },
-    {
-      "category": "authorization",
-      "question": "Are you authorized to work in the country? (India)",
-      "answer": "No",
-      "country": "india"
     },
     {
       "category": "expected_graduation",
@@ -360,78 +282,6 @@
       "category": "expected_graduation",
       "question": "What is your expected graduation date?",
       "answer": "18 May 2027"
-    },
-    {
-      "category": "authorization",
-      "question": "Are you authorized to work in the country? (India)",
-      "answer": "No",
-      "country": "india"
-    },
-    {
-      "category": "authorization",
-      "question": "Are you authorized to work in the country? (India)",
-      "answer": "No",
-      "country": "india"
-    },
-    {
-      "category": "authorization",
-      "question": "Are you authorized to work in the country? (India)",
-      "answer": "No",
-      "country": "india"
-    },
-    {
-      "category": "authorization",
-      "question": "Are you authorized to work in the country? (India)",
-      "answer": "No",
-      "country": "india"
-    },
-    {
-      "category": "authorization",
-      "question": "Are you authorized to work in the country? (India)",
-      "answer": "No",
-      "country": "india"
-    },
-    {
-      "category": "authorization",
-      "question": "Are you authorized to work in the country? (India)",
-      "answer": "No",
-      "country": "india"
-    },
-    {
-      "category": "authorization",
-      "question": "Are you authorized to work in the country? (India)",
-      "answer": "No",
-      "country": "india"
-    },
-    {
-      "category": "authorization",
-      "question": "Are you authorized to work in the country? (India)",
-      "answer": "No",
-      "country": "india"
-    },
-    {
-      "category": "authorization",
-      "question": "Are you authorized to work in the country? (India)",
-      "answer": "No",
-      "country": "india"
-    },
-    {
-      "category": "authorization",
-      "question": "Are you authorized to work in the country? (India)",
-      "answer": "No",
-      "country": "india"
-    },
-    {
-      "category": "authorization",
-      "question": "Are you authorized to work in the country? (India)",
-      "answer": "No",
-      "country": "india"
-    },
-    {
-      "category": "authorization",
-      "question": "Are you authorized to work in the country? (India)",
-      "answer": "No",
-      "country": "india"
     }
   ]
 }

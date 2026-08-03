@@ -29,11 +29,17 @@ export function humanTypingMaxLength(): number {
 /**
  * Human per-keystroke delay: mostly 40-140ms with an occasional longer
  * "thinking" pause between bursts, so the inter-key cadence is never uniform.
+ * AUTOFILL_TYPING_SPEED scales the cadence down (>1 = faster typing while
+ * still emitting real per-keystroke events); 1 = default, ignored below 1.
  */
 export function typingDelayMs(): number {
-  const base = 40 + Math.floor(Math.random() * 100);
+  const speed = parseFloat(process.env.AUTOFILL_TYPING_SPEED || "1");
+  const divisor = Number.isFinite(speed) && speed >= 1 ? speed : 1;
+  const base = (40 + Math.floor(Math.random() * 100)) / divisor;
   // ~7% of keys: a longer pause (hand on keyboard, re-reading).
-  return Math.random() < 0.07 ? base + 250 + Math.floor(Math.random() * 350) : base;
+  return Math.random() < 0.07
+    ? base + (250 + Math.floor(Math.random() * 350)) / divisor
+    : base;
 }
 
 /**
