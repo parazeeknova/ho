@@ -150,7 +150,10 @@ async def main() -> None:
     except Exception as e:
         ux.chip("err", f"Could not connect to Postgres: {e}")
         ux.bullet("Start the database first:")
-        ux.bullet("  docker compose up -d nuq-postgres", style="cyan")
+        ux.bullet(
+            "  docker compose -f packages/ingest/docker-compose.yaml up -d nuq-postgres",
+            style="cyan",
+        )
         ux.bullet(
             "  PGPASSWORD=postgres psql -h localhost -p 5433 -U postgres "
             "-d agent_memory -f packages/ingest/scripts/sql/init-pgvector.sql",

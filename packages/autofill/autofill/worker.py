@@ -206,7 +206,7 @@ async def _ensure_torproxy() -> None:
             "docker",
             "compose",
             "-f",
-            str(_PROJECT_ROOT / "docker-compose.yaml"),
+            str(_PROJECT_ROOT / "packages" / "ingest" / "docker-compose.yaml"),
             "up",
             "-d",
             "torproxy",
@@ -223,7 +223,7 @@ async def _ensure_torproxy() -> None:
         await asyncio.sleep(1)
     logger.warning(
         "torproxy not ready on :9050; browser runs will fail to connect "
-        "(start it with: make tor-up)"
+        "(start it with: npm run fc -- tor-up)"
     )
 
 
@@ -234,7 +234,7 @@ async def _read_tor_cookie_hex() -> str:
             "docker",
             "compose",
             "-f",
-            str(_PROJECT_ROOT / "docker-compose.yaml"),
+            str(_PROJECT_ROOT / "packages" / "ingest" / "docker-compose.yaml"),
             "ps",
             "-q",
             "torproxy",
