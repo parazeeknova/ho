@@ -136,10 +136,23 @@ export class AshbyAdapter extends ATSAdapter {
   private async waitForForm(): Promise<void> {
     const page = this.getPage();
     for (let i = 0; i < 40; i++) {
+      // The resume file input (#_systemfield_resume) hydrates AFTER the field
+      // rows render — it must be present before fill() tries to upload, or
+      // setInputFiles silently targets nothing and the resume never attaches.
       const ready = await page
-        .locator('[data-field-path], button.ashby-application-form-submit-button')
-        .first()
-        .isVisible()
+        .evaluate(() => {
+          const rows = Array.from(document.querySelectorAll("[data-field-path]"));
+          const anyVisible = rows.some(
+            (el) =>
+              (el as HTMLElement).offsetParent !== null ||
+              (el as HTMLElement).getBoundingClientRect().height > 0
+          );
+          return (
+            anyVisible ||
+            !!document.querySelector("#_systemfield_resume[type='file']") ||
+            !!document.querySelector("button.ashby-application-form-submit-button")
+          );
+        })
         .catch(() => false);
       if (ready) return;
       await randomSleep(800, 1200);
@@ -296,7 +309,8 @@ export class AshbyAdapter extends ATSAdapter {
       // gate auto-submit on an incomplete form.
       setBlankedRequiredCount(requiredBlanks.length);
 
-      if (profile.resumePath && !resumeAttached && !(await this.controls.isResumeAttached())) {
+      const resumeBase = (profile.resumePath ?? "").split(/[\\/]/).pop() || "";
+      if (profile.resumePath && !resumeAttached && !(await this.controls.isResumeAttached(resumeBase))) {
         console.warn("[Ashby] REVERIFY: resume is NOT attached after the final pass.");
       } else if (profile.resumePath) {
         console.log("[Ashby] REVERIFY: resume is attached.");
@@ -362,20 +376,39 @@ export class AshbyAdapter extends ATSAdapter {
 
   private async uploadResume(resumePath: string): Promise<boolean> {
     const page = this.getPage();
-    const input = page.locator('#_systemfield_resume[type="file"]').first();
+    const baseName = resumePath.split(/[\\/]/).pop() || "";
     console.log(`[Ashby] Uploading resume from ${resumePath}...`);
     for (let attempt = 0; attempt < 3; attempt++) {
+      // The resume input hydrates AFTER the field rows render. Wait for it so
+      // setInputFiles targets a real element — a stale/absent locator silently
+      // no-ops and the resume is never attached.
+      const input = page.locator('#_systemfield_resume[type="file"]').first();
+      for (let i = 0; i < 12; i++) {
+        if ((await input.count()) > 0) break;
+        await randomSleep(500, 800);
+      }
       if ((await input.count()) === 0) {
-        console.log("[Ashby] Resume already registered (input consumed).");
-        return true;
+        // No file input in the DOM. It may have been consumed by a previous
+        // attempt — only count that as attached when a rendered attachment
+        // chip actually shows the resume file name.
+        if (await this.controls.isResumeAttached(baseName)) {
+          console.log("[Ashby] Resume already registered (attachment visible).");
+          return true;
+        }
+        console.warn(
+          `[Ashby] Resume input not present (attempt ${attempt + 1}); retrying...`
+        );
+        continue;
       }
       try {
         await input.setInputFiles(resumePath);
       } catch (err: any) {
-        console.warn(`[Ashby] Resume setInputFiles threw (attempt ${attempt + 1}): ${err?.message || err}`);
+        console.warn(
+          `[Ashby] Resume setInputFiles threw (attempt ${attempt + 1}): ${err?.message || err}`
+        );
       }
       await randomSleep(1500, 2200);
-      if (await this.controls.isResumeAttached()) {
+      if (await this.controls.isResumeAttached(baseName)) {
         console.log("[Ashby] Resume uploaded and registered.");
         return true;
       }
@@ -694,17 +727,38 @@ export class AshbyControlStack extends FormControls {
     }
   }
 
-  /** Resume flag: true only if the file input is consumed or has files. */
-  async isResumeAttached(): Promise<boolean> {
+  /** Resume flag: true only when the file input carries files or a rendered
+   *  attachment chip shows the resume name. A missing input does NOT prove
+   *  attachment — it may simply not have hydrated yet (that was the Matic bug:
+   *  an early "input consumed" returned true for an empty form). */
+  async isResumeAttached(fileName = ""): Promise<boolean> {
     const page = this.getPage();
     return page
-      .evaluate(() => {
+      .evaluate((name: string) => {
         const input = document.querySelector(
           '#_systemfield_resume[type="file"]'
         ) as HTMLInputElement | null;
-        if (!input) return true;
-        return !!(input.files && input.files.length > 0);
-      })
+        if (input) return !!(input.files && input.files.length > 0);
+        // No file input in the DOM: attached ONLY when a rendered file chip
+        // (upload/attachment area) shows the resume name — never the generic
+        // "Upload your resume" hint, which would false-positive an empty form.
+        if (!name) return false;
+        const areas = Array.from(
+          document.querySelectorAll(
+            '[class*="file"], [class*="upload"], [class*="attachment"], [id^="upload-"], [class*="resume"]'
+          )
+        );
+        for (const a of areas) {
+          const t = (a.textContent || "").replace(/\s+/g, " ").trim();
+          // The resume name in a chip wins even when the chip also carries
+          // the upload hint ("resume.pdf · Upload a different file").
+          if (t.includes(name)) return true;
+          const stem = name.length > 16 ? name.slice(0, 20) : "";
+          if (stem && t.includes(stem)) return true;
+          if (/upload|drag|drop/i.test(t)) continue; // the upload hint, not a chip
+        }
+        return false;
+      }, fileName)
       .catch(() => false);
   }
 

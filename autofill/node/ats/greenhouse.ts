@@ -127,16 +127,46 @@ export class GreenhouseAdapter extends ATSAdapter {
 
   private async ensureApplicationForm(): Promise<void> {
     const page = this.getPage();
-    const form = page.locator('#first_name, #application-form').first();
+    const formVisible = async (): Promise<boolean> => {
+      // The form may render in THIS page or in a NEW TAB opened by the Apply
+      // click (job-boards.eu.greenhouse.io does this); adopt whichever page
+      // shows the form so the rest of the fill drives the right document.
+      for (const p of this.stagehand.context.pages()) {
+        try {
+          if (await p.locator('#first_name, #application-form').first().isVisible().catch(() => false)) {
+            if (p !== this.controls.getPage()) {
+              this.controls.adoptPage(p);
+            }
+            return true;
+          }
+        } catch {
+          // Page may have been closed mid-poll; skip it.
+        }
+      }
+      return false;
+    };
     // Give the page a moment to hydrate, then check for the form.
     await randomSleep(1200, 2000);
-    if (await form.isVisible().catch(() => false)) {
+    if (await formVisible()) {
       return;
     }
-    // Some Greenhouse postings only reveal the application form after clicking Apply.
+    // Some Greenhouse postings only reveal the application form after clicking
+    // Apply. The click may open the form in a new tab OR keep the JD page —
+    // poll for the form so fill() never walks an empty JD page (the ABBYY bug:
+    // submit clicked nothing because the form was never reached).
     console.log("[GreenhouseAdapter] Application form not visible; clicking Apply...");
     await this.controls.safeAct("click the 'Apply for this job' or 'Apply now' button");
-    await randomSleep(800, 1500);
+    for (let i = 0; i < 24; i++) {
+      await randomSleep(900, 1200);
+      if (await formVisible()) {
+        console.log("[GreenhouseAdapter] Application form is now visible.");
+        return;
+      }
+    }
+    throw new Error(
+      "Greenhouse application form never appeared after clicking Apply " +
+        "(no #first_name / #application-form visible in any tab)"
+    );
   }
 
   /**
@@ -470,11 +500,26 @@ export class GreenhouseAdapter extends ATSAdapter {
     const baseName = resumePath.split(/[\\/]/).pop() || "";
     console.log(`[GreenhouseAdapter] Uploading resume from ${resumePath}...`);
     for (let attempt = 0; attempt < 3; attempt++) {
+      // The resume input may hydrate after the rest of the form (or after the
+      // Apply click opened the form in a new tab) — wait for it so
+      // setInputFiles targets a real element, never an absent locator.
       const resumeInput = page.locator('input#resume[type="file"]').first();
+      for (let i = 0; i < 12; i++) {
+        if ((await resumeInput.count()) > 0) break;
+        await randomSleep(500, 800);
+      }
       if ((await resumeInput.count()) === 0) {
-        // Already consumed by a previous attempt — the resume is attached.
-        console.log("[GreenhouseAdapter] Resume already registered (input consumed).");
-        return true;
+        // No file input in the DOM. Only count it as attached when a rendered
+        // attachment shows the resume name — an absent input is NOT proof (it
+        // may simply not have hydrated yet).
+        if (await this.isResumeAttached(page, baseName)) {
+          console.log("[GreenhouseAdapter] Resume already registered (attachment visible).");
+          return true;
+        }
+        console.warn(
+          `[GreenhouseAdapter] Resume input not present (attempt ${attempt + 1}); retrying...`
+        );
+        continue;
       }
       try {
         await resumeInput.setInputFiles(resumePath);
@@ -496,20 +541,22 @@ export class GreenhouseAdapter extends ATSAdapter {
     return false;
   }
 
-  /** Whether the resume is attached (input consumed, has files, or name shown). */
+  /** Whether the resume is attached (input has files, or the name is shown in
+   *  a rendered file-upload chip). A missing input is NOT proof of attachment
+   *  — it may simply not have hydrated yet. */
   private async isResumeAttached(page: any, fileName = ""): Promise<boolean> {
     return page
       .evaluate((name: string) => {
         const input = document.querySelector(
           'input#resume[type="file"]'
         ) as HTMLInputElement | null;
-        if (!input) return true; // consumed by the board = attached
-        if (input.files && input.files.length > 0) return true;
+        if (input && input.files && input.files.length > 0) return true;
+        if (!name) return false;
         const area = document.querySelector(
           ".file-upload, [class*='file-upload'], [id^='upload-label-']"
         );
         const text = area ? (area.textContent || "") : "";
-        return !!name && text.includes(name);
+        return !!name && (text.includes(name) || text.replace(/\s+/g, "").includes(name));
       }, fileName)
       .catch(() => false);
   }
@@ -743,7 +790,8 @@ export class GreenhouseAdapter extends ATSAdapter {
       });
 
       // Resume reverify: surface a failed attach instead of submitting without a CV.
-      if (profile.resumePath && !resumeAttached && !(await this.isResumeAttached(page))) {
+      const resumeBase = (profile.resumePath ?? "").split(/[\\/]/).pop() || "";
+      if (profile.resumePath && !resumeAttached && !(await this.isResumeAttached(page, resumeBase))) {
         console.warn("[GreenhouseAdapter] REVERIFY: resume is NOT attached after the final pass.");
       } else if (profile.resumePath) {
         console.log("[GreenhouseAdapter] REVERIFY: resume is attached.");

@@ -11,7 +11,59 @@ import {
   selectCandidates,
   pickLocationOption,
   translateToDate,
+  valuesConsistent,
 } from "./matching.js";
+
+/**
+ * Coerce an answer for a type=number input to a bare numeric string, or ""
+ * when nothing numeric survives. Stagehand's fill rejects non-numeric values
+ * with an invalid-number-value error that aborts the whole fill; KB/LLM
+ * answers are often ranges or labels ("0-4 Years", "Immediately").
+ *
+ * Quantity suffixes are expanded ("80K" -> "80000", "1.5M" -> "1500000") so a
+ * salary answer like "80K INR/month" never degrades to a bare "80", and
+ * separators/whitespace are stripped ("1,200" -> "1200").
+ */
+export function sanitizeNumberAnswer(answer: string): string {
+  const original = String(answer ?? "").trim();
+  if (!original) return "";
+  // Quantity suffix (K/M/B): only when the magnitude is a STANDALONE token —
+  // digit-run + suffix, bounded by non-letters on both sides. This expands
+  // "80K INR/month" -> "80000" while never exploding ordinary words like
+  // "3 BHK", "8 MB", "5 M&A deals", or the "2B" inside "10 B2B clients".
+  const mul = original.match(
+    /(?<![a-zA-Z0-9])([\d.]+)([kKmMbB])(?=\s|[^a-zA-Z0-9]|$)/
+  );
+  if (mul) {
+    const n = parseFloat(mul[1]);
+    const mult: Record<string, number> = { k: 1e3, m: 1e6, b: 1e9 };
+    if (Number.isFinite(n)) return String(Math.round(n * mult[mul[2].toLowerCase()]));
+  }
+  const m = original.replace(/[,\s]/g, "").match(/-?\d+(?:\.\d+)?/);
+  return m ? m[0] : "";
+}
+
+/**
+ * Normalize a committed form value so a framework placeholder (the literal
+ * strings "undefined", "null", "NaN") never counts as a filled answer or gets
+ * committed to a field. Returns the trimmed value, or "" for placeholders.
+ */
+export function cleanPlaceholderValue(value: string): string {
+  const v = (value ?? "").trim();
+  return /^(undefined|null|nan)$/i.test(v) ? "" : v;
+}
+
+/**
+ * Extract the first URL from a free-text answer. Answers to "Public links" /
+ * "Portfolio" style fields are often a comma/space-separated list of several
+ * URLs; a single-line URL control can only hold one, and concatenating the
+ * list fails URL validation. Returns null when the answer has no URL.
+ */
+export function firstUrl(answer: string): string | null {
+  const urls = String(answer ?? "").match(/https?:\/\/[^\s,;"']+/g);
+  if (!urls || !urls.length) return null;
+  return urls[0].replace(/[.,;)\]>]+$/, "").trim() || null;
+}
 
 /**
  * Browser-interaction primitives shared by all ATS adapters: deterministic
@@ -287,7 +339,7 @@ export class FormControls {
   async readSelectValue(id: string): Promise<string> {
     const page = this.getPage();
     try {
-      return await page.evaluate((inputId: string) => {
+      const raw = await page.evaluate((inputId: string) => {
         const input = document.getElementById(inputId) as HTMLInputElement | null;
         if (!input) return "";
         const shell =
@@ -310,6 +362,7 @@ export class FormControls {
         }
         return (input.value || "").trim();
       }, id);
+      return cleanPlaceholderValue(raw);
     } catch {
       return "";
     }
@@ -321,7 +374,7 @@ export class FormControls {
   async readInputValue(id: string): Promise<string> {
     const page = this.getPage();
     try {
-      return await page.evaluate((inputId: string) => {
+      const raw = await page.evaluate((inputId: string) => {
         const byId = document.getElementById(inputId) as HTMLInputElement | null;
         if (byId) return (byId.value || "").trim();
         const label = document.querySelector(`label[for="${inputId}"]`);
@@ -342,6 +395,7 @@ export class FormControls {
             );
         return scoped ? ((scoped as HTMLInputElement).value || "").trim() : "";
       }, id);
+      return cleanPlaceholderValue(raw);
     } catch {
       return "";
     }
@@ -351,7 +405,7 @@ export class FormControls {
   async readGroupValue(name: string): Promise<string> {
     const page = this.getPage();
     try {
-      return await page.evaluate((groupName: string) => {
+      const raw = await page.evaluate((groupName: string) => {
         const checked = document.querySelector(
           `input[type="radio"][name="${groupName}"]:checked, input[type="checkbox"][name="${groupName}"]:checked`
         ) as HTMLInputElement | null;
@@ -368,6 +422,7 @@ export class FormControls {
           .replace(/\s+/g, " ")
           .trim();
       }, name);
+      return cleanPlaceholderValue(raw);
     } catch {
       return "";
     }
@@ -384,7 +439,7 @@ export class FormControls {
   async readScopedGroupValue(field: FormField): Promise<string> {
     const page = this.getPage();
     try {
-      return await page.evaluate((fid: string) => {
+      const raw = await page.evaluate((fid: string) => {
         const scope = document.querySelector(`[data-field-path="${fid}"]`);
         if (!scope) return "";
         const checked = scope.querySelector(
@@ -421,6 +476,7 @@ export class FormControls {
         }
         return "";
       }, field.id);
+      return cleanPlaceholderValue(raw);
     } catch {
       return "";
     }
@@ -453,7 +509,9 @@ export class FormControls {
    * label match inside the application form is the last resort. Handles all
    * three label renderings: wrapping ``label:has(input)``, a sibling
    * ``label[for=<input-id>]``, and a bare visible input. The checked state is
-   * verified after every attempt.
+   * verified after every attempt, and the wrong option is never committed:
+   * a click that does not flip the intended option (or that flips a different
+   * one) is treated as a failure and the caller leaves the field blank.
    */
   async clickGroupOption(
     field: FormField,
@@ -462,19 +520,23 @@ export class FormControls {
   ): Promise<boolean> {
     const page = this.getPage();
     try {
+      const type = field.kind === "checkbox" ? "checkbox" : "radio";
       const picks = selectCandidates(answer);
       const targets = field.optionTargets;
       for (const cand of picks) {
         const nc = normalizeOptionText(cand);
+        // Never match a target whose text is empty: ``nc.includes("")`` is
+        // always true, which silently selects the FIRST option in the group
+        // (e.g. "Yes") no matter what the answer was.
+        const nonEmptyTargets = targets.filter((t) => normalizeOptionText(t.text).length > 0);
         const target =
-          targets.find((t) => normalizeOptionText(t.text) === nc) ||
-          targets.find(
+          nonEmptyTargets.find((t) => normalizeOptionText(t.text) === nc) ||
+          nonEmptyTargets.find(
             (t) =>
               normalizeOptionText(t.text).includes(nc) ||
               nc.includes(normalizeOptionText(t.text))
           );
         if (!target) continue;
-        const type = field.kind === "checkbox" ? "checkbox" : "radio";
         // NOTE: do NOT add `[value="..."]` here. For an input without a value
         // attribute, `input.value` (the property, read by the walker) is the
         // browser default "on", but there is NO `value` attribute in the DOM —
@@ -488,8 +550,11 @@ export class FormControls {
         // When the input has no id (common for Greenhouse/Lever), disambiguate
         // the group by matching the option's OWN label text: walk every input
         // in the group, find the one whose wrapping/sibling label matches the
-        // candidate, and use THAT input's id. This clicks the correct option
-        // (e.g. "No" in a Yes/No group) instead of always the first.
+        // candidate, and use THAT input's id. The match is substring-aware so
+        // a leading-token/clause candidate ("No", "No, I am not based in
+        // Europe/UK") still resolves to the full option ("No, I am not based
+        // in Europe/UK and would require visa support.") instead of being
+        // skipped and falling back to a first-match click on the wrong option.
         const nameSel = cssEscape(target.name || field.name || field.id);
         let optionId = target.id;
         if (!optionId) {
@@ -508,6 +573,7 @@ export class FormControls {
                     `input[type="${args.type}"][name="${args.name}"]`
                   )
                 ) as HTMLInputElement[];
+                let best = "";
                 for (const inp of inputs) {
                   const wrapLabel = inp.closest("label");
                   const forLabel = inp.id
@@ -519,11 +585,21 @@ export class FormControls {
                       ? label.textContent || ""
                       : inp.getAttribute("aria-label") || ""
                   );
+                  if (!txt) continue;
                   if (txt === args.want) {
-                    return inp.id || "";
+                    if (inp.id) return inp.id;
+                    // Exact match with no id: keep it as best rather than
+                    // throwing away a substring-matched sibling.
+                    best = inp.id || best;
+                    continue;
+                  }
+                  // Substring either way: the candidate may be a leading token
+                  // of a longer option, or the option a fragment of the answer.
+                  if (txt.includes(args.want) || args.want.includes(txt)) {
+                    best = inp.id || best;
                   }
                 }
-                return "";
+                return best;
               },
               { name: nameSel, type, want: nc }
             )
@@ -533,12 +609,23 @@ export class FormControls {
           ? `input[type="${type}"][id="${cssEscape(optionId)}"]`
           : `input[type="${type}"][name="${nameSel}"]`;
         const input = page.locator(base).first();
+        // A name-only selector resolves to the group's FIRST option (all
+        // members share the name). Only an id-precise click is trusted
+        // immediately; an id-less click must be verified against the intended
+        // answer so a "No" answer can never commit a "Yes" first option.
+        const verified = async (): Promise<boolean> => {
+          if (optionId) return true;
+          const committed = await this.readFieldValue(field);
+          return !!committed && valuesConsistent(answer, committed);
+        };
 
         // 1) Wrapping label (label:has(input)).
         const wrapLabel = page.locator(`label:has(${base})`).first();
         if (await wrapLabel.isVisible().catch(() => false)) {
           await wrapLabel.click();
-          if (await input.isChecked().catch(() => false)) return true;
+          if (await input.isChecked().catch(() => false)) {
+            if (await verified()) return true;
+          }
         }
         // 2) Sibling label[for=<input id>] — label is NOT an ancestor. The
         //    native radio/checkbox is often visually hidden (opacity:0 or a
@@ -552,21 +639,31 @@ export class FormControls {
           const forLabel = page.locator(`label[for="${cssEscape(inputId)}"]`).first();
           if (await forLabel.isVisible().catch(() => false)) {
             await forLabel.click();
-            if (await input.isChecked().catch(() => false)) return true;
+            if (await input.isChecked().catch(() => false)) {
+              if (await verified()) return true;
+            }
           }
         }
         // 3) Bare input: force-check it (never rely on a wrapping label or
         //    visibility — the input is often the styled/hidden native control).
         await (input as any).check({ force: true }).catch(() => {});
-        if (await input.isChecked().catch(() => false)) return true;
+        if (await input.isChecked().catch(() => false)) {
+          if (await verified()) return true;
+        }
       }
+
       // Fallback: click a matching visible element within the field's OWN
       // scope. Board-agnostic — handles toggle-button rows, pill options, and
-      // option rows whose input has no id/name captured. Closes over the
-      // answer and verifies the field actually flipped afterward.
+      // option rows whose input has no id/name captured. Only leaf option rows
+      // are clicked (a wrapper whose text spans the whole group can toggle the
+      // FIRST option and commit the WRONG value), and an element whose text
+      // also contains another option of the group is never a target.
+      const optionTexts = field.options
+        .map((o) => normalizeOptionText(o))
+        .filter(Boolean);
       const scopeClicked = await page
         .evaluate(
-          (fid: string, want: string) => {
+          (fid: string, want: string, opts: string[]) => {
             const scope = document.querySelector(`[data-field-path="${fid}"]`);
             if (!scope) return false;
             // WARNING: only anonymous arrows here (tsx keepNames wraps
@@ -580,35 +677,120 @@ export class FormControls {
                 "button, label[for], label:has(input), [role='option'], " +
                   "[class*='option'], li, span, div[class*='option']"
               )
-            ).filter((el) => {
-              const txt = norm((el as HTMLElement).textContent || "");
-              // Skip empty and the question label itself (a label whose text
-              // equals the field's own heading is not an option).
-              return txt === want || (txt && want && txt.includes(want));
-            });
+            );
+            const scored: Array<{ el: Element; score: number }> = [];
             for (const el of candidates) {
               const tag = el.tagName;
-              // Prefer leaf nodes: a button, or an element with no option
-              // descendants (avoids double-clicks on containers).
-              if (tag === "BUTTON") {
-                (el as HTMLElement).click();
-                return true;
-              }
-              if (!el.querySelector("button, [class*='option']")) {
-                (el as HTMLElement).click();
-                return true;
-              }
+              const txt = norm((el as HTMLElement).textContent || "");
+              if (!txt) continue;
+              // A wrapper whose text also contains ANOTHER option of this
+              // group (e.g. a "Yes No" row when we want "No") must never be
+              // clicked: clicking it can toggle the group's first option.
+              if (opts.some((o) => o && o !== want && txt.includes(o))) continue;
+              const clickableTag = tag === "BUTTON" || tag === "LABEL";
+              const leaf =
+                clickableTag || !el.querySelector("button, [class*='option'], input");
+              const exact = txt === want;
+              const near =
+                leaf && txt.split(/\s+/).length <= 4 && txt.includes(want);
+              if (!exact && !near) continue;
+              // Exact option rows beat short containment matches; buttons are
+              // the most precise target (toggle rows), then labels, then any.
+              const score = exact ? (tag === "BUTTON" ? 0 : 1) : 2;
+              scored.push({ el, score });
+            }
+            scored.sort((a, b) => a.score - b.score);
+            for (const s of scored) {
+              (s.el as HTMLElement).click();
+              return true;
             }
             return false;
           },
           field.id,
-          normalizeOptionText(answer)
+          normalizeOptionText(answer),
+          optionTexts
         )
         .catch(() => false);
       if (scopeClicked) {
         await randomSleep(250, 450);
-        return !!(await this.readScopedGroupValue(field));
+        // Verify the committed value matches the intended answer — a click
+        // on the wrong option (e.g. a group wrapper) can check something,
+        // so presence alone must not count as success.
+        const committed = await this.readFieldValue(field);
+        return !!committed && valuesConsistent(answer, committed);
       }
+
+      // Page-wide fallback for groups NOT inside a data-field-path scope
+      // (Greenhouse/Lever radios/checkboxes). Resolve the exact option input
+      // by its label anywhere in the document and click that input's own
+      // label — never a first-match guess — then verify the specific input
+      // checked AND the committed value is consistent with the answer.
+      const groupName = targets[0]?.name || field.name || field.id;
+      if (groupName) {
+        const pageWideId = await page
+          .evaluate(
+            (args: { name: string; type: string; want: string }) => {
+              const [norm] = [
+                (s: string) =>
+                  (s || "").replace(/\s+/g, " ").trim().toLowerCase(),
+              ];
+              const inputs = Array.from(
+                document.querySelectorAll(
+                  `input[type="${args.type}"][name="${args.name}"]`
+                )
+              ) as HTMLInputElement[];
+              let bestId = "";
+              let bestScore = 0;
+              for (const inp of inputs) {
+                const wrap = inp.closest("label");
+                const forLabel = inp.id
+                  ? document.querySelector(`label[for="${inp.id}"]`)
+                  : null;
+                const label = wrap || forLabel;
+                const txt = norm(
+                  label
+                    ? label.textContent || ""
+                    : inp.getAttribute("aria-label") || ""
+                );
+                if (!txt) continue;
+                let score = 0;
+                if (txt === args.want) score = 3;
+                else if (txt.includes(args.want) || args.want.includes(txt)) score = 2;
+                if (score > bestScore) {
+                  bestScore = score;
+                  bestId = inp.id || "";
+                }
+              }
+              if (!bestId) return "";
+              const target = document.getElementById(bestId);
+              // Scan label[for] manually — interpolating bestId into a CSS
+              // selector breaks on ids containing quotes.
+              const forLabels = Array.from(document.querySelectorAll("label[for]")).filter(
+                (l) => l.getAttribute("for") === bestId
+              );
+              const targetLabel =
+                (target?.closest("label") as HTMLElement | null) ||
+                (forLabels[0] as HTMLElement | null) ||
+                target;
+              if (targetLabel) (targetLabel as HTMLElement).click();
+              return bestId;
+            },
+            { name: cssEscape(groupName), type, want: normalizeOptionText(answer) }
+          )
+          .catch(() => "");
+        if (pageWideId) {
+          await randomSleep(250, 450);
+          const clickedInput = page
+            .locator(`input[type="${type}"][id="${cssEscape(pageWideId)}"]`)
+            .first();
+          const checked = await clickedInput.isChecked().catch(() => false);
+          if (checked) {
+            const committed = await this.readFieldValue(field);
+            if (committed && valuesConsistent(answer, committed)) return true;
+          }
+        }
+      }
+
       // Fallback: text-based label matching within the form. Walks EVERY radio
       // in the group — not just the first — so an id-less group where the
       // answer is the second (or later) option still clicks the right one.
@@ -619,11 +801,10 @@ export class FormControls {
         .first();
       if (await formLabel.isVisible().catch(() => false)) {
         await formLabel.click();
-        // Verify the chosen option (not the group's first) actually committed.
+        // Verify the chosen option (not the group's first) actually committed
+        // AND is consistent with the intended answer.
         const committed = await this.readFieldValue(field);
-        return (
-          !!committed && normalizeOptionText(committed) === normalizeOptionText(answer)
-        );
+        return !!committed && valuesConsistent(answer, committed);
       }
       return false;
     } catch {
@@ -655,6 +836,19 @@ export class FormControls {
     const id = field.id;
     return page
       .evaluate((fid: string) => {
+        // WARNING: only anonymous arrows may be defined here (tsx keepNames
+        // wraps inferred-name arrows in __name(), which throws in page
+        // context). Destructure helpers into an array so none gains a name.
+        const [describe] = [
+          (el: Element): any => {
+            const tag = el.tagName.toLowerCase();
+            const type =
+              el instanceof HTMLInputElement
+                ? el.type || tag
+                : tag;
+            return { type, tag };
+          },
+        ];
         const byId = document.getElementById(fid);
         if (
           byId &&
@@ -662,7 +856,7 @@ export class FormControls {
             byId instanceof HTMLTextAreaElement ||
             byId instanceof HTMLSelectElement)
         ) {
-          return { byId: true };
+          return { byId: true, ...describe(byId) };
         }
         const label = document.querySelector(`label[for="${fid}"]`);
         const control = label ? (label as HTMLLabelElement).control : null;
@@ -672,7 +866,7 @@ export class FormControls {
             control instanceof HTMLTextAreaElement ||
             control instanceof HTMLSelectElement)
         ) {
-          return { byLabel: true, type: (control as HTMLInputElement).type || control.tagName.toLowerCase() };
+          return { byLabel: true, ...describe(control) };
         }
         // Last resort: the field's own container. The input may carry no id
         // at all (and the label's `for` dangles) — grab the first text-like
@@ -691,7 +885,7 @@ export class FormControls {
             first instanceof HTMLInputElement ||
             first instanceof HTMLTextAreaElement
           ) {
-            return { byScope: true, type: (first as HTMLInputElement).type || first.tagName.toLowerCase() };
+            return { byScope: true, ...describe(first) };
           }
         }
         return null;
@@ -714,6 +908,60 @@ export class FormControls {
       console.log(`[DEBUG_FILL] fillTextById #${id} resolveTextControl=${JSON.stringify(target)} answer="${answer}"`);
     }
     if (!target) return;
+
+    // Never commit a framework placeholder (the literal "undefined"/"null"/
+    // "NaN" a broken datepicker can render) — leave the field blank instead.
+    const cleaned = cleanPlaceholderValue(String(answer ?? ""));
+    if (!cleaned) {
+      console.warn(
+        `[${this.tagName}] #${id} got a blank/placeholder answer ` +
+          `("${escapePromptValue(String(answer ?? ""))}"); leaving blank.`
+      );
+      return;
+    }
+
+    // A react-datepicker control reached through the plain-text path (the
+    // walker missed the date classification) must be filled as a real date —
+    // typing free text like "Immediately" leaves the picker broken.
+    if (target.type === "date") {
+      await this.fillDate(id, cleaned);
+      return;
+    }
+
+    // A single-line URL/link control holds ONE url. Answers to "Public links"
+    // style fields are often a comma-separated list of several URLs; filling
+    // the concatenated list fails URL validation, so fill only the first.
+    // Only truncate for an actual URL control, or when the ENTIRE answer is a
+    // list of URLs — a free-text answer that merely mentions a link ("Built
+    // https://github.com/x, a CI tool") must never be destroyed.
+    let valueToFill = cleaned;
+    if (target.tag === "input") {
+      const tokens = cleaned
+        .split(/[\s,;]+/)
+        .map((t) => t.trim())
+        .filter(Boolean);
+      const allUrls = tokens.length > 0 && tokens.every((t) => /^https?:\/\//i.test(t));
+      if (target.type === "url" || allUrls) {
+        const only = firstUrl(cleaned);
+        if (only) valueToFill = only;
+      }
+    }
+
+    // A type=number control resolved via label/scope still needs numeric
+    // coercion — writing "0-4 Years" through the native setter silently
+    // becomes "" (the browser drops non-numeric input).
+    if (target.type === "number") {
+      const numeric = sanitizeNumberAnswer(valueToFill);
+      if (!numeric) {
+        console.warn(
+          `[${this.tagName}] Number field #${id} has non-numeric answer ` +
+            `"${escapePromptValue(valueToFill)}"; leaving blank.`
+        );
+        return;
+      }
+      valueToFill = numeric;
+    }
+
     if (target.byLabel || target.byScope) {
       // The control has no id of its own; drive it through the label's
       // associated control (or the scope's first control) with a native value
@@ -752,7 +1000,7 @@ export class FormControls {
             return true;
           },
           id,
-          String(answer ?? "")
+          valueToFill
         )
         .catch(() => {});
       await randomSleep(200, 500);
@@ -785,7 +1033,23 @@ export class FormControls {
       );
       return;
     }
-    await loc.fill(answer);
+    // A type=number input rejects non-numeric values with Stagehand's
+    // invalid-number-value error, aborting the whole fill. The KB/LLM answer
+    // is often a range or label ("0-4 Years"); coerce it to a bare number
+    // (first integer/float token) and skip the field when nothing numeric is
+    // left, instead of crashing the run.
+    if (type === "number") {
+      const numeric = sanitizeNumberAnswer(valueToFill);
+      if (!numeric) {
+        console.warn(
+          `[${this.tagName}] Number field #${id} has non-numeric answer ` +
+            `"${escapePromptValue(valueToFill)}"; leaving blank.`
+        );
+        return;
+      }
+      valueToFill = numeric;
+    }
+    await loc.fill(valueToFill);
     await randomSleep(200, 500);
   }
 
@@ -967,7 +1231,11 @@ export class FormControls {
       if (field.optionTargets.length) {
         return this.clickGroupOption({ ...field, kind: "radio" }, answer);
       }
-      // Native <select> fallback.
+      // Native <select> fallback. Stagehand's locator wrapper serializes a
+      // Playwright {label}/{value} object to "[object Object]", which never
+      // matches an option and silently commits nothing — pass the option TEXT
+      // as a plain string (Stagehand matches by text OR value). Verify the
+      // commit actually stuck before claiming success.
       const page = this.getPage();
       const sel = page
         .locator(`${cssIdLocator(field.id)} select, select${cssIdLocator(field.id)}`)
@@ -975,8 +1243,13 @@ export class FormControls {
       if (await sel.isVisible().catch(() => false)) {
         const picked = chooseOption(selectCandidates(answer), optionTexts ?? []);
         if (picked) {
-          await (sel as any).selectOption({ label: picked });
-          return true;
+          await (sel as any).selectOption(picked);
+          await randomSleep(200, 400);
+          const committed = !!(await this.readInputValue(field.id));
+          if (committed) return true;
+          console.warn(
+            `[${this.tagName}] Native select #${field.id} did not commit "${picked}"`
+          );
         }
       }
       return false;
@@ -1009,12 +1282,21 @@ export class FormControls {
    * Returns true when a date value commits.
    */
   async fillDate(id: string, answer: string): Promise<boolean> {
-    const date = translateToDate(answer);
-    if (!date) return false;
+    const clean = cleanPlaceholderValue(String(answer ?? ""));
+    const date = translateToDate(clean);
+    // A translated Date can still be invalid (NaN components) — never commit it.
+    if (!date || !Number.isFinite(date.getTime())) return false;
     const page = this.getPage();
     const target = await this.resolveTextControl({ label: id, id, kind: "date", required: false, options: [], optionTargets: [] } as any);
     if (!target) return false;
-    const value = `${date.getMonth() + 1}/${date.getDate()}/${date.getFullYear()}`;
+    // Native <input type="date"> requires YYYY-MM-DD; react-datepicker text
+    // inputs parse MM/DD/YYYY. Route by the resolved control's type.
+    const value =
+      target.type === "date"
+        ? `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
+            date.getDate()
+          ).padStart(2, "0")}`
+        : `${date.getMonth() + 1}/${date.getDate()}/${date.getFullYear()}`;
     const ok = await page
       .evaluate(
         (fid: string, v: string) => {
@@ -1049,18 +1331,23 @@ export class FormControls {
       )
       .catch(() => false);
     await randomSleep(300, 600);
-    if (!ok) return false;
-    const committed = await this.readInputValue(id);
-    if (!committed) {
-      // react-datepicker may keep the calendar open; commit by typing again.
+    let committed = ok ? cleanPlaceholderValue(await this.readInputValue(id)) : "";
+    // A commit that left a placeholder (e.g. react-datepicker rejected the
+    // native setter and re-rendered "undefined") must be re-driven by typing.
+    if (!committed || /^[a-z\s]+$/i.test(committed)) {
       const input = page.locator(this.fieldScopeInputSelector(id)).first();
       if (await input.isVisible().catch(() => false)) {
+        await input.click().catch(() => {});
         await input.fill(value);
         await randomSleep(300, 600);
+        await input.press("Enter").catch(() => {});
+        await randomSleep(300, 600);
       }
+      committed = cleanPlaceholderValue(await this.readInputValue(id));
     }
+    if (committed && /^[a-z\s]+$/i.test(committed)) committed = "";
     console.log(`[${this.tagName}] Filled date #${id} with "${value}" (from "${answer}")`);
-    return !!(await this.readInputValue(id));
+    return !!committed;
   }
 
   /** CSS selector for the first text/date input inside a field's scope. */
