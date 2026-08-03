@@ -715,6 +715,18 @@ class StartupAgent:
 
             scored.append((score, idx, j))
 
+        # Pass-through companies still get their cached OSINT served: the
+        # cache read is one indexed query, while the gate only exists to
+        # conserve LLM/search budget. Without this, previously-enriched
+        # companies silently lose founders on every sweep.
+        for j in pass_through:
+            try:
+                cached = await self._get_cached_osint(str(j.get("company") or ""))
+                if cached:
+                    j.update(cached)
+            except Exception:
+                pass
+
         if not scored:
             return jobs
 

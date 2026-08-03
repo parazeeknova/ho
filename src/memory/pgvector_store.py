@@ -440,12 +440,17 @@ CREATE INDEX IF NOT EXISTS idx_evidence_company_observed
 """
 
 
-def _jsonb_val(val: Any, default: Any) -> str:
-    """Coerce a value to a JSON string for a jsonb column.
+def _jsonb_val(val: Any, default: Any) -> Any:
+    """Coerce a value to a plain container for a jsonb column.
 
     Guards against string-typed JSON (e.g. a model returning ``"[]"``
     instead of an empty list) that would otherwise be stored as a jsonb
     *string* and break every list-typed renderer downstream.
+
+    Returns the raw container (never a pre-serialized string): every pool
+    connection registers a jsonb codec (``json.dumps``) in ``_init``, so a
+    str return here would be serialized a second time and stored as a jsonb
+    string scalar, which breaks ``jsonb_array_length`` in upsert conflicts.
     """
     if isinstance(val, str):
         try:
@@ -454,9 +459,9 @@ def _jsonb_val(val: Any, default: Any) -> str:
             parsed = None
         if parsed is not None:
             val = parsed
-    if isinstance(val, (list, dict, int, float, bool)) or val is None:
-        return json.dumps(val if val is not None else default)
-    return json.dumps(default)
+    if isinstance(val, (list, dict, int, float, bool)):
+        return val
+    return default
 
 
 class MemoryStore:
@@ -574,7 +579,7 @@ class MemoryStore:
                 data.get("company", ""),
                 data.get("match_percent", 0),
                 data.get("verdict", "NO_MATCH"),
-                json.dumps(data),
+                data,
             )
 
     # Resume_embeddings
@@ -1277,7 +1282,7 @@ class MemoryStore:
                 data.get("company_news", ""),
                 _jsonb_val(data.get("osint_signals", []), []),
                 data.get("source_url", data.get("url", "")),
-                json.dumps(data),
+                data,
             )
         return 1
 
@@ -1783,19 +1788,23 @@ class MemoryStore:
             await conn.execute(
                 "INSERT INTO radar_analytics (event_type, event_data) VALUES ($1, $2)",
                 event_type,
-                json.dumps(event_data),
+                event_data,
             )
 
     _OSINT_CACHE_TTL_SECONDS = 7 * 86400
     _OSINT_DEGRADED_TTL_SECONDS = 6 * 3600
 
     async def get_company_osint(self, company: str) -> dict[str, Any] | None:
-        """Return cached company OSINT enrichment if fresh, else None."""
+        """Return cached company OSINT enrichment if fresh, else None.
+
+        Cache keys are normalized to lowercase on write and read, so a
+        ``Cloudflare`` candidate matches a ``cloudflare`` cache row.
+        """
         async with self._pool.acquire() as conn:
             try:
                 row = await conn.fetchrow(
                     "SELECT data, expires_at FROM company_osint WHERE company = $1",
-                    company,
+                    (company or "").strip().lower(),
                 )
             except Exception:
                 return None
@@ -1829,8 +1838,8 @@ class MemoryStore:
                 "ON CONFLICT (company) DO UPDATE SET "
                 "data = EXCLUDED.data, cached_at = EXCLUDED.cached_at, "
                 "expires_at = EXCLUDED.expires_at",
-                company,
-                json.dumps(data),
+                (company or "").strip().lower(),
+                data,
                 now,
                 now + ttl,
             )

@@ -77,7 +77,8 @@ def main() -> None:
                 json.dump(manifest, mf, indent=2)
             if i % 5 == 0 or size > 50_000_000:
                 print(
-                    f"  [{time.strftime('%H:%M:%S')}] {i}/{len(pending)} {b.name} ({size / 1e6:.1f} MB)",
+                    f"  [{time.strftime('%H:%M:%S')}] "
+                    f"{i}/{len(pending)} {b.name} ({size / 1e6:.1f} MB)",
                     flush=True,
                 )
         except Exception as exc:

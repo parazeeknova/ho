@@ -87,9 +87,7 @@ def _ts(epoch: Any) -> str:
     import datetime as dt
 
     try:
-        return dt.datetime.fromtimestamp(float(epoch), tz=dt.UTC).strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
+        return dt.datetime.fromtimestamp(float(epoch), tz=dt.UTC).strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
         return str(epoch)
 

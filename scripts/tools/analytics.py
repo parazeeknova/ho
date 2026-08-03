@@ -14,6 +14,7 @@ Run:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import shutil
 import subprocess
 from pathlib import Path
@@ -130,10 +131,8 @@ async def _db_counts() -> dict[str, int]:
     except Exception:
         return {}
     finally:
-        try:
+        with contextlib.suppress(Exception):
             await s.close()
-        except Exception:
-            pass
 
 
 def main() -> None:

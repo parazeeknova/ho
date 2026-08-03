@@ -85,6 +85,7 @@ async def _mock_store(
     mock_conn.execute = AsyncMock(return_value=execute_return)
     if fetch_return is not None:
         mock_conn.fetch = AsyncMock(return_value=fetch_return)
+        mock_conn.fetchrow = AsyncMock(return_value=fetch_return[0] if fetch_return else None)
 
     mock_pool = MagicMock()
     mock_pool.acquire = MagicMock()
@@ -200,3 +201,30 @@ class TestEmbedCache:
         store = await _mock_store(fetch_return=[{"content_hash": "a"}, {"content_hash": "c"}])
         found = await store.existing_resume_hashes(["a", "b", "c"])
         assert found == {"a", "c"}
+
+
+class TestCompanyOsintCache:
+    """Company OSINT cache keys are normalized to lowercase on read/write."""
+
+    @pytest.mark.asyncio
+    async def test_put_normalizes_key_to_lowercase(self) -> None:
+        store = await _mock_store()
+        await store.put_company_osint("Cloudflare", {"founders": [{"name": "A"}]})
+        executed = store._pool.acquire.return_value.__aenter__.return_value.execute.await_args_list
+        assert executed and executed[-1].args[1] == "cloudflare"
+
+    @pytest.mark.asyncio
+    async def test_get_looks_up_with_lowercase_key(self) -> None:
+        store = await _mock_store(
+            fetch_return=[{"data": {"founders": [{"name": "A"}]}, "expires_at": 2e12}]
+        )
+        data = await store.get_company_osint("Cloudflare")
+        called = store._pool.acquire.return_value.__aenter__.return_value.fetchrow.await_args
+        assert called.args[1] == "cloudflare"
+        assert data == {"founders": [{"name": "A"}]}
+
+    @pytest.mark.asyncio
+    async def test_get_expired_returns_none(self) -> None:
+        store = await _mock_store(fetch_return=[{"data": {"founders": []}, "expires_at": 1.0}])
+        data = await store.get_company_osint("Cloudflare")
+        assert data is None

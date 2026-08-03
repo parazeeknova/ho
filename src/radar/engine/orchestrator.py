@@ -1088,8 +1088,10 @@ async def _enrich_high_fit(
         company_ix.append(company_key)
 
     # Evidence gate: companies whose ledger already carries strong hiring
-    # evidence skip the whole ladder this sweep (cache-miss reruns are rare
-    # but this makes the skip explicit).
+    # evidence skip the LLM/search ladder this sweep (cache-miss reruns are
+    # rare but this makes the skip explicit). A cache hit still applies the
+    # cached enrichment, so previously-bugged rows get healed; only the
+    # expensive uncached pipeline is avoided.
     skip: set[str] = set()
     for company_key in by_company:
         try:
@@ -1107,6 +1109,16 @@ async def _enrich_high_fit(
         )
         for idx, company_key in enumerate(to_enrich):
             enriched_by_company[company_key] = enriched_all[idx] if idx < len(enriched_all) else {}
+
+    for company_key in skip:
+        if company_key not in by_company:
+            continue
+        try:
+            cached = await sa._get_cached_osint(company_key)
+        except AttributeError:
+            cached = None
+        if cached:
+            enriched_by_company[company_key] = cached
 
     for company_key, ixs in by_company.items():
         enriched = enriched_by_company.get(company_key) or {}

@@ -12,7 +12,8 @@ Use with care: this overwrites the live volume.
 Run:
     uv run python scripts/backup/checkpoint_restore.py                # latest
     uv run python scripts/backup/checkpoint_restore.py --dir checkpoints/20260802-123456
-    uv run python scripts/backup/checkpoint_restore.py --vol firecrawl_agent_memory_data  # latest, one vol
+    uv run python scripts/backup/checkpoint_restore.py \
+        --vol firecrawl_agent_memory_data  # latest, one vol
 """
 
 from __future__ import annotations

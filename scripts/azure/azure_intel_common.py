@@ -57,14 +57,14 @@ def newest_blob(prefix: str, cc: Any = None) -> dict[str, Any] | None:
         return None
     newest = max(blobs, key=lambda b: b.last_modified)
     data = cc.get_blob_client(newest.name).download_blob().readall().decode()
-    records = [json.loads(l) for l in data.splitlines() if l.strip()]
+    records = [json.loads(line) for line in data.splitlines() if line.strip()]
     return {"name": newest.name, "records": records}
 
 
 def read_blob(name: str, cc: Any = None) -> list[dict[str, Any]]:
     cc = cc or container_client()
     data = cc.get_blob_client(name).download_blob().readall().decode()
-    return [json.loads(l) for l in data.splitlines() if l.strip()]
+    return [json.loads(line) for line in data.splitlines() if line.strip()]
 
 
 def list_blobs(prefix: str, cc: Any = None) -> list[str]:
