@@ -28,13 +28,14 @@ def _make_client(
 ) -> httpx.AsyncClient:
     cfg = _client_config or get_config().http
     t = timeout if timeout is not None else cfg.default_timeout
+    timeout = t if isinstance(t, httpx.Timeout) else httpx.Timeout(t, connect=cfg.connect_timeout)
     limits_kw = {
         "max_keepalive_connections": cfg.max_keepalive,
         "max_connections": cfg.max_connections,
         **(extra_limits or {}),
     }
     return httpx.AsyncClient(
-        timeout=httpx.Timeout(t, connect=cfg.connect_timeout),
+        timeout=timeout,
         limits=httpx.Limits(**limits_kw),
         follow_redirects=follow_redirects,
     )
