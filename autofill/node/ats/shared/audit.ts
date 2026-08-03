@@ -95,12 +95,15 @@ function escapeLog(val: string): string {
 
 /**
  * The result of a submit attempt. `confirmed` is ONLY true when the ATS
- * actually reached a confirmation state (success-URL redirect or inline
- * confirmation text). `retryable` is true when the failure looks like a
- * client-side validation error (an error banner, or the submit button still
- * visible) that a field-recheck + resubmit could fix; it is false when no
- * outcome could be detected at all (the form may have navigated somewhere
- * unexpected, or the page is in an unknown state).
+ * actually reached a confirmed-submitted state: a success-page URL redirect,
+ * or the form leaving the submission state (submit button gone) while a
+ * success phrase is rendered. Bare inline body text is NOT confirmation —
+ * a static "thank you" string on the still-unsubmitted form page never counts.
+ * `retryable` is true when the failure looks like a client-side validation
+ * error (an error banner, or the submit button still visible) that a
+ * field-recheck + resubmit could fix; it is false when no outcome could be
+ * detected at all (the form may have navigated somewhere unexpected, or the
+ * page is in an unknown state).
  */
 export interface SubmitOutcome {
   confirmed: boolean;
@@ -112,16 +115,19 @@ export interface SubmitOutcome {
 }
 
 /** Success-URL tokens shared across ATS confirmation pages. */
-const SUCCESS_URL_RE = /thanks|submitted|confirmation|success|applied|complete/i;
+const SUCCESS_URL_RE = /thanks|submitted|confirmation|success|applied|complete|received/i;
 
-/** Inline confirmation phrases shared across ATS success pages. */
+/** Inline success phrases. Only trusted as confirmation when the form has
+ *  structurally left the submission state (submit button gone) — see
+ *  ``verifySubmitOutcome``. */
 const CONFIRM_TEXT_RE =
-  /application (has been )?(successfully )?submitted|thank (you|u) for applying|your application has been received|we (have )?received your application|application complete|we have received your application/i;
+  /application (has been )?(successfully )?submitted|your application was successfully submitted|thank (you|u) for applying|your application has been received|we (have )?received your application|application complete|we have received your application|application received|your application has been submitted|you'?re all set|we'?ll (be )?in touch/i;
 
 /**
- * Verify a submit by polling for a success URL, inline confirmation text, or
- * a visible error banner. This is the ONLY path that declares a submission
- * confirmed — adapters must never report `submitted` on a bare click + sleep.
+ * Verify a submit by polling for a success-page redirect, a structurally-gone
+ * submit form with a success phrase, or a visible error banner. This is the
+ * ONLY path that declares a submission confirmed — a bare submit click + sleep
+ * is never a confirmation.
  *
  * @param page active Playwright/Stagehand page
  * @param opts
@@ -129,7 +135,8 @@ const CONFIRM_TEXT_RE =
  *   - `successUrlRe`: extra URL tokens for this board (default: shared set).
  *   - `submitButtonSelector`: when provided, a still-visible submit button
  *     after the click is a retryable failure signal (the form never left the
- *     page / validation kept it).
+ *     page / validation kept it); when it has GONE and a success phrase is
+ *     present, the submit is confirmed (SPA-style inline success).
  *   - `errorSelectors`: selectors for error banners (default shared set).
  *   - `polls`: number of poll iterations (default 10).
  */
@@ -152,7 +159,7 @@ export async function verifySubmitOutcome(
   for (let i = 0; i < polls; i++) {
     const url = page.url();
     if (urlRe.test(url)) {
-      console.log(`[${tag}] Submitted: redirect confirmed (${url}).`);
+      console.log(`[${tag}] Submitted: success-page redirect confirmed (${url}).`);
       return { confirmed: true, retryable: false };
     }
 
@@ -172,44 +179,52 @@ export async function verifySubmitOutcome(
       }
     }
 
-    // Inline confirmation text (some ATS show success without a URL change).
-    const bodyText = await page
-      .evaluate(() => document.body?.innerText?.slice(0, 4000) ?? "")
-      .catch(() => "");
-    if (CONFIRM_TEXT_RE.test(bodyText)) {
-      console.log(`[${tag}] Submitted: inline confirmation text detected.`);
-      return { confirmed: true, retryable: false };
-    }
-
-    // Board-specific fast signal: submit button still present = not submitted.
     if (opts.submitButtonSelector) {
       const stillVisible = await page
         .locator(opts.submitButtonSelector)
         .first()
         .isVisible()
         .catch(() => false);
-      if (stillVisible) {
-        // A button that is still on the page after the click usually means
-        // validation refused the submit. Double-check it is not a disabled
-        // re-render — if we are past the first poll and the button persists,
-        // treat it as a retryable validation failure.
-        if (i >= 1) {
-          console.warn(`[${tag}] Submit button still visible after click; validation likely failed.`);
-          return {
-            confirmed: false,
-            error: "submit button still visible after submit (validation blocked it)",
-            retryable: true,
-          };
+      // Structural confirmation: after the first poll the form is gone (submit
+      // button no longer present) AND a success phrase is rendered. Stricter
+      // than raw inline text — the button must actually be gone, so a static
+      // "thank you" string on the un-submitted form page can never confirm.
+      // Gated on i >= 1 so a slow re-render right after the click isn't misread.
+      if (!stillVisible && i >= 1) {
+        const bodyText = await page
+          .evaluate(() => document.body?.innerText?.slice(0, 4000) ?? "")
+          .catch(() => "");
+        if (CONFIRM_TEXT_RE.test(bodyText)) {
+          console.log(`[${tag}] Submitted: form gone + inline confirmation text detected.`);
+          return { confirmed: true, retryable: false };
         }
+      }
+      if (stillVisible && i >= 1) {
+        // A button that is still on the page after the click usually means
+        // validation refused the submit.
+        console.warn(`[${tag}] Submit button still visible after click; validation likely failed.`);
+        return {
+          confirmed: false,
+          error: "submit button still visible after submit (validation blocked it)",
+          retryable: true,
+        };
       }
     }
 
     await randomSleep(1500, 2000);
   }
   console.error(`[${tag}] Submit outcome not detected at ${page.url()}.`);
+  const lastUrl = page.url();
+  // Keep the error diagnostic short (and avoid dumping the applicant's own
+  // form answers — name/email/work history — into the persisted job error).
+  const bodySnip = (await page
+    .evaluate(() => document.body?.innerText?.slice(0, 120) ?? "")
+    .catch(() => ""))
+    .replace(/\s+/g, " ")
+    .trim();
   return {
     confirmed: false,
-    error: "no success or error outcome detected after clicking submit",
+    error: `no success-page redirect or error outcome detected after clicking submit (final url: ${lastUrl}; body: ${escapePromptValue(bodySnip)})`,
     retryable: false,
   };
 }

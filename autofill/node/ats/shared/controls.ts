@@ -1,5 +1,11 @@
 import { Stagehand, type Action } from "@browserbasehq/stagehand";
-import { randomSleep } from "../../utils/evasion.js";
+import {
+  humanTypingEnabled,
+  humanTypingMaxLength,
+  randomSleep,
+  thinkPause,
+  typingDelayMs,
+} from "../../utils/evasion.js";
 import { FormField } from "./model.js";
 import {
   chooseOption,
@@ -160,7 +166,7 @@ export class FormControls {
     if (!value) return;
     const locator = this.getPage().locator(selector).first();
     if (await locator.isVisible().catch(() => false)) {
-      await locator.fill(value);
+      await this.fillLikeHuman(locator, value);
       await randomSleep(100, 300);
     } else {
       await this.safeAct(actPrompt, { [variableName]: value });
@@ -168,12 +174,190 @@ export class FormControls {
     }
   }
 
+  /**
+   * Fill a visible locator. With human typing enabled and a short-enough
+   * value, type per-keystroke (real keydown/keyup events + human cadence)
+   * instead of committing via the native setter with zero key events.
+   */
+  private async fillLikeHuman(locator: any, value: string): Promise<void> {
+    if (humanTypingEnabled() && value.length <= humanTypingMaxLength()) {
+      await locator.type(value, { delay: typingDelayMs() });
+    } else {
+      await locator.fill(value);
+    }
+  }
+
+  /** Center (viewport coords) of the first VISIBLE element matching a CSS
+   *  selector or XPath, or null when none is on screen. Used to drive a human
+   *  mouse arc before clicking without depending on Locator internals. */
+  private async elementCenter(
+    page: any,
+    selector: string
+  ): Promise<{ x: number; y: number } | null> {
+    return page
+      .evaluate((sel: string) => {
+        let els: Element[] = [];
+        if (sel.startsWith("//") || sel.startsWith("(")) {
+          const snap = document.evaluate(
+            sel,
+            document,
+            null,
+            XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
+            null
+          );
+          for (let i = 0; i < snap.snapshotLength; i++) {
+            const el = snap.snapshotItem(i);
+            if (el instanceof Element) els.push(el);
+          }
+        } else {
+          els = Array.from(document.querySelectorAll(sel));
+        }
+        for (const el of els) {
+          const r = (el as HTMLElement).getBoundingClientRect();
+          if (r.width < 1 || r.height < 1) continue;
+          return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+        }
+        return null;
+      }, selector)
+      .catch(() => null);
+  }
+
+  /** Move the cursor to a point with a natural multi-step arc and a dwell,
+   *  via the page's CDP session. Falls back to a no-op when unavailable. */
+  private async mouseArc(
+    page: any,
+    x: number,
+    y: number
+  ): Promise<void> {
+    const session = (page as any).mainSession ?? (page as any).session;
+    if (!session?.send) return;
+    try {
+      const steps = 5 + Math.floor(Math.random() * 4);
+      const sx = x - (30 + Math.random() * 50);
+      const sy = y - (15 + Math.random() * 40);
+      await session.send("Input.dispatchMouseEvent", {
+        type: "mouseMoved",
+        x: sx,
+        y: sy,
+        button: "none",
+      });
+      for (let i = 1; i <= steps; i++) {
+        const t = i / (steps + 1);
+        const e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+        await session.send("Input.dispatchMouseEvent", {
+          type: "mouseMoved",
+          x: sx + (x - sx) * e + (Math.random() - 0.5) * 4,
+          y: sy + (y - sy) * e + (Math.random() - 0.5) * 4,
+          button: "none",
+        });
+        await new Promise((r) => setTimeout(r, 15 + Math.random() * 35));
+      }
+      await session.send("Input.dispatchMouseEvent", {
+        type: "mouseMoved",
+        x,
+        y,
+        button: "none",
+      });
+      await randomSleep(150, 350); // dwell before the click
+    } catch {
+      // Best-effort; a failed arc still lets the locator click proceed.
+    }
+  }
+
+  /** Click a locator like a human: move the cursor in an arc to the element
+   *  (or hover + dwell), pause, then click. ``selector`` (CSS or XPath) is the
+   *  geometry source for the arc; when omitted the arc degrades to a hover. */
+  async humanClick(locator: any, selector?: string): Promise<void> {
+    const page = this.getPage();
+    if (selector) {
+      const center = await this.elementCenter(page, selector);
+      if (center) {
+        await this.mouseArc(page, center.x, center.y);
+        await locator.click();
+        await thinkPause();
+        return;
+      }
+    }
+    await locator.hover().catch(() => {});
+    await randomSleep(200, 450);
+    await locator.click();
+    await thinkPause();
+  }
+
   /** Close an open react-select menu without depending on keyboard typing. */
   async closeMenu(): Promise<void> {
     try {
-      await this.getPage().keyboard?.press("Escape");
+      await this.getPage().keyPress("Escape");
     } catch {
       // Menu may already be closed; harmless.
+    }
+  }
+
+  /**
+   * Simulate a human "reading over" the form before submitting: move the cursor
+   * with a real arc to a few benign, non-input elements (headings, section
+   * titles, the form header) and click them. These trusted pointer interactions
+   * in the form region mirror what a human does while reviewing, without ever
+   * changing a field value. Number of clicks is randomized 1-2 so it is never
+   * a fixed pattern.
+   */
+  async humanFormInteractions(page: any, count = 2): Promise<void> {
+    try {
+      const targets = await page
+        .evaluate(() => {
+          const nodes = Array.from(
+            document.querySelectorAll(
+              "h1, h2, h3, h4, .ashby-application-form-header, " +
+                "section[data-qa='form-section'], [class*='form-header']"
+            )
+          ) as HTMLElement[];
+          const pts: { x: number; y: number }[] = [];
+          for (const el of nodes) {
+            if (el.querySelector("input, textarea, select, button")) continue;
+            const r = el.getBoundingClientRect();
+            if (r.width < 4 || r.height < 4) continue;
+            if (r.bottom < 0 || r.top > window.innerHeight) continue;
+            pts.push({ x: r.left + r.width / 2, y: r.top + r.height / 2 });
+          }
+          return pts;
+        })
+        .catch(() => [] as { x: number; y: number }[]);
+      if (!targets.length) return;
+      // Pick 1..2 distinct benign targets, shuffled.
+      const pick = (() => {
+        const n = Math.min(count, targets.length);
+        const shuffled = [...targets].sort(() => Math.random() - 0.5);
+        return shuffled.slice(0, n);
+      })();
+      for (const t of pick) {
+        await this.mouseArc(page, t.x, t.y);
+        const session = (page as any).mainSession ?? (page as any).session;
+        if (session?.send) {
+          await session
+            .send("Input.dispatchMouseEvent", {
+              type: "mousePressed",
+              x: t.x,
+              y: t.y,
+              button: "left",
+              clickCount: 1,
+            })
+            .catch(() => {});
+          await randomSleep(60, 150);
+          await session
+            .send("Input.dispatchMouseEvent", {
+              type: "mouseReleased",
+              x: t.x,
+              y: t.y,
+              button: "left",
+              clickCount: 1,
+            })
+            .catch(() => {});
+        }
+        await randomSleep(350, 800);
+      }
+      console.log(`[${this.tagName}] Simulated ${pick.length} human form interaction(s).`);
+    } catch (err: any) {
+      console.warn(`[${this.tagName}] humanFormInteractions failed (continuing):`, err?.message || err);
     }
   }
 
@@ -225,14 +409,13 @@ export class FormControls {
       // Walk matches in DOM order and click the first visible one: closed
       // portal menus can keep hidden options in the DOM, so we must never
       // blindly take `.first()`.
-      const options = page.locator(
-        `//${this.optionTag}[contains(@role,"option")][${optionExactXPath(picked)}]`
-      );
+      const xpath = `//${this.optionTag}[contains(@role,"option")][${optionExactXPath(picked)}]`;
+      const options = page.locator(xpath);
       const count = await options.count().catch(() => 0);
       for (let i = 0; i < count; i++) {
         const option = options.nth(i);
         if (!(await option.isVisible().catch(() => false))) continue;
-        await option.click();
+        await this.humanClick(option, xpath);
         return true;
       }
       return false;
@@ -1049,7 +1232,7 @@ export class FormControls {
       }
       valueToFill = numeric;
     }
-    await loc.fill(valueToFill);
+    await this.fillLikeHuman(loc, valueToFill);
     await randomSleep(200, 500);
   }
 
@@ -1340,7 +1523,7 @@ export class FormControls {
         await input.click().catch(() => {});
         await input.fill(value);
         await randomSleep(300, 600);
-        await input.press("Enter").catch(() => {});
+        await page.keyPress("Enter").catch(() => {});
         await randomSleep(300, 600);
       }
       committed = cleanPlaceholderValue(await this.readInputValue(id));

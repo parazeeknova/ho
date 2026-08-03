@@ -171,10 +171,11 @@ export abstract class ATSAdapter {
   /**
    * Submit the filled application. MUST return a verified SubmitOutcome — a
    * submission is only `confirmed` when the ATS reached a confirmation state
-   * (success-URL redirect or inline confirmation text). Never throw for a
-   * normal validation failure; return `{confirmed:false, retryable:true}` so
-   * the runner can recheck missing fields and retry. Throw only for fatal
-   * adapter/browser errors that cannot be retried.
+   * (success-page redirect, or the submit form gone with a success phrase).
+   * Never throw for a normal validation failure; return
+   * `{confirmed:false, retryable:true}` so the runner can recheck missing
+   * fields and retry. Throw only for fatal adapter/browser errors that cannot
+   * be retried.
    */
   abstract submit(): Promise<SubmitOutcome>;
 
@@ -186,5 +187,16 @@ export abstract class ATSAdapter {
    */
   async recheckMissingFields(_rpc?: RpcHelper): Promise<number> {
     return 0;
+  }
+
+  /**
+   * Some ATS flag a submission as possible spam and offer to "submit again";
+   * a human resolves it by navigating back to the posting and reopening the
+   * form (fields preserved), then resubmitting. Adapters that support that
+   * return true when the form is back on screen; the default is a no-op that
+   * returns false (no navigation attempted).
+   */
+  async retryAfterSpamFlag(): Promise<boolean> {
+    return false;
   }
 }

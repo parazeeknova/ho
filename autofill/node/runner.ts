@@ -10,6 +10,7 @@ import { LeverAdapter } from "./ats/lever.js";
 import { WorkdayAdapter } from "./ats/workday.js";
 import { GenericAdapter } from "./ats/generic.js";
 import { ActivityWatchdog } from "./utils/activity.js";
+import { applyFingerprint, loadFingerprint } from "./utils/fingerprint.js";
 import { getBlankedRequiredCount, getDeferredFieldCount, resetBlankedRequiredCount, resetDeferredFieldCount } from "./ats/shared/screener.js";
 
 // Rejects when a promise has not settled within `ms`. Used so a best-effort
@@ -118,6 +119,12 @@ async function main() {
 
   console.log(`[Runner] Initializing Stagehand LOCAL environment with model ${genericModel}...`);
 
+  // Per-job browser fingerprint (UA/platform/viewport/cores/memory/languages,
+  // India-consistent locale+timezone). Seeded by AUTOFILL_FINGERPRINT_SEED
+  // (set per job by the worker) so a batch of applications never presents as
+  // a single device — the "many apps from one device" fraud signal.
+  const fingerprint = loadFingerprint();
+
   // Stagehand v3 unified model config: modelClientOptions was removed, and the
   // OpenAI AI SDK defaults custom baseURL endpoints to the Responses API. GeneralCompute
   // exposes an OpenAI-compatible Chat Completions endpoint, so we must opt into chat format.
@@ -136,7 +143,45 @@ async function main() {
     selfHeal: false,
     localBrowserLaunchOptions: {
       headless: false,
-      args: ["--disable-blink-features=AutomationControlled"]
+      args: ["--disable-blink-features=AutomationControlled"],
+      // Drop the test-harness flags that scream "automation" to a fingerprint
+      // scanner. A real user's Chrome has no --metrics-recording-only,
+      // --propagate-iph-for-testing, disabled sync/extensions/background
+      // networking, or the Stagehand MCP feature flag (our act()/observe()
+      // fallbacks use the a11y snapshot, not WebMCP, so it is safe to drop).
+      ignoreDefaultArgs: [
+        "--metrics-recording-only",
+        "--use-mock-keychain",
+        "--propagate-iph-for-testing",
+        "--disable-sync",
+        "--disable-extensions",
+        "--disable-component-extensions-with-background-pages",
+        "--disable-background-networking",
+        "--disable-hang-monitor",
+        "--enable-features=WebMCPTesting,DevToolsWebMCPSupport",
+      ],
+      // Reuse a persistent Chrome profile (one per worker slot, assigned by the
+      // worker via AUTOFILL_USER_DATA_DIR) so the browser accumulates cookies,
+      // storage, and history like a real lived-in browser instead of starting
+      // as a brand-new profile on every run — the "fresh browser every submit"
+      // session shape is itself an automation signal.
+      ...(process.env.AUTOFILL_USER_DATA_DIR
+        ? { userDataDir: process.env.AUTOFILL_USER_DATA_DIR }
+        : {}),
+      // Randomized device attributes applied at launch: locale -> --lang,
+      // viewport -> --window-size, deviceScaleFactor ->
+      // --force-device-scale-factor. UA + timezone are applied post-init via
+      // CDP (see applyFingerprint below) since they need the page session.
+      locale: fingerprint.locale,
+      viewport: fingerprint.viewport,
+      deviceScaleFactor: fingerprint.deviceScaleFactor,
+      // Route the whole browser session through a proxy when AUTOFILL_PROXY is
+      // set (either the legacy Tor SOCKS5 proxy, or — with a proxy template —
+      // a per-job residential IP URL substituted by the worker). Stagehand maps
+      // proxy.server -> --proxy-server=... at launch.
+      ...(process.env.AUTOFILL_PROXY
+        ? { proxy: { server: process.env.AUTOFILL_PROXY } }
+        : {}),
     }
   };
   const stagehand = new Stagehand(stagehandConfig);
@@ -249,6 +294,11 @@ async function main() {
   try {
     await stagehand.init();
     console.log("[Runner] Stagehand initialized successfully.");
+
+    // Apply the per-job fingerprint before the adapter navigates anywhere: CDP
+    // Emulation overrides persist on the page session and the document-start
+    // init script runs on every future navigation.
+    await applyFingerprint(stagehand, fingerprint);
 
     const adapter = getAdapterForUrl(payload.url, stagehand);
 
@@ -429,9 +479,18 @@ async function main() {
       //        -> submit attempt 2
       //           -> retryable failure -> submit attempt 3
       //              -> still failing -> FAILED with the last error banner
-      //   Only a CONFIRMATION page (success-URL redirect or inline
-      //   confirmation text) yields `submitted`.
+      //   Only a CONFIRMATION state (success-page redirect, or the submit form
+      //   gone with a success phrase) yields `submitted`.
       const MAX_SUBMIT_ATTEMPTS = 3;
+      // Ashby flags a submission as possible spam and offers "submit again". A
+      // human clicks the posting's Overview, returns to the application form
+      // (fields preserved), and submits again. `retryAfterSpamFlag` does that
+      // navigation; up to MAX_SPAM_RETRIES such round-trips are attempted
+      // before giving up. The normal field-recheck path is only for client-side
+      // validation failures (submit button still visible), not spam flags.
+      const SPAM_FLAG_RE = /flagged as possible spam|possible spam|submitted.*spam|spam/i;
+      const MAX_SPAM_RETRIES = 2;
+      let spamRetries = 0;
       let lastError: string | undefined;
       let rechecked = false;
       for (let attempt = 1; attempt <= MAX_SUBMIT_ATTEMPTS; attempt++) {
@@ -472,9 +531,34 @@ async function main() {
           process.exit(0);
         }
 
-        // Not confirmed. If retryable and we still have attempts (and have
-        // not yet rechecked), recheck missing fields then try again.
+        // Not confirmed.
         lastError = outcome?.error;
+
+        // Spam flag: navigate Overview -> back to the form -> resubmit without
+        // touching any field. Takes priority over the field-recheck path.
+        if (lastError && SPAM_FLAG_RE.test(lastError) && spamRetries < MAX_SPAM_RETRIES) {
+          spamRetries += 1;
+          console.warn(
+            `[Runner] Ashby flagged the submit as possible spam (attempt ${attempt}); ` +
+              "navigating to Overview and back, then resubmitting..."
+          );
+          try {
+            const back = await adapter.retryAfterSpamFlag();
+            if (!back) {
+              console.warn("[Runner] Could not return to the application form after spam flag.");
+            }
+          } catch (spamErr: any) {
+            console.warn("[Runner] Spam-flag retry navigation failed:", spamErr?.message || spamErr);
+          }
+          // Resubmit on the next loop iteration, even past the normal attempt cap
+          // (spam retries are a distinct budget).
+          if (attempt >= MAX_SUBMIT_ATTEMPTS && spamRetries < MAX_SPAM_RETRIES) {
+            attempt = MAX_SUBMIT_ATTEMPTS - 1;
+          }
+          continue;
+        }
+
+        // Normal retryable failure (validation): recheck missing fields once.
         if (outcome?.retryable) {
           console.warn(
             `[Runner] Submit attempt ${attempt}/${MAX_SUBMIT_ATTEMPTS} not confirmed: ${lastError ?? "validation likely failed"}`

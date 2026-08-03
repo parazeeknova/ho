@@ -323,20 +323,135 @@ export class AshbyAdapter extends ATSAdapter {
   async submit(): Promise<SubmitOutcome> {
     console.log("[Ashby] Submitting application form...");
     const page = this.getPage();
+    // A human re-reads the form before committing: give the submit a real
+    // pause, click around the form (headings/sections) with real pointer
+    // events, then scroll to the button and click it with a human cursor arc.
+    await randomSleep(2500, 6000);
+    await this.controls.humanFormInteractions(page);
+    await randomSleep(400, 900);
     const submitBtn = page
       .locator("button.ashby-application-form-submit-button")
       .first();
     if (await submitBtn.isVisible().catch(() => false)) {
-      await submitBtn.click();
+      await this.controls.humanClick(
+        submitBtn,
+        "button.ashby-application-form-submit-button"
+      );
     } else {
       await this.stagehand.act("Click the Submit Application button");
     }
-    await randomSleep(500, 1000);
+    await randomSleep(800, 1600);
 
     return verifySubmitOutcome(page, {
       tag: "Ashby",
       submitButtonSelector: "button.ashby-application-form-submit-button",
     });
+  }
+
+  /**
+   * Ashby rejected the submit as "possible spam" and shows a retry prompt. A
+   * human resolves this by clicking the posting's Overview, returning to the
+   * application form, and submitting again — the form's filled state survives
+   * the round-trip (Ashby's SPA keeps it), so no field is touched here.
+   *
+   * Returns true when the application form is back on screen and ready to
+   * submit; false when the navigation could not complete.
+   */
+  async retryAfterSpamFlag(): Promise<boolean> {
+    const page = this.getPage();
+    try {
+      // 1) Back to the job overview. Prefer a clickable "Overview" element;
+      //    fall back to navigating to the base posting URL (strip /application).
+      const clicked = await page
+        .evaluate(() => {
+          const nodes = Array.from(
+            document.querySelectorAll(
+              "a, button, [role='button'], nav a, nav button, li a"
+            )
+          );
+          for (const el of nodes) {
+            const t = ((el as HTMLElement).textContent || "").trim();
+            if (t.toLowerCase() === "overview") {
+              (el as HTMLElement).click();
+              return true;
+            }
+          }
+          return false;
+        })
+        .catch(() => false);
+      await randomSleep(1500, 2500);
+
+      const cur = page.url();
+      try {
+        const base = new URL(cur);
+        if (!clicked || /\/application(?:\/|$)/.test(base.pathname)) {
+          base.pathname = base.pathname.replace(/\/application(?:\/|$)/, "").replace(/\/+$/, "");
+          if (base.pathname !== new URL(cur).pathname) {
+            console.log(`[Ashby] Spam retry: navigating to overview ${base.href}`);
+            await page.goto(base, { waitUntil: "domcontentloaded" }).catch(() => {});
+            await randomSleep(1200, 2000);
+          }
+        }
+      } catch {
+        // URL unparseable; rely on the Overview click alone.
+      }
+
+      // 2) Reopen the application form (deterministic: a real Apply link to the
+      //    /application route, then a text "Apply" element as fallback).
+      const reopened = await page
+        .evaluate(() => {
+          const direct = document.querySelector("a[href*='/application']");
+          if (direct) {
+            (direct as HTMLElement).click();
+            return true;
+          }
+          const nodes = Array.from(
+            document.querySelectorAll("a, button, [role='button']")
+          );
+          for (const el of nodes) {
+            const t = ((el as HTMLElement).textContent || "").trim();
+            if (t.toLowerCase() === "apply") {
+              (el as HTMLElement).click();
+              return true;
+            }
+          }
+          return false;
+        })
+        .catch(() => false);
+      await randomSleep(1500, 2500);
+      if (!reopened) {
+        // Last resort: the direct /application route.
+        try {
+          const base = new URL(page.url());
+          if (!/\/application(?:\/|$)/.test(base.pathname)) {
+            base.pathname = base.pathname.replace(/\/+$/, "") + "/application";
+            await page.goto(base, { waitUntil: "domcontentloaded" }).catch(() => {});
+          }
+        } catch {
+          // Give up on navigation; the form may already be embedded.
+        }
+      }
+      if (!(await page.locator('[data-field-path]').first().isVisible().catch(() => false))) {
+        // A new tab may have opened for the form; adopt the page showing it.
+        for (const p of this.stagehand.context.pages()) {
+          if (await p.locator('[data-field-path]').first().isVisible().catch(() => false)) {
+            this.controls.adoptPage(p);
+            break;
+          }
+        }
+      }
+      await this.waitForForm();
+      const ready = await page
+        .locator("button.ashby-application-form-submit-button")
+        .first()
+        .isVisible()
+        .catch(() => false);
+      console.log(`[Ashby] Back on the application form after spam retry (ready=${ready})`);
+      return ready;
+    } catch (err: any) {
+      console.warn(`[Ashby] retryAfterSpamFlag failed: ${err?.message || err}`);
+      return false;
+    }
   }
 
   /**
