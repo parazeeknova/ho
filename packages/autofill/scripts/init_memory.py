@@ -112,9 +112,10 @@ async def index_resume(resume_url: str | None, resume_path: str | None) -> None:
 
 
 async def run_script(name: str, *extra: str) -> int:
-    return subprocess.run(
-        [sys.executable, str(REPO / "packages" / "ingest" / "scripts" / name), *extra], cwd=REPO
-    ).returncode
+    script = REPO / "packages" / "autofill" / "scripts" / name
+    if not script.exists():
+        script = REPO / "packages" / "ingest" / "scripts" / name
+    return subprocess.run([sys.executable, str(script), *extra], cwd=REPO).returncode
 
 
 def has_env(source: str) -> bool:
@@ -228,7 +229,7 @@ async def main() -> None:
     ux.next_steps(
         [
             "uv run python -m autofill.cli apply <greenhouse-url>",
-            "uv run python -m src.radar.orchestrator",
+            "uv run python -m src.radar.engine.orchestrator",
         ]
     )
 
