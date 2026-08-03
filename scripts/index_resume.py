@@ -102,7 +102,6 @@ async def main() -> None:
     finally:
         await store.close()
     ux.chip("ok", f"Done - {count} resume chunks indexed.")
-    ux.bullet("Verify with: uv run python get_resume.py", style="dim")
 
 
 if __name__ == "__main__":

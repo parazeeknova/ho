@@ -42,3 +42,8 @@ azure_dump/
 checkpoints/
 crawler_out/
 intel/
+.tor-geoip/
+
+# Local editor / tooling state (opencode plugin cache + receipts)
+.ocx/
+.opencode/
