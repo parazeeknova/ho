@@ -178,7 +178,7 @@ def _per_job_resume(
     name_slug = re.sub(r"[^A-Za-z0-9]+", "_", f"{first_name}_{last_name}").strip("_")
     if not name_slug:
         name_slug = src.stem
-    dest_dir = Path(__file__).resolve().parent / "node" / "artifacts" / "resumes"
+    dest_dir = Path(__file__).resolve().parent.parent / "node" / "artifacts" / "resumes"
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / f"{name_slug}_{company_slug}_Resume{src.suffix}"
     if not dest.exists():
@@ -334,7 +334,7 @@ class AutofillWorker:
         ``min_size`` (the worker's concurrency) so a concurrent runner never
         silently falls back to no persistent profile.
         """
-        base = Path(__file__).resolve().parent / "node" / "artifacts" / "profiles"
+        base = Path(__file__).resolve().parent.parent / "node" / "artifacts" / "profiles"
         try:
             pool_size = int(os.getenv("AUTOFILL_PROFILE_POOL_SIZE", "4"))
         except TypeError, ValueError:
@@ -641,7 +641,7 @@ class AutofillWorker:
             }
             payload_str = json.dumps(job_payload)
 
-            node_dir = os.path.join(os.path.dirname(__file__), "node")
+            node_dir = str(Path(__file__).resolve().parent.parent / "node")
 
             process_env = {**os.environ}
             # Per-job identity: one session id drives BOTH the residential proxy

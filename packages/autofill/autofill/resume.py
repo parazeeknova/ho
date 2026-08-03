@@ -17,7 +17,7 @@ from src.logging import get_logger
 
 logger = get_logger("autofill.resume")
 
-_ARTIFACTS_DIR = Path(__file__).resolve().parent / "node" / "artifacts"
+_ARTIFACTS_DIR = Path(__file__).resolve().parent.parent / "node" / "artifacts"
 _RESUME_FILENAME = "resume.pdf"
 _RESUME_URL_SIDECAR = f"{_RESUME_FILENAME}.url"
 
