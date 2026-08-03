@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from src.graph.entity import GraphEvent, NodeType
+from src.graph.entity import FrontierEntry, GraphEvent, NodeType
 from src.graph.event_bus import EventBus, TTLSet
 
 
@@ -95,8 +95,9 @@ async def test_eventbus_dedup_single_fire() -> None:
     try:
         fired: list[str] = []
 
-        async def handler(event: GraphEvent) -> None:
+        async def handler(event: GraphEvent) -> list[FrontierEntry]:
             fired.append(event.node_id)
+            return []
 
         bus.subscribe("test.evt", handler)
         evt = bus.new_event("test.evt", "node-1", NodeType.COMPANY)
