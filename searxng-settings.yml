@@ -52,3 +52,6 @@ engines:
     engine: github
     shortcut: gh
     disabled: false
+
+  - name: wikidata
+    disabled: true

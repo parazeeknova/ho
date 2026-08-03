@@ -1,7 +1,92 @@
 Candidate Profile:
-- Background: B.Tech CSE undergrad, new grad / junior. Accept both internships and full-time roles. Do not accept roles requiring 3+ years of professional experience.
-- Tech Stack: Extracted automatically from your resume and GitHub profile. Accept roles with strong overlap — do not reject for missing one secondary skill.
-- Location: Based in India. Open to onsite & remote in India, remote worldwide, or onsite anywhere with relocation bonus provided. Has passport, can relocate.
-- Visa: US roles ok if company sponsors (FAANG, unicorns, well-funded startups). For other countries, relocation bonus is sufficient signal.
-- Industries to Reject: None — open to all legitimate tech roles.
-- Minimum Salary: 70,000 INR/month for India roles. For internships or roles at exceptionally good companies (reputation, learning, brand), accept any paid position even if salary is not mentioned.
+- firstName: Aman
+- lastName: Aziz
+- preferredName: Aman
+- email: amanaziz2020@gmail.com
+- phone: +91 9315978211
+- linkedin: https://linkedin.com/in/aman-aziz
+- github: https://github.com/tutankhAman
+- website: https://aamn.dev/tldr
+- What is your current location?: Bhopal, India
+- Which work model are you comfortable with? (remote/hybrid/onsite): remote, hybrid, onsite
+- Are you willing to relocate for this role?: yes, not in third world countries
+- What is your nationality?: Indian
+- Are you legally authorized to work in India?: Yes
+- Are you authorized to work in the country? (India): Yes, only in India
+- Are you legally authorized to work in the United States?: No
+- Do you require visa sponsorship?: Yes
+- What is your current annual cash compensation?: Nil
+- What is your expected compensation?: 80000 INR/ month
+- Do you hold any equity in your current company?: No
+- How soon can you join?: Immediately
+- How many hours per week are you available to work?: 30-40
+- Gender: Male
+- Veteran Status: No
+- Are you Hispanic/Latino?: No
+- Disability Status: No
+- Do you have experience with Kubernetes?: Yes
+- What is your current or more recent job title?: Co-Founder
+- Country: India +91
+- Attach: India +91
+- Are you open to working in person in our San Francisco or New York office 2-3 times a week?: Yes
+- Are you legally authorized to work in the country where the job is located?: No, I am only authorized to work in India
+- Will you now or in the future require company sponsorship to retain or extend your work authorization in the country where the job is located?: Yes
+- Race: Asian
+- Degree: Bachelor's Degree
+- School: Aalborg University
+- Discipline: Computer Science
+- How did you hear about this job?: Google
+- Do you currently live or are you willing to relocate to the job’s location?: I am willing to relocate to this job's location.
+- This position is based in Bangkok, Thailand and requires full-time, on-site work. Are you willing and able to relocate to Bangkok for this role, if offered the position? (Hybrid - 2 days WFH, 3 days in office): Yes
+- In which country/region are you currently based?: India
+- What is your total number of years of professional software development experience, excluding internships and freelance work?: 0-4 Years
+- How frequently do you write production codes? • Daily • Weekly • Monthly • Rarely: Daily
+- Do you as a candidate have a personal relationship with a current Agoda employee?: No
+- Have you undergone interview process (coding/platform/system design/culture) for any of the following positions at Agoda in the past 6 months: Senior Software Engineer, Staff Software Engineer, Lead Software Engineer, and Engineering Manager?: No
+- Are you presently employed by any company within the Booking Holdings group, including but not limited to Kayak, OpenTable, Booking.com, Rental Cars, RocketMiles, FareHarbor, HotelsCombined, CheapFlights, Momondo, Priceline, or Getaroom?: No
+- Do you agree to Agoda’s use of personal data from your application to improve our recruitment experience? We may collaborate and share your data with third-party providers for recruitment purposes and you may ask to remove your data at any time.: Yes
+- Do you allow us to provide you TEXT/SMS updates of your interview process? We may engage with a service provider to do so.: Yes
+- Email me about other job openings within the Booking Holding’s entities and recruitment-related newsletters: No
+- What is your current company?: N/A
+- Project Password: N/A
+- X Profile: https://x.com/amancooks
+- Do you have any prior experience in Trust and Safety?✱: No
+- Have you worked on reporting content on Social media platforms/web or both?✱: Yes
+- Are you aware of content violation policies and what are the requirements for sending enforcements?✱: No
+- What is your Current Fixed CTC (in LPA)?✱: N/A
+- What are your favorite books or blogs on software development and why?: Clean Code by Robert C Martin
+- What type of computer and internet connection do you have? If you get the job, would you be willing to ensure you have good equipment (e.g. MacBook Pro with 16GB RAM and a fast internet connection)? Please be specific.✱: 16GB RAM, Ryzen 5800h, 200mbps+ connection
+- Start date: Immediately
+- How did you come to learn about Xsolla? We're delighted to know more about your journey to discovering our company. (Events, Friends, LinkedIn etc.)✱: LinkedIn
+- Graduation Date: 18/05/27
+- When is your expected graduation date?: 18 May 2027
+- What is your expected graduation date?: 18 May 2027
+
+- Are you authorized to work in the country? (India): No
+- Are you authorized to work in the country? (India): No
+- Are you authorized to work in the country? (India): No
+- Are you authorized to work in the country? (India): No
+- Are you authorized to work in the country? (India): No
+From Resume:
+- Experience: Delivered 5 high-impact projects with a 4.8+ client rating and generated six-figure revenue within the first two
+- Achievements: • NPTEL: Introduction to Machine Learning | Introduction to Japanese Language and Culture
+- Experience: Translated ambiguous requirements into precise UX flows and production-ready systems, including clients with zero
+- Achievements: • IBM: Frontend Development with React, Backend Development with Node.js, Cloud Computing, Python for Data Science
+- Achievements: • 4-Star Python on HackerRank; open source contributor to AsyncAPI and LangChain
+- +91 93159 78211 amanaziz2020@gmail.com linkedin.com/in/aman-aziz github.com/tutankhaman aamn.dev/tldr
+- Education: Bachelor of Technology, Computer Science and Engineering Bhopal, MP
+- Technical  |     | Skills
+- Aman |     | Aziz --- | --- | --- | --- | --- | --- | --- | ---- | --- | ---- | --- | --- | --- | --- +91 93159 78211 amanaziz2020@gmail.com linkedin.com/in/aman-aziz github.com/tutankhaman aamn.dev/tldr ---------- | --- | --------- | ----------- | ----------- | -------- | ------- | -----
+- AI/ML: LangChain, LangGraph, pgvector, Groq, Gemini, OpenAI, Deepgram, Vercel AI SDK
+- Experience: Singularity |     |     | Works |           |     |     |     |     |     |     |     | Aug 2025 | - Present
+- Experience: technical |     | background
+- Languages: |     |           | JavaScript, | TypeScript, |          | Python, | C++,  | Rust
+- Education: VIT | Bhopal |     | University |     |     |     |     |     |     |     |     | Sep 2023 | - Present
+- Experience: --- | --------- | --- | ---------- | --- | --- | --- | --- | --- | --- | --- | --- | --- | ---
+- Backend & Cloud: Node.js, Bun, Elysia, Express.js, REST APIs, PostgreSQL, Redis, RabbitMQ, MongoDB, Supabase,
+- Realtime:   |     | WebSockets, |        | Yjs | (CRDT), | Durable |     | Objects
+- Experience: and | full-stack | development
+- Achievements: --- | ----- | -------- | --- | ----------- | --- | ---- | --- | --- | --- | --- | --- | --- | ---
+- Experience: --- | --- | ---------- | ----------- | --- | --- | --- | --- | --- | --- | --- | --- | --- | ---
+- Cloudflare, |     | AWS,        | Azure, | GCP
+- Frontend:  |     | React.js, |             | Next.js,    | Tailwind | CSS,    | Vite, | Electron, | HTML, | CSS

@@ -35,8 +35,15 @@ devenv.local.yaml
 
 # pre-commit
 .pre-commit-config.yaml
+# Plans
+.plans/
 scripts/.watchdog.env
 azure_dump/
 checkpoints/
 crawler_out/
 intel/
+.tor-geoip/
+
+# Local editor / tooling state (opencode plugin cache + receipts)
+.ocx/
+.opencode/

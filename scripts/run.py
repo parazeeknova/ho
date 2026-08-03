@@ -35,6 +35,29 @@ STATUS_UP = "[green]READY[/green]"
 STATUS_WAIT = "[yellow]·[/yellow]"
 STATUS_DOWN = "[red]DOWN[/red]"
 
+
+def _env_value_or_default(key: str, default: str) -> str:
+    """Read ``key`` from the process env, then the project's .env file (so a
+    value the user set in .env is honored without requiring it in the shell).
+    Returns ``default`` only when neither source specifies the key."""
+    value = os.environ.get(key)
+    if value is not None and value.strip() != "":
+        return value.strip()
+    try:
+        dotenv_path = PROJECT / ".env"
+        if dotenv_path.exists():
+            for raw_line in dotenv_path.read_text().splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                if k.strip() == key:
+                    return v.strip().strip('"').strip("'")
+    except Exception:
+        pass
+    return default
+
+
 _proc: subprocess.Popen | None = None
 
 
@@ -50,8 +73,8 @@ def run(cmd: str, silent: bool = True, timeout: int = 30) -> tuple[int, str]:
 
 def check_neo4j_ready() -> bool:
     """Verify Neo4j is actually serving queries, not just TCP accepting."""
-    raw = _podman_exec(
-        "firecrawl_neo4j_1",
+    raw = _docker_exec(
+        "firecrawl-neo4j-1",
         "cypher-shell -u neo4j -p password 'RETURN 1 AS ready' 2>/dev/null",
     )
     return "ready" in raw.lower() and "1" in raw
@@ -74,7 +97,7 @@ def check_port(host: str, port: int) -> bool:
 
 def container_running(name: str) -> bool:
     code, _ = run(
-        f"podman ps --filter name='{name}' --filter status=running --format '{{{{.Names}}}}'"
+        f"docker ps --filter name='{name}' --filter status=running --format '{{{{.Names}}}}'"
     )
     return code == 0
 
@@ -97,9 +120,9 @@ def stop_all() -> None:
     console.print("[green]All services stopped.[/green]")
 
 
-def _podman_exec(container: str, cmd: str) -> str:
+def _docker_exec(container: str, cmd: str) -> str:
     code, out = run(
-        f"podman exec {container} {cmd}",
+        f"docker exec {container} {cmd}",
         silent=True,
         timeout=10,
     )
@@ -112,8 +135,8 @@ def deep_stats() -> dict[str, Any]:
 
     # Neo4j node count
     if check_port("localhost", 7687):
-        raw = _podman_exec(
-            "firecrawl_neo4j_1",
+        raw = _docker_exec(
+            "firecrawl-neo4j-1",
             "cypher-shell -u neo4j -p password 'MATCH (n) RETURN count(n) AS nodes' 2>/dev/null",
         )
         for line in raw.split("\n"):
@@ -124,8 +147,8 @@ def deep_stats() -> dict[str, Any]:
     # pgvector row counts
     if check_port("localhost", 5433):
         for table in ("job_observations", "job_candidates", "discovered_sources"):
-            raw = _podman_exec(
-                "firecrawl_agent-memory-db_1",
+            raw = _docker_exec(
+                "firecrawl-agent-memory-db-1",
                 f"psql -U postgres -d agent_memory -t "
                 f"-c 'SELECT COUNT(*) FROM {table}' 2>/dev/null",
             )
@@ -135,7 +158,7 @@ def deep_stats() -> dict[str, Any]:
 
     # RabbitMQ queue depths
     if container_running("firecrawl_rabbitmq"):
-        raw = _podman_exec(
+        raw = _docker_exec(
             "firecrawl_rabbitmq_1",
             "rabbitmqctl list_queues name messages 2>/dev/null",
         )
@@ -166,11 +189,11 @@ def deep_stats() -> dict[str, Any]:
     # Container CPU/mem
     try:
         r = subprocess.run(
-            "podman stats --no-stream "
+            "docker stats --no-stream "
             "--format '{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}' "
-            "firecrawl_api_1 firecrawl_playwright-service_1 "
-            "firecrawl_rabbitmq_1 firecrawl_redis_1 "
-            "firecrawl_neo4j_1 2>/dev/null",
+            "firecrawl-api-1 firecrawl-playwright-service-1 "
+            "firecrawl_rabbitmq_1 firecrawl-redis-1 "
+            "firecrawl-neo4j-1 2>/dev/null",
             shell=True,
             capture_output=True,
             text=True,
@@ -422,13 +445,13 @@ def main() -> None:
     # Define services
     services: list[tuple[str, Any, str]] = [
         ("llama-server (Embed)", lambda: check_http("http://localhost:8900/health"), ":8900"),
-        ("redis", lambda: container_running("firecrawl_redis"), ":6379"),
-        ("nuq-postgres", lambda: container_running("firecrawl_nuq-postgres"), ":5432"),
+        ("redis", lambda: container_running("firecrawl-redis-1"), ":6379"),
+        ("nuq-postgres", lambda: container_running("firecrawl-nuq-postgres-1"), ":5432"),
         ("searxng", lambda: check_http("http://localhost:8080"), ":8080"),
         ("neo4j", check_neo4j_ready, ":7687"),
         ("agent-memory-db", lambda: check_port("localhost", 5433), ":5433"),
-        ("rabbitmq", lambda: container_running("firecrawl_rabbitmq"), ":5672"),
-        ("playwright", lambda: container_running("firecrawl_playwright"), ":3000"),
+        ("rabbitmq", lambda: container_running("firecrawl_rabbitmq_1"), ":5672"),
+        ("playwright", lambda: container_running("firecrawl-playwright-service-1"), ":3000"),
         ("firecrawl api", lambda: check_port("localhost", 3002), ":3002"),
     ]
 
@@ -445,7 +468,7 @@ def main() -> None:
     )
 
     run(
-        "podman run -d --name firecrawl_rabbitmq_1 "
+        "docker run -d --name firecrawl_rabbitmq_1 "
         "--network firecrawl_default --network-alias rabbitmq "
         "--restart unless-stopped "
         "--entrypoint /bin/bash rabbitmq:3-management "

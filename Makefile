@@ -10,7 +10,7 @@
 #   make backup / backup-list / restore DIR=... / autobackup
 #   make analytics / health / serve / check / test
 
-.PHONY: help run crawl intel accepted analytics backup backup-list restore autobackup fc graph launch health serve check test
+.PHONY: help run crawl intel accepted analytics backup backup-list restore autobackup fc graph launch health serve check check-py check-node test
 
 help:
 	@echo "make <target> [FLAGS]"
@@ -29,6 +29,16 @@ help:
 
 # Pipeline
 # MODE: (default) | no-cloud | worker | dev | overnight (direct orchestrator)
+init-memory:
+	uv run python scripts/init_memory.py
+
+grill-persona:
+	uv run python scripts/grill_persona.py
+
+index-resume:
+	uv run python scripts/index_resume.py
+
+
 run:
 	@case "$(MODE)" in \
 	  overnight) OVERNIGHT_LOOP=true PYTHONPATH=$(CURDIR) uv run python -m src.radar.engine.orchestrator ;; \
@@ -95,8 +105,13 @@ health:
 serve:
 	uv run python scripts/serve.py
 
-check:
-	uv run ruff format . && uv run ruff check . --fix
+check: check-py check-node
+
+check-py:
+	uv run ruff format . && uv run ruff check . --fix && uv run mypy src scripts
+
+check-node:
+	cd autofill/node && npm run lint && npm run format:check && npm run typecheck
 
 test:
 	uv run python -m pytest . -v --ignore=refs
