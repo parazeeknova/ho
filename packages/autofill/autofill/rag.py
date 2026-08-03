@@ -1442,7 +1442,11 @@ candidate has submitted; never copy phrasing verbatim across applications.
     def _append_persona_json(
         self, question: str, answer: str, category: str, country: str | None = None
     ) -> None:
-        """Durably append a learned Q&A to persona.json (atomic write)."""
+        """Durably persist a learned Q&A to persona.json (atomic write).
+
+        Idempotent per (category, question, country): a repeated learn of the
+        same fact replaces the stored entry instead of appending a duplicate.
+        """
         try:
             data = json.loads(PERSONA_JSON.read_text())
         except OSError, json.JSONDecodeError:
@@ -1455,7 +1459,17 @@ candidate has submitted; never copy phrasing verbatim across applications.
         }
         if country:
             entry["country"] = country
-        data.setdefault("answers", []).append(entry)
+        answers = data.setdefault("answers", [])
+        for i, existing in enumerate(answers):
+            if (
+                existing.get("category") == entry["category"]
+                and existing.get("question") == entry["question"]
+                and (existing.get("country") or "").lower() == (entry.get("country") or "").lower()
+            ):
+                answers[i] = entry
+                break
+        else:
+            answers.append(entry)
         tmp = PERSONA_JSON.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(data, indent=2) + "\n")
         os.replace(tmp, PERSONA_JSON)

@@ -1,5 +1,6 @@
 """Unit tests for Phase 3 ScreenerRAG integration."""
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -458,14 +459,25 @@ def test_authorization_policy_question_names_country_wins() -> None:
 
 
 @pytest.mark.asyncio
-async def test_learn_scoped_qualifies_question_text() -> None:
+async def test_learn_scoped_qualifies_question_text(tmp_path) -> None:
+    persona_json = tmp_path / "persona.json"
     rag = ScreenerRAG(exact_answers={}, scoped_answers={}, store=None)
-    ok = await rag.learn("Are you authorized to work in the country?", "No", country="india")
+    with patch("autofill.rag.PERSONA_JSON", persona_json):
+        ok = await rag.learn("Are you authorized to work in the country?", "No", country="india")
 
     assert ok is True
     # Learned under the scoped map, not the global exact tier.
     assert rag._scoped_answers[("authorization", "india")] == "No"
     assert rag.exact_answer("Are you authorized to work in the country?") is None
+    persisted = json.loads(persona_json.read_text())
+    assert persisted["answers"] == [
+        {
+            "category": "authorization",
+            "question": "Are you authorized to work in the country? (India)",
+            "answer": "No",
+            "country": "india",
+        }
+    ]
 
 
 def _persona_store(rows):
