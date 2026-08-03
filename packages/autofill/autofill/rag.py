@@ -19,8 +19,7 @@ from autofill.profile import Profile
 logger = get_logger("autofill.rag")
 
 ROOT = Path(__file__).resolve().parent.parent
-PERSONA_JSON = ROOT / "persona.json"
-PERSONA_TXT = ROOT / "persona.txt"
+PERSONA_JSON = ROOT / "data" / "persona.json"
 
 # Sentinel returned when an answer is a personal fact we must not fabricate.
 # The CLI prompts the user for these; the worker leaves them blank.
@@ -686,7 +685,7 @@ def qualify_question(question: str, country: str | None) -> str:
     """Make a question country-qualified when it does not name a country.
 
     "Are you authorized to work in the country?" with country "india" becomes
-    "Are you authorized to work in India?" so learned text, persona.txt, and
+    "Are you authorized to work in India?" so learned text, persona.json, and
     embeddings never imply a global answer.
     """
     q = (question or "").strip()
@@ -1431,7 +1430,6 @@ candidate has submitted; never copy phrasing verbatim across applications.
             category,
             country=scope_country if category in _SCOPED_CATEGORIES else None,
         )
-        self._append_persona_txt(question, answer)
         logger.info(
             "Learned answer persisted",
             question=question,
@@ -1461,17 +1459,3 @@ candidate has submitted; never copy phrasing verbatim across applications.
         tmp = PERSONA_JSON.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(data, indent=2) + "\n")
         os.replace(tmp, PERSONA_JSON)
-
-    def _append_persona_txt(self, question: str, answer: str) -> None:
-        """Insert the learned line into persona.txt before the resume section."""
-        try:
-            text = PERSONA_TXT.read_text()
-        except OSError:
-            return
-        line = f"- {question}: {answer}"
-        marker = "From Resume:"
-        if marker in text:
-            text = text.replace(marker, f"{line}\n{marker}", 1)
-        else:
-            text = text.rstrip("\n") + f"\n{line}\n"
-        PERSONA_TXT.write_text(text)

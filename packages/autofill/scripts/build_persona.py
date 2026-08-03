@@ -2,8 +2,9 @@
 """Build the candidate persona from persona.json and index it into pgvector.
 
 Renders each grilled Q&A into a retrievable chunk, embeds via the local
-embedding server (EMBED_URL), indexes into ``persona_embeddings``, and writes
-a clean ``persona.txt`` combining the persona answers with the resume summary.
+embedding server (EMBED_URL), indexes into ``persona_embeddings``, and stores
+the resume summary inside ``persona.json`` (``resume_summary``) so the single
+persona file doubles as the radar matcher's grounding text.
 
 Usage:
     uv run python scripts/build_persona.py
@@ -13,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -34,10 +36,9 @@ from src.memory.pgvector_store import MemoryStore  # noqa: E402
 
 logger = get_logger("build_persona")
 
-PERSONA_JSON = ROOT / "persona.json"
-PERSONA_TXT = ROOT / "persona.txt"
+PERSONA_JSON = ROOT / "data" / "persona.json"
 
-# Resume sections to fold into persona.txt so the radar matcher keeps grounding.
+# Resume sections to fold into the persona.json resume_summary field.
 _RESUME_SECTIONS = ("header", "skills", "experience", "education", "achievements")
 
 
@@ -178,7 +179,7 @@ async def embed_chunks(
 async def main() -> None:
     import ux
 
-    ux.banner("PERSONA BUILDER", "persona.json  ->  persona_embeddings + persona.txt")
+    ux.banner("PERSONA BUILDER", "persona.json  ->  persona_embeddings + resume_summary")
     answers = load_persona()
     identity = load_identity()
     chunks = render_chunks(answers, identity)
@@ -189,9 +190,12 @@ async def main() -> None:
         with ux.console.status("Fetching resume summary...", spinner="dots"):
             resume = await resume_summary(store)
 
-        persona_txt = render_persona_txt(answers, resume, identity)
-        PERSONA_TXT.write_text(persona_txt)
-        ux.chip("ok", f"Wrote {PERSONA_TXT} ({len(persona_txt)} chars)")
+        persona = json.loads(PERSONA_JSON.read_text())
+        persona["resume_summary"] = resume
+        tmp = PERSONA_JSON.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(persona, indent=2) + "\n")
+        os.replace(tmp, PERSONA_JSON)
+        ux.chip("ok", f"Stored resume_summary in {PERSONA_JSON} ({len(resume)} chars)")
 
         records = await embed_chunks(chunks)
         await store.clear_persona()

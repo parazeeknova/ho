@@ -4,7 +4,7 @@
 Asks for identity/contact fields and the grilled personal Q&A (with the
 existing persona.json values shown as defaults), writes persona.json
 atomically, then rebuilds the persona memory (persona_embeddings +
-persona.txt) via build_persona.py.
+resume_summary) via build_persona.py.
 
 On a fresh setup (no persona.json) the identity fields are pre-filled from
 the indexed resume header when available, and saved values that differ from
@@ -37,7 +37,7 @@ from src.logging import get_logger  # noqa: E402
 
 logger = get_logger("grill_persona")
 
-PERSONA_JSON = ROOT / "persona.json"
+PERSONA_JSON = ROOT / "data" / "persona.json"
 
 IDENTITY_FIELDS = (
     "firstName",

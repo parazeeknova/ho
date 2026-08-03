@@ -3,7 +3,7 @@
 
 Checks Postgres + the embedding server (starting it if needed), indexes the
 resume into resume_embeddings, builds the persona into persona_embeddings +
-persona.txt (grilling interactively when persona.json is missing), and prints
+resume_summary (grilling interactively when persona.json is missing), and prints
 a summary of what is now in memory.
 
 Usage:
@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import shutil
 import subprocess
@@ -182,9 +183,9 @@ async def main() -> None:
             "or pass --resume-url/--resume-path.",
         )
 
-    # 4. Persona -> persona_embeddings + persona.txt
+    # 4. Persona -> persona_embeddings + resume_summary in persona.json
     ux.section(4, 4, "Persona")
-    persona_json = ROOT / "persona.json"
+    persona_json = ROOT / "data" / "persona.json"
     if args.grill:
         await run_script("grill_persona.py")
     elif persona_json.exists():
@@ -215,11 +216,13 @@ async def main() -> None:
         ("resume_embeddings", f"{resume_count} chunks"),
         ("persona_embeddings", f"{persona_count} chunks"),
     ]
-    persona_txt = ROOT / "persona.txt"  # noqa: F841 (see persona merge)
-    if persona_txt.exists():
-        rows.append(("persona.txt", f"{len(persona_txt.read_text())} chars"))
+    if persona_json.exists():
+        persona = json.loads(persona_json.read_text())
+        rows.append(("persona.json", f"{len(persona.get('answers', []))} answers"))
+        if persona.get("resume_summary"):
+            rows.append(("resume_summary", "stored in persona.json"))
     else:
-        rows.append(("persona.txt", "MISSING (run build_persona.py)"))
+        rows.append(("persona.json", "MISSING (run grill_persona.py)"))
     ux.summary_table("MEMORY SUMMARY", rows)
 
     ux.next_steps(

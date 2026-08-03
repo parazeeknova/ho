@@ -209,17 +209,14 @@ def _learnable_rag(tmp_path):
     rag.store.index_persona_chunks = AsyncMock()
     persona_json = tmp_path / "persona.json"
     persona_json.write_text(json.dumps({"name": "T", "version": 1, "answers": []}))
-    persona_txt = tmp_path / "persona.txt"
-    persona_txt.write_text("Candidate Profile:\n- x: y\n\nFrom Resume:\n- stuff\n")
-    return rag, persona_json, persona_txt
+    return rag, persona_json
 
 
 @pytest.mark.asyncio
 async def test_learn_indexes_and_appends(tmp_path):
-    rag, pj, ptxt = _learnable_rag(tmp_path)
+    rag, pj = _learnable_rag(tmp_path)
     with (
         patch("autofill.rag.PERSONA_JSON", pj),
-        patch("autofill.rag.PERSONA_TXT", ptxt),
         _embed_stub(),
     ):
         ok = await rag.learn("How many years of experience do you have?", "2 years")
@@ -238,18 +235,14 @@ async def test_learn_indexes_and_appends(tmp_path):
         "question": "How many years of experience do you have?",
         "answer": "2 years",
     }
-    txt = ptxt.read_text()
-    assert "- How many years of experience do you have?: 2 years" in txt
-    assert txt.index("From Resume:") > txt.index("How many years")
 
 
 @pytest.mark.asyncio
 async def test_learn_skips_exact_duplicate(tmp_path):
-    rag, pj, ptxt = _learnable_rag(tmp_path)
+    rag, pj = _learnable_rag(tmp_path)
     rag.store.persona_question_exists = AsyncMock(return_value=True)
     with (
         patch("autofill.rag.PERSONA_JSON", pj),
-        patch("autofill.rag.PERSONA_TXT", ptxt),
         _embed_stub(),
     ):
         ok = await rag.learn("Do you require visa sponsorship?", "Yes")
@@ -270,10 +263,9 @@ async def test_learn_blank_answer_noop():
 
 @pytest.mark.asyncio
 async def test_learn_embed_failure_still_appends_persona_json(tmp_path):
-    rag, pj, ptxt = _learnable_rag(tmp_path)
+    rag, pj = _learnable_rag(tmp_path)
     with (
         patch("autofill.rag.PERSONA_JSON", pj),
-        patch("autofill.rag.PERSONA_TXT", ptxt),
         patch.object(ScreenerRAG, "_embed", new=AsyncMock(return_value=None)),
     ):
         ok = await rag.learn("Do you require visa sponsorship?", "Yes", country="india")
@@ -288,7 +280,7 @@ async def test_learn_embed_failure_still_appends_persona_json(tmp_path):
 
 @pytest.mark.asyncio
 async def test_learn_scoped_without_country_refuses_to_persist(tmp_path):
-    rag, pj, _ = _learnable_rag(tmp_path)
+    rag, pj = _learnable_rag(tmp_path)
     with (
         patch("autofill.rag.PERSONA_JSON", pj),
         patch.object(ScreenerRAG, "_embed", new=AsyncMock(return_value=None)),

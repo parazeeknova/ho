@@ -55,7 +55,11 @@ class Profile(BaseModel):
 def _load_persona_json() -> dict[str, Any]:
     import os
 
-    for path in ("persona.json", os.path.join(os.path.dirname(__file__), "..", "persona.json")):
+    for path in (
+        "persona.json",
+        os.path.join(os.path.dirname(__file__), "..", "data", "persona.json"),
+        os.path.join(os.path.dirname(__file__), "..", "persona.json"),
+    ):
         try:
             with open(path) as f:
                 return json.load(f)
