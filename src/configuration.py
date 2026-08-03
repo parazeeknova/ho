@@ -166,6 +166,9 @@ class FirecrawlConfig:
     timeout: float = field(default_factory=lambda: _env_float("FIRECRAWL_TIMEOUT", 60.0))
     map_limit: int = field(default_factory=lambda: _env_int("FIRECRAWL_MAP_LIMIT", 200))
     scrape_limit: int = field(default_factory=lambda: _env_int("FIRECRAWL_SCRAPE_LIMIT", 200))
+    scrape_timeout: float = field(
+        default_factory=lambda: _env_float("FIRECRAWL_SCRAPE_TIMEOUT", 15.0)
+    )
 
 
 @dataclass

@@ -789,11 +789,13 @@ async def _fetch_postings_and_gate(
     sem = asyncio.Semaphore(8)
     processed_count = 0
     total = len(observations)
+    scrape_budget = cfg.scrape_limit
+    scrape_used = 0
     if total > 0:
         logger.info(f"Fetching and gating {total} postings...")
 
     async def _process_one(obs: JobObservation) -> None:
-        nonlocal rejected_count, processed_count
+        nonlocal rejected_count, processed_count, scrape_used
         async with sem:
             try:
                 pid = _posting_id(obs)
@@ -807,7 +809,18 @@ async def _fetch_postings_and_gate(
                     return
 
                 if not obs.raw_markdown or len(obs.raw_markdown) < 100:
-                    client = await get_client("orchestrator", timeout=15.0)
+                    if scrape_used >= scrape_budget:
+                        # Per-sweep scrape cap (FIRECRAWL_SCRAPE_LIMIT):
+                        # never-gated postings without content drain one
+                        # bounded batch per sweep instead of re-scraping the
+                        # whole corpus every time. Persist the observation so
+                        # freshness tracking still advances; it re-enters the
+                        # gate queue on a later sweep.
+                        await _persist_observation(store, obs, pid)
+                        processed_count += 1
+                        return
+                    scrape_used += 1
+                    client = await get_client("orchestrator", timeout=cfg.scrape_timeout)
                     resp = await client.post(
                         f"{cfg.url}/v1/scrape",
                         json={"url": obs.url, "formats": ["markdown"], "onlyMainContent": True},
