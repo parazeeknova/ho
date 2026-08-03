@@ -139,6 +139,18 @@ services:
     image: dperson/torproxy
     restart: "no"
     network_mode: "host"
+    environment:
+      # Exit only from the persona's country (IN) so the application's geo-IP
+      # matches the stated location instead of a random exit that trips the
+      # ATS location-mismatch fraud signal.
+      LOCATION: "${TOR_EXIT_COUNTRY:-IN}"
+    volumes:
+      # Fresh Tor geoip databases (mounted read-only) replace the image's
+      # stale 2020 geoip, whose country data misclassifies real-world exits
+      # (e.g. a Turkish exit labelled IN). Refresh with:
+      #   scripts/refresh-tor-geoip.sh
+      - ./.tor-geoip/geoip:/usr/share/tor/geoip:ro
+      - ./.tor-geoip/geoip6:/usr/share/tor/geoip6:ro
 
   agent-memory-db:
     image: pgvector/pgvector:pg18

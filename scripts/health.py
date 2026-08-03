@@ -75,7 +75,7 @@ def container_running(pattern: str) -> bool:
     try:
         r = subprocess.run(
             [
-                "podman",
+                "docker",
                 "ps",
                 "--filter",
                 f"name={pattern}",
@@ -97,7 +97,7 @@ def container_count(pattern: str) -> int:
     try:
         r = subprocess.run(
             [
-                "podman",
+                "docker",
                 "ps",
                 "--filter",
                 f"name={pattern}",
@@ -139,14 +139,14 @@ _register("llama-server Embeddings :8900", lambda: http_ok("http://localhost:890
 print()
 print("Firecrawl")
 _register("api              :3002", lambda: http_ok("http://localhost:3002"))
-_register("redis", lambda: container_running("firecrawl_redis"))
-_register("rabbitmq", lambda: container_running("firecrawl_rabbitmq"))
-_register("playwright", lambda: container_running("firecrawl_playwright"))
-_register("nuq-postgres", lambda: container_running("firecrawl_nuq-postgres"))
+_register("redis", lambda: container_running("firecrawl-redis-1"))
+_register("rabbitmq", lambda: container_running("firecrawl_rabbitmq_1"))
+_register("playwright", lambda: container_running("firecrawl-playwright-service-1"))
+_register("nuq-postgres", lambda: container_running("firecrawl-nuq-postgres-1"))
 
 print()
 print("Agent Memory")
-_register("agent-memory-db", lambda: container_running("firecrawl_agent-memory-db"))
+_register("agent-memory-db", lambda: container_running("firecrawl-agent-memory-db-1"))
 pgvector_ok = _register("pgvector :5433", lambda: check_port("localhost", 5433))
 
 if pgvector_ok:
