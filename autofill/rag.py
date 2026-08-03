@@ -66,6 +66,31 @@ questions the user provides. Follow these decision rules strictly, in order:
    employed by Z", "associated with Deloitte"): if the persona or resume shows
    it, choose the confirming option; if the material does not mention it,
    choose the "No"/negative option.
+5A. WORK AUTHORIZATION / VISA-SPONSORSHIP questions ("are you authorized to
+   work", "right to work", "require sponsorship", "will you require visa
+   sponsorship"): this is a geography policy decision, not a personal fact.
+   If the job's country (from the <job_description>) differs from the
+   candidate's home country (stated in the Candidate Background), choose the
+   sponsorship-requiring option ("No", "I require visa sponsorship", "No, I
+   will require immediate visa sponsorship"). If the job country equals the
+   home country, choose the authorized / no-sponsorship option. If neither
+   country is knowable, return the exact literal "__ASK_USER__". Never answer
+   "authorized" for a foreign job unless the material confirms it.
+5B. RELOCATION / COMMUTE / WORK-LOCATION questions ("are you able to commute to
+   the office", "willing to relocate", "based in <city> or willing to move",
+   "how many days in office"): a geography decision, not a personal fact. If the
+   job's country differs from the candidate's home country, choose the
+   negative/No option when offered (e.g. "No", "Not based in <city>, but open to
+   relocating" when the options distinguish willingness from current residence);
+   for free-text questions answer "No". If the job country equals the home
+   country, choose the positive/Yes option. Never return "__ASK_USER__" for a
+   commute/relocation question whose countries are knowable.
+5C. YEARS-OF-EXPERIENCE questions ("how many years of experience...",
+   "<technology> experience in years"): answer with the candidate's stated years
+   of professional experience from the Candidate Background / persona (e.g.
+   "0-4 Years", "3", "5+ years"). If the material states a range, return that
+   range verbatim. Never return "__ASK_USER__" for a years-of-experience
+   question when the persona states any years of experience.
 6. VOLUNTARY DEI questions (gender, ethnicity for diversity monitoring): use
    the persona value when present; otherwise the "prefer not to disclose"
    option if offered, else "__ASK_USER__".
@@ -215,14 +240,20 @@ _PERSONAL_RULES: list[tuple[re.Pattern, str]] = [
     ),
     (
         re.compile(
-            r"expected (annual )?(cash )?(salary|compensation)|salary expectation|expected comp",
+            r"current (annual )?(cash )?compensation|current salary|current comp",
+            re.I,
+        ),
+        "current_comp",
+    ),
+    (
+        re.compile(
+            r"expected.*(salary|compensation)|salary (expectation|requirement|range)|"
+            r"(base|minimum|target) (annual )?(cash )?(salary|compensation)|"
+            r"(annual|total) (gross )?(salary|compensation)|"
+            r"(salary|compensation) (expectation|requirement|range|band)",
             re.I,
         ),
         "expected_comp",
-    ),
-    (
-        re.compile(r"current (annual )?(cash )?compensation|current salary|current comp", re.I),
-        "current_comp",
     ),
     (
         re.compile(r"current location|currently (based|located|residing|living)", re.I),
@@ -363,6 +394,7 @@ _SCOPED_CATEGORIES = {"authorization", "visa"}
 _SCOPED_EMBED_CATEGORY = {
     "authorization": "work_authorization",
     "visa": "work_authorization",
+    "visa_sponsorship": "work_authorization",
 }
 
 # Visa-option patterns used to pick a deterministic default. Order matters:
@@ -370,6 +402,49 @@ _SCOPED_EMBED_CATEGORY = {
 _VISA_H1B_RE = re.compile(r"\bH-?1-?B\b", re.I)
 _VISA_YES_RE = re.compile(r"^yes\b", re.I)
 _VISA_NO_RE = re.compile(r"^no\b", re.I)
+
+
+def _pick_authorization_answer(options: list[str], want_yes: bool) -> str | None:
+    """Pick the exact option for a work-authorization question expressing the
+    desired stance (authorized / not authorized), or None when the options
+    carry no clear match.
+
+    ``want_yes=True`` prefers the unambiguous "authorized / no sponsorship"
+    option; ``want_yes=False`` prefers the "require sponsorship / No" option,
+    ranking a leading "No" highest (e.g. the Xsolla-style three-way list
+    "Yes… without sponsorship" / "Yes, but require sponsorship in future" /
+    "No, require immediate sponsorship" resolves to the immediate-sponsorship
+    option for a candidate who needs sponsorship abroad).
+    """
+    best: str | None = None
+    best_score = -1
+    for o in options or []:
+        t = (o or "").strip().lower()
+        if not t:
+            continue
+        needs_visa = any(
+            k in t
+            for k in (
+                "require sponsorship",
+                "require immediate",
+                "require visa",
+                "not authorized",
+            )
+        )
+        positive = (
+            t.startswith("yes") or "authorized to work without" in t or "i am authorized" in t
+        )
+        if want_yes:
+            score = 3 if (positive and not needs_visa) else (1 if positive else 0)
+        else:
+            score = (
+                4
+                if (needs_visa and t.startswith("no"))
+                else (3 if needs_visa else (2 if t.startswith("no") else 0))
+            )
+        if score > best_score:
+            best_score, best = score, o
+    return best if best_score > 0 else None
 
 
 def default_visa_option(options: list[str]) -> str | None:
@@ -668,9 +743,25 @@ class ScreenerRAG:
     ) -> str | None:
         """Country a question is scoped to: named in the question, else from
         the job description (location first, then description)."""
-        mentioned = _country_from_text(question or "")
+        q = (question or "").strip()
+        mentioned = _country_from_text(q)
         if mentioned:
             return mentioned
+        # No country named in the question. Self-referential phrasing ("the
+        # country you currently reside in", "your home country", "the country
+        # you are based in") points at the CANDIDATE'S country, never the
+        # job's country. Falling through to the job description here answers a
+        # residence question against the role's country (e.g. a US posting)
+        # and inverts the policy for a candidate in India.
+        if re.search(
+            r"you (currently )?(reside|live|stay|are based) in|your (home|resident) country|"
+            r"country you currently reside in|country you (reside|live) in",
+            q,
+            re.I,
+        ):
+            home = self.home_country()
+            if home:
+                return home
         if job_context:
             for field in ("location", "description"):
                 src = str(job_context.get(field) or "").strip()
@@ -725,6 +816,30 @@ class ScreenerRAG:
                     return o
         return None
 
+    def resolve_authorization_policy(
+        self, question: str, options: list[str], job_context: dict[str, Any] | None
+    ) -> str | None:
+        """Deterministic work-authorization decision for an authorization-scoped
+        question when the persona has no country-scoped answer.
+
+        Mirrors ``resolve_visa_policy``. Policy:
+        - job country == home  -> authorized (the "Yes" / no-sponsorship option),
+        - job country != home  -> not authorized (the "No" / sponsorship option),
+        - otherwise (home or job country unknown) -> None, so the caller falls
+          through to the LLM tier instead of deferring an answerable question.
+        Returns an exact option text or None.
+        """
+        matched = next(
+            ((p, k) for p, k in _PERSONAL_RULES if p.search(question or "")), None
+        )
+        if not matched or matched[1] != "authorization":
+            return None
+        job_country = self.target_country(question, job_context)
+        home = self.home_country()
+        if not home or job_country is None:
+            return None
+        return _pick_authorization_answer(list(options or []), want_yes=job_country == home)
+
     async def kb_answer(
         self, question: str, job_context: dict[str, Any] | None = None
     ) -> str | None:
@@ -744,12 +859,16 @@ class ScreenerRAG:
             return None
         q_lower = q.lower()
 
-        custom = self._match_custom_answer(q, q_lower)
-        if custom is not None:
-            return custom
-
-        matched_rule = next(((p, key) for p, key in _PERSONAL_RULES if p.search(q)), None)
+        matched_rule = next(
+            ((p, key) for p, key in _PERSONAL_RULES if p.search(q)), None
+        )
         key = matched_rule[1] if matched_rule else None
+
+        # Scoped categories (work authorization, visa) NEVER consult the global
+        # custom/learned/persona tiers: a "No" for India must not answer a US
+        # question, and a short label like "Work Authorization" must not
+        # substring-match an unrelated custom answer (e.g. a visa-sponsorship
+        # entry) and leak "Yes". Resolve only from country-scoped data.
         if key in _SCOPED_CATEGORIES:
             country = self.target_country(q, job_context)
             if country:
@@ -767,14 +886,37 @@ class ScreenerRAG:
                 if persona_ans is not None:
                     return persona_ans
                 return None
-            # No country known from the question or the job description: fall
-            # back to persona embeddings, which are still country-guarded when
-            # both sides name a country. The exact tier is never consulted so a
-            # learned answer can never leak across countries.
-            persona_ans = await self._lookup_persona(q, q_lower)
-            if persona_ans is not None:
-                return persona_ans
+            # No country named and no job-context country: only a SELF-CONTAINED
+            # general fact may answer (e.g. "Do you require visa sponsorship?"
+            # -> "Yes" — true in every country the candidate applies abroad).
+            # A fragment that merely substring-matches a longer custom key, or
+            # that only fuzzy-matches a stored fact (e.g. "Work Authorization"
+            # vs "Do you require visa sponsorship?"), is never a confident
+            # answer — require an EXACT normalized question match.
+            nq = _normalise_question(q)
+            for custom_key, custom_val in self.profile.customAnswers.items():
+                if _normalise_question(custom_key) == nq:
+                    return custom_val
+            if self.store is not None:
+                emb = await self._embed(q)
+                if emb:
+                    try:
+                        results = await self.store.search_similar_persona(emb, top_k=6)
+                    except Exception:
+                        results = []
+                    for r in results:
+                        if r.get("distance", 1) > PERSONA_MATCH_THRESHOLD:
+                            continue
+                        if _normalise_question(r.get("question") or "") != nq:
+                            continue
+                        ans = (r.get("answer") or "").strip()
+                        if ans:
+                            return ans
             return None
+
+        custom = self._match_custom_answer(q, q_lower)
+        if custom is not None:
+            return custom
 
         exact = self.exact_answer(q)
         if exact is not None:
@@ -839,10 +981,13 @@ class ScreenerRAG:
                 else:
                     answers[q] = kb
                     continue
-            # Protected-class and country-scoped questions never reach the LLM:
-            # without a confident KB answer they are a user prompt, never a
-            # generated guess.
-            if _SENSITIVE_QUESTION_RE.search(q.lower()) or self._is_scoped_question(q):
+            # Protected-class questions never reach the LLM: without a confident
+            # KB answer they are a user prompt, never a generated guess.
+            # Country-scoped work-authorization/visa questions ARE allowed
+            # through to the LLM: the deterministic policies above resolve the
+            # common cases, and the grounded LLM is a better backstop than
+            # deferring a clearly-answerable form.
+            if _SENSITIVE_QUESTION_RE.search(q.lower()):
                 answers[q] = ASK_USER
                 continue
             unresolved.append(s)
@@ -865,6 +1010,7 @@ Candidate Name: {self.profile.firstName} {self.profile.lastName}
 Candidate Email: {self.profile.email}
 Candidate LinkedIn: {self.profile.linkedin}
 Candidate GitHub: {self.profile.github}
+Candidate Home Country: {self.home_country() or "unknown"}
 """
         if context:
             prompt += f"""
@@ -917,7 +1063,7 @@ Questions:
                 if not spec:
                     answers[q] = ASK_USER
                     continue
-                if _SENSITIVE_QUESTION_RE.search(q.lower()) or self._is_scoped_question(q):
+                if _SENSITIVE_QUESTION_RE.search(q.lower()):
                     answers[q] = ASK_USER
                 elif spec["kind"] in ("select", "multi") and spec["options"]:
                     # Validate: never fill a hallucinated non-option.

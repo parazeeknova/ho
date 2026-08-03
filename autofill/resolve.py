@@ -173,6 +173,16 @@ async def resolve_question(
         if visa_pick is not None:
             return (visa_pick, "kb")
 
+    # Work-authorization deterministic policy, mirroring visa: a question like
+    # "Are you legally authorized to work in Germany?" is decided from the
+    # job/home country (job != home -> not authorized -> "No"/sponsorship).
+    # When the policy cannot decide it returns None so the LLM tier below can
+    # still attempt the question instead of deferring an answerable one.
+    if kind in ("select", "multi") and options and rag is not None:
+        auth_pick = rag.resolve_authorization_policy(q, list(options), job_context)
+        if auth_pick is not None:
+            return (auth_pick, "kb")
+
     # Tier 3: grounded LLM (persona + resume + JD, with options for selects).
     # Select answers are validated against the real options inside
     # answer_questions — a non-option is never filled. Only what survives to
