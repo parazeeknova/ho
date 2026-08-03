@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 from firecrawl import FirecrawlApp
 from rich.console import Console
 
-from src.agent.startup_agent import StartupAgent
+from src.agent.startup_agent import StartupAgent, _is_plausible_company_name
 from src.agent.telegram_agent import TelegramAgent, set_pipeline_state
 from src.configuration import get_config
 from src.graph.engine import WorkScheduler
@@ -51,7 +51,7 @@ from src.radar.sources.agents import (
     employee_discovery_agent,
     founder_social_agent,
 )
-from src.radar.sources.board_registry import REGISTERED_BOARDS, get_discovery_index_sources
+from src.radar.sources.board_registry import REGISTERED_BOARDS
 from src.radar.sources.discovery import (
     _extract_domain as _discovery_domain,
 )
@@ -89,7 +89,6 @@ console = Console()
 logger = get_logger("radar_orchestrator")
 
 _SEED_BOARDS = REGISTERED_BOARDS
-_DISCOVERY_INDEX_SOURCES = get_discovery_index_sources()
 
 _SCHEDULER_ERRORS: dict[str, int] = {}
 _PIPELINE_METRICS: dict[str, Any] = {
@@ -118,12 +117,6 @@ def _hash_board_url(board_url: str) -> str:
 # Source persistence
 
 
-def _save_source_checkpoint(source_id: str, board_url: str, origin: str = "discovery") -> None:
-    cp = register_source(source_id, "ats_board", initial_quality=0.5)
-    cp.board_url = board_url
-    cp.discovery_origin = origin
-
-
 async def _persist_discovered_sources(
     store: MemoryStore,
     discovered: list[dict[str, Any]],
@@ -136,6 +129,10 @@ async def _persist_discovered_sources(
     """
     added: list[dict[str, Any]] = []
     for c in discovered:
+        name = c.get("name", "").strip()
+        if not _is_plausible_company_name(name):
+            logger.info(f"Discovery: skipping implausible company name: {name[:60]!r}")
+            continue
         website = c.get("website", "")
         board_url = c.get("ats_url", website) or website
         name_slug = c.get("name", "").lower().replace(" ", "-")[:40]
@@ -181,7 +178,7 @@ async def _dispatch_discovered_founders(
     dispatched = 0
     for c in added_sources[:limit]:
         name = c.get("name", "").strip()
-        if not name:
+        if not name or not _is_plausible_company_name(name):
             continue
         try:
             node = await graph.get_node(name)
@@ -857,10 +854,12 @@ async def _fetch_postings_and_gate(
                 pid = _posting_id(obs)
                 if pid in known_hashes:
                     # Already indexed before: URL_DUPLICATE gate would reject this
-                    # regardless, so skip the expensive scrape entirely and just
-                    # refresh last_seen.
-                    obs.observed_at = _time.time()
-                    await _persist_observation(store, obs, pid)
+                    # regardless, so skip the expensive scrape entirely. Refresh
+                    # last_seen at most once every 6h so a full-corpus sweep
+                    # doesn't upsert ~15K unchanged rows every run.
+                    if time.time() - (last_seen.get(pid) or 0) > 6 * 3600:
+                        obs.observed_at = _time.time()
+                        await _persist_observation(store, obs, pid)
                     processed_count += 1
                     return
 
