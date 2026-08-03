@@ -27,10 +27,6 @@ def _default_lease_ttl() -> float:
     return get_config().scheduler.lease_ttl
 
 
-def _default_heartbeat_interval() -> float:
-    return get_config().scheduler.heartbeat_interval
-
-
 class NodeType(StrEnum):
     COMPANY = "company"
     FOUNDER = "founder"
@@ -260,6 +256,13 @@ def property_provenance(
     return PropertyProvenance(value=value, source=source, confidence=confidence)
 
 
+def _unwrap_prov(value: Any) -> Any:
+    """Unwrap a PropertyProvenance dict back to its raw value."""
+    if isinstance(value, dict) and "value" in value and "source" in value:
+        return value["value"]
+    return value
+
+
 def resolve_entity(
     existing_aliases: list[str],
     new_alias: str,
@@ -287,14 +290,14 @@ def resolve_entity(
             continue
         existing = merged.get(key)
         if existing is None:
-            merged[key] = property_provenance(value, new_source).model_dump()
+            merged[key] = property_provenance(value, new_source).model_dump(mode="json")
             continue
         if isinstance(existing, dict) and "value" in existing and "source" in existing:
-            if existing["value"] != value:
-                alt_key = f"{key}__alt_{new_source}"
-                merged[alt_key] = property_provenance(value, new_source).model_dump()
+            if _unwrap_prov(existing["value"]) != _unwrap_prov(value):
+                alt_key = f"{key}__alt_{_unwrap_prov(new_source)}"
+                merged[alt_key] = property_provenance(value, new_source).model_dump(mode="json")
         else:
-            merged[key] = property_provenance(value, new_source).model_dump()
+            merged[key] = property_provenance(value, new_source).model_dump(mode="json")
 
     return merged
 

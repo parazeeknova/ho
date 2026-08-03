@@ -35,6 +35,10 @@ devenv.local.yaml
 
 # pre-commit
 .pre-commit-config.yaml
-
 # Plans
 .plans/
+scripts/.watchdog.env
+azure_dump/
+checkpoints/
+crawler_out/
+intel/

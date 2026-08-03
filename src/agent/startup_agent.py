@@ -7,17 +7,38 @@ Extracts founder details (name, title, LinkedIn, GitHub, email), funding rounds
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
 import re
 from typing import Any
 
-import httpx
 from rich.console import Console
 
+from src.agent.email_triangulation import triangulate_founder_email
 from src.configuration import get_config
+from src.http_client import get_client
 from src.llm.context import ContextManager
 from src.logging import get_logger
 
 console = Console()
+
+_PLACEHOLDER_COMPANY_RX = re.compile(
+    r"not.?specified|unknown|n\.?a\.?|tbd|placeholder|no.?company|"
+    r"^company$|^job listing$|^-+$",
+    re.I,
+)
+
+
+def _company_domain(company: str) -> str:
+    """Best-effort domain for a company, or '' when the name is a placeholder.
+
+    Prevents fabricating emails like ``careers@notspecifiedinjoblisting.com``
+    when the OSINT layer could not identify a real company.
+    """
+    name = (company or "").strip()
+    if not name or _PLACEHOLDER_COMPANY_RX.search(name):
+        return ""
+    return name.lower().replace(" ", "").strip() + ".com"
 logger = get_logger("startup_agent")
 
 FOUNDER_POST_SCHEMA: dict[str, Any] = {
@@ -55,18 +76,18 @@ async def _searxng_search(query: str, time_range: str | None = None) -> list[str
     cfg = get_config().searxng
     async with _searxng_sem:
         try:
-            async with httpx.AsyncClient(timeout=cfg.timeout) as client:
-                resp = await client.get(
-                    cfg.url,
-                    params=params,
-                )
-                if resp.status_code == 200:
-                    results = resp.json().get("results", [])
-                    return [
-                        f"{r.get('title', '')}: {r.get('content', '')} ({r.get('url', '')})"
-                        for r in results[:5]
-                        if r.get("content") or r.get("title")
-                    ]
+            client = await get_client("startup_agent", timeout=cfg.timeout)
+            resp = await client.get(
+                cfg.url,
+                params=params,
+            )
+            if resp.status_code == 200:
+                results = resp.json().get("results", [])
+                return [
+                    f"{r.get('title', '')}: {r.get('content', '')} ({r.get('url', '')})"
+                    for r in results[:5]
+                    if r.get("content") or r.get("title")
+                ]
         except Exception as e:
             logger.debug(
                 "SearXNG query failed",
@@ -123,6 +144,9 @@ FOUNDER_SCHEMA = {
 }
 
 
+_LINKEDIN_RE = re.compile(r"https?://(?:[\w-]+\.)*linkedin\.com/in/[A-Za-z0-9_\-%]+")
+
+
 class StartupAgent:
     """Agent that researches startup founders, funding, and outreach info."""
 
@@ -165,8 +189,9 @@ class StartupAgent:
         r"raised\s+\$?\d)"
     )
 
-    def __init__(self, ctx: ContextManager) -> None:
+    def __init__(self, ctx: ContextManager, store: Any = None) -> None:
         self.ctx = ctx
+        self.store = store
 
     @staticmethod
     def _should_skip_llm(job: dict[str, Any]) -> str | None:
@@ -257,8 +282,119 @@ class StartupAgent:
 
         return min(100, score)
 
+    _OSINT_CACHE_KEYS = (
+        "is_startup",
+        "founders",
+        "funding_info",
+        "funding_stage",
+        "founder_socials",
+        "company_news",
+        "osint_signals",
+    )
+
     async def analyze_startup(self, job: dict[str, Any]) -> dict[str, Any]:
-        """Research company founders, funding stage, socials, and recent news."""
+        """Research company founders, funding stage, socials, and recent news.
+
+        Wrapper with a per-company OSINT cache: the same company is
+        analyzed again whenever another of its roles gets accepted, so
+        this avoids repeated SearXNG/Wikipedia/LLM work and source
+        hammering.
+        """
+        company = str(job.get("company") or "").strip()
+        if not company or company in ("N/A", "Unknown", "Company"):
+            return job
+        if self.store is not None:
+            cached = await self._get_cached_osint(company)
+            if cached:
+                job.update(cached)
+                return job
+        result = await self._analyze_startup_uncached(job)
+        if self.store is not None:
+            await self._put_cached_osint(company, result)
+        return result
+
+    async def _get_cached_osint(self, company: str) -> dict[str, Any] | None:
+        if self.store is None:
+            return None
+        try:
+            data = await self.store.get_company_osint(company)
+        except Exception:
+            return None
+        if not data:
+            return None
+        return {k: data.get(k) for k in self._OSINT_CACHE_KEYS if k in data}
+
+    async def _put_cached_osint(self, company: str, job: dict[str, Any]) -> None:
+        if self.store is None:
+            return
+        payload = {k: job.get(k) for k in self._OSINT_CACHE_KEYS if job.get(k) is not None}
+        if not payload:
+            return
+        # A result with no founders, funding or news is a degraded run
+        # (e.g. rate-limited sources); cache it briefly so the next sweep
+        # retries rather than serving emptiness for the full week.
+        substance = any(
+            payload.get(k)
+            for k in (
+                "founders",
+                "funding_info",
+                "funding_stage",
+                "founder_socials",
+                "company_news",
+                "osint_signals",
+            )
+        )
+        with contextlib.suppress(Exception):
+            await self.store.put_company_osint(company, payload, degraded=not substance)
+
+    async def _finalize_founders(self, job: dict[str, Any], company: str, domain: str) -> None:
+        """Email triangulation + real LinkedIn profile search for founders.
+
+        Both run only when search sources genuinely return data; nothing
+        is fabricated (a guessed URL is worse than a missing one).
+        """
+        founders = job.get("founders") or []
+        if not founders or not isinstance(founders[0], dict):
+            return
+        resolved_linkedin = 0
+        for f in founders:
+            if not isinstance(f, dict) or not f.get("name"):
+                continue
+            if not f.get("email"):
+                tri = await triangulate_founder_email(f["name"], domain)
+                if tri:
+                    f["email"] = tri["email"]
+                    f["email_triangulated"] = True
+            if not f.get("linkedin_url") and resolved_linkedin < 3:
+                url = await self._resolve_linkedin(str(f["name"]), company)
+                if url:
+                    f["linkedin_url"] = url
+                    resolved_linkedin += 1
+                    socials = job.get("founder_socials") or []
+                    if url not in socials:
+                        socials.append(url)
+                        job["founder_socials"] = socials
+
+    async def _resolve_linkedin(self, name: str, company: str) -> str | None:
+        """Find a founder's real LinkedIn profile URL via search.
+
+        Wikipedia only yields names; SearXNG/Bing rarely surfaces
+        linkedin.com pages in the generic company query, so search for
+        the person explicitly. Never fabricates a URL.
+        """
+        for q in (f'"{name}" "{company}" linkedin', f'"{name}" linkedin'):
+            snippets = await _searxng_search(q)
+            for snippet in snippets:
+                for match in _LINKEDIN_RE.finditer(snippet):
+                    url = match.group(0)
+                    if url.endswith((".", ",", ")")):
+                        url = url[:-1]
+                    if url:
+                        return url
+        return None
+
+    async def _analyze_startup_uncached(self, job: dict[str, Any]) -> dict[str, Any]:
+        """The uncached search + extraction pipeline."""
         company = str(job.get("company") or "").strip()
         if not company or company in ("N/A", "Unknown", "Company"):
             return job
@@ -271,7 +407,19 @@ class StartupAgent:
         results_list = await asyncio.gather(*(_searxng_search(q) for q in queries))
         combined_snippets = "\n".join(snippet for sublist in results_list for snippet in sublist)
 
+        # Founder names straight from the Wikipedia infobox; SearXNG/Bing
+        # rarely surfaces founder pages, so this is the primary founder source.
+        from src.search.wikipedia import get_wikipedia_founders
+
+        wiki_founders = await get_wikipedia_founders(company)
+
         if not combined_snippets:
+            if wiki_founders:
+                job["founders"] = wiki_founders
+            if job.get("founders"):
+                domain = _company_domain(company)
+                if domain:
+                    await self._finalize_founders(job, company, domain)
             return job
 
         prompt = (
@@ -327,12 +475,32 @@ class StartupAgent:
                 if isinstance(f, dict) and f.get("linkedin_url")
             ]
         elif raw_founders and isinstance(raw_founders[0], str):
-            job["founders"] = [{"name": n} for n in raw_founders]
+            if isinstance(raw_founders, str):
+                try:
+                    parsed = json.loads(raw_founders)
+                    if isinstance(parsed, list):
+                        job["founders"] = [{"name": n} for n in parsed if isinstance(n, str)]
+                    else:
+                        job["founders"] = [{"name": raw_founders}]
+                except Exception:
+                    job["founders"] = [{"name": raw_founders}]
+            else:
+                job["founders"] = [{"name": n} for n in raw_founders]
             if extracted.get("founder_socials"):
                 job["founder_socials"] = extracted["founder_socials"]
         else:
             if extracted.get("founder_socials"):
                 job["founder_socials"] = extracted["founder_socials"]
+
+        if not job.get("founders") and wiki_founders:
+            job["founders"] = wiki_founders
+
+        # Email triangulation fallback + LinkedIn profile resolution for
+        # founders missing direct contact data. Only when the company name
+        # resolves to a plausible domain (never placeholder names).
+        domain = _company_domain(company)
+        if domain:
+            await self._finalize_founders(job, company, domain)
 
         fi = extracted.get("funding_info")
         if isinstance(fi, dict) and any(fi.values()):

@@ -1,4 +1,4 @@
-.PHONY: check check-types test serve run match health fc-up fc-down fc-logs dev dev-down start overnight clean-volumes start-daemon stop-daemon graph graph-stop graph-shell graph-reset
+.PHONY: check check-types test serve run ncrun match health fc-up fc-down fc-logs dev dev-down start overnight clean-volumes start-daemon stop-daemon graph graph-stop graph-shell graph-reset
 
 check:
 	uv run ruff format . && uv run ruff check . --fix
@@ -24,6 +24,14 @@ index-resume:
 run:
 	uv run python scripts/run.py
 
+# Run the full pipeline with NO cloud (Azure) - for machines without
+# cloud creds. Same as run but skips cloud sync.
+ncrun:
+	uv run python scripts/run.py --no-cloud
+
+worker:
+	uv run python scripts/run.py --worker-only
+
 match: health
 	uv run python -m src.radar.orchestrator
 
@@ -36,7 +44,7 @@ fc-up:
 	podman run -d --name firecrawl_rabbitmq_1 \
 		--network firecrawl_default \
 		--network-alias rabbitmq \
-		--restart unless-stopped \
+		--restart no \
 		--entrypoint /bin/bash \
 		rabbitmq:3-management \
 		-c "rm -f /var/lib/rabbitmq/.erlang.cookie; exec docker-entrypoint.sh rabbitmq-server"; \
@@ -95,3 +103,58 @@ graph-reset:
 	docker compose -f docker-compose.yaml up -d neo4j; \
 	echo "Neo4j reset."
 
+
+intel:
+	uv run python scripts/radar_intel.py
+
+intel-telegram:
+	uv run python scripts/radar_intel.py --telegram
+
+smart-intel:
+	uv run python scripts/smart_intel.py --write
+
+# Azure relic intelligence workers (portable to any VPS). Set
+# AZURE_STORAGE_ACCOUNT/KEY/CONTAINER in the environment first.
+azure-founder:
+	uv run --with azure-storage-blob python scripts/azure/founder_miner.py
+
+azure-funding:
+	uv run --with azure-storage-blob python scripts/azure/funding_tracker.py
+
+# Local analytics: storage + containers + volumes + DB numbers.
+analytics:
+	uv run python scripts/analytics.py
+
+# Local crawl worker + ingest (routed through Tor via torproxy).
+# Writes to crawler_out/ and pulls into Postgres. No cloud needed.
+crawl:
+	./scripts/local_crawler.sh
+
+crawl-only:
+	./scripts/local_crawler.sh --crawl
+
+crawl-ingest:
+	./scripts/local_crawler.sh --ingest
+
+crawl-notor:
+	./scripts/local_crawler.sh --no-tor
+
+tor-up:
+	docker compose -f docker-compose.yaml up -d torproxy
+
+# Local volume checkpoint backup / restore (snapshots under checkpoints/).
+backup:
+	uv run python scripts/checkpoint_backup.py
+
+backup-list:
+	@ls -dt checkpoints/*/ 2>/dev/null || echo "no checkpoints yet"
+
+restore:
+	uv run python scripts/checkpoint_restore.py
+
+restore-dir:
+	uv run python scripts/checkpoint_restore.py --dir $(CKPT)
+
+# Auto-backup: snapshot volumes + prune to latest 10 (also runs per-sweep).
+autobackup:
+	uv run python scripts/auto_backup.py

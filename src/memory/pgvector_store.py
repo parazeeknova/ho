@@ -6,7 +6,11 @@ No dependency on Firebase or any other persistence layer.
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
 import json
+import re
+import time
 from typing import Any
 
 import asyncpg
@@ -19,6 +23,117 @@ from src.logging import get_logger
 logger = get_logger("memory_store")
 
 VECTOR_DIM = 1024
+
+
+def _url_hash(url: str) -> str:
+    """Stable hash used to key obs_embeddings rows (matches md5(o.url))."""
+    return hashlib.md5(url.encode("utf-8")).hexdigest()
+
+
+_EMBED_NOISE = re.compile(r"[\u0000-\u001f\u007f]+")
+
+
+def _company_from_url(url: str) -> str:
+    """Best-effort company name from common ATS URL shapes.
+
+    - https://jobs.ashbyhq.com/<company>[/...]
+    - https://job-boards.greenhouse.io/<company>[/...]
+    - https://jobs.lever.co/<company>[/...]
+    - https://<company>.applytojob.com or <company>.bamboohr.com/jobs
+    Falls back to the last path segment only when it looks like a name.
+    """
+    try:
+        import urllib.parse
+
+        host = urllib.parse.urlparse(url).netloc.lower()
+        path = urllib.parse.urlparse(url).path
+    except Exception:
+        return ""
+    for needle in ("jobs.ashbyhq.com", "boards.greenhouse.io", "jobs.lever.co"):
+        if needle in host:
+            idx = host.find(needle)
+            return host[idx + len(needle) + 1 :].strip() or _first_path(path)
+    if "greenhouse.io" in host and "job-boards" in host:
+        return _first_path(path)
+    if "applytojob.com" in host:
+        return host.split(".")[0]
+    if "bamboohr.com" in host:
+        return host.split(".")[0]
+    if host in ("jobicy.com", "remoteok.com", "linkedin.com", "www.linkedin.com"):
+        return ""
+    return ""
+
+
+def _first_path(path: str) -> str:
+    parts = [p for p in path.split("/") if p]
+    if not parts:
+        return ""
+    return parts[0][:60] if not parts[0].startswith("jobs") else (parts[1][:60] if len(parts) > 1 else "")
+
+
+def _build_embed_text(title: str, raw_json: Any) -> str:
+    """Compact, embedding-friendly text for an observation.
+
+    Keeps the title + company + the first ~400 words of readable JD text so
+    the vector captures *what* the job is, not boilerplate. Lists (posting
+    bullet text) are the highest-signal part of the raw payload.
+    """
+    parts: list[str] = []
+    if title:
+        parts.append(title)
+    text = ""
+    if isinstance(raw_json, str) and raw_json:
+        try:
+            raw_json = json.loads(raw_json)
+        except Exception:
+            raw_json = None
+    if isinstance(raw_json, dict):
+        parsed = raw_json.get("parsed")
+        parsed_comp = ""
+        if isinstance(parsed, dict):
+            parsed_comp = str(parsed.get("company") or parsed.get("name") or "")
+            if parsed_comp:
+                parts.append(parsed_comp)
+            content = str(parsed.get("description") or parsed.get("content") or "")
+            if content:
+                text = content
+        raw_comp = str(
+            raw_json.get("company_name")
+            or raw_json.get("companyName")
+            or (
+                (raw_json.get("company") or {}).get("name", "")
+                if isinstance(raw_json.get("company"), dict)
+                else (raw_json.get("company") or "")
+            )
+            or ""
+        )
+        if raw_comp and raw_comp.lower() != parsed_comp.lower():
+            parts.append(raw_comp)
+        lists = raw_json.get("lists")
+        if isinstance(lists, list):
+            blobs: list[str] = []
+            for item in lists:
+                if isinstance(item, dict):
+                    h = str(item.get("head", "") or item.get("text", "") or "")
+                    c = str(item.get("content", "") or "")
+                    if h:
+                        blobs.append(h)
+                    if c:
+                        blobs.append(c)
+            if blobs:
+                joined = " ".join(blobs)
+                if len(joined) > len(text):
+                    text = joined
+        if not text:
+            for key in ("content", "markdown", "description"):
+                v = raw_json.get(key)
+                if isinstance(v, str) and v:
+                    text = v
+                    break
+    text = _EMBED_NOISE.sub(" ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    parts.append(text[:1200])
+    return " | ".join(p for p in parts if p)
 
 CREATE_TABLES_SQL = f"""
 CREATE TABLE IF NOT EXISTS processed_jobs (
@@ -204,6 +319,44 @@ CREATE TABLE IF NOT EXISTS source_snapshots (
     updated_at    TIMESTAMP DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS salary_estimates (
+    lookup_key    TEXT PRIMARY KEY,
+    company       TEXT NOT NULL DEFAULT '',
+    role          TEXT NOT NULL DEFAULT '',
+    amount_usd    DOUBLE PRECISION,
+    currency      TEXT NOT NULL DEFAULT 'USD',
+    period        TEXT NOT NULL DEFAULT 'year',
+    raw           TEXT NOT NULL DEFAULT '',
+    source        TEXT NOT NULL DEFAULT 'searxng',
+    searched_at   DOUBLE PRECISION NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS company_osint (
+    company      TEXT PRIMARY KEY,
+    data         JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+    cached_at    DOUBLE PRECISION NOT NULL DEFAULT 0,
+    expires_at   DOUBLE PRECISION NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS llm_queue (
+    id            BIGSERIAL PRIMARY KEY,
+    canonical_id  TEXT NOT NULL,
+    version       INT NOT NULL DEFAULT 1,
+    priority      INT NOT NULL DEFAULT 50,
+    payload       JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+    status        TEXT NOT NULL DEFAULT 'pending',
+    attempts      INT NOT NULL DEFAULT 0,
+    enqueued_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    lease_until   TIMESTAMPTZ,
+    completed_at  TIMESTAMPTZ,
+    UNIQUE (canonical_id, version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_llm_queue_claim ON llm_queue(status, priority DESC, id);
+
+ALTER TABLE jobs_ledger
+ADD COLUMN IF NOT EXISTS embedding vector({VECTOR_DIM});
+
 CREATE INDEX IF NOT EXISTS idx_radar_candidates_eligibility ON radar_candidates(eligibility);
 CREATE INDEX IF NOT EXISTS idx_radar_candidates_freshness ON radar_candidates(freshness_lane);
 CREATE INDEX IF NOT EXISTS idx_radar_candidates_rejection ON radar_candidates(rejection_reason);
@@ -212,7 +365,40 @@ CREATE INDEX IF NOT EXISTS idx_radar_candidates_created ON radar_candidates(crea
 CREATE INDEX IF NOT EXISTS idx_job_observations_source ON job_observations(source);
 CREATE INDEX IF NOT EXISTS idx_job_observations_first_seen ON job_observations(first_seen);
 CREATE INDEX IF NOT EXISTS idx_source_checkpoints_active ON source_checkpoints(active);
+CREATE INDEX IF NOT EXISTS idx_radar_candidates_elig_created
+    ON radar_candidates(eligibility, created_at);
+CREATE INDEX IF NOT EXISTS idx_job_observations_source_seen
+    ON job_observations(source, last_seen);
+CREATE INDEX IF NOT EXISTS idx_jobs_ledger_match
+    ON jobs_ledger(match_percent DESC);
+
+CREATE TABLE IF NOT EXISTS obs_embeddings (
+    url_hash     TEXT PRIMARY KEY,
+    title        TEXT NOT NULL DEFAULT '',
+    company      TEXT NOT NULL DEFAULT '',
+    embedding    vector({VECTOR_DIM}),
+    embedded_at  TIMESTAMP DEFAULT NOW()
+);
 """
+
+
+def _jsonb_val(val: Any, default: Any) -> str:
+    """Coerce a value to a JSON string for a jsonb column.
+
+    Guards against string-typed JSON (e.g. a model returning ``"[]"``
+    instead of an empty list) that would otherwise be stored as a jsonb
+    *string* and break every list-typed renderer downstream.
+    """
+    if isinstance(val, str):
+        try:
+            parsed = json.loads(val)
+        except Exception:
+            parsed = None
+        if parsed is not None:
+            val = parsed
+    if isinstance(val, (list, dict, int, float, bool)) or val is None:
+        return json.dumps(val if val is not None else default)
+    return json.dumps(default)
 
 
 class MemoryStore:
@@ -225,12 +411,73 @@ class MemoryStore:
     async def create(cls, config: PostgresConfig | None = None) -> MemoryStore:
         """Initialise pool, register vector type, create tables."""
         cfg = config or get_config().postgres
-        pool = await asyncpg.create_pool(cfg.dsn, min_size=cfg.min_pool, max_size=cfg.max_pool)
+
+        async def _init(conn) -> None:
+            await register_vector(conn)
+
+        pool = await asyncpg.create_pool(
+            cfg.dsn, min_size=cfg.min_pool, max_size=cfg.max_pool, init=_init
+        )
         async with pool.acquire() as conn:
             await register_vector(conn)
+            await conn.set_type_codec(
+                "jsonb", encoder=json.dumps, decoder=json.loads, schema="pg_catalog"
+            )
             await conn.execute(CREATE_TABLES_SQL)
+            # Lightweight column migrations for tables that predate schema
+            # additions (CREATE TABLE IF NOT EXISTS won't touch them).
+            await conn.execute(
+                "ALTER TABLE company_osint ADD COLUMN IF NOT EXISTS "
+                "expires_at DOUBLE PRECISION NOT NULL DEFAULT 0"
+            )
+            await cls._create_hnsw_indexes(conn)
+            await cls._prune_llm_queue(conn)
         logger.info("MemoryStore initialized", dsn=cfg.dsn.split("@")[-1])
         return cls(pool)
+
+    @staticmethod
+    async def _create_hnsw_indexes(conn) -> None:
+        """Build ANN indexes on the hot vector-search columns.
+
+        Wrapped in suppress: HNSW needs pgvector >= 0.5.0, and a missing
+        index must never block store startup (searches just degrade to
+        exact scans).
+        """
+        with contextlib.suppress(Exception):
+            await conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_resume_embeddings_hnsw
+                ON resume_embeddings USING hnsw (embedding vector_cosine_ops)
+                WITH (m = 16, ef_construction = 64)
+                """
+            )
+        with contextlib.suppress(Exception):
+            await conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_jobs_ledger_embedding_hnsw
+                ON jobs_ledger USING hnsw (embedding vector_cosine_ops)
+                WITH (m = 16, ef_construction = 64)
+                """
+            )
+        with contextlib.suppress(Exception):
+            await conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_obs_embeddings_hnsw
+                ON obs_embeddings USING hnsw (embedding vector_cosine_ops)
+                WITH (m = 16, ef_construction = 64)
+                """
+            )
+
+    @staticmethod
+    async def _prune_llm_queue(conn, older_than_days: int = 7) -> None:
+        """Drop settled queue rows so llm_queue never grows unbounded."""
+        with contextlib.suppress(Exception):
+            await conn.execute(
+                "DELETE FROM llm_queue "
+                "WHERE status IN ('done', 'error') "
+                "AND completed_at < NOW() - ($1::int * INTERVAL '1 day')",
+                older_than_days,
+            )
 
     async def close(self) -> None:
         await self._pool.close()
@@ -379,6 +626,227 @@ class MemoryStore:
     async def clear_persona(self) -> None:
         async with self._pool.acquire() as conn:
             await conn.execute("TRUNCATE persona_embeddings")
+
+    # ── obs_embeddings: vector intelligence over the job corpus ────────────────
+
+    async def upsert_obs_embedding(
+        self, url_hash: str, title: str, company: str, embedding: list[float]
+    ) -> None:
+        """Insert or refresh a single observation embedding (cosine-normalized)."""
+        vec = Vector(embedding)
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO obs_embeddings (url_hash, title, company, embedding)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (url_hash) DO UPDATE SET
+                    title = EXCLUDED.title,
+                    company = EXCLUDED.company,
+                    embedding = EXCLUDED.embedding,
+                    embedded_at = NOW()
+                """,
+                url_hash,
+                title,
+                company,
+                vec,
+            )
+
+    async def missing_obs_hashes(
+        self, url_hashes: list[str], limit: int = 2000
+    ) -> list[str]:
+        """Return which of the given url hashes have no embedding yet (batch-safe)."""
+        if not url_hashes:
+            return []
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT h AS url_hash
+                FROM unnest($1::text[]) AS h
+                WHERE NOT EXISTS (SELECT 1 FROM obs_embeddings e WHERE e.url_hash = h)
+                LIMIT $2
+                """,
+                url_hashes,
+                limit,
+            )
+        return [r["url_hash"] for r in rows]
+
+    async def unembedded_obs(
+        self,
+        limit: int = 2000,
+        software_first: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Fetch observations that lack an embedding row, software-first.
+
+        Returns dicts with ``url_hash``, ``title``, ``company`` and the text to
+        embed. ``company`` is best-effort: the crawler stores it inside
+        ``raw_json`` (often ``parsed.company`` or ``company.name``); when absent
+        we fall back to the first URL path segment as a weak signal.
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT o.url, o.title, o.raw_json, o.first_seen
+                FROM job_observations o
+                LEFT JOIN obs_embeddings e ON e.url_hash = md5(o.url)
+                WHERE e.url_hash IS NULL AND o.url IS NOT NULL
+                ORDER BY (
+                    CASE WHEN $2::bool AND lower(o.title) ~
+                        'software|engineer|developer|full.?stack|backend|frontend|'
+                        'devops|sre|data|machine|ml|ai|python|java|golang|rust|'
+                        'intern|new grad|junior|entry|graduate'
+                         THEN 0 ELSE 1 END
+                ), o.first_seen DESC
+                LIMIT $1
+                """,
+                limit,
+                software_first,
+            )
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            raw = r["raw_json"]
+            company = ""
+            if isinstance(raw, str) and raw:
+                try:
+                    raw = json.loads(raw)
+                except Exception:
+                    raw = None
+            if isinstance(raw, dict):
+                parsed = raw.get("parsed") or {}
+                if isinstance(parsed, dict):
+                    company = str(parsed.get("company") or parsed.get("name") or "")
+                if not company:
+                    comp = raw.get("company")
+                    if isinstance(comp, dict):
+                        company = str(comp.get("name") or "")
+                    elif isinstance(comp, str):
+                        company = comp
+                if not company:
+                    company = str(raw.get("company_name") or raw.get("companyName") or "")
+                if not company:
+                    # greenhouse/jobicy etc. often carry company in nested fields
+                    for key in ("organization", "employer", "hiring_company", "host_company"):
+                        v = raw.get(key)
+                        if isinstance(v, dict):
+                            company = str(v.get("name") or "")
+                            if company:
+                                break
+            if not company:
+                company = _company_from_url(r["url"])
+            out.append(
+                {
+                    "url_hash": _url_hash(r["url"]),
+                    "title": r["title"] or "",
+                    "company": company,
+                    "text": _build_embed_text(r["title"], r["raw_json"]),
+                }
+            )
+        return out
+
+    async def resume_centroid(self) -> list[float] | None:
+        """Mean of all resume chunk embeddings (L2-normalized). None if empty."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT embedding FROM resume_embeddings WHERE embedding IS NOT NULL"
+            )
+        if not rows:
+            return None
+        dim = VECTOR_DIM
+        import numpy as np
+
+        acc = np.zeros(dim, dtype=np.float32)
+        for r in rows:
+            acc += np.asarray(r["embedding"].to_list(), dtype=np.float32)
+        acc /= len(rows)
+        n = np.linalg.norm(acc)
+        if n > 0:
+            acc /= n
+        return acc.tolist()
+
+    async def obs_nearest(
+        self, query_emb: list[float], top_k: int = 10, exclude: set[str] | None = None
+    ) -> list[dict[str, Any]]:
+        """Top-k nearest embedded observations by cosine distance."""
+        vec = Vector(query_emb)
+        async with self._pool.acquire() as conn:
+            if exclude:
+                rows = await conn.fetch(
+                    """
+                    SELECT e.title, e.company, e.embedding <=> $1 AS distance
+                    FROM obs_embeddings e
+                    WHERE e.url_hash <> ALL($2::text[])
+                    ORDER BY distance ASC LIMIT $3
+                    """,
+                    vec,
+                    list(exclude),
+                    top_k,
+                )
+            else:
+                rows = await conn.fetch(
+                    """
+                    SELECT e.title, e.company, e.embedding <=> $1 AS distance
+                    FROM obs_embeddings e
+                    ORDER BY distance ASC LIMIT $2
+                    """,
+                    vec,
+                    top_k,
+                )
+        return [
+            {"title": r["title"], "company": r["company"], "distance": float(r["distance"])}
+            for r in rows
+        ]
+
+    async def company_centroids(self, min_obs: int = 2) -> list[dict[str, Any]]:
+        """Mean embedding per company (L2-normalized) plus obs count."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT company, COUNT(*) AS n
+                FROM obs_embeddings
+                WHERE company <> '' AND embedding IS NOT NULL
+                GROUP BY company HAVING COUNT(*) >= $1
+                """,
+                min_obs,
+            )
+        if not rows:
+            return []
+        import numpy as np
+
+        dim = VECTOR_DIM
+        out: list[dict[str, Any]] = []
+        async with self._pool.acquire() as conn:
+            for r in rows:
+                embs = await conn.fetch(
+                    "SELECT embedding FROM obs_embeddings "
+                    "WHERE company = $1 AND embedding IS NOT NULL",
+                    r["company"],
+                )
+                acc = np.zeros(dim, dtype=np.float32)
+                for e in embs:
+                    acc += np.asarray(e["embedding"].to_list(), dtype=np.float32)
+                acc /= max(len(embs), 1)
+                n = np.linalg.norm(acc)
+                if n > 0:
+                    acc /= n
+                out.append({"company": r["company"], "centroid": acc.tolist(), "n": r["n"]})
+        return out
+
+    # Companies / intel
+
+    async def accepted_companies(self, limit: int = 200) -> list[str]:
+        """Companies with at least one accepted candidate, newest first."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT normalized_company
+                FROM radar_candidates
+                WHERE eligibility = 'accepted' AND normalized_company <> ''
+                GROUP BY normalized_company
+                ORDER BY MAX(created_at) DESC
+                LIMIT $1
+                """,
+                limit,
+            )
+        return [r["normalized_company"] for r in rows]
 
     # Discovered_domains
 
@@ -550,12 +1018,12 @@ class MemoryStore:
                 data.get("role_summary", ""),
                 str(data.get("verdict", "NO_MATCH")),
                 bool(data.get("is_startup", False)),
-                json.dumps(data.get("founders", [])),
+                _jsonb_val(data.get("founders", []), []),
                 data.get("funding_stage", ""),
-                json.dumps(data.get("funding_info", {})),
-                json.dumps(data.get("founder_socials", [])),
+                _jsonb_val(data.get("funding_info", {}), {}),
+                _jsonb_val(data.get("founder_socials", []), []),
                 data.get("company_news", ""),
-                json.dumps(data.get("osint_signals", [])),
+                _jsonb_val(data.get("osint_signals", []), []),
                 data.get("source_url", data.get("url", "")),
                 json.dumps(data),
             )
@@ -902,13 +1370,66 @@ class MemoryStore:
                 )
                 ON CONFLICT (canonical_id) DO UPDATE SET
                     last_seen = EXCLUDED.last_seen,
+                    first_seen = LEAST(
+                        radar_candidates.first_seen, EXCLUDED.first_seen
+                    ),
                     match_percent = GREATEST(
                         radar_candidates.match_percent, EXCLUDED.match_percent
                     ),
+                    shortlist_probability = GREATEST(
+                        radar_candidates.shortlist_probability,
+                        EXCLUDED.shortlist_probability
+                    ),
                     eligibility = EXCLUDED.eligibility,
+                    rejection_reason = COALESCE(
+                        NULLIF(EXCLUDED.rejection_reason, ''),
+                        radar_candidates.rejection_reason
+                    ),
                     matching_skills = EXCLUDED.matching_skills,
                     missing_skills = EXCLUDED.missing_skills,
                     verdict = EXCLUDED.verdict,
+                    jd_summary = COALESCE(
+                        NULLIF(EXCLUDED.jd_summary, ''),
+                        radar_candidates.jd_summary
+                    ),
+                    company_description = COALESCE(
+                        NULLIF(EXCLUDED.company_description, ''),
+                        radar_candidates.company_description
+                    ),
+                    role_summary = COALESCE(
+                        NULLIF(EXCLUDED.role_summary, ''),
+                        radar_candidates.role_summary
+                    ),
+                    founders = CASE
+                        WHEN jsonb_array_length(EXCLUDED.founders) > 0
+                        THEN EXCLUDED.founders
+                        ELSE radar_candidates.founders
+                    END,
+                    funding_stage = COALESCE(
+                        NULLIF(EXCLUDED.funding_stage, ''),
+                        radar_candidates.funding_stage
+                    ),
+                    funding_info = CASE
+                        WHEN jsonb_typeof(EXCLUDED.funding_info) = 'object'
+                             AND (EXCLUDED.funding_info <> '{}'::jsonb)
+                        THEN EXCLUDED.funding_info
+                        ELSE radar_candidates.funding_info
+                    END,
+                    founder_socials = CASE
+                        WHEN jsonb_array_length(EXCLUDED.founder_socials) > 0
+                        THEN EXCLUDED.founder_socials
+                        ELSE radar_candidates.founder_socials
+                    END,
+                    company_news = COALESCE(
+                        NULLIF(EXCLUDED.company_news, ''),
+                        radar_candidates.company_news
+                    ),
+                    osint_signals = CASE
+                        WHEN jsonb_array_length(EXCLUDED.osint_signals) > 0
+                        THEN EXCLUDED.osint_signals
+                        ELSE radar_candidates.osint_signals
+                    END,
+                    extra = radar_candidates.extra || EXCLUDED.extra,
                     updated_at = NOW()
                 """,
                 data.get("canonical_id", ""),
@@ -930,8 +1451,8 @@ class MemoryStore:
                 data.get("posted_date", ""),
                 data.get("first_seen", 0.0),
                 data.get("last_seen", 0.0),
-                json.dumps(data.get("matching_skills", [])),
-                json.dumps(data.get("missing_skills", [])),
+                _jsonb_val(data.get("matching_skills", []), []),
+                _jsonb_val(data.get("missing_skills", []), []),
                 int(data.get("match_percent", 0)),
                 int(data.get("shortlist_probability", 0)),
                 data.get("verdict", "NO_MATCH"),
@@ -939,13 +1460,13 @@ class MemoryStore:
                 data.get("company_description", ""),
                 data.get("role_summary", ""),
                 bool(data.get("is_remote", False)),
-                json.dumps(data.get("founders", [])),
+                _jsonb_val(data.get("founders", []), []),
                 data.get("funding_stage", ""),
-                json.dumps(data.get("funding_info", {})),
-                json.dumps(data.get("founder_socials", [])),
+                _jsonb_val(data.get("funding_info", {}), {}),
+                _jsonb_val(data.get("founder_socials", []), []),
                 data.get("company_news", ""),
-                json.dumps(data.get("osint_signals", [])),
-                json.dumps(data.get("extra", {})),
+                _jsonb_val(data.get("osint_signals", []), []),
+                _jsonb_val(data.get("extra", {}), {}),
             )
 
     async def record_rejection(self, canonical_id: str, reason: str, detail: str) -> None:
@@ -1013,23 +1534,66 @@ class MemoryStore:
                 json.dumps(event_data),
             )
 
+    _OSINT_CACHE_TTL_SECONDS = 7 * 86400
+    _OSINT_DEGRADED_TTL_SECONDS = 6 * 3600
+
+    async def get_company_osint(self, company: str) -> dict[str, Any] | None:
+        """Return cached company OSINT enrichment if fresh, else None."""
+        async with self._pool.acquire() as conn:
+            try:
+                row = await conn.fetchrow(
+                    "SELECT data, expires_at FROM company_osint WHERE company = $1",
+                    company,
+                )
+            except Exception:
+                return None
+        if row is None:
+            return None
+        if time.time() >= (row.get("expires_at") or 0):
+            return None
+        try:
+            return json.loads(row.get("data") or "{}")
+        except Exception:
+            return None
+
+    async def put_company_osint(
+        self, company: str, data: dict[str, Any], degraded: bool = False
+    ) -> None:
+        """Insert or refresh the cached OSINT payload for a company.
+
+        A "degraded" payload (rate-limited sources, no enrichment produced)
+        gets a short TTL so the next sweep retries instead of serving the
+        empty result for the full week.
+        """
+        ttl = self._OSINT_DEGRADED_TTL_SECONDS if degraded else self._OSINT_CACHE_TTL_SECONDS
+        now = time.time()
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO company_osint (company, data, cached_at, expires_at) "
+                "VALUES ($1, $2::jsonb, $3, $4) "
+                "ON CONFLICT (company) DO UPDATE SET "
+                "data = EXCLUDED.data, cached_at = EXCLUDED.cached_at, "
+                "expires_at = EXCLUDED.expires_at",
+                company,
+                json.dumps(data),
+                now,
+                now + ttl,
+            )
+
     async def get_salary_stats(self) -> dict[str, Any]:
         async with self._pool.acquire() as conn:
             try:
                 row = await conn.fetchrow(
                     """
                     SELECT
-                        COUNT(*) FILTER (
-                            WHERE salary_amount IS NOT NULL AND salary_amount > 0
-                        ) AS count_with_salary,
-                        ROUND(AVG(salary_amount) FILTER (
-                            WHERE salary_amount IS NOT NULL AND salary_amount > 0
-                        ))::int AS avg_salary,
-                        ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY salary_amount)
-                            FILTER (
-                                WHERE salary_amount IS NOT NULL AND salary_amount > 0
-                            ))::int AS median_salary
+                        COUNT(*) AS count_with_salary,
+                        ROUND(AVG(salary_amount))::int AS avg_salary,
+                        ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY salary_amount))::int
+                            AS median_salary
                     FROM radar_candidates
+                    WHERE salary_amount IS NOT NULL AND salary_amount > 0
+                      AND salary_currency = 'USD'
+                      AND salary_period = 'year'
                     """
                 )
                 if row is None:
@@ -1041,6 +1605,49 @@ class MemoryStore:
                 }
             except Exception:
                 return {"count": 0, "avg": 0, "median": 0, "error": "salary_stats_failed"}
+
+    async def learned_title_scores(
+        self, min_obs: int = 8, top_k: int = 200
+    ) -> dict[str, float]:
+        """Learn a per-keyword gate-pass score from historical candidates.
+
+        For each space-separated token in ``normalized_role``, count how often a
+        candidate with that token passed the gate (accepted/near_miss) vs was
+        rejected. Returns a map of keyword -> pass-rate in [0,1]. Tokens with
+        fewer than ``min_obs`` observations are omitted (unreliable signal).
+
+        ``min_obs`` defaults to 8 so that one-off keywords (e.g. a single
+        "restaurant" or "music" role that happened to pass) don't pollute the
+        signal. The drain uses this to order never-gated observations by
+        *learned* pass probability instead of hand-maintained regex tiers, so it
+        self-adapts as the corpus and the gate evolve.
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT lower(normalized_role) AS role, eligibility
+                FROM radar_candidates
+                WHERE normalized_role IS NOT NULL AND normalized_role != ''
+                """
+            )
+        counts: dict[str, int] = {}
+        passes: dict[str, int] = {}
+        for r in rows:
+            tokens = set((r["role"] or "").split())
+            ok = r["eligibility"] in ("accepted", "near_miss")
+            for tok in tokens:
+                tok = tok.strip("(),/&+-")
+                if len(tok) < 2:
+                    continue
+                counts[tok] = counts.get(tok, 0) + 1
+                if ok:
+                    passes[tok] = passes.get(tok, 0) + 1
+        scores: dict[str, float] = {}
+        for tok, cnt in counts.items():
+            if cnt >= min_obs:
+                scores[tok] = passes.get(tok, 0) / cnt
+        ranked = sorted(scores.items(), key=lambda kv: (-kv[1], -counts[kv[0]]))
+        return dict(ranked[:top_k])
 
 
 def _row_to_radar_candidate(row: asyncpg.Record) -> dict[str, Any]:
@@ -1115,15 +1722,29 @@ async def _radar_gate_stats(self: MemoryStore) -> dict[str, Any]:
 
 
 async def _radar_top_skills(self: MemoryStore, limit: int = 12) -> list[dict[str, Any]]:
-    """Top matching skills from accepted/near-miss candidates."""
+    """Top matching skills from accepted/near-miss candidates.
+
+    ``matching_skills`` can be a proper jsonb array OR a string that itself
+    holds a JSON array (a double-encoded artifact of the LLM path). We first
+    normalise any scalar/string to a jsonb array so ``jsonb_array_elements``
+    never crashes on a scalar.
+    """
     async with self._pool.acquire() as conn:
         rows = await conn.fetch(
             """
+            WITH norm AS (
+                SELECT CASE
+                    WHEN jsonb_typeof(matching_skills) = 'array' THEN matching_skills
+                    WHEN jsonb_typeof(matching_skills) = 'string'
+                         THEN (matching_skills #>> '{}')::jsonb
+                    ELSE '[]'::jsonb
+                END AS skills
+                FROM radar_candidates
+                WHERE eligibility IN ('accepted', 'near_miss')
+            )
             SELECT skill, COUNT(*) AS cnt
-            FROM radar_candidates,
-                 LATERAL jsonb_array_elements_text(matching_skills) AS skill
-            WHERE eligibility IN ('accepted', 'near_miss')
-              AND skill IS NOT NULL AND skill != ''
+            FROM norm, LATERAL jsonb_array_elements_text(skills) AS skill
+            WHERE skill IS NOT NULL AND skill != ''
             GROUP BY skill ORDER BY cnt DESC LIMIT $1
             """,
             limit,
@@ -1132,21 +1753,148 @@ async def _radar_top_skills(self: MemoryStore, limit: int = 12) -> list[dict[str
 
 
 async def _radar_skill_arbitrage(self: MemoryStore) -> list[dict[str, Any]]:
-    """Missing skills that caused near-misses."""
+    """Missing skills that caused near-misses (double-encoding safe)."""
     async with self._pool.acquire() as conn:
         rows = await conn.fetch(
             """
+            WITH norm AS (
+                SELECT CASE
+                    WHEN jsonb_typeof(missing_skills) = 'array' THEN missing_skills
+                    WHEN jsonb_typeof(missing_skills) = 'string'
+                         THEN (missing_skills #>> '{}')::jsonb
+                    ELSE '[]'::jsonb
+                END AS skills
+                FROM radar_candidates
+                WHERE eligibility = 'near_miss'
+            )
             SELECT skill, COUNT(*) AS miss_count
-            FROM radar_candidates,
-                 LATERAL jsonb_array_elements_text(missing_skills) AS skill
-            WHERE eligibility = 'near_miss'
-              AND skill IS NOT NULL AND skill != ''
+            FROM norm, LATERAL jsonb_array_elements_text(skills) AS skill
+            WHERE skill IS NOT NULL AND skill != ''
             GROUP BY skill ORDER BY miss_count DESC LIMIT 12
             """
         )
     return [{"skill": r["skill"], "miss_count": r["miss_count"]} for r in rows]
 
 
+async def _get_recent_accepts(self: MemoryStore, hours: int = 24) -> list[dict[str, Any]]:
+    """Accepted candidates in the last N hours with their timestamp."""
+    async with self._pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT normalized_company, normalized_role, created_at
+            FROM radar_candidates
+            WHERE eligibility = 'accepted' AND created_at > NOW() - ($1::int * INTERVAL '1 hour')
+            ORDER BY created_at DESC
+            """,
+            hours,
+        )
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        ts = (r["created_at"].timestamp() if r["created_at"] else 0.0)
+        out.append(
+            {
+                "company": r["normalized_company"],
+                "role": r["normalized_role"],
+                "ts": ts,
+            }
+        )
+    return out
+
+
+async def _get_near_miss_count(self: MemoryStore) -> int:
+    async with self._pool.acquire() as conn:
+        return await conn.fetchval(
+            "SELECT COUNT(*) FROM radar_candidates WHERE eligibility = 'near_miss'"
+        ) or 0
+
+
+async def _get_top_companies(self: MemoryStore, limit: int = 8) -> list[dict[str, Any]]:
+    """Accepted companies ranked by accepted-count then avg match percent."""
+    async with self._pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT normalized_company AS company,
+                   COUNT(*) AS accepted,
+                   ROUND(AVG(match_percent))::int AS avg_match,
+                   MAX(funding_stage) AS funding_stage
+            FROM radar_candidates
+            WHERE eligibility = 'accepted' AND normalized_company <> ''
+            GROUP BY normalized_company
+            ORDER BY accepted DESC, avg_match DESC
+            LIMIT $1
+            """,
+            limit,
+        )
+    return [
+        {
+            "company": r["company"],
+            "accepted": r["accepted"],
+            "avg_match": r["avg_match"],
+            "funding_stage": r["funding_stage"] or "seed",
+        }
+        for r in rows
+    ]
+
+
+async def _get_sector_signal(self: MemoryStore, limit: int = 6) -> list[dict[str, Any]]:
+    """Sector labels from accepted candidates.
+
+    Uses role_family when it's meaningful; otherwise infers a sector from the
+    role title so "unknown" never dominates the report.
+    """
+    async with self._pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT CASE
+                WHEN role_family IS NOT NULL AND role_family NOT IN ('', 'unknown')
+                     THEN role_family
+                WHEN lower(normalized_role) ~ 'machine learning|ml|ai/|ai |research|llm|genai'
+                     THEN 'ai_ml'
+                WHEN lower(normalized_role) ~ 'data (engineer|scientist|analyst)|analytics'
+                     THEN 'data'
+                WHEN lower(normalized_role) ~ 'full.?stack|frontend|front end|react|ui'
+                     THEN 'frontend'
+                WHEN lower(normalized_role) ~ 'backend|api|server'
+                     THEN 'backend'
+                WHEN lower(normalized_role) ~ 'devops|sre|platform|infra|cloud|site reliability'
+                     THEN 'infra_platform'
+                WHEN lower(normalized_role) ~ 'security|cyber'
+                     THEN 'security'
+                WHEN lower(normalized_role) ~ 'mobile|ios|android'
+                     THEN 'mobile'
+                WHEN lower(normalized_role) ~ 'founder|founding|co.founder|head of engineering'
+                     THEN 'startup_founding'
+                ELSE 'general_swe'
+            END AS label,
+            COUNT(*) AS cnt
+            FROM radar_candidates
+            WHERE eligibility = 'accepted'
+            GROUP BY label
+            ORDER BY cnt DESC
+            LIMIT $1
+            """,
+            limit,
+        )
+        total = await conn.fetchval(
+            "SELECT COUNT(*) FROM radar_candidates WHERE eligibility = 'accepted'"
+        ) or 0
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        cnt = r["cnt"]
+        out.append(
+            {
+                "label": r["label"],
+                "count": cnt,
+                "pct": round(cnt / total * 100) if total else 0,
+            }
+        )
+    return out
+
+
 MemoryStore.get_radar_gate_stats = _radar_gate_stats  # type: ignore[attr-defined]
 MemoryStore.get_radar_top_skills = _radar_top_skills  # type: ignore[attr-defined]
 MemoryStore.get_radar_skill_arbitrage = _radar_skill_arbitrage  # type: ignore[attr-defined]
+MemoryStore.get_recent_accepts = _get_recent_accepts  # type: ignore[attr-defined]
+MemoryStore.get_near_miss_count = _get_near_miss_count  # type: ignore[attr-defined]
+MemoryStore.get_top_companies = _get_top_companies  # type: ignore[attr-defined]
+MemoryStore.get_sector_signal = _get_sector_signal  # type: ignore[attr-defined]

@@ -10,10 +10,10 @@ x-common-env: &common-env
   POSTGRES_HOST: nuq-postgres
   POSTGRES_PORT: 5432
   USE_DB_AUTHENTICATION: false
-  NUM_WORKERS_PER_QUEUE: 32
-  CRAWL_CONCURRENT_REQUESTS: 50
-  MAX_CONCURRENT_JOBS: 20
-  BROWSER_POOL_SIZE: 20
+  NUM_WORKERS_PER_QUEUE: 16
+  CRAWL_CONCURRENT_REQUESTS: 24
+  MAX_CONCURRENT_JOBS: 12
+  BROWSER_POOL_SIZE: 12
   OPENAI_API_KEY: ${OPENAI_API_KEY:-}
   OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
   MODEL_NAME: ${MODEL_NAME:-}
@@ -34,17 +34,19 @@ services:
         condition: service_started
       playwright-service:
         condition: service_started
+      rabbitmq:
+        condition: service_started
     ports:
       - "3002:3002"
     command: node dist/src/harness.js --start-docker
-    restart: unless-stopped
+    restart: "no"
     ulimits:
       nofile:
         soft: 65535
         hard: 65535
     cpus: 12.0
-    mem_limit: 8G
-    memswap_limit: 8G
+    mem_limit: 6G
+    memswap_limit: 6G
     logging:
       driver: "json-file"
       options:
@@ -56,11 +58,11 @@ services:
     image: ghcr.io/firecrawl/playwright-service:latest
     environment:
       PORT: 3000
-      CONCURRENT_WORKERS: 20
-    cpus: 8.0
-    mem_limit: 8G
-    memswap_limit: 8G
-    restart: unless-stopped
+      CONCURRENT_WORKERS: 12
+    cpus: 6.0
+    mem_limit: 6G
+    memswap_limit: 6G
+    restart: "no"
     tmpfs:
       - /tmp/.cache:noexec,nosuid,size=1g
     logging:
@@ -73,6 +75,7 @@ services:
   redis:
     image: redis:alpine
     command: redis-server --bind 0.0.0.0
+    restart: "no"
     ports:
       - "6379:6379"
     logging:
@@ -84,6 +87,7 @@ services:
 
   nuq-postgres:
     image: ghcr.io/firecrawl/nuq-postgres:latest
+    restart: "no"
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -95,8 +99,21 @@ services:
         max-file: "3"
         compress: "true"
 
+  rabbitmq:
+    image: rabbitmq:3-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+        compress: "true"
+
   searxng:
     image: searxng/searxng:latest
+    restart: "no"
     ports:
       - "8080:8080"
     environment:
@@ -116,8 +133,16 @@ services:
         max-size: "5m"
         max-file: "1"
 
+  # Self-hosted SOCKS5 proxy rotating IPs via the Tor network, so SearXNG
+  # can bypass CAPTCHA blocks from datacenter IPs.
+  torproxy:
+    image: dperson/torproxy
+    restart: "no"
+    network_mode: "host"
+
   agent-memory-db:
     image: pgvector/pgvector:pg18
+    restart: "no"
     ports:
       - "5433:5432"
     environment:
@@ -145,7 +170,7 @@ services:
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs
-    restart: unless-stopped
+    restart: "no"
     logging:
       driver: "json-file"
       options:

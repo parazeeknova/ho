@@ -33,10 +33,11 @@ def test_format_job_card() -> None:
     }
 
     card = agent.format_job_card(job)
-    assert "BACKEND ENGINEER" in card
-    assert "STRIPE" in card
+    assert "Backend Engineer" in card
+    assert "Stripe" in card
     assert "90%" in card
     assert "Patrick Collison" in card
+    assert "Flexible / Competitive" not in card
 
 
 @pytest.mark.asyncio
@@ -57,6 +58,7 @@ async def test_handle_resend_unconfigured() -> None:
 
 
 @pytest.mark.asyncio
-async def test_handle_clear_unconfigured() -> None:
+async def test_clear_command_removed() -> None:
+    """The /clear command was removed by royal decree; ensure it's gone."""
     agent = TelegramAgent(bot_token="", chat_id="")
-    await agent._handle_clear("123", 100, "/clear 10")
+    assert not hasattr(agent, "_handle_clear")

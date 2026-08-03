@@ -7,7 +7,6 @@ Commands (send to bot in Telegram DMs):
     /health    – runs live health checks on all services
     /analytics – generate market intelligence & skill arbitrage report
     /resend    – resend accepted job matches (usage: /resend [--dry] [limit])
-    /clear     – delete recent bot messages (usage: /clear [count])
     /help      – lists available commands
 """  # noqa: E501
 
@@ -24,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from src.http_client import get_client
 from src.logging import get_logger
 
 if TYPE_CHECKING:
@@ -34,7 +34,6 @@ logger = get_logger("telegram_agent")
 TELEGRAM_BASE = "https://api.telegram.org/bot{token}"
 TELEGRAM_SEND = f"{TELEGRAM_BASE}/sendMessage"
 TELEGRAM_UPDATES = f"{TELEGRAM_BASE}/getUpdates"
-TELEGRAM_DELETE = f"{TELEGRAM_BASE}/deleteMessage"
 
 _TG_MAX_LEN = 4000
 _HTML_TAG_RX = re.compile(r"<[^>]+>")
@@ -68,9 +67,9 @@ async def _check_port(host: str, port: int, timeout: float = 2.0) -> bool:
 
 async def _check_http(url: str, timeout: float = 3.0) -> bool:
     try:
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-            resp = await client.get(url)
-            return resp.status_code < 500
+        client = await get_client("telegram_agent", timeout=timeout)
+        resp = await client.get(url)
+        return resp.status_code < 500
     except Exception:
         return False
 
@@ -224,38 +223,36 @@ class TelegramAgent:
     ) -> bool:
         for attempt in range(3):
             try:
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    payload: dict[str, Any] = {
-                        "chat_id": cid,
-                        "text": text,
-                        "parse_mode": parse_mode,
-                        "disable_web_page_preview": True,
-                    }
-                    if reply_markup:
-                        payload["reply_markup"] = reply_markup
+                client = await get_client("telegram_agent", timeout=10.0)
+                payload: dict[str, Any] = {
+                    "chat_id": cid,
+                    "text": text,
+                    "parse_mode": parse_mode,
+                    "disable_web_page_preview": True,
+                }
+                if reply_markup:
+                    payload["reply_markup"] = reply_markup
 
-                    resp = await client.post(
-                        TELEGRAM_SEND.format(token=self.bot_token), json=payload
-                    )
-                    if resp.status_code == 200:
-                        return True
+                resp = await client.post(TELEGRAM_SEND.format(token=self.bot_token), json=payload)
+                if resp.status_code == 200:
+                    return True
 
-                    body = resp.text[:200]
-                    logger.warning(
-                        f"Telegram send {resp.status_code}",
-                        source="telegram",
-                        extra={"body": body},
-                    )
-                    if resp.status_code == 400 and parse_mode == "HTML":
-                        text = _HTML_TAG_RX.sub("", text)
-                        parse_mode = ""
-                        continue
-                    if resp.status_code == 429:
-                        await asyncio.sleep(2 << attempt)
-                    elif resp.status_code >= 500:
-                        await asyncio.sleep(1 << attempt)
-                    else:
-                        return False
+                body = resp.text[:200]
+                logger.warning(
+                    f"Telegram send {resp.status_code}",
+                    source="telegram",
+                    extra={"body": body},
+                )
+                if resp.status_code == 400 and parse_mode == "HTML":
+                    text = _HTML_TAG_RX.sub("", text)
+                    parse_mode = ""
+                    continue
+                if resp.status_code == 429:
+                    await asyncio.sleep(2 << attempt)
+                elif resp.status_code >= 500:
+                    await asyncio.sleep(1 << attempt)
+                else:
+                    return False
             except Exception as e:
                 logger.warning(
                     f"Telegram send attempt {attempt + 1} failed",
@@ -298,13 +295,13 @@ class TelegramAgent:
         if self._update_id > 0:
             params["offset"] = self._update_id + 1
 
-        async with httpx.AsyncClient(timeout=8.0) as client:
-            resp = await client.get(TELEGRAM_UPDATES.format(token=self.bot_token), params=params)
-            if resp.status_code != 200:
-                return
-            data = resp.json()
-            if not data.get("ok"):
-                return
+        client = await get_client("telegram_agent", timeout=8.0)
+        resp = await client.get(TELEGRAM_UPDATES.format(token=self.bot_token), params=params)
+        if resp.status_code != 200:
+            return
+        data = resp.json()
+        if not data.get("ok"):
+            return
 
         for upd in data.get("result", []):
             self._update_id = max(self._update_id, upd.get("update_id", 0))
@@ -327,8 +324,6 @@ class TelegramAgent:
                 await self._handle_analytics()
             elif cmd == "/resend":
                 await self._handle_resend(text)
-            elif cmd == "/clear":
-                await self._handle_clear(sender_id, msg_id, text)
             elif cmd == "/help":
                 await self._handle_help()
 
@@ -377,6 +372,7 @@ class TelegramAgent:
             f"State: {status}",
             f"Phase: <code>{html.escape(str(s['phase']))}</code>",
             f"Sweep: #{s['sweep']}",
+            "▪ Process Workers: <b>4 (1 Master + 3 Workers)</b>",
         ]
         if uptime:
             lines.append(f"Uptime: {uptime}")
@@ -387,7 +383,13 @@ class TelegramAgent:
 
             cfg_persona = get_config().candidate.persona.strip()
             if cfg_persona:
-                short_persona = cfg_persona.split("\n")[0][:100]
+                persona_lines = [
+                    line_str.strip()
+                    for line_str in cfg_persona.split("\n")
+                    if line_str.strip()
+                    and not line_str.strip().lower().startswith("candidate profile")
+                ]
+                short_persona = "\n".join(persona_lines[:3]) if persona_lines else cfg_persona[:200]
                 lines.extend(
                     [
                         "",
@@ -476,7 +478,7 @@ class TelegramAgent:
             ]
         )
 
-        # Recent Logs (Last 4 log entries)
+        # Recent Logs (Last 5 clean non-noise log entries)
         try:
             from pathlib import Path
 
@@ -485,24 +487,31 @@ class TelegramAgent:
                 recent_logs: list[str] = []
                 with open(log_path, encoding="utf-8", errors="ignore") as f:
                     all_lines = [line.strip() for line in f if line.strip()]
-                    for line_str in all_lines[-4:]:
+                    for line_str in reversed(all_lines):
+                        if len(recent_logs) >= 5:
+                            break
+                        if "firecrawl_tail" in line_str:
+                            continue
                         if line_str.startswith("{") and "message" in line_str:
                             try:
                                 import json
 
                                 d = json.loads(line_str)
-                                logger_n = d.get("logger", "app")
-                                msg = d.get("message", line_str)
-                                recent_logs.append(
-                                    f"▪ <code>[{html.escape(logger_n)}]</code> "
-                                    f"{html.escape(msg[:70])}"
+                                ts = d.get("timestamp", "").split("T")[-1][:8]
+                                lvl = d.get("level", "INFO")
+                                logger_n = d.get("logger", "sys")
+                                msg = str(d.get("message", line_str))
+                                tag = f"[{ts}] [{lvl}] {logger_n}"
+                                recent_logs.insert(
+                                    0,
+                                    f"▪ <code>{html.escape(tag)}</code>: {html.escape(msg[:100])}",
                                 )
                             except Exception:
-                                recent_logs.append(f"▪ {html.escape(line_str[:70])}")
+                                recent_logs.insert(0, f"▪ {html.escape(line_str[:120])}")
                         else:
-                            recent_logs.append(f"▪ {html.escape(line_str[:70])}")
+                            recent_logs.insert(0, f"▪ {html.escape(line_str[:120])}")
                 if recent_logs:
-                    lines.extend(["", "<b>Recent Logs</b>"] + recent_logs)
+                    lines.extend(["", "<b>Recent Activity Logs</b>"] + recent_logs)
         except Exception:
             pass
 
@@ -640,29 +649,6 @@ class TelegramAgent:
 
         await self._send_raw(f"<b>[RESEND] Sent {count} job alerts to Telegram.</b>")
 
-    async def _handle_clear(self, chat_id: str, current_msg_id: int, text: str) -> None:
-        parts = text.split()
-        count = 50
-        if len(parts) > 1 and parts[1].isdigit():
-            count = min(100, max(1, int(parts[1])))
-
-        deleted = 0
-        tasks = []
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            for m_id in range(current_msg_id, max(0, current_msg_id - count - 1), -1):
-                tasks.append(
-                    client.post(
-                        TELEGRAM_DELETE.format(token=self.bot_token),
-                        json={"chat_id": chat_id, "message_id": m_id},
-                    )
-                )
-            resps = await asyncio.gather(*tasks, return_exceptions=True)
-            for r in resps:
-                if isinstance(r, httpx.Response) and r.status_code == 200:
-                    deleted += 1
-
-        await self._send_to_chat(chat_id, f"<i>Cleared {deleted} recent messages.</i>", "HTML")
-
     async def _handle_help(self) -> None:
         lines = [
             "<b>Commands</b>",
@@ -671,7 +657,6 @@ class TelegramAgent:
             "/health    – live service health check",
             "/analytics – market intelligence & skill arbitrage report",
             "/resend    – resend top accepted job alerts (e.g. /resend 10)",
-            "/clear     – delete recent bot messages (e.g. /clear 50)",
             "/help      – this message",
             "",
             "I'll also notify you on pipeline errors, new matches,",
@@ -711,7 +696,15 @@ class TelegramAgent:
         try:
             from src.configuration import get_config
 
-            short_persona = get_config().candidate.persona.strip().split("\n")[0][:100]
+            cfg_persona = get_config().candidate.persona.strip()
+            if cfg_persona:
+                persona_lines = [
+                    line_str.strip()
+                    for line_str in cfg_persona.split("\n")
+                    if line_str.strip()
+                    and not line_str.strip().lower().startswith("candidate profile")
+                ]
+                short_persona = "\n".join(persona_lines[:3]) if persona_lines else cfg_persona[:200]
         except Exception:
             pass
 
@@ -776,12 +769,30 @@ class TelegramAgent:
     # ── job card + inline keyboards ─────────────────────────────────
 
     def format_job_card(self, job: dict[str, Any]) -> str:
-        role = html.escape(str(job.get("role") or "Software Engineer").strip())
+        role_raw = str(job.get("role") or "Software Engineer").strip()
+        role = html.escape(" ".join(w[:1].upper() + w[1:] for w in role_raw.split()))
         company = html.escape(str(job.get("company") or "Company").strip())
         match_pct = job.get("match_percent", 0)
         shortlist_pct = job.get("shortlist_probability", 0)
-        salary = html.escape(str(job.get("salary") or "Not specified").strip())
+
+        raw_sal = str(job.get("salary") or "").strip()
+        salary_annual = job.get("salary_annual_usd")
+        salary_estimated = bool(job.get("salary_estimated"))
+        if raw_sal and raw_sal not in ("-", "Not specified", "N/A", "Flexible", "Competitive"):
+            salary_str = html.escape(raw_sal)
+            salary_estimated = salary_estimated and "est" not in raw_sal.lower()
+        elif salary_annual:
+            salary_str = f"${salary_annual:,.0f}/yr"
+            salary_estimated = True
+        else:
+            salary_str = ""
+        if salary_str and salary_estimated:
+            src = str(job.get("salary_source") or "").strip()
+            salary_str += f"  <i>(est. {html.escape(src)})</i>" if src else "  <i>(est.)</i>"
+
         location = html.escape(str(job.get("location") or "Remote").strip())
+        raw_link = job.get("apply_link") or job.get("direct_apply_url") or job.get("url") or ""
+        apply_link = str(raw_link).strip()
 
         comp_desc = html.escape(
             str(
@@ -794,15 +805,37 @@ class TelegramAgent:
         if len(comp_desc) > 200:
             comp_desc = comp_desc[:197] + "..."
 
-        lines = [
-            f"<b>{role.upper()}</b> — <b>{company.upper()}</b>",
-            "<code>───────────────────────────</code>",
-            f"<b>JD Match:</b> {match_pct}%  |  <b>Shortlist:</b> {shortlist_pct}%",
-            f"<b>Location:</b> {location}",
-        ]
+        badges: list[str] = []
+        if job.get("sponsors_visa"):
+            badges.append("visa sponsor")
+        if job.get("is_remote") or "remote" in location.lower():
+            badges.append("remote")
+        if job.get("underdog_score") and float(job.get("underdog_score", 0)) > 0:
+            badges.append("underdog")
+        badges_str = f" · {' · '.join(badges)}" if badges else ""
 
-        if salary and salary != "-":
-            lines.append(f"<b>Salary:</b> {salary}")
+        lines = [
+            f"<b>{role}</b>",
+            f"<b>{company}</b>",
+            "<code>───────────────────────────</code>",
+        ]
+        if match_pct > 0 or shortlist_pct > 0:
+            lines.append(
+                f"Match <b>{match_pct}%</b> · Shortlist <b>{shortlist_pct}%</b>{badges_str}"
+            )
+        else:
+            lines.append(f"<i>Newly surfaced</i>{badges_str}")
+        lines.append(f"📍 {location}")
+        if salary_str:
+            lines.append(f"💰 {salary_str}")
+
+        if apply_link and apply_link.startswith("http"):
+            esc_link = html.escape(apply_link)
+            lines.append(f'🔗 <a href="{esc_link}"><b>Apply →</b></a>')
+
+        skills = job.get("matching_skills")
+        if skills and isinstance(skills, list) and skills:
+            lines.append(f"<b>Skills:</b> {html.escape(', '.join(str(s) for s in skills[:6]))}")
 
         if comp_desc:
             lines.extend(["", f"<blockquote>{comp_desc}</blockquote>"])
@@ -810,7 +843,11 @@ class TelegramAgent:
         funding_info = job.get("funding_info") or {}
         funding_stage = job.get("funding_stage", "")
         founders = job.get("founders", [])
+        if isinstance(founders, str):
+            founders = []
         osint_signals = job.get("osint_signals", [])
+        if isinstance(osint_signals, str):
+            osint_signals = []
 
         has_osint = bool(funding_info or funding_stage or founders or osint_signals)
         if has_osint:
@@ -840,11 +877,18 @@ class TelegramAgent:
                     title_str = f" ({title})" if title else ""
                     badges = []
                     if f.get("email"):
-                        badges.append(f'<a href="mailto:{html.escape(f["email"])}">Email</a>')
+                        email = str(f["email"])
+                        badges.append(
+                            f'<a href="mailto:{html.escape(email)}">✉️ {html.escape(email)}</a>'
+                        )
                     if f.get("linkedin_url"):
-                        badges.append(f'<a href="{html.escape(f["linkedin_url"])}">LinkedIn</a>')
+                        url = str(f["linkedin_url"])
+                        handle = url.rstrip("/").rsplit("/", 1)[-1] or "LinkedIn"
+                        badges.append(f'<a href="{html.escape(url)}">in/{html.escape(handle)}</a>')
                     if f.get("github_url"):
-                        badges.append(f'<a href="{html.escape(f["github_url"])}">GitHub</a>')
+                        url = str(f["github_url"])
+                        handle = url.rstrip("/").rsplit("/", 1)[-1] or "GitHub"
+                        badges.append(f'<a href="{html.escape(url)}">{html.escape(handle)}</a>')
                     badge_str = f" — {' | '.join(badges)}" if badges else ""
                     lines.append(f"▪ Founder: {name}{title_str}{badge_str}")
             else:
@@ -903,7 +947,7 @@ class TelegramAgent:
                     buttons.append([{"text": f"👤 {name} LinkedIn", "url": f["linkedin_url"]}])
 
         reply_markup = {"inline_keyboard": buttons} if buttons else None
-        return await self._send_to_chat(self._primary_chat_id, text, "HTML", reply_markup)
+        return await self._send_raw(text, "HTML", reply_markup)
 
     async def notify_verified_jobs(
         self,
@@ -962,6 +1006,7 @@ class TelegramAgent:
         "outreach": "[OUTREACH]",
         "eligible": "[ELIGIBLE]",
         "review": "[REVIEW]",
+        "general_accepted": "[MATCH]",
     }
 
     _CATEGORY_LABELS: dict[str, str] = {
@@ -970,6 +1015,7 @@ class TelegramAgent:
         "outreach": "Cold Outreach Opportunity",
         "eligible": "Eligible Role",
         "review": "Freshness Review Role",
+        "general_accepted": "Matched Role",
     }
 
     async def send_categorized_alert(
@@ -1004,7 +1050,7 @@ class TelegramAgent:
                     buttons.append([{"text": f"LinkedIn: {name}", "url": f["linkedin_url"]}])
 
         reply_markup = {"inline_keyboard": buttons} if buttons else None
-        success = await self._send_to_chat(self._primary_chat_id, text, "HTML", reply_markup)
+        success = await self._send_raw(text, "HTML", reply_markup)
 
         if success and dedup_key:
             self._notified_keys.add(dedup_key)
@@ -1079,8 +1125,7 @@ class TelegramAgent:
             ]
         )
 
-        await self._send_to_chat(
-            self._primary_chat_id,
+        await self._send_raw(
             text,
             "HTML",
             {"inline_keyboard": buttons},
@@ -1123,8 +1168,7 @@ class TelegramAgent:
         if draft:
             lines.extend(["", f"<blockquote expandable>{html.escape(draft)}</blockquote>"])
 
-        await self._send_to_chat(
-            self._primary_chat_id,
+        await self._send_raw(
             "\n".join(lines),
             "HTML",
             {"inline_keyboard": buttons} if buttons else None,

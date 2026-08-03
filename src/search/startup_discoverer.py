@@ -12,9 +12,8 @@ from __future__ import annotations
 import asyncio
 import random
 
-import httpx
-
 from src.configuration import get_config
+from src.http_client import get_client
 from src.logging import get_logger
 
 logger = get_logger("startup_discoverer")
@@ -50,28 +49,28 @@ async def _searxng_discover(query: str) -> list[dict[str, str]]:
     results: list[dict[str, str]] = []
     try:
         cfg = get_config().searxng
-        async with httpx.AsyncClient(timeout=cfg.timeout) as client:
-            resp = await client.get(
-                cfg.url,
-                params={
-                    "q": query,
-                    "format": "json",
-                    "time_range": "month",
-                },
-                headers={"User-Agent": random.choice(_USER_AGENTS)},
-            )
-            if resp.status_code == 200:
-                for r in resp.json().get("results", [])[:10]:
-                    url = r.get("url", "")
-                    if url and url.startswith("http"):
-                        results.append(
-                            {
-                                "company": r.get("title", "").split("|")[0].strip(),
-                                "description": r.get("content", ""),
-                                "url": url,
-                                "source": "searxng",
-                            }
-                        )
+        client = await get_client("startup_discoverer", timeout=cfg.timeout)
+        resp = await client.get(
+            cfg.url,
+            params={
+                "q": query,
+                "format": "json",
+                "time_range": "month",
+            },
+            headers={"User-Agent": random.choice(_USER_AGENTS)},
+        )
+        if resp.status_code == 200:
+            for r in resp.json().get("results", [])[:10]:
+                url = r.get("url", "")
+                if url and url.startswith("http"):
+                    results.append(
+                        {
+                            "company": r.get("title", "").split("|")[0].strip(),
+                            "description": r.get("content", ""),
+                            "url": url,
+                            "source": "searxng",
+                        }
+                    )
     except Exception as e:
         logger.warning("Startup discoverer SearXNG failed", source="searxng", exception=str(e))
     return results
@@ -81,25 +80,25 @@ async def discover_yc_companies() -> list[dict[str, str]]:
     """Pull recent YC batches. Falls back to SearXNG if API not reachable."""
     discovered: list[dict[str, str]] = []
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(
-                YC_COMPANIES_API,
-                params={"batch": "W25", "limit": "50"},
-                headers={"User-Agent": random.choice(_USER_AGENTS)},
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                for c in data.get("companies", [])[:50]:
-                    discovered.append(
-                        {
-                            "company": c.get("name", ""),
-                            "description": c.get("short_description", ""),
-                            "url": f"https://www.ycombinator.com/companies/{c.get('slug', '')}",
-                            "source": "yc",
-                        }
-                    )
-                if discovered:
-                    return discovered
+        client = await get_client("startup_discoverer", timeout=10.0)
+        resp = await client.get(
+            YC_COMPANIES_API,
+            params={"batch": "W25", "limit": "50"},
+            headers={"User-Agent": random.choice(_USER_AGENTS)},
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            for c in data.get("companies", [])[:50]:
+                discovered.append(
+                    {
+                        "company": c.get("name", ""),
+                        "description": c.get("short_description", ""),
+                        "url": f"https://www.ycombinator.com/companies/{c.get('slug', '')}",
+                        "source": "yc",
+                    }
+                )
+            if discovered:
+                return discovered
     except Exception as e:
         logger.warning("YC API failed", source="yc", exception=str(e))
 

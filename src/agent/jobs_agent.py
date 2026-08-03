@@ -182,13 +182,24 @@ class JobsAgent:
             socials = j.get("founder_socials", [])
             news = j.get("company_news")
 
+            if isinstance(founders, str):
+                try:
+                    import json as _json
+
+                    parsed = _json.loads(founders)
+                    founders = parsed if isinstance(parsed, list) else []
+                except Exception:
+                    founders = []
+            founder_names = [f.get("name") if isinstance(f, dict) else f for f in founders]
+            founder_names = [str(n) for n in founder_names if n]
+
             lines.append(f"### {i}. {role} @ {company}")
             if comp_desc:
                 lines.append(f"**Company Overview**: {comp_desc}")
             if role_desc:
                 lines.append(f"**Role Focus**: {role_desc}")
-            if founders:
-                lines.append(f"**Founders / Leadership**: {', '.join(founders)}")
+            if founder_names:
+                lines.append(f"**Founders / Leadership**: {', '.join(founder_names)}")
             if funding:
                 lines.append(f"**Funding Stage**: {funding}")
             if news:

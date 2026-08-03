@@ -1,0 +1,13 @@
+[Unit]
+Description=ho pipeline self-healing watchdog
+After=default.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/parazeeknova/Projects/ho
+ExecStart=/home/parazeeknova/Projects/ho/.devenv/state/venv/bin/python3 /home/parazeeknova/Projects/ho/scripts/watchdog.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
