@@ -69,6 +69,7 @@ from src.radar.sources.discovery import (
     is_aggregator_domain,
 )
 from src.radar.sources.sources import (
+    _SOURCE_CHECKPOINTS,
     diff_snapshots,
     get_all_checkpoints,
     get_checkpoint,
@@ -126,9 +127,14 @@ def _save_source_checkpoint(source_id: str, board_url: str, origin: str = "disco
 async def _persist_discovered_sources(
     store: MemoryStore,
     discovered: list[dict[str, Any]],
-) -> int:
-    """Persist discovered boards with their URLs. Returns count added."""
-    count = 0
+) -> list[dict[str, Any]]:
+    """Persist discovered boards with their URLs.
+
+    Returns the list of *newly added* sources (company name + board url),
+    so the discovery sweep can dispatch founder mining only for companies
+    that are genuinely new.
+    """
+    added: list[dict[str, Any]] = []
     for c in discovered:
         website = c.get("website", "")
         board_url = c.get("ats_url", website) or website
@@ -136,16 +142,66 @@ async def _persist_discovered_sources(
         board_hash = _hash_board_url(board_url)
         source_id = f"discovered:{name_slug}:{board_hash}"
         try:
+            already = source_id in _SOURCE_CHECKPOINTS
             register_source(source_id, "ats_board", initial_quality=0.5)
             cp = get_checkpoint(source_id)
             cp.board_url = c.get("ats_url", website)
             cp.company_name = c.get("name", "")
             cp.discovery_origin = c.get("source", "")
             cp.active = True
-            count += 1
+            if not already:
+                added.append(
+                    {
+                        "name": c.get("name", ""),
+                        "url": board_url or website,
+                        "source_id": source_id,
+                    }
+                )
         except Exception:
             _PIPELINE_METRICS["failed_source_persistence"] += 1
-    return count
+    return added
+
+
+async def _dispatch_discovered_founders(
+    added_sources: list[dict[str, Any]],
+    bus: EventBus,
+    graph: GraphStore,
+) -> int:
+    """Fire company_discovered events for newly registered sources so the
+    graph engine's founder miner resolves founders/funding and the cold-DM
+    pipeline can reach them — no accepted job required.
+
+    Bounded per discovery pass (DISCOVERY_FOUNDER_MINE_LIMIT) so a large
+    discovery batch never floods the LLM budget: each company costs one
+    governor-paced OSINT analysis.
+    """
+    from src.graph.entity import company_node as _cn
+
+    limit = int(os.environ.get("DISCOVERY_FOUNDER_MINE_LIMIT", "15"))
+    dispatched = 0
+    for c in added_sources[:limit]:
+        name = c.get("name", "").strip()
+        if not name:
+            continue
+        try:
+            node = await graph.get_node(name)
+            if node is None:
+                node = _cn(name, source="radar_discovery")
+                node, _ = await graph.upsert_node(node)
+            await bus.fire(
+                bus.new_event(
+                    "company_discovered",
+                    node.id,
+                    NodeType.COMPANY,
+                    {"name": name, "url": c.get("url", "")},
+                )
+            )
+            dispatched += 1
+        except Exception as e:
+            logger.debug(f"Failed dispatching founder mining for {name}: {e}")
+    if dispatched:
+        logger.info(f"Discovery: dispatched {dispatched} new companies for founder mining")
+    return dispatched
 
 
 # Company discovery
@@ -2000,12 +2056,18 @@ async def _run_radar_pipeline() -> None:
                 async def _run_discovery(sweep_no: int = sweep) -> None:
                     try:
                         discovered = await asyncio.wait_for(_discover_new_companies(), timeout=300)
-                        await _persist_discovered_sources(store, discovered)
+                        added = await _persist_discovered_sources(store, discovered)
+                        # Founder mining + cold-DM for newly discovered
+                        # companies (YC batches included), no job match needed.
+                        await _dispatch_discovered_founders(added, bus, graph)
                         await persist_checkpoints(store)
                         if ta.is_configured:
+                            mine_limit = int(os.environ.get("DISCOVERY_FOUNDER_MINE_LIMIT", "15"))
                             await ta.send_stage_progress(
                                 f"Sweep {sweep_no}: Company Discovery",
-                                f"Surfaced {len(discovered)} potential company sources.",
+                                f"Surfaced {len(discovered)} potential company sources "
+                                f"({len(added)} new, {min(len(added), mine_limit)} "
+                                "queued for founder mining).",
                             )
                     except Exception as exc:
                         logger.warning(f"Company discovery failed: {exc}")
