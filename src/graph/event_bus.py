@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass, field
 
@@ -43,39 +43,48 @@ class TTLSet:
     """A size-bounded set with TTL expiry. Entries older than *ttl* seconds
     are considered absent (expired). When at capacity, the oldest entries
     are evicted first.
+
+    Backed by an OrderedDict: insertion order is expiry order, so add/evict
+    and stale sweeps are all O(1)-amortized instead of O(n) scans.
     """
 
     def __init__(self, maxsize: int = 10000, ttl: float = 3600.0) -> None:
         self._maxsize = maxsize
         self._ttl = ttl
-        self._dict: dict[str, _CacheEntry] = {}
+        self._clock = time.monotonic
+        self._dict: OrderedDict[str, _CacheEntry] = OrderedDict()
         self._hits: int = 0
         self._misses: int = 0
 
+    def _now(self) -> float:
+        return self._clock()
+
     def _evict_stale(self) -> None:
-        now = time.monotonic()
-        stale = [k for k, v in self._dict.items() if now - v.inserted_at >= self._ttl]
-        for k in stale:
-            del self._dict[k]
+        now = self._now()
+        while self._dict:
+            oldest_key, oldest = next(iter(self._dict.items()))
+            if now - oldest.inserted_at < self._ttl:
+                break
+            del self._dict[oldest_key]
 
     def add(self, key: str) -> None:
         self._evict_stale()
         if key in self._dict:
-            # Already present; refresh TTL by reinserting
-            self._dict[key] = _CacheEntry()
+            # Already present; refresh TTL and move to the (recent) end
+            self._dict[key] = _CacheEntry(inserted_at=self._now())
+            self._dict.move_to_end(key)
             return
         if len(self._dict) >= self._maxsize:
-            # Evict oldest
-            oldest = min(self._dict, key=lambda k: self._dict[k].inserted_at)
-            del self._dict[oldest]
-        self._dict[key] = _CacheEntry()
+            # Evict the oldest entry
+            self._dict.popitem(last=False)
+        self._dict[key] = _CacheEntry(inserted_at=self._now())
 
     def __contains__(self, key: str) -> bool:
         entry = self._dict.get(key)
         if entry is None:
             self._misses += 1
             return False
-        now = time.monotonic()
+        now = self._now()
         if now - entry.inserted_at >= self._ttl:
             del self._dict[key]
             self._misses += 1
