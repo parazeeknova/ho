@@ -180,6 +180,9 @@ class SourceCheckpoint:
     board_url: str = ""
     company_name: str = ""
     discovery_origin: str = ""
+    poll_lane: str = "high"  # "high" | "medium" | "low"
+    yield_per_poll: float = 0.0  # EWMA of jobs observed per poll
+    last_change_at: float = 0.0  # when the snapshot last changed
 
 
 @dataclass

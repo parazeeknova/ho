@@ -79,6 +79,7 @@ from src.radar.sources.sources import (
     record_failure,
     record_success,
     register_source,
+    select_sources_for_sweep,
     should_poll,
 )
 from src.rag.loader import index_resume_in_pgvector, load_resume
@@ -1858,6 +1859,10 @@ async def _run_radar_pipeline() -> None:
                     active_sources.append({"id": id_, "url": url, "source_type": source_type})
 
             logger.info(f"Sweep {sweep}: {len(active_sources)} active sources to poll")
+
+            # Lane-aware ordering: expected-value first, low-lane floor so
+            # quiet sources still get polled (should_poll gates frequency).
+            active_sources = select_sources_for_sweep(active_sources)
 
             # Parallel source polling across all registered seed boards
             poll_sem = asyncio.Semaphore(12)

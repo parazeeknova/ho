@@ -240,6 +240,9 @@ CREATE TABLE IF NOT EXISTS source_checkpoints (
     total_direct_url_rate REAL DEFAULT 0.0,
     company_name         TEXT DEFAULT '',
     discovery_origin     TEXT DEFAULT '',
+    poll_lane            TEXT NOT NULL DEFAULT 'high',
+    yield_per_poll       REAL NOT NULL DEFAULT 0,
+    last_change_at       DOUBLE PRECISION NOT NULL DEFAULT 0,
     updated_at           TIMESTAMP DEFAULT NOW()
 );
 
@@ -251,6 +254,15 @@ ADD COLUMN IF NOT EXISTS company_name TEXT DEFAULT '';
 
 ALTER TABLE source_checkpoints
 ADD COLUMN IF NOT EXISTS discovery_origin TEXT DEFAULT '';
+
+ALTER TABLE source_checkpoints
+ADD COLUMN IF NOT EXISTS poll_lane TEXT NOT NULL DEFAULT 'high';
+
+ALTER TABLE source_checkpoints
+ADD COLUMN IF NOT EXISTS yield_per_poll REAL NOT NULL DEFAULT 0;
+
+ALTER TABLE source_checkpoints
+ADD COLUMN IF NOT EXISTS last_change_at DOUBLE PRECISION NOT NULL DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS job_observations (
     url_hash              TEXT PRIMARY KEY,

@@ -8,6 +8,7 @@ Every connector must inherit from BaseConnector and define:
 
 from __future__ import annotations
 
+import contextlib
 import random
 import time
 from abc import ABC, abstractmethod
@@ -21,6 +22,20 @@ from src.logging import get_logger
 from src.retry import RateLimiter, retry
 
 logger = get_logger("connectors")
+
+# Above this error rate (over the trailing window), _fetch refuses to hit the
+# network and raises immediately: an open circuit for a misbehaving provider.
+CONNECTOR_ERROR_RATE_CIRCUIT_OPEN = 0.3
+CONNECTOR_CIRCUIT_WINDOW = 20
+
+# Module-level health registry so other subsystems (scheduler, health checks)
+# can consume connector state without owning connector instances.
+CONNECTOR_HEALTH: dict[str, ConnectorHealth] = {}
+
+
+class ConnectorUnavailableError(RuntimeError):
+    """Raised when a connector's circuit breaker is open (high error rate)."""
+
 
 _USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",  # noqa: E501
@@ -87,6 +102,14 @@ class BaseConnector(ABC):
         self._latency_samples: list[float] = []
 
     async def _fetch(self, url: str, params: dict | None = None) -> str:
+        if self._circuit_open():
+            self._health_counter += 1
+            self._health_failures += 1
+            raise ConnectorUnavailableError(
+                f"{self.source_name} connector circuit open "
+                f"(error rate {self._error_rate():.0%} over last "
+                f"{CONNECTOR_CIRCUIT_WINDOW} requests)"
+            )
         await self._rate_limiter.acquire()
         client = await get_client(f"connector_{self.source_name}", timeout=12.0)
 
@@ -107,11 +130,13 @@ class BaseConnector(ABC):
             self._latency_samples.append(elapsed)
             self._health_counter += 1
             self._last_success = datetime.now(UTC)
+            self._update_health_registry()
             return result
         except Exception as e:
             self._health_counter += 1
             self._health_failures += 1
             self._last_error = str(e)
+            self._update_health_registry()
             logger.warning(
                 f"{self.source_name} connector fetch failed",
                 connector=self.source_name,
@@ -119,6 +144,18 @@ class BaseConnector(ABC):
                 extra={"url": url},
             )
             raise
+
+    def _circuit_open(self) -> bool:
+        return self._error_rate() >= CONNECTOR_ERROR_RATE_CIRCUIT_OPEN
+
+    def _error_rate(self) -> float:
+        if self._health_counter <= 0:
+            return 0.0
+        return self._health_failures / self._health_counter
+
+    def _update_health_registry(self) -> None:
+        with contextlib.suppress(Exception):
+            CONNECTOR_HEALTH[self.source_name] = self._health_snapshot()
 
     # --- ABSTRACT INTERFACE ---
 
@@ -147,14 +184,12 @@ class BaseConnector(ABC):
         }
         return entities, next_checkpoint
 
-    async def health_report(self) -> ConnectorHealth:
+    def _health_snapshot(self) -> ConnectorHealth:
         recent_latency = 0.0
         if self._latency_samples:
             recent = self._latency_samples[-10:]
             recent_latency = sum(recent) / len(recent) * 1000.0
-        error_rate = 0.0
-        if self._health_counter > 0:
-            error_rate = self._health_failures / self._health_counter
+        error_rate = self._error_rate()
         return ConnectorHealth(
             source_name=self.source_name,
             status="healthy" if error_rate < 0.1 else "degraded",
@@ -165,6 +200,9 @@ class BaseConnector(ABC):
             requests_total=self._health_counter,
             requests_failed=self._health_failures,
         )
+
+    async def health_report(self) -> ConnectorHealth:
+        return self._health_snapshot()
 
     def confidence(self, entity: DiscoveredEntity) -> float:
         return entity.confidence
