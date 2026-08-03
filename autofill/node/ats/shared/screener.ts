@@ -10,7 +10,7 @@ import {
   isLocationAutocomplete,
   PROFILE_FILLS,
 } from "./model.js";
-import { escapePromptValue } from "./matching.js";
+import { escapePromptValue, valuesConsistent } from "./matching.js";
 
 /** A question left blank during resolution, with the reason it was skipped. */
 export interface BlankEntry {
@@ -30,6 +30,25 @@ export function resetDeferredFieldCount(): void {
 
 export function getDeferredFieldCount(): number {
   return deferredFieldCount;
+}
+
+// Count of REQUIRED fields left blank after the fill/sweep/reverify pass. A
+// required field that failed to commit (or a skipped radio, unchecked consent
+// box, etc.) must never be submitted — the runner reads this alongside the
+// deferred count to gate auto-submit. Set by each adapter's fill() from its
+// final required-blank audit.
+let blankedRequiredCount = 0;
+
+export function resetBlankedRequiredCount(): void {
+  blankedRequiredCount = 0;
+}
+
+export function setBlankedRequiredCount(n: number): void {
+  blankedRequiredCount = Math.max(0, Math.floor(n));
+}
+
+export function getBlankedRequiredCount(): number {
+  return blankedRequiredCount;
 }
 
 /**
@@ -218,7 +237,17 @@ export class Screener {
         ok = await this.controls.fillByKind(field, answer, optionTexts);
       }
       const committed = await this.controls.readFieldValue(field);
-      ok = ok && !!committed;
+      // Presence alone is not enough: an option group click can commit a
+      // DIFFERENT option than the answer resolved to (e.g. the first radio in
+      // a Yes/No group when the "No" target was missed). Only count the field
+      // as filled when the committed value is consistent with the answer.
+      const isOptionKind =
+        field.kind === "radio" || field.kind === "checkbox" ||
+        field.kind === "select" || field.kind === "multi";
+      ok =
+        ok &&
+        !!committed &&
+        (!isOptionKind || valuesConsistent(answer, committed));
     }
 
     if (!ok) {
