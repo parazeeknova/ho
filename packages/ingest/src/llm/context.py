@@ -4,6 +4,7 @@ import re
 from typing import Any
 
 from generalcompute import GeneralCompute
+
 from src.configuration import LLMConfig, get_config
 from src.logging import get_logger
 from src.radar.core.governor import (
@@ -16,6 +17,15 @@ from src.radar.core.governor import (
 from src.retry import _is_transient
 
 logger = get_logger("llm")
+
+VERIFY_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "same_job": {"type": "boolean"},
+        "confidence": {"type": "integer", "minimum": 0, "maximum": 100},
+    },
+    "required": ["same_job", "confidence"],
+}
 
 _initialized = False
 

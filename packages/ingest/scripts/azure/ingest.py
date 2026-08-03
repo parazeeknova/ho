@@ -224,7 +224,9 @@ async def _ingest(store) -> None:
         ("signals/", "osint"),
     ):
         if local_root:
-            blobs = _local_blobs(root, prefix)
+            blobs: list[tuple[str, Path | None]] = [
+                (name, p) for name, p in _local_blobs(root, prefix)
+            ]
         else:
             blobs = [(b.name, None) for b in cc.list_blobs(name_starts_with=prefix)]  # type: ignore[union-attr]
         for name, path in blobs:

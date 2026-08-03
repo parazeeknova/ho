@@ -24,8 +24,8 @@
     "intel:planning": "PYTHONPATH=.:packages/ingest:packages/autofill uv run python packages/ingest/scripts/intel/planning_pass.py --write",
     "accepted": "PYTHONPATH=.:packages/ingest:packages/autofill uv run python packages/ingest/scripts/tools/export_accepted.py --out intel/accepted_jobs.csv --eligibility accepted --mode jobs",
     "analytics": "PYTHONPATH=.:packages/ingest:packages/autofill uv run python packages/ingest/scripts/tools/analytics.py",
-    "fc": "PYTHONPATH=.:packages/ingest:packages/autofill uv run python packages/ingest/scripts/cli/firecrawl.py",
-    "graph": "PYTHONPATH=.:packages/ingest:packages/autofill uv run python packages/ingest/scripts/cli/firecrawl.py graph-up",
+    "fc": "PYTHONPATH=.:packages/ingest:packages/autofill uv run python packages/ingest/scripts/cli/fc.py",
+    "graph": "PYTHONPATH=.:packages/ingest:packages/autofill uv run python packages/ingest/scripts/cli/fc.py graph-up",
     "backup": "uv run python packages/ingest/scripts/backup/checkpoint_backup.py",
     "backup-list": "ls -dt checkpoints/*/ 2>/dev/null || echo no checkpoints yet",
     "restore": "uv run python packages/ingest/scripts/backup/checkpoint_restore.py",
@@ -33,7 +33,7 @@
     "health": "uv run python packages/ingest/scripts/tools/health.py",
     "serve": "uv run python packages/ingest/scripts/serve.py",
     "check": "bun run check-py && bun run check-node",
-    "check-py": "uv run ruff format . && uv run ruff check . --fix && uv run mypy packages/ingest/src packages/ingest/scripts packages/autofill --explicit-package-bases",
+    "check-py": "uv run ruff format . && uv run ruff check . --fix && uv run mypy",
     "check-node": "bun run --filter 'autofill-node*' lint && bun run --filter 'autofill-node*' format:check && bun run --filter 'autofill-node*' typecheck",
     "test": "uv run python -m pytest . -v --ignore=refs",
     "test:node": "bun run --filter 'autofill-node*' test",
@@ -41,6 +41,5 @@
     "format": "bun run --filter 'autofill-node*' format",
     "format:check": "bun run --filter 'autofill-node*' format:check",
     "typecheck": "bun run --filter 'autofill-node*' typecheck"
-  },
-
+  }
 }

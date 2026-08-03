@@ -433,7 +433,7 @@ class Indexer:
             if spec is None:
                 return
             pattern, slug_re = spec
-            slug_re = re.compile(slug_re, re.IGNORECASE)
+            slug_rex: re.Pattern[str] = re.compile(slug_re, re.IGNORECASE)
             target = "discovery" if platform in _CDX_DISCOVERY else platform
             page = 0
             errors = 0
@@ -464,7 +464,7 @@ class Indexer:
                         try:
                             rec = json.loads(line)
                             url = rec.get("url", "")
-                            m = slug_re.search(url)
+                            m = slug_rex.search(url)
                             if not m:
                                 continue
                             s = m.group(1).strip().lower()

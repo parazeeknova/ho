@@ -7,6 +7,7 @@ import urllib.request
 from pathlib import Path
 
 import httpx
+
 from src.configuration import get_config
 from src.http_client import get_client
 

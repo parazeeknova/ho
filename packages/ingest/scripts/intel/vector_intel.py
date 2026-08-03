@@ -29,7 +29,6 @@ from collections import defaultdict
 from typing import Any
 
 import numpy as np
-
 from src.http_cache import set_http_cache_store
 from src.logging import get_logger
 from src.memory.pgvector_store import MemoryStore
@@ -109,7 +108,7 @@ def label_propagation_communities(
                 labels[i] = best_label
                 changed = True
     # Normalise community ids to 0..k
-    remap = {}
+    remap: dict[int, int] = {}
     for label in labels:
         if label not in remap:
             remap[label] = len(remap)

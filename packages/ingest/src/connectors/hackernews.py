@@ -12,6 +12,7 @@ import asyncio
 import time
 
 import httpx
+
 from src.configuration import get_config
 from src.http_client import get_client
 from src.logging import get_logger
@@ -81,7 +82,7 @@ class HackerNewsConnector(BaseConnector):
             )
 
             for comment in comments:
-                if isinstance(comment, Exception):
+                if isinstance(comment, BaseException):
                     continue
                 if comment is None:
                     continue

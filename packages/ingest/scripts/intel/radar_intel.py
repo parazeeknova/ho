@@ -269,8 +269,8 @@ async def main() -> None:
     print("\n=== SKILL GAP INTELLIGENCE (top misses worth learning) ===")
     top_misses = graph.missed.most_common(12)
     for skill, count in top_misses:
-        larp = graph.is_larp_friendly(skill)
-        eff = graph.larp_effort(skill) if larp else "hard"
+        larp_friendly = graph.is_larp_friendly(skill)
+        eff = graph.larp_effort(skill) if larp_friendly else "hard"
         print(f"  {skill:<28} missed in {count:4d} jobs | {eff}")
 
     # Export for the auto-applier

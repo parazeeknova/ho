@@ -20,7 +20,6 @@ import argparse
 import os
 import signal
 import subprocess
-import sys
 from pathlib import Path
 
 PROJECT = Path(__file__).resolve().parents[2]
@@ -105,4 +104,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

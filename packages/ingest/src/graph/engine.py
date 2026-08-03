@@ -279,6 +279,8 @@ class WorkScheduler:
         self._consecutive_failure_threshold = cfg.consecutive_failure_threshold
         self._consecutive_empty_threshold = cfg.consecutive_empty_threshold
         self._batch_max = cfg.batch_max
+        self.config = cfg
+        self.agent_caps = dict(AGENT_CONCURRENCY)
 
     def register_agent(self, name: str, handler: HandlerType) -> None:
         self._agents[name] = handler
@@ -373,10 +375,9 @@ class WorkScheduler:
                 continue
 
             self._consecutive_empty = 0
-            is_batch = entry.agent in self._batch_agents
-            handler = (
-                self._batch_agents.get(entry.agent) if is_batch else self._agents.get(entry.agent)
-            )
+            batch_handler = self._batch_agents.get(entry.agent)
+            handler = self._agents.get(entry.agent)
+            is_batch = batch_handler is not None
             sem = self._agent_sems.get(entry.agent, AdaptiveSemaphore(3))
 
             async with sem:
@@ -396,9 +397,11 @@ class WorkScheduler:
                         if batch and len(batch.entries) > 1:
                             async with self._metrics_lock:
                                 self._metrics.batches_executed += 1
-                            new_entries = await handler(batch)
+                            assert batch_handler is not None
+                            new_entries = await batch_handler(batch)
                         else:
-                            new_entries = await self._agents.get(entry.agent, lambda x: [])(entry)
+                            single_handler = self._agents.get(entry.agent)
+                            new_entries = await single_handler(entry) if single_handler else []
                     else:
                         new_entries = await handler(entry) if handler else []
 
@@ -474,7 +477,7 @@ class WorkScheduler:
             logger.warning("Adaptive concurrency: halved limits due to consecutive failures")
         else:
             for agent_id, sem in self._agent_sems.items():
-                target = self.agent_caps.get(agent_id, self.config.max_concurrency)
+                target = self.agent_caps.get(agent_id, max(self.agent_caps.values()) or 1)
                 if sem.limit < target:
                     await sem.set_limit(min(target, sem.limit + 1))
 

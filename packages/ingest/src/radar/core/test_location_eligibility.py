@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+
 from src.agent.telegram_agent import TelegramAgent
 from src.radar.core.models import EligibilityState, JobCandidate, RejectionReason
 from src.radar.core.queue import _apply_llm_result

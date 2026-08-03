@@ -5,14 +5,14 @@ dev-down / clean-volumes / tor-up / graph-up / graph-stop / graph-reset /
 graph-shell.
 
 Usage:
-    uv run python scripts/cli/firecrawl.py                    # up (default)
-    uv run python scripts/cli/firecrawl.py down
-    uv run python scripts/cli/firecrawl.py logs
-    uv run python scripts/cli/firecrawl.py status
-    uv run python scripts/cli/firecrawl.py clean
-    uv run python scripts/cli/firecrawl.py dev-down
-    uv run python scripts/cli/firecrawl.py tor-up
-    uv run python scripts/cli/firecrawl.py graph-up|graph-stop|graph-reset|graph-shell
+    uv run python scripts/cli/fc.py                            # up (default)
+    uv run python scripts/cli/fc.py down
+    uv run python scripts/cli/fc.py logs
+    uv run python scripts/cli/fc.py status
+    uv run python scripts/cli/fc.py clean
+    uv run python scripts/cli/fc.py dev-down
+    uv run python scripts/cli/fc.py tor-up
+    uv run python scripts/cli/fc.py graph-up|graph-stop|graph-reset|graph-shell
 """
 
 from __future__ import annotations

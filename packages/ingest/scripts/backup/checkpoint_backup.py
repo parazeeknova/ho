@@ -17,7 +17,6 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
-import sys
 import tarfile
 import time
 from pathlib import Path
@@ -118,4 +117,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

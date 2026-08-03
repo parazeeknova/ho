@@ -57,7 +57,7 @@ def _dir_size(p: Path) -> int:
     return 0
 
 
-def _fmt(n: int) -> str:
+def _fmt(n: float) -> str:
     for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
         if n < 1024 or unit == "TiB":
             return f"{n:.1f} {unit}"

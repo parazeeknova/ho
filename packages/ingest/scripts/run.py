@@ -640,9 +640,9 @@ def main() -> None:
     threads: list[threading.Thread] = []
     for idx, p in enumerate(_procs):
         label = f"Worker-{idx}" if idx > 0 else "Master"
-        t = threading.Thread(target=_stream_proc, args=(p, label), daemon=True)
-        t.start()
-        threads.append(t)
+        thread = threading.Thread(target=_stream_proc, args=(p, label), daemon=True)
+        thread.start()
+        threads.append(thread)
 
     _procs[0].wait()
     stop_stats.set()

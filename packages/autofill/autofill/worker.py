@@ -13,7 +13,10 @@ import re
 import secrets
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from autofill.proxyrelay import ProxyRelay
 
 from dotenv import load_dotenv
 from src.logging import get_logger
@@ -103,7 +106,7 @@ def _per_job_proxy(session_id: str) -> str | None:
     return static or None
 
 
-async def _start_proxy_relay(template_url: str) -> ProxyRelay | None:  # noqa: F821
+async def _start_proxy_relay(template_url: str) -> ProxyRelay | None:
     """Start the per-job localhost relay that injects residential credentials.
 
     Chrome drops credentials embedded in a proxy URL and Stagehand's local
@@ -648,7 +651,7 @@ class AutofillWorker:
             # both defeated. A per-job writing-tone seed varies answer phrasing.
             session_id = _new_session_id()
             voice_seed = _pick_voice()
-            proxy_relay: Any = None
+            proxy_relay = None
             profile_dir = await self._acquire_profile()
             if profile_dir:
                 process_env["AUTOFILL_USER_DATA_DIR"] = profile_dir

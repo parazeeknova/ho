@@ -6,6 +6,7 @@ import random
 import time
 
 import httpx
+
 from src.configuration import get_config
 from src.http_client import get_client
 from src.logging import get_logger

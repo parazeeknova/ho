@@ -6,6 +6,7 @@ import time
 from collections.abc import Generator
 
 import pytest
+
 from src.configuration import get_config
 from src.connectors.base import (
     CONNECTOR_ERROR_RATE_CIRCUIT_OPEN,

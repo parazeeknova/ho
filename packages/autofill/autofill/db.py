@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import uuid
+from collections.abc import Sequence
 from typing import Any
 
 import asyncpg
@@ -244,7 +245,7 @@ class AutofillDB:
             return res
 
     async def mark_deferred(
-        self, job_id: str, questions: list[str] | None = None, reason: str = ""
+        self, job_id: str, questions: Sequence[str | dict[str, Any]] | None = None, reason: str = ""
     ) -> bool:
         """Mark a job as deferred: it needs user input before it can be completed.
 

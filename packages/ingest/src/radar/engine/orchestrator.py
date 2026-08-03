@@ -14,6 +14,7 @@ from typing import Any
 from dotenv import load_dotenv
 from firecrawl import FirecrawlApp
 from rich.console import Console
+
 from src.agent.startup_agent import StartupAgent, _is_plausible_company_name
 from src.agent.telegram_agent import TelegramAgent, set_pipeline_state
 from src.configuration import get_config
@@ -309,16 +310,16 @@ async def _discover_new_companies() -> list[dict[str, Any]]:
             deduped.append(c)
 
     # Build set of already-known company slugs from prior discovery sweeps
-    known_slugs: set[str] = set()
+    prior_slugs: set[str] = set()
     for sid in get_all_checkpoints():
         if sid.startswith("discovered:"):
             # source_id format: "discovered:{name_slug}:{board_hash}"
             parts = sid.split(":", 2)
             if len(parts) >= 2:
-                known_slugs.add(parts[1])
-    if known_slugs:
+                prior_slugs.add(parts[1])
+    if prior_slugs:
         logger.info(
-            f"Discovery cache: {len(known_slugs)} companies already registered as active sources"
+            f"Discovery cache: {len(prior_slugs)} companies already registered as active sources"
         )
 
     new_sources = 0
@@ -333,7 +334,7 @@ async def _discover_new_companies() -> list[dict[str, Any]]:
         async with sem:
             # Skip companies already persisted as sources in a prior sweep
             name_slug = c.get("name", "").lower().replace(" ", "-")[:40]
-            if name_slug in known_slugs:
+            if name_slug in prior_slugs:
                 skipped_known += 1
                 if skipped_known <= 3:
                     logger.info(

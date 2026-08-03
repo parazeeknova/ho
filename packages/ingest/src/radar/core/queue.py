@@ -519,7 +519,7 @@ def _digest_from_chunks(chunks: list[dict[str, Any]], max_chars: int = 2000) -> 
 async def _dequeue() -> tuple[int, int, JobCandidate] | None:
     loop = asyncio.get_running_loop()
     if getattr(_queue_not_empty, "_loop", None) is not loop:
-        _queue_not_empty._loop = loop
+        _queue_not_empty._loop = loop  # type: ignore[attr-defined]
     try:
         await asyncio.wait_for(_queue_not_empty.wait(), timeout=5.0)
     except TimeoutError:

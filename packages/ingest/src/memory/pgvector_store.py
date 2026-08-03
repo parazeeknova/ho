@@ -16,6 +16,7 @@ from typing import Any
 import asyncpg
 from pgvector import Vector
 from pgvector.asyncpg import register_vector
+
 from src.configuration import PostgresConfig, get_config
 from src.logging import get_logger
 
@@ -1952,6 +1953,224 @@ class MemoryStore:
             except Exception:
                 return {"count": 0, "avg": 0, "median": 0, "error": "salary_stats_failed"}
 
+    async def get_radar_gate_stats(self: MemoryStore) -> dict[str, Any]:
+        """Return counts by eligibility and rejection reason from radar_candidates."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT
+                    COUNT(*) AS total,
+                    COUNT(*) FILTER (WHERE eligibility = 'accepted') AS accepted,
+                    COUNT(*) FILTER (WHERE eligibility = 'near_miss') AS near_miss,
+                    COUNT(*) FILTER (WHERE eligibility = 'rejected') AS rejected,
+                    COUNT(*) FILTER (WHERE eligibility = 'pending') AS pending,
+                    COUNT(*) FILTER (WHERE freshness_lane = 'urgent') AS urgent,
+                    COUNT(*) FILTER (WHERE freshness_lane = 'review') AS review
+                FROM radar_candidates
+                """
+            )
+            if row is None:
+                return {
+                    "total": 0,
+                    "accepted": 0,
+                    "near_miss": 0,
+                    "rejected": 0,
+                    "pending": 0,
+                    "urgent": 0,
+                    "review": 0,
+                }
+            rejections = await conn.fetch(
+                """
+                SELECT rejection_reason, COUNT(*) AS cnt
+                FROM radar_candidates
+                WHERE eligibility = 'rejected' AND rejection_reason != ''
+                GROUP BY rejection_reason ORDER BY cnt DESC LIMIT 8
+                """
+            )
+            return {
+                "total": row["total"] or 0,
+                "accepted": row["accepted"] or 0,
+                "near_miss": row["near_miss"] or 0,
+                "rejected": row["rejected"] or 0,
+                "pending": row["pending"] or 0,
+                "urgent": row["urgent"] or 0,
+                "review": row["review"] or 0,
+                "top_rejection_reasons": [
+                    {"reason": r["rejection_reason"], "count": r["cnt"]} for r in rejections
+                ],
+            }
+
+    async def get_radar_top_skills(self: MemoryStore, limit: int = 12) -> list[dict[str, Any]]:
+        """Top matching skills from accepted/near-miss candidates.
+
+        ``matching_skills`` can be a proper jsonb array OR a string that itself
+        holds a JSON array (a double-encoded artifact of the LLM path). We first
+        normalise any scalar/string to a jsonb array so ``jsonb_array_elements``
+        never crashes on a scalar.
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                WITH norm AS (
+                    SELECT CASE
+                        WHEN jsonb_typeof(matching_skills) = 'array' THEN matching_skills
+                        WHEN jsonb_typeof(matching_skills) = 'string'
+                             THEN (matching_skills #>> '{}')::jsonb
+                        ELSE '[]'::jsonb
+                    END AS skills
+                    FROM radar_candidates
+                    WHERE eligibility IN ('accepted', 'near_miss')
+                )
+                SELECT skill, COUNT(*) AS cnt
+                FROM norm, LATERAL jsonb_array_elements_text(skills) AS skill
+                WHERE skill IS NOT NULL AND skill != ''
+                GROUP BY skill ORDER BY cnt DESC LIMIT $1
+                """,
+                limit,
+            )
+        return [{"skill": r["skill"], "count": r["cnt"]} for r in rows]
+
+    async def get_radar_skill_arbitrage(self: MemoryStore) -> list[dict[str, Any]]:
+        """Missing skills that caused near-misses (double-encoding safe)."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                WITH norm AS (
+                    SELECT CASE
+                        WHEN jsonb_typeof(missing_skills) = 'array' THEN missing_skills
+                        WHEN jsonb_typeof(missing_skills) = 'string'
+                             THEN (missing_skills #>> '{}')::jsonb
+                        ELSE '[]'::jsonb
+                    END AS skills
+                    FROM radar_candidates
+                    WHERE eligibility = 'near_miss'
+                )
+                SELECT skill, COUNT(*) AS miss_count
+                FROM norm, LATERAL jsonb_array_elements_text(skills) AS skill
+                WHERE skill IS NOT NULL AND skill != ''
+                GROUP BY skill ORDER BY miss_count DESC LIMIT 12
+                """
+            )
+        return [{"skill": r["skill"], "miss_count": r["miss_count"]} for r in rows]
+
+    async def get_recent_accepts(self: MemoryStore, hours: int = 24) -> list[dict[str, Any]]:
+        """Accepted candidates in the last N hours with their timestamp."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT normalized_company, normalized_role, created_at
+                FROM radar_candidates
+                WHERE eligibility = 'accepted'
+                  AND created_at > NOW() - ($1::int * INTERVAL '1 hour')
+                ORDER BY created_at DESC
+                """,
+                hours,
+            )
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            ts = r["created_at"].timestamp() if r["created_at"] else 0.0
+            out.append(
+                {
+                    "company": r["normalized_company"],
+                    "role": r["normalized_role"],
+                    "ts": ts,
+                }
+            )
+        return out
+
+    async def get_near_miss_count(self: MemoryStore) -> int:
+        async with self._pool.acquire() as conn:
+            return (
+                await conn.fetchval(
+                    "SELECT COUNT(*) FROM radar_candidates WHERE eligibility = 'near_miss'"
+                )
+                or 0
+            )
+
+    async def get_top_companies(self: MemoryStore, limit: int = 8) -> list[dict[str, Any]]:
+        """Accepted companies ranked by accepted-count then avg match percent."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT normalized_company AS company,
+                       COUNT(*) AS accepted,
+                       ROUND(AVG(match_percent))::int AS avg_match,
+                       MAX(funding_stage) AS funding_stage
+                FROM radar_candidates
+                WHERE eligibility = 'accepted' AND normalized_company <> ''
+                GROUP BY normalized_company
+                ORDER BY accepted DESC, avg_match DESC
+                LIMIT $1
+                """,
+                limit,
+            )
+        return [
+            {
+                "company": r["company"],
+                "accepted": r["accepted"],
+                "avg_match": r["avg_match"],
+                "funding_stage": r["funding_stage"] or "seed",
+            }
+            for r in rows
+        ]
+
+    async def get_sector_signal(self: MemoryStore, limit: int = 6) -> list[dict[str, Any]]:
+        """Sector labels from accepted candidates.
+
+        Uses role_family when it's meaningful; otherwise infers a sector from the
+        role title so "unknown" never dominates the report.
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT CASE
+                    WHEN role_family IS NOT NULL AND role_family NOT IN ('', 'unknown')
+                         THEN role_family
+                    WHEN lower(normalized_role) ~ 'machine learning|ml|ai/|ai |research|llm|genai'
+                         THEN 'ai_ml'
+                    WHEN lower(normalized_role) ~ 'data (engineer|scientist|analyst)|analytics'
+                         THEN 'data'
+                    WHEN lower(normalized_role) ~ 'full.?stack|frontend|front end|react|ui'
+                         THEN 'frontend'
+                    WHEN lower(normalized_role) ~ 'backend|api|server'
+                         THEN 'backend'
+                    WHEN lower(normalized_role) ~ 'devops|sre|platform|infra|cloud|site reliability'
+                         THEN 'infra_platform'
+                    WHEN lower(normalized_role) ~ 'security|cyber'
+                         THEN 'security'
+                    WHEN lower(normalized_role) ~ 'mobile|ios|android'
+                         THEN 'mobile'
+                    WHEN lower(normalized_role) ~ 'founder|founding|co.founder|head of engineering'
+                         THEN 'startup_founding'
+                    ELSE 'general_swe'
+                END AS label,
+                COUNT(*) AS cnt
+                FROM radar_candidates
+                WHERE eligibility = 'accepted'
+                GROUP BY label
+                ORDER BY cnt DESC
+                LIMIT $1
+                """,
+                limit,
+            )
+            total = (
+                await conn.fetchval(
+                    "SELECT COUNT(*) FROM radar_candidates WHERE eligibility = 'accepted'"
+                )
+                or 0
+            )
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            cnt = r["cnt"]
+            out.append(
+                {
+                    "label": r["label"],
+                    "count": cnt,
+                    "pct": round(cnt / total * 100) if total else 0,
+                }
+            )
+        return out
+
     async def learned_title_scores(self, min_obs: int = 8, top_k: int = 200) -> dict[str, float]:
         """Learn a per-keyword gate-pass score from historical candidates.
 
@@ -2239,12 +2458,3 @@ async def _get_sector_signal(self: MemoryStore, limit: int = 6) -> list[dict[str
             }
         )
     return out
-
-
-MemoryStore.get_radar_gate_stats = _radar_gate_stats  # type: ignore[attr-defined]
-MemoryStore.get_radar_top_skills = _radar_top_skills  # type: ignore[attr-defined]
-MemoryStore.get_radar_skill_arbitrage = _radar_skill_arbitrage  # type: ignore[attr-defined]
-MemoryStore.get_recent_accepts = _get_recent_accepts  # type: ignore[attr-defined]
-MemoryStore.get_near_miss_count = _get_near_miss_count  # type: ignore[attr-defined]
-MemoryStore.get_top_companies = _get_top_companies  # type: ignore[attr-defined]
-MemoryStore.get_sector_signal = _get_sector_signal  # type: ignore[attr-defined]

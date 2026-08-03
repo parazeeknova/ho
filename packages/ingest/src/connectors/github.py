@@ -178,7 +178,7 @@ class GitHubConnector(BaseConnector):
     async def _get_org_repos(self, client, org_name: str) -> list[dict]:
         try:
 
-            async def _get() -> dict:
+            async def _get() -> list[dict]:
                 resp = await client.get(
                     f"{GITHUB_API_BASE}/orgs/{org_name}/repos",
                     params={"sort": "pushed", "per_page": 10, "type": "public"},

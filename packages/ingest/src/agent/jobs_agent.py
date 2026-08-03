@@ -190,8 +190,11 @@ class JobsAgent:
                     founders = parsed if isinstance(parsed, list) else []
                 except Exception:
                     founders = []
-            founder_names = [f.get("name") if isinstance(f, dict) else f for f in founders]
-            founder_names = [str(n) for n in founder_names if n]
+            founder_names: list[str] = []
+            for f in founders:
+                n = f.get("name") if isinstance(f, dict) else f
+                if n:
+                    founder_names.append(str(n))
 
             lines.append(f"### {i}. {role} @ {company}")
             if comp_desc:

@@ -74,7 +74,7 @@ async def discover_all(
     seen: set[str] = set()
     all_entities: list[DiscoveredEntity] = []
     for r in results:
-        if isinstance(r, Exception):
+        if isinstance(r, BaseException):
             logger.exception("Connector discovery failed", exc=r)
             continue
         for e in r:

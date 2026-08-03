@@ -64,6 +64,7 @@ def _stop() -> int:
 
     pid = _read_pid()
     if _alive(pid):
+        assert pid is not None
         print(f"stopping pipeline (pid {pid})...")
         os.kill(pid, signal.SIGTERM)
         with contextlib.suppress(ChildProcessError):

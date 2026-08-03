@@ -12,6 +12,7 @@ import re
 from typing import Any
 
 from bs4 import BeautifulSoup
+
 from src.http_client import get_client
 from src.logging import get_logger
 

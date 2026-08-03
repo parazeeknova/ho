@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 
 import httpx
+
 from src.configuration import get_config
 from src.logging import get_logger
 

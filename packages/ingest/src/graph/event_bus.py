@@ -20,13 +20,14 @@ import time
 from collections import OrderedDict, defaultdict
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass, field
+from typing import Any
 
 from src.configuration import EventBusConfig, get_config
 from src.graph.entity import FrontierEntry, GraphEvent, NodeType, make_event_id
 from src.logging import get_logger
 
 Handler = Callable[[GraphEvent], Awaitable[list[FrontierEntry]]]
-EnqueueCallback = Callable[[list[FrontierEntry]], Awaitable[None]]
+EnqueueCallback = Callable[[list[FrontierEntry]], Awaitable[Any]]
 
 logger = get_logger("event_bus")
 

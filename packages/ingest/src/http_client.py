@@ -11,6 +11,7 @@ import asyncio
 from typing import Any
 
 import httpx
+
 from src.configuration import HttpConfig, get_config
 
 _CLIENTS: dict[str, httpx.AsyncClient] = {}
@@ -21,7 +22,7 @@ _global_client: httpx.AsyncClient | None = None
 
 
 def _make_client(
-    timeout: float | None = None,
+    timeout: float | httpx.Timeout | None = None,
     extra_limits: dict[str, Any] | None = None,
     follow_redirects: bool = True,
 ) -> httpx.AsyncClient:
@@ -41,7 +42,7 @@ def _make_client(
 
 async def get_client(
     name: str = "default",
-    timeout: float | None = None,
+    timeout: float | httpx.Timeout | None = None,
     extra_limits: dict[str, Any] | None = None,
     follow_redirects: bool = True,
 ) -> httpx.AsyncClient:

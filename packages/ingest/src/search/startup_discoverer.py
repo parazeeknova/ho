@@ -164,7 +164,7 @@ async def discover_startups(positions: list[str]) -> list[dict[str, str]]:
     seen: set[str] = set()
     all_companies: list[dict[str, str]] = []
     for result in results:
-        if isinstance(result, Exception):
+        if isinstance(result, BaseException):
             continue
         for company in result:
             name = company.get("company", "").strip().lower()

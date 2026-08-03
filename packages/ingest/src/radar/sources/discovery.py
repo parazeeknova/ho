@@ -470,7 +470,7 @@ async def discover_from_dealroom(limit: int = 50) -> list[dict[str, str]]:
                         "name": name,
                         "website": website,
                         "source": "dealroom",
-                        "funding_amount": _extract_funding(comp),
+                        "funding_amount": str(_extract_funding(comp)),
                         "hq_city": _extract_hq_city(comp),
                     }
                 )

@@ -326,6 +326,9 @@ class TelegramAgent:
 
     async def _handle_analytics(self) -> None:
         await self._send_raw("<i>Crunching market data and calculating skill arbitrage...</i>")
+        if self.ctx is None:
+            await self._send_raw("Analytics unavailable (no LLM context).")
+            return
         sections: list[str] = []
         try:
             from src.agent.analytics_agent import AnalyticsAgent
@@ -1204,6 +1207,8 @@ class TelegramAgent:
             "Be warm, direct, and ask about engineering roles. "
             "Return ONLY the draft text, no quotes, no explanations."
         )
+        if self.ctx is None:
+            return ""
         try:
             draft = await self.ctx.chat(prompt[:3000])
             return draft.strip().strip('"')

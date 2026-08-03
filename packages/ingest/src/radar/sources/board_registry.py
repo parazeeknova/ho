@@ -11,6 +11,7 @@ import asyncio
 from typing import Any
 
 import httpx
+
 from src.http_client import get_client
 from src.logging import get_logger
 

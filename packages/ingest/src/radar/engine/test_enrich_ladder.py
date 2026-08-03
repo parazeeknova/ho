@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+
 from src.radar.core.models import EligibilityState, JobCandidate
 from src.radar.engine import orchestrator as orch
 
