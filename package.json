@@ -26,6 +26,8 @@
     "analytics": "PYTHONPATH=.:packages/ingest:packages/autofill uv run python packages/ingest/scripts/tools/analytics.py",
     "fc": "PYTHONPATH=.:packages/ingest:packages/autofill uv run python packages/ingest/scripts/cli/fc.py",
     "graph": "PYTHONPATH=.:packages/ingest:packages/autofill uv run python packages/ingest/scripts/cli/fc.py graph-up",
+    "bridge": "PYTHONPATH=.:packages/ingest:packages/autofill uv run python packages/ingest/scripts/autofill_bridge.py",
+    "loop": "PYTHONPATH=.:packages/ingest:packages/autofill uv run python packages/ingest/scripts/loop.py",
     "backup": "uv run python packages/ingest/scripts/backup/checkpoint_backup.py",
     "backup-list": "ls -dt checkpoints/*/ 2>/dev/null || echo no checkpoints yet",
     "restore": "uv run python packages/ingest/scripts/backup/checkpoint_restore.py",

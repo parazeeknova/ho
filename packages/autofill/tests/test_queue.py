@@ -278,3 +278,65 @@ async def test_fill_ttl_expires_and_purges(db: AutofillDB):
         )
     assert await db.purge_expired_fills() >= 1
     assert len(await db.get_fills(job_id)) == 0
+
+
+@pytest.mark.asyncio
+async def test_update_status_sets_applied_at(db: AutofillDB):
+    job_id = await db.enqueue_job(apply_link="https://boards.greenhouse.io/test/applied")
+    assert (await db.get_job(job_id))["applied_at"] is None
+
+    ok = await db.update_status(job_id, status="submitted")
+    assert ok
+    row = await db.get_job(job_id)
+    assert row["status"] == "submitted"
+    assert row["applied_at"] is not None
+
+    summary = await db.queue_summary()
+    assert summary["applied"] == 1
+    assert summary["open"] == 0
+
+
+@pytest.mark.asyncio
+async def test_update_status_failed_bumps_error_count(db: AutofillDB):
+    job_id = await db.enqueue_job(apply_link="https://boards.greenhouse.io/test/error")
+    await db.update_status(job_id, status="failed", error="CAPTCHA_DETECTED")
+    await db.update_status(job_id, status="failed", error="TIMEOUT")
+
+    row = await db.get_job(job_id)
+    assert row["error_count"] == 2
+    assert row["last_error"] == "TIMEOUT"
+    assert row["last_error_at"] is not None
+
+    summary = await db.queue_summary()
+    assert summary["errored"] == 1
+    assert summary["failed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_link_known_covers_terminal_rows(db: AutofillDB):
+    link = "https://boards.greenhouse.io/test/known"
+    assert await db.link_known(link) is False
+
+    job_id = await db.enqueue_job(apply_link=link, source="radar")
+    assert await db.link_known(link) is True
+
+    # Terminal status still counts: bridge must never re-enqueue an applied job.
+    await db.update_status(job_id, status="submitted")
+    assert await db.link_known(link) is True
+
+
+@pytest.mark.asyncio
+async def test_queue_summary_counts(db: AutofillDB):
+    a = await db.enqueue_job(apply_link="https://boards.greenhouse.io/test/sum-a")
+    b = await db.enqueue_job(apply_link="https://boards.greenhouse.io/test/sum-b")
+    c = await db.enqueue_job(apply_link="https://boards.greenhouse.io/test/sum-c")
+
+    await db.update_status(a, status="submitted")
+    await db.update_status(b, status="failed", error="boom")
+    await db.update_status(c, status="deferred", reason="needs user input")
+
+    summary = await db.queue_summary()
+    assert summary["applied"] == 1
+    assert summary["errored"] == 1
+    assert summary["deferred"] == 1
+    assert summary["failed"] == 1

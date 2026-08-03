@@ -1197,6 +1197,43 @@ async def _persist_full(store: MemoryStore, c: JobCandidate) -> None:
 # Telegram
 
 
+async def _bridge_accepted_to_autofill(matched: list[JobCandidate]) -> int:
+    """Enqueue accepted candidates (with a direct apply URL) into the autofill queue.
+
+    Links already known to the queue (any status) are skipped, so the bridge is
+    idempotent across sweeps: a job applied to, failed, or deferred once is
+    never re-enqueued. Runs in a best-effort try/except — autofill must never
+    take down the radar pipeline.
+    """
+    try:
+        from autofill.db import AutofillDB
+
+        db = await AutofillDB.create()
+        try:
+            enqueued = 0
+            for c in matched:
+                if not c.is_accepted or not c.direct_apply_url:
+                    continue
+                if await db.link_known(c.direct_apply_url):
+                    continue
+                await db.enqueue_job(
+                    apply_link=c.direct_apply_url,
+                    role=c.normalized_role or None,
+                    company=c.normalized_company or None,
+                    apply_mode="auto",
+                    source="radar",
+                )
+                enqueued += 1
+            if enqueued:
+                logger.info("Autofill bridge: enqueued accepted jobs", count=enqueued)
+            return enqueued
+        finally:
+            await db.close()
+    except Exception as exc:
+        logger.warning("Autofill bridge skipped", error=str(exc))
+        return 0
+
+
 async def _notify_telegram(
     ta: TelegramAgent, matched: list[JobCandidate], store: MemoryStore
 ) -> int:
@@ -2142,6 +2179,7 @@ async def _run_radar_pipeline() -> None:
             logger.info(f"Sweep {sweep}: enriched {enriched_count} accepted candidates")
             await _dispatch_company_events(matched, graph, bus)
             actual_sent = await _notify_telegram(ta, matched, store)
+            await _bridge_accepted_to_autofill(matched)
             stealth_sent = await _check_and_notify_stealth_signals(ta, graph, store)
             accepted_count = len([c for c in matched if c.is_accepted])
             logger.info(

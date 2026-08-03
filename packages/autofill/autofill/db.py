@@ -39,6 +39,16 @@ CREATE INDEX IF NOT EXISTS idx_autofill_queue_link ON autofill_queue(apply_link)
 ALTER TABLE autofill_queue ADD COLUMN IF NOT EXISTS pending_questions JSONB DEFAULT '[]'::jsonb;
 ALTER TABLE autofill_queue ADD COLUMN IF NOT EXISTS summary_sent BOOLEAN DEFAULT FALSE;
 
+-- Applied-vs-not tracking: applied_at is set the moment a job is submitted,
+-- error_count/last_error/last_error_at record fill failures so the loop and
+-- reports can separate applied, open and errored jobs. source records where
+-- the job entered the queue ('radar' pipeline bridge, 'cli', ...).
+ALTER TABLE autofill_queue ADD COLUMN IF NOT EXISTS applied_at TIMESTAMP WITH TIME ZONE;
+ALTER TABLE autofill_queue ADD COLUMN IF NOT EXISTS error_count INTEGER DEFAULT 0;
+ALTER TABLE autofill_queue ADD COLUMN IF NOT EXISTS last_error TEXT DEFAULT '';
+ALTER TABLE autofill_queue ADD COLUMN IF NOT EXISTS last_error_at TIMESTAMP WITH TIME ZONE;
+ALTER TABLE autofill_queue ADD COLUMN IF NOT EXISTS source TEXT DEFAULT '';
+
 -- Per-job Q&A audit trail: every screener question the autofill answered for
 -- a posting, so we can always reconstruct what was filled and from where.
 -- job_id is deliberately NOT a foreign key (a single CLI run may fill without
@@ -86,6 +96,7 @@ class AutofillDB:
         company: str | None = None,
         ats_platform: str = "",
         apply_mode: str = "review",
+        source: str = "",
     ) -> str:
         """Enqueue a new job application. Returns job_id.
 
@@ -115,9 +126,9 @@ class AutofillDB:
             await conn.execute(
                 """
                 INSERT INTO autofill_queue (
-                    job_id, apply_link, role, company, ats_platform, apply_mode, status
+                    job_id, apply_link, role, company, ats_platform, apply_mode, status, source
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, 'pending')
+                VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7)
                 """,
                 job_id,
                 apply_link,
@@ -125,6 +136,7 @@ class AutofillDB:
                 company,
                 ats_platform,
                 apply_mode,
+                source,
             )
         logger.info("Job enqueued", job_id=job_id, apply_link=apply_link, mode=apply_mode)
         return job_id
@@ -202,6 +214,15 @@ class AutofillDB:
             args.append(error)
             updates.append(f"error = ${len(args)}")
 
+        if status == "submitted":
+            updates.append("applied_at = NOW()")
+        elif status == "failed":
+            updates.append("error_count = error_count + 1")
+            updates.append("last_error_at = NOW()")
+            if error is not None:
+                args.append(error)
+                updates.append(f"last_error = ${len(args)}")
+
         query = f"UPDATE autofill_queue SET {', '.join(updates)} WHERE job_id = $1"
 
         async with self._pool.acquire() as conn:
@@ -230,6 +251,42 @@ class AutofillDB:
                 res["filled_payload"] = json.loads(res["filled_payload"])
             result.append(res)
         return result
+
+    async def link_known(self, apply_link: str) -> bool:
+        """True when any row (any status) exists for a link.
+
+        Used by the radar bridge so an already-applied or already-failed job
+        is never re-enqueued from the stored corpus.
+        """
+        async with self._pool.acquire() as conn:
+            return bool(
+                await conn.fetchval(
+                    "SELECT 1 FROM autofill_queue WHERE apply_link = $1 LIMIT 1",
+                    apply_link,
+                )
+            )
+
+    async def queue_summary(self) -> dict[str, Any]:
+        """Applied / open / errored counts for the loop report."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT
+                    COUNT(*) FILTER (WHERE applied_at IS NOT NULL) AS applied,
+                    COUNT(*) FILTER (WHERE applied_at IS NULL
+                                     AND status NOT IN ('deferred', 'skipped', 'failed'))
+                        AS open,
+                    COUNT(*) FILTER (WHERE status = 'deferred') AS deferred,
+                    COUNT(*) FILTER (WHERE status = 'skipped') AS skipped,
+                    COUNT(*) FILTER (WHERE status = 'failed' OR error_count > 0) AS errored,
+                    COUNT(*) FILTER (WHERE status = 'failed') AS failed,
+                    COUNT(*) FILTER (WHERE status = 'pending') AS pending,
+                    COUNT(*) FILTER (WHERE status = 'filling') AS filling,
+                    COUNT(*) FILTER (WHERE status = 'awaiting_review') AS awaiting_review
+                FROM autofill_queue
+                """
+            )
+            return dict(rows[0])
 
     async def get_job(self, job_id: str) -> dict[str, Any] | None:
         """Fetch job details by ID."""
