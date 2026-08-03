@@ -2,8 +2,8 @@
 """Full pipeline launcher: start all services, wait for health, run orchestrator.
 
 Usage:
-    make run          → full pipeline
-    make dev          → infrastructure only (same as --no-pipeline)
+    npm run run       → full pipeline
+    npm run run:dev   → infrastructure only (same as --no-pipeline)
 """
 
 import argparse
