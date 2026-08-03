@@ -152,11 +152,18 @@ CREATE TABLE IF NOT EXISTS processed_jobs (
 );
 
 CREATE TABLE IF NOT EXISTS resume_embeddings (
-    id         SERIAL PRIMARY KEY,
-    section    VARCHAR(128),
-    content    TEXT NOT NULL,
-    embedding  vector({VECTOR_DIM})
+    id           SERIAL PRIMARY KEY,
+    section      VARCHAR(128),
+    content      TEXT NOT NULL,
+    content_hash TEXT NOT NULL DEFAULT '',
+    embedding    vector({VECTOR_DIM})
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_resume_embeddings_hash
+    ON resume_embeddings (content_hash);
+
+ALTER TABLE resume_embeddings
+ADD COLUMN IF NOT EXISTS content_hash TEXT NOT NULL DEFAULT '';
 
 CREATE TABLE IF NOT EXISTS discovered_domains (
     domain          TEXT PRIMARY KEY,
@@ -369,8 +376,18 @@ CREATE TABLE IF NOT EXISTS obs_embeddings (
     url_hash     TEXT PRIMARY KEY,
     title        TEXT NOT NULL DEFAULT '',
     company      TEXT NOT NULL DEFAULT '',
+    content_hash TEXT NOT NULL DEFAULT '',
     embedding    vector({VECTOR_DIM}),
     embedded_at  TIMESTAMP DEFAULT NOW()
+);
+
+ALTER TABLE obs_embeddings
+ADD COLUMN IF NOT EXISTS content_hash TEXT NOT NULL DEFAULT '';
+
+CREATE TABLE IF NOT EXISTS embed_cache (
+    text_hash   TEXT PRIMARY KEY,
+    embedding   vector({VECTOR_DIM}),
+    created_at  TIMESTAMP DEFAULT NOW()
 );
 """
 
@@ -425,6 +442,7 @@ class MemoryStore:
             )
             await cls._create_hnsw_indexes(conn)
             await cls._prune_llm_queue(conn)
+            await cls._prune_embed_cache(conn)
         logger.info("MemoryStore initialized", dsn=cfg.dsn.split("@")[-1])
         return cls(pool)
 
@@ -507,22 +525,62 @@ class MemoryStore:
 
     # Resume_embeddings
 
-    async def index_resume_chunks(self, chunks: list[dict[str, Any]]) -> None:
-        """Insert resume chunks with their pre-computed embeddings.
+    async def index_resume_chunks(
+        self, chunks: list[dict[str, Any]], current_hashes: set[str] | None = None
+    ) -> None:
+        """Upsert resume chunks by content hash.
 
-        Each chunk dict must have keys: ``section``, ``content``, ``embedding``
-        (list[float] of length 1024).
+        Each chunk dict must have keys: ``section``, ``content``,
+        ``content_hash`` (sha256 of content) and ``embedding`` (list[float]
+        of length 1024).
+
+        Rows whose hash is absent from *current_hashes* (the full set of
+        chunks in the resume right now) are deleted as stale, so a changed
+        resume rebuilds cleanly while unchanged chunks survive without
+        re-embedding. When *current_hashes* is None, chunks are inserted
+        without pruning.
         """
         async with self._pool.acquire() as conn, conn.transaction():
+            if current_hashes is not None:
+                rows = await conn.fetch("SELECT content_hash FROM resume_embeddings")
+                stale = [
+                    r["content_hash"]
+                    for r in rows
+                    if r["content_hash"] and r["content_hash"] not in current_hashes
+                ]
+                if stale:
+                    await conn.execute(
+                        "DELETE FROM resume_embeddings WHERE content_hash = ANY($1::text[])",
+                        stale,
+                    )
             for ch in chunks:
                 emb = Vector(ch["embedding"])
                 await conn.execute(
-                    "INSERT INTO resume_embeddings (section, content, embedding) "
-                    "VALUES ($1, $2, $3)",
+                    """
+                    INSERT INTO resume_embeddings (section, content, content_hash, embedding)
+                    VALUES ($1, $2, $3, $4)
+                    ON CONFLICT (content_hash) DO UPDATE SET
+                        section = EXCLUDED.section,
+                        content = EXCLUDED.content,
+                        embedding = EXCLUDED.embedding
+                    """,
                     ch["section"],
                     ch["content"],
+                    ch["content_hash"],
                     emb,
                 )
+
+    async def existing_resume_hashes(self, hashes: list[str]) -> set[str]:
+        """Return which of the given content hashes already have an embedding
+        row, so callers can skip re-embedding unchanged resume chunks."""
+        if not hashes:
+            return set()
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT content_hash FROM resume_embeddings WHERE content_hash = ANY($1::text[])",
+                hashes,
+            )
+        return {r["content_hash"] for r in rows}
 
     async def search_similar_chunks(
         self, query_emb: list[float], top_k: int = 5
@@ -552,31 +610,39 @@ class MemoryStore:
             row = await conn.fetchrow("SELECT COUNT(*) AS cnt FROM resume_embeddings")
             return row["cnt"] if row else 0
 
-    async def clear_embeddings(self) -> None:
-        async with self._pool.acquire() as conn:
-            await conn.execute("TRUNCATE resume_embeddings")
-
     # obs_embeddings: vector intelligence over the job corpus
 
     async def upsert_obs_embedding(
-        self, url_hash: str, title: str, company: str, embedding: list[float]
+        self,
+        url_hash: str,
+        title: str,
+        company: str,
+        embedding: list[float],
+        content_hash: str = "",
     ) -> None:
-        """Insert or refresh a single observation embedding (cosine-normalized)."""
+        """Insert or refresh a single observation embedding (cosine-normalized).
+
+        *content_hash* fingerprints the embedded text (md5 of raw_json) so
+        unchanged observations are never re-embedded or re-written.
+        """
         vec = Vector(embedding)
         async with self._pool.acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO obs_embeddings (url_hash, title, company, embedding)
-                VALUES ($1, $2, $3, $4)
+                INSERT INTO obs_embeddings
+                    (url_hash, title, company, content_hash, embedding)
+                VALUES ($1, $2, $3, $4, $5)
                 ON CONFLICT (url_hash) DO UPDATE SET
                     title = EXCLUDED.title,
                     company = EXCLUDED.company,
+                    content_hash = EXCLUDED.content_hash,
                     embedding = EXCLUDED.embedding,
                     embedded_at = NOW()
                 """,
                 url_hash,
                 title,
                 company,
+                content_hash,
                 vec,
             )
 
@@ -597,6 +663,44 @@ class MemoryStore:
             )
         return [r["url_hash"] for r in rows]
 
+    # embed_cache: content-hash-keyed embedding cache so identical text is
+    # never re-sent to the (shared) llama-server.
+
+    async def get_cached_embedding(self, text_hash: str) -> list[float] | None:
+        """Return the cached embedding for a text hash, or None on miss."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT embedding FROM embed_cache WHERE text_hash = $1", text_hash
+            )
+        if row is None or row["embedding"] is None:
+            return None
+        return [float(v) for v in row["embedding"].to_list()]
+
+    async def put_cached_embedding(self, text_hash: str, embedding: list[float]) -> None:
+        """Store an embedding keyed by text hash (refresh timestamp on hit)."""
+        vec = Vector(embedding)
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO embed_cache (text_hash, embedding, created_at)
+                VALUES ($1, $2, NOW())
+                ON CONFLICT (text_hash) DO UPDATE SET
+                    embedding = EXCLUDED.embedding,
+                    created_at = NOW()
+                """,
+                text_hash,
+                vec,
+            )
+
+    @staticmethod
+    async def _prune_embed_cache(conn, older_than_days: int = 30) -> None:
+        """Drop embed_cache rows older than the TTL so the table stays bounded."""
+        with contextlib.suppress(Exception):
+            await conn.execute(
+                "DELETE FROM embed_cache WHERE created_at < NOW() - ($1::int * INTERVAL '1 day')",
+                older_than_days,
+            )
+
     async def unembedded_obs(
         self,
         limit: int = 2000,
@@ -612,10 +716,13 @@ class MemoryStore:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT o.url, o.title, o.raw_json, o.first_seen
+                SELECT o.url, o.title, o.raw_json, o.first_seen,
+                       md5(o.raw_json::text) AS content_hash
                 FROM job_observations o
                 LEFT JOIN obs_embeddings e ON e.url_hash = md5(o.url)
-                WHERE e.url_hash IS NULL AND o.url IS NOT NULL
+                WHERE (e.url_hash IS NULL
+                       OR e.content_hash IS DISTINCT FROM md5(o.raw_json::text))
+                  AND o.url IS NOT NULL
                 ORDER BY (
                     CASE WHEN $2::bool AND lower(o.title) ~
                         'software|engineer|developer|full.?stack|backend|frontend|'
@@ -664,6 +771,7 @@ class MemoryStore:
                     "url_hash": _url_hash(r["url"]),
                     "title": r["title"] or "",
                     "company": company,
+                    "content_hash": r["content_hash"] or "",
                     "text": _build_embed_text(r["title"], r["raw_json"]),
                 }
             )

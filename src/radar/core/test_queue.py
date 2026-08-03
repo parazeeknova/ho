@@ -151,7 +151,7 @@ class _FakeCtx:
 def _patch_embedding(monkeypatch: pytest.MonkeyPatch) -> None:
     import src.agent.enrichment_agent as ea
 
-    async def fake_embed(text: str) -> list[float] | None:
+    async def fake_embed(text: str, store=None) -> list[float] | None:  # noqa: ANN001
         return [0.1, 0.2, 0.3]
 
     monkeypatch.setattr(ea, "_get_embedding", fake_embed)
@@ -220,7 +220,7 @@ class TestVectorGate:
     ) -> None:
         import src.agent.enrichment_agent as ea
 
-        async def failing_embed(text: str) -> list[float] | None:
+        async def failing_embed(text: str, store=None) -> list[float] | None:  # noqa: ANN001
             return None
 
         monkeypatch.setattr(ea, "_get_embedding", failing_embed)

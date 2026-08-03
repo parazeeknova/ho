@@ -470,7 +470,7 @@ async def _resume_chunks_for(
     try:
         from src.agent.enrichment_agent import _get_embedding
 
-        jd_vector = await _get_embedding(jd)
+        jd_vector = await _get_embedding(jd, store)
         if jd_vector is None:
             return None
 

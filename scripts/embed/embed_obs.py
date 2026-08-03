@@ -29,8 +29,8 @@ BATCH = 32
 THROTTLE = 0.05  # polite inter-batch sleep (s)
 
 
-async def _embed_batch(texts: list[str]) -> list[list[float] | None]:
-    return [await _get_embedding(t) for t in texts]
+async def _embed_batch(texts: list[str], store: MemoryStore) -> list[list[float] | None]:
+    return [await _get_embedding(t, store) for t in texts]
 
 
 async def run(limit: int | None, all_corpus: bool) -> None:
@@ -48,10 +48,16 @@ async def run(limit: int | None, all_corpus: bool) -> None:
         ok = 0
         for i in range(0, len(obs), BATCH):
             chunk = obs[i : i + BATCH]
-            embs = await _embed_batch([o["text"] for o in chunk])
-            for o, e in zip(chunk, embs):
+            embs = await _embed_batch([o["text"] for o in chunk], store)
+            for o, e in zip(chunk, embs, strict=True):
                 if e:
-                    await store.upsert_obs_embedding(o["url_hash"], o["title"], o["company"], e)
+                    await store.upsert_obs_embedding(
+                        o["url_hash"],
+                        o["title"],
+                        o["company"],
+                        e,
+                        content_hash=o.get("content_hash", ""),
+                    )
                     ok += 1
             await asyncio.sleep(THROTTLE)
         total += ok

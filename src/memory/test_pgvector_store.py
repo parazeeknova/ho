@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from pgvector import Vector
 
 from src.memory.pgvector_store import CREATE_TABLES_SQL, MemoryStore
 
@@ -97,3 +98,105 @@ async def _mock_store(
         store = await MemoryStore.create()
         store._pool = mock_pool  # override with our controlled mock
     return store
+
+
+class TestEmbedCache:
+    """Tests for the content-hash-keyed embedding cache."""
+
+    def test_embed_cache_ddl_present(self) -> None:
+        assert "embed_cache" in CREATE_TABLES_SQL
+        assert "text_hash" in CREATE_TABLES_SQL
+        assert "embedding" in CREATE_TABLES_SQL
+
+    def test_resume_embeddings_has_content_hash(self) -> None:
+        assert "content_hash" in CREATE_TABLES_SQL
+
+    def test_obs_embeddings_has_content_hash(self) -> None:
+        assert "obs_embeddings" in CREATE_TABLES_SQL
+
+    async def test_get_cached_embedding_hit(self) -> None:
+        store = await _mock_store()
+        mock_conn = AsyncMock()
+        mock_conn.fetchrow = AsyncMock(return_value={"embedding": Vector([0.1, 0.2, 0.3])})
+        mock_pool = MagicMock()
+        mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=None)
+        store._pool = mock_pool
+
+        emb = await store.get_cached_embedding("abc123")
+        assert emb == pytest.approx([0.1, 0.2, 0.3])
+
+    async def test_get_cached_embedding_miss(self) -> None:
+        store = await _mock_store()
+        mock_conn = AsyncMock()
+        mock_conn.fetchrow = AsyncMock(return_value=None)
+        mock_pool = MagicMock()
+        mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=None)
+        store._pool = mock_pool
+
+        assert await store.get_cached_embedding("missing") is None
+
+    async def test_put_cached_embedding_executes_upsert(self) -> None:
+        store = await _mock_store()
+        executed: list[tuple] = []
+
+        async def _execute(sql: str, *args: object) -> str:
+            executed.append((sql, args))
+            return "INSERT 0 1"
+
+        mock_conn = AsyncMock()
+        mock_conn.execute = _execute
+        mock_pool = MagicMock()
+        mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=None)
+        store._pool = mock_pool
+
+        await store.put_cached_embedding("abc", [0.1, 0.2])
+        assert executed, "expected an upsert against embed_cache"
+        assert "embed_cache" in executed[0][0]
+        assert executed[0][1][0] == "abc"
+
+    async def test_index_resume_chunks_prunes_stale_and_upserts(self) -> None:
+        store = await _mock_store()
+        mock_conn = AsyncMock()
+        mock_conn.transaction = MagicMock(return_value=AsyncMock())  # async ctx mgr
+        mock_conn.fetch = AsyncMock(
+            return_value=[
+                {"content_hash": "stale1"},
+                {"content_hash": "stale2"},
+            ]
+        )
+        executed: list[tuple] = []
+
+        async def _execute(sql: str, *args: object) -> str:
+            executed.append((sql, args))
+            return "INSERT 0 1"
+
+        mock_conn.execute = _execute
+        mock_pool = MagicMock()
+        mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=None)
+        store._pool = mock_pool
+
+        chunks = [
+            {
+                "section": "skills",
+                "content": "Python",
+                "content_hash": "fresh1",
+                "embedding": [0.1, 0.2],
+            }
+        ]
+        await store.index_resume_chunks(chunks, current_hashes={"fresh1"})
+
+        sql = "\n".join(sql for sql, _ in executed)
+        delete_args = [args for sql, args in executed if "DELETE" in sql]
+        insert_args = [args for sql, args in executed if "INSERT" in sql]
+        assert delete_args and "stale1" in delete_args[0][0] and "stale2" in delete_args[0][0]
+        assert "ON CONFLICT (content_hash)" in sql
+        assert insert_args and "fresh1" in insert_args[0][2]
+
+    async def test_existing_resume_hashes_returns_matching(self) -> None:
+        store = await _mock_store(fetch_return=[{"content_hash": "a"}, {"content_hash": "c"}])
+        found = await store.existing_resume_hashes(["a", "b", "c"])
+        assert found == {"a", "c"}

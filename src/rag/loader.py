@@ -1,5 +1,6 @@
 """Resume loader: download, extract, verify, interactive review, embed-index."""
 
+import hashlib
 import subprocess
 import tempfile
 import urllib.request
@@ -9,6 +10,11 @@ import httpx
 
 from src.configuration import get_config
 from src.http_client import get_client
+
+
+def _chunk_hash(content: str) -> str:
+    """Stable content fingerprint for resume chunks (dedupes re-embedding)."""
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
 def download_resume(url: str) -> tuple[Path, str]:
@@ -248,41 +254,44 @@ async def index_resume_in_pgvector(
     )
     try:
         records: list[dict[str, object]] = []
+        current_hashes: set[str] = set()
+        batches: list[tuple[str, list[str]]] = []
         for section, text in chunks.items():
             raw_lines = [ln.strip() for ln in text.split("\n")]
             lines = [ln for ln in raw_lines if ln and len(ln) > 10]
             for i in range(0, len(lines), 8):
-                batch = lines[i : i + 8]
-                resp = await embed_client.post(
-                    f"{cfg.url}/embeddings",
-                    json={"model": cfg.model, "input": batch},
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                for item, content in zip(data["data"], batch, strict=True):
-                    records.append(
-                        {
-                            "section": section,
-                            "content": content,
-                            "embedding": item["embedding"],
-                        }
-                    )
+                batches.append((section, lines[i : i + 8]))
             if len(text) > 20:
-                resp = await embed_client.post(
-                    f"{cfg.url}/embeddings",
-                    json={"model": cfg.model, "input": [text[:500]]},
-                )
-                resp.raise_for_status()
-                data = resp.json()
+                batches.append((section, [text[:500]]))
+        for _, batch in batches:
+            current_hashes.update(_chunk_hash(c) for c in batch)
+
+        # Skip chunks whose content hash already exists so unchanged resume
+        # sections are never re-embedded or re-uploaded.
+        if hasattr(store, "existing_resume_hashes"):
+            existing = await store.existing_resume_hashes(list(current_hashes))
+        else:
+            existing = set()
+        for section, batch in batches:
+            missing = [c for c in batch if _chunk_hash(c) not in existing]
+            if not missing:
+                continue
+            resp = await embed_client.post(
+                f"{cfg.url}/embeddings",
+                json={"model": cfg.model, "input": missing},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            for item, content in zip(data["data"], missing, strict=True):
                 records.append(
                     {
                         "section": section,
-                        "content": text[:500],
-                        "embedding": data["data"][0]["embedding"],
+                        "content": content,
+                        "content_hash": _chunk_hash(content),
+                        "embedding": item["embedding"],
                     }
                 )
         if records:
-            await store.clear_embeddings()
-            await store.index_resume_chunks(records)
+            await store.index_resume_chunks(records, current_hashes=current_hashes)
     finally:
         await embed_client.aclose()
