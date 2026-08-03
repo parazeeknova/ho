@@ -66,16 +66,19 @@ questions the user provides. Follow these decision rules strictly, in order:
    employed by Z", "associated with Deloitte"): if the persona or resume shows
    it, choose the confirming option; if the material does not mention it,
    choose the "No"/negative option.
-5A. WORK AUTHORIZATION / VISA-SPONSORSHIP questions ("are you authorized to
-   work", "right to work", "require sponsorship", "will you require visa
-   sponsorship"): this is a geography policy decision, not a personal fact.
-   If the job's country (from the <job_description>) differs from the
-   candidate's home country (stated in the Candidate Background), choose the
-   sponsorship-requiring option ("No", "I require visa sponsorship", "No, I
-   will require immediate visa sponsorship"). If the job country equals the
-   home country, choose the authorized / no-sponsorship option. If neither
-   country is knowable, return the exact literal "__ASK_USER__". Never answer
-   "authorized" for a foreign job unless the material confirms it.
+5A. WORK AUTHORIZATION / VISA-SPONSORSHIP questions ("are you authorized/
+   authorised to work", "right to (live and) work", "eligible/permitted/
+   entitled to work", "require sponsorship", "will you require visa
+   sponsorship", "work permit"): this is a geography policy decision, not a
+   personal fact. If the job's country (from the <job_description>) differs
+   from the candidate's home country (stated in the Candidate Background),
+   choose the sponsorship-requiring option ("No", "I require visa
+   sponsorship", "No, I will require immediate visa sponsorship"). If the job
+   country equals the home country, choose the authorized / no-sponsorship
+   option. If the job country is unknown, choose the negative /
+   sponsorship-requiring option — never "authorized"/"Yes" unless the job
+   country is confirmed to equal the home country. Never answer "authorized"
+   for a foreign job unless the material confirms it.
 5B. RELOCATION / COMMUTE / WORK-LOCATION questions ("are you able to commute to
    the office", "willing to relocate", "based in <city> or willing to move",
    "how many days in office"): a geography decision, not a personal fact. If the
@@ -233,9 +236,20 @@ def _select_answer_matches(answer: str, options: list[str]) -> str | None:
 # hasn't configured an answer in profile.customAnswers or the persona store,
 # we ask instead.
 _PERSONAL_RULES: list[tuple[re.Pattern, str]] = [
-    (re.compile(r"visa|sponsorship", re.I), "visa"),
     (
-        re.compile(r"authorized to work|legally authorized|work authorization|right to work", re.I),
+        re.compile(
+            r"visa|sponsorship|work permit|immigration|work visa",
+            re.I,
+        ),
+        "visa",
+    ),
+    (
+        re.compile(
+            r"authori[sz]ed to work|legally authori[sz]ed|work authori[sz]ation|"
+            r"right to (live and )?work|eligible to work|permitted to work|"
+            r"entitled to work",
+            re.I,
+        ),
         "authorization",
     ),
     (
@@ -271,6 +285,14 @@ _PERSONAL_RULES: list[tuple[re.Pattern, str]] = [
     (re.compile(r"relocat", re.I), "relocation"),
     (re.compile(r"hybrid|in.?office|work model|office per week", re.I), "work_model"),
     (re.compile(r"equity|rsu|esop|stock options|hold any equity", re.I), "equity"),
+    (
+        re.compile(
+            r"expected graduation|graduation date|graduation year|when.*(graduate|graduat)|"
+            r"year of (graduation|completion)|date.*graduat",
+            re.I,
+        ),
+        "expected_graduation",
+    ),
 ]
 
 # Personal-fact categories that resolve from configured data (no guessing, no prompting).
@@ -347,6 +369,7 @@ _COUNTRY_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("denmark", re.compile(r"\bdenmark\b|\bdanish\b", re.I)),
     ("finland", re.compile(r"\bfinland\b|\bfinnish\b", re.I)),
     ("poland", re.compile(r"\bpoland\b|\bpolish\b", re.I)),
+    ("hungary", re.compile(r"\bhungary\b|\bhungarian\b|\bbudapest\b", re.I)),
     ("czech republic", re.compile(r"\bczech\b", re.I)),
     ("spain", re.compile(r"\bspain\b|\bspanish\b", re.I)),
     ("portugal", re.compile(r"\bportugal\b|\bportuguese\b", re.I)),
@@ -381,6 +404,169 @@ _COUNTRY_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("kenya", re.compile(r"\bkenya\b|\bkenyan\b", re.I)),
     ("egypt", re.compile(r"\begypt\b|\begyptian\b", re.I)),
     ("morocco", re.compile(r"\bmorocco\b|\bmoroccan\b", re.I)),
+]
+
+# City -> country fallback for job locations that name a city but no country.
+# Consulted when _country_from_text finds no country name; only unambiguous
+# cities are listed (Cambridge-style multi-country names are deliberately
+# omitted). India is well covered because the candidate's home country is
+# India and an India-located job must resolve to "india" for authorization.
+_CITY_COUNTRIES: dict[str, str] = {
+    # India
+    "bengaluru": "india",
+    "bangalore": "india",
+    "mumbai": "india",
+    "bombay": "india",
+    "delhi": "india",
+    "new delhi": "india",
+    "noida": "india",
+    "gurugram": "india",
+    "gurgaon": "india",
+    "hyderabad": "india",
+    "chennai": "india",
+    "madras": "india",
+    "pune": "india",
+    "kolkata": "india",
+    "calcutta": "india",
+    "ahmedabad": "india",
+    "jaipur": "india",
+    "kochi": "india",
+    "kozhikode": "india",
+    "chandigarh": "india",
+    "indore": "india",
+    "bhopal": "india",
+    "lucknow": "india",
+    "surat": "india",
+    # United States
+    "san francisco": "united states",
+    "sf": "united states",
+    "bay area": "united states",
+    "new york": "united states",
+    "nyc": "united states",
+    "boston": "united states",
+    "seattle": "united states",
+    "austin": "united states",
+    "los angeles": "united states",
+    "la": "united states",
+    "san diego": "united states",
+    "chicago": "united states",
+    "denver": "united states",
+    "phoenix": "united states",
+    "portland": "united states",
+    "dallas": "united states",
+    "houston": "united states",
+    "atlanta": "united states",
+    "miami": "united states",
+    "san jose": "united states",
+    "palo alto": "united states",
+    "menlo park": "united states",
+    "mountain view": "united states",
+    "redwood city": "united states",
+    "santa monica": "united states",
+    "santa clara": "united states",
+    "sunnyvale": "united states",
+    "fremont": "united states",
+    "oakland": "united states",
+    "philadelphia": "united states",
+    "washington dc": "united states",
+    "washington, dc": "united states",
+    # United Kingdom
+    "london": "united kingdom",
+    "manchester": "united kingdom",
+    "birmingham": "united kingdom",
+    "leeds": "united kingdom",
+    "edinburgh": "united kingdom",
+    "glasgow": "united kingdom",
+    "bristol": "united kingdom",
+    "cambridge uk": "united kingdom",
+    # Europe
+    "barcelona": "spain",
+    "madrid": "spain",
+    "berlin": "germany",
+    "munich": "germany",
+    "hamburg": "germany",
+    "frankfurt": "germany",
+    "cologne": "germany",
+    "amsterdam": "netherlands",
+    "rotterdam": "netherlands",
+    "paris": "france",
+    "lyon": "france",
+    "zurich": "switzerland",
+    "geneva": "switzerland",
+    "vienna": "austria",
+    "dublin": "ireland",
+    "stockholm": "sweden",
+    "gothenburg": "sweden",
+    "malmo": "sweden",
+    "malmö": "sweden",
+    "oslo": "norway",
+    "copenhagen": "denmark",
+    "helsinki": "finland",
+    "warsaw": "poland",
+    "krakow": "poland",
+    "prague": "czech republic",
+    "milan": "italy",
+    "rome": "italy",
+    "lisbon": "portugal",
+    "athens": "greece",
+    "kyiv": "ukraine",
+    "kiev": "ukraine",
+    "bucharest": "romania",
+    "tel aviv": "israel",
+    "istanbul": "turkey",
+    "budapest": "hungary",
+    # Middle East / Africa
+    "dubai": "united arab emirates",
+    "abu dhabi": "united arab emirates",
+    "riyadh": "saudi arabia",
+    "doha": "qatar",
+    "cairo": "egypt",
+    "lagos": "nigeria",
+    "nairobi": "kenya",
+    "cape town": "south africa",
+    "johannesburg": "south africa",
+    # Asia-Pacific
+    "singapore": "singapore",
+    "hong kong": "hong kong",
+    "tokyo": "japan",
+    "osaka": "japan",
+    "seoul": "south korea",
+    "shanghai": "china",
+    "beijing": "china",
+    "shenzhen": "china",
+    "taipei": "taiwan",
+    "hanoi": "vietnam",
+    "ho chi minh": "vietnam",
+    "bangkok": "thailand",
+    "jakarta": "indonesia",
+    "kuala lumpur": "malaysia",
+    "manila": "philippines",
+    "sydney": "australia",
+    "melbourne": "australia",
+    "brisbane": "australia",
+    "perth": "australia",
+    "auckland": "new zealand",
+    "wellington": "new zealand",
+    # Canada / Americas
+    "toronto": "canada",
+    "vancouver": "canada",
+    "montreal": "canada",
+    "montréal": "canada",
+    "ottawa": "canada",
+    "calgary": "canada",
+    "mexico city": "mexico",
+    "sao paulo": "brazil",
+    "são paulo": "brazil",
+    "rio de janeiro": "brazil",
+    "buenos aires": "argentina",
+    "santiago": "chile",
+    "bogota": "colombia",
+}
+
+# Word-boundary city patterns for _country_from_text's fallback pass.
+_CITY_PATTERNS: list[tuple[re.Pattern, str]] = [
+    (re.compile(rf"\b{re.escape(city)}\b", re.I), country)
+    for city, country in _CITY_COUNTRIES.items()
 ]
 
 # Question categories whose answers are scoped to a country: the answer is
@@ -470,12 +656,24 @@ def _mentioned_countries(text: str) -> set[str]:
 
 
 def _country_from_text(text: str) -> str | None:
-    """First country mentioned in a text (by position), or None."""
+    """First country mentioned in a text (by position), or None.
+
+    Falls back to an unambiguous city mention (``_CITY_COUNTRIES``) when no
+    country name appears, so a location like "San Francisco" or "Bengaluru"
+    still resolves to its country. A country name always beats a city so
+    "London, Ontario, Canada" stays "canada" rather than "united kingdom".
+    """
+    src = (text or "").lower()
     best: tuple[str, int] | None = None
     for name, pat in _COUNTRY_PATTERNS:
-        m = pat.search(text or "")
+        m = pat.search(src)
         if m and (best is None or m.start() < best[1]):
             best = (name, m.start())
+    if best is None:
+        for city, country in _CITY_PATTERNS:
+            m = city.search(src)
+            if m and (best is None or m.start() < best[1]):
+                best = (country, m.start())
     return best[0] if best else None
 
 
@@ -825,8 +1023,11 @@ class ScreenerRAG:
         Mirrors ``resolve_visa_policy``. Policy:
         - job country == home  -> authorized (the "Yes" / no-sponsorship option),
         - job country != home  -> not authorized (the "No" / sponsorship option),
-        - otherwise (home or job country unknown) -> None, so the caller falls
-          through to the LLM tier instead of deferring an answerable question.
+        - job country unknown  -> conservative default: NOT authorized (the
+          "No" / sponsorship option). We never claim authorization we cannot
+          confirm, mirroring the visa policy's unknown-country default to
+          sponsorship. Returns None only when the option list carries no
+          option expressing either stance.
         Returns an exact option text or None.
         """
         matched = next(
@@ -836,9 +1037,12 @@ class ScreenerRAG:
             return None
         job_country = self.target_country(question, job_context)
         home = self.home_country()
-        if not home or job_country is None:
+        if not home:
             return None
-        return _pick_authorization_answer(list(options or []), want_yes=job_country == home)
+        # Unknown job country defaults to "not authorized" (conservative): the
+        # candidate is only known to be authorized in their home country.
+        want_yes = home is not None and job_country is not None and job_country == home
+        return _pick_authorization_answer(list(options or []), want_yes=want_yes)
 
     async def kb_answer(
         self, question: str, job_context: dict[str, Any] | None = None
@@ -1033,6 +1237,12 @@ Location: {location}
 {desc[:4000]}
 </job_description>
 """
+        voice = str((job_context or {}).get("voice") or "").strip()
+        if voice:
+            prompt += f"""
+Writing tone: {voice}. Vary sentence structure from any other application the
+candidate has submitted; never copy phrasing verbatim across applications.
+"""
         prompt += """
 Questions:
 """
@@ -1138,6 +1348,12 @@ Company: {company}
 Location: {location}
 {desc[:4000]}
 </job_description>
+"""
+        voice = str((job_context or {}).get("voice") or "").strip()
+        if voice:
+            prompt += f"""
+Writing tone: {voice}. Vary sentence structure from any other application the
+candidate has submitted; never copy phrasing verbatim across applications.
 """
         prompt += "\nCover letter:"
 
