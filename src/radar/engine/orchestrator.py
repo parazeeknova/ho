@@ -989,53 +989,86 @@ async def _enrich_high_fit(
         return
     logger.info(f"Enriching {len(accepted)} accepted candidates with OSINT & founder details...")
 
-    jobs: list[dict[str, Any]] = []
-    by_candidate: dict[int, JobCandidate] = {}
-    for c in accepted:
-        by_candidate[len(jobs)] = c
-        jobs.append(
+    # One enrichment run per unique company (dedupe: 2 accepted roles at the
+    # same company previously ran the full OSINT pipeline twice).
+    by_company: dict[str, list[int]] = {}
+    for idx, c in enumerate(accepted):
+        by_company.setdefault(c.normalized_company.lower(), []).append(idx)
+
+    company_jobs: list[dict[str, Any]] = []
+    company_ix: list[str] = []
+    for company_key, ixs in by_company.items():
+        reps = [accepted[ix] for ix in ixs]
+        top = max(reps, key=lambda c: c.match_percent)
+        multi_role = len(ixs) > 1
+        company_jobs.append(
             {
-                "role": c.normalized_role,
-                "company": c.normalized_company,
-                "match_percent": c.match_percent,
-                "verdict": c.verdict,
-                "source": c.source,
-                "apply_link": c.direct_apply_url,
-                "jd_summary": c.jd_summary,
-                "company_description": c.company_description,
-                "role_summary": c.role_summary,
+                "role": top.normalized_role,
+                "company": top.normalized_company,
+                "match_percent": top.match_percent,
+                "verdict": top.verdict,
+                "source": top.source,
+                "apply_link": top.direct_apply_url,
+                "jd_summary": top.jd_summary,
+                "company_description": top.company_description,
+                "role_summary": top.role_summary,
+                # Cost gate: deep founder lookups (email triangulation,
+                # LinkedIn resolution) only for strong or multi-role matches.
+                "deep_enrich": multi_role or top.match_percent >= 70,
             }
         )
+        company_ix.append(company_key)
 
-    enriched_all = await sa.batch_analyze_startups(jobs, concurrency=8)
+    # Evidence gate: companies whose ledger already carries strong hiring
+    # evidence skip the whole ladder this sweep (cache-miss reruns are rare
+    # but this makes the skip explicit).
+    skip: set[str] = set()
+    for company_key in by_company:
+        try:
+            summary = await store.evidence_summary(make_company_id(company_key))
+            if summary["support"] >= 2 and summary["confidence"] >= 0.7:
+                skip.add(company_key)
+        except Exception:
+            pass
 
-    for idx, c in by_candidate.items():
-        enriched = enriched_all[idx] if idx < len(enriched_all) else {}
-        c.founders = _as_list(enriched.get("founders"))
-        c.funding_stage = enriched.get("funding_stage", "")
-        c.funding_info = enriched.get("funding_info", {}) or {}
-        c.founder_socials = _as_list(enriched.get("founder_socials"))
-        c.company_news = enriched.get("company_news", "")
-        c.osint_signals = _as_list(enriched.get("osint_signals"))
-        c.underdog_score = compute_underdog_score(c)
+    to_enrich: list[str] = [k for k in company_ix if k not in skip]
+    enriched_by_company: dict[str, dict[str, Any]] = {}
+    if to_enrich:
+        enriched_all = await sa.batch_analyze_startups(
+            [company_jobs[company_ix.index(k)] for k in to_enrich], concurrency=8
+        )
+        for idx, company_key in enumerate(to_enrich):
+            enriched_by_company[company_key] = enriched_all[idx] if idx < len(enriched_all) else {}
 
-        # Inject graph structural insights (predictive link prediction)
-        if c.funding_stage or enriched.get("founders"):
-            try:
-                graph_insights = await graph.generate_graph_insights_for_llm(
-                    make_company_id(c.normalized_company)
-                )
-                if graph_insights:
-                    existing = list(c.osint_signals or [])
-                    existing.append(graph_insights)
-                    c.osint_signals = existing
-            except Exception:
-                pass
+    for company_key, ixs in by_company.items():
+        enriched = enriched_by_company.get(company_key) or {}
+        for cix in ixs:
+            c = accepted[cix]
+            c.founders = _as_list(enriched.get("founders"))
+            c.funding_stage = enriched.get("funding_stage", "")
+            c.funding_info = enriched.get("funding_info", {}) or {}
+            c.founder_socials = _as_list(enriched.get("founder_socials"))
+            c.company_news = enriched.get("company_news", "")
+            c.osint_signals = _as_list(enriched.get("osint_signals"))
+            c.underdog_score = compute_underdog_score(c)
 
-        await _persist_full(store, c)
+            # Inject graph structural insights (predictive link prediction)
+            if c.funding_stage or enriched.get("founders"):
+                try:
+                    graph_insights = await graph.generate_graph_insights_for_llm(
+                        make_company_id(c.normalized_company)
+                    )
+                    if graph_insights:
+                        existing = list(c.osint_signals or [])
+                        existing.append(graph_insights)
+                        c.osint_signals = existing
+                except Exception:
+                    pass
 
-    for idx, c in by_candidate.items():
-        logger.info(f"Enriching {c.normalized_company}: {idx + 1}/{len(accepted)}")
+            await _persist_full(store, c)
+
+    for idx, c in enumerate(accepted, start=1):
+        logger.info(f"Enriching {c.normalized_company}: {idx}/{len(accepted)}")
 
 
 async def _persist_full(store: MemoryStore, c: JobCandidate) -> None:

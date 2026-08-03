@@ -376,20 +376,25 @@ class StartupAgent:
 
         Both run only when search sources genuinely return data; nothing
         is fabricated (a guessed URL is worse than a missing one).
+
+        The cost-aware ``deep_enrich`` gate (set by the orchestrator for
+        strong matches or multi-role companies) skips the expensive email
+        triangulation and LinkedIn resolution for low-value candidates.
         """
         founders = job.get("founders") or []
         if not founders or not isinstance(founders[0], dict):
             return
+        deep = bool(job.get("deep_enrich", True))
         resolved_linkedin = 0
         for f in founders:
             if not isinstance(f, dict) or not f.get("name"):
                 continue
-            if not f.get("email"):
+            if deep and not f.get("email"):
                 tri = await triangulate_founder_email(f["name"], domain)
                 if tri:
                     f["email"] = tri["email"]
                     f["email_triangulated"] = True
-            if not f.get("linkedin_url") and resolved_linkedin < 3:
+            if deep and not f.get("linkedin_url") and resolved_linkedin < 3:
                 url = await self._resolve_linkedin(str(f["name"]), company)
                 if url:
                     f["linkedin_url"] = url
