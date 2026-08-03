@@ -54,6 +54,33 @@ def set_pipeline_state(**kwargs: Any) -> None:
     _pipeline_state.update(kwargs)
 
 
+async def autofill_queue_lines() -> list[str]:
+    """Autofill queue status lines (applied / failed / need review).
+
+    ``need review`` = deferred jobs plus jobs parked for manual review.
+    Returns an empty list when the autofill queue is unreachable, so callers
+    can silently omit the section.
+    """
+    try:
+        from autofill.db import AutofillDB
+
+        db = await AutofillDB.create()
+        try:
+            s = await db.queue_summary()
+        finally:
+            await db.close()
+    except Exception:
+        return []
+    need_review = s.get("deferred", 0) + s.get("awaiting_review", 0)
+    return [
+        "<b>Autofill Queue</b>",
+        f"▪ Applied: <b>{s.get('applied', 0)}</b>",
+        f"▪ Failed: <b>{s.get('failed', 0)}</b>",
+        f"▪ Need Review: <b>{need_review}</b>",
+        f"▪ Open: <b>{s.get('open', 0)}</b>",
+    ]
+
+
 async def _check_port(host: str, port: int, timeout: float = 2.0) -> bool:
     try:
         _, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=timeout)
@@ -326,6 +353,11 @@ class TelegramAgent:
 
     async def _handle_analytics(self) -> None:
         await self._send_raw("<i>Crunching market data and calculating skill arbitrage...</i>")
+        queue_lines = await autofill_queue_lines()
+        if queue_lines:
+            queue_msg = "\n".join(["<b>[QUEUE] Autofill Status</b>", "", *queue_lines[1:]])
+            await self._send_raw(queue_msg)
+            await asyncio.sleep(0.5)
         if self.ctx is None:
             await self._send_raw("Analytics unavailable (no LLM context).")
             return
@@ -723,6 +755,10 @@ class TelegramAgent:
             "▪ Scheduler: <b>8 async workers active</b>",
         ]
 
+        queue_lines = await autofill_queue_lines()
+        if queue_lines:
+            lines.extend(["", *queue_lines])
+
         if short_persona:
             lines.extend(
                 [
@@ -759,12 +795,17 @@ class TelegramAgent:
     async def send_sweep_summary(
         self, sweep: int, matched: int, scraped: int, duration: float
     ) -> None:
-        await self._send_raw(
-            f"<b>[SWEEP] Sweep {sweep} Complete</b>\n\n"
-            f"Scraped: {scraped}\n"
-            f"Matched: {matched}\n"
-            f"Duration: {duration:.1f}s"
-        )
+        lines = [
+            f"<b>[SWEEP] Sweep {sweep} Complete</b>",
+            "",
+            f"Scraped: {scraped}",
+            f"Matched: {matched}",
+            f"Duration: {duration:.1f}s",
+        ]
+        queue_lines = await autofill_queue_lines()
+        if queue_lines:
+            lines.extend(["", *queue_lines])
+        await self._send_raw("\n".join(lines))
 
     # job card + inline keyboards
 
