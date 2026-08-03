@@ -65,7 +65,7 @@ dev = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-pythonpath = ["."]
+pythonpath = [".", "packages/ingest", "packages/autofill"]
 # Per-package tests/ dirs hold same-basename files (test_queue.py,
 # test_overnight.py appear in multiple packages); importlib mode loads each
 # module by file path so they never collide.
