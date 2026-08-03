@@ -23,13 +23,17 @@ import time
 from typing import Any
 
 import httpx
-
 from azure_intel_common import container_client, log, newest_blob, upload_records
 
-_MONEY_RE = re.compile(r"[$€£]\s?([0-9]+(?:\.[0-9]+)?)\s?([MBK])(?:\s?(?:million|billion|k))?", re.I)
+_MONEY_RE = re.compile(
+    r"[$€£]\s?([0-9]+(?:\.[0-9]+)?)\s?([MBK])(?:\s?(?:million|billion|k))?", re.I
+)
 _STAGE_RE = re.compile(r"\b(pre-?seed|seed|series\s*[a-z]|venture|growth|late-stage)\b", re.I)
 _ROUND_RE = re.compile(r"\b(raised|announces?|secured|closes?|led)\s", re.I)
-_DATE_RE = re.compile(r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+[0-9]{1,2}(?:,\s*[0-9]{4})?\b", re.I)
+_DATE_RE = re.compile(
+    r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+[0-9]{1,2}(?:,\s*[0-9]{4})?\b",
+    re.I,
+)
 
 
 def _searxng_search(q: str) -> list[str]:
@@ -37,7 +41,9 @@ def _searxng_search(q: str) -> list[str]:
     try:
         r = httpx.get(url, params={"q": q, "format": "json"}, timeout=8.0)
         if r.status_code == 200:
-            return [f"{x.get('title','')} {x.get('content','')}" for x in r.json().get("results", [])]
+            return [
+                f"{x.get('title', '')} {x.get('content', '')}" for x in r.json().get("results", [])
+            ]
     except Exception:
         pass
     return []

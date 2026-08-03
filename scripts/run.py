@@ -393,9 +393,7 @@ def main() -> None:
     parser.add_argument(
         "--no-pipeline", action="store_true", help="Start infra only, don't run pipeline"
     )
-    parser.add_argument(
-        "--no-cloud", action="store_true", help="Run fully offline: no Azure sync"
-    )
+    parser.add_argument("--no-cloud", action="store_true", help="Run fully offline: no Azure sync")
     parser.add_argument(
         "--worker-only", action="store_true", help="Start as a dedicated queue worker process"
     )
@@ -417,7 +415,7 @@ def main() -> None:
         )
     )
 
-    # ── Cleanup ──
+    # Cleanup
     stop_all()
     time.sleep(1)
 
@@ -456,7 +454,7 @@ def main() -> None:
         silent=True,
     )
 
-    # ── Live status table while containers come up ──
+    # Live status table while containers come up
     failed: list[str] = []
     wait_start = time.monotonic()
     with Live(Table(), refresh_per_second=3, console=console) as live:
@@ -508,7 +506,7 @@ def main() -> None:
             stop_all()
             sys.exit(0)
 
-    # ── Pipeline ──
+    # Pipeline
     log_dir = PROJECT / "logs"
     log_dir.mkdir(exist_ok=True)
     log_path = log_dir / "run.log"

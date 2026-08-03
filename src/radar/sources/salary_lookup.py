@@ -163,7 +163,7 @@ def _best_estimate(company: str, role: str, texts: list[str]) -> NormalizedSalar
     )
 
 
-# ── Tier 1: levels.fyi direct ──────────────────────────────────────────
+# Tier 1: levels.fyi direct
 
 
 def _company_slug(company: str) -> str:
@@ -224,7 +224,7 @@ async def _levels_fyi_lookup(company: str, role: str) -> NormalizedSalary | None
         return None
 
 
-# ── Tier 2: SearXNG snippet search ─────────────────────────────────────
+# Tier 2: SearXNG snippet search
 
 
 async def _search_snippets(query: str) -> list[str]:
@@ -266,7 +266,7 @@ async def _searxng_lookup(company: str, role: str) -> NormalizedSalary | None:
     return _best_estimate(company, role, texts)
 
 
-# ── Cache ──────────────────────────────────────────────────────────────
+# Cache
 
 
 async def _load_cache(store: Any, lookup_key: str) -> tuple[NormalizedSalary | None, str]:

@@ -39,6 +39,8 @@ def _company_domain(company: str) -> str:
     if not name or _PLACEHOLDER_COMPANY_RX.search(name):
         return ""
     return name.lower().replace(" ", "").strip() + ".com"
+
+
 logger = get_logger("startup_agent")
 
 FOUNDER_POST_SCHEMA: dict[str, Any] = {

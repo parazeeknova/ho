@@ -518,7 +518,7 @@ class GraphStore:
                 )
         return {"nodes": nodes, "edges": edges}
 
-    # ── Node Embeddings (Predictive Link Prediction) ──
+    # Node Embeddings (Predictive Link Prediction)
 
     async def compute_fastrp_embeddings(self, embedding_dim: int = 64) -> dict[str, list[float]]:
         """Compute Fast Random Projection (FastRP) node embeddings via Neo4j GDS.

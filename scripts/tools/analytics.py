@@ -8,14 +8,12 @@ Reports:
   - Process counts for the pipeline workers
 
 Run:
-    uv run python scripts/analytics.py
+    uv run python scripts/tools/analytics.py
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
-import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -25,7 +23,7 @@ from src.memory.pgvector_store import MemoryStore
 
 logger = get_logger("analytics")
 
-PROJECT = Path(__file__).resolve().parent.parent
+PROJECT = Path(__file__).resolve().parents[2]
 
 CONTAINER_VOLUME_MAP = {
     "firecrawl_agent-memory-db_1": "firecrawl_agent_memory_data",
@@ -49,9 +47,7 @@ def _dir_size(p: Path) -> int:
     if not p.exists():
         return 0
     try:
-        r = subprocess.run(
-            ["du", "-sk", str(p)], capture_output=True, text=True, timeout=30
-        )
+        r = subprocess.run(["du", "-sk", str(p)], capture_output=True, text=True, timeout=30)
         if r.returncode == 0:
             # du -sk gives KiB
             return int(r.stdout.split()[0]) * 1024
@@ -103,12 +99,10 @@ def _volume_sizes() -> dict[str, str]:
             try:
                 sizes[vol] = _fmt(int(out.split()[0]) * 1024)
                 continue
-            except (ValueError, IndexError):
+            except ValueError, IndexError:
                 pass
         # fallback to raw path
-        p = Path(
-            f"/home/parazeeknova/.local/share/containers/storage/volumes/{vol}/_data"
-        )
+        p = Path(f"/home/parazeeknova/.local/share/containers/storage/volumes/{vol}/_data")
         if p.exists():
             sizes[vol] = _fmt(_dir_size(p))
     return sizes
@@ -157,7 +151,12 @@ def main() -> None:
         size = 0
         if name.startswith("project"):
             size = _dir_size(PROJECT)
-            for excl in (PROJECT / "azure_dump", PROJECT / ".venv", PROJECT / ".devenv", PROJECT / "checkpoints"):
+            for excl in (
+                PROJECT / "azure_dump",
+                PROJECT / ".venv",
+                PROJECT / ".devenv",
+                PROJECT / "checkpoints",
+            ):
                 size -= _dir_size(excl)
         else:
             size = _dir_size(path)

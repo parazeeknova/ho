@@ -15,14 +15,11 @@ Run:
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import re
-import time
 from typing import Any
 
 import httpx
-
 from azure_intel_common import container_client, log, newest_blob, upload_records
 
 _LINKEDIN_RE = re.compile(r"https?://(?:www\.)?linkedin\.com/in/[A-Za-z0-9_%.\-]+")
@@ -38,7 +35,9 @@ def _searxng_search(q: str) -> list[str]:
     try:
         r = httpx.get(url, params={"q": q, "format": "json"}, timeout=8.0)
         if r.status_code == 200:
-            return [f"{x.get('title','')} {x.get('content','')}" for x in r.json().get("results", [])]
+            return [
+                f"{x.get('title', '')} {x.get('content', '')}" for x in r.json().get("results", [])
+            ]
     except Exception:
         pass
     return []

@@ -52,9 +52,7 @@ def upload_records(prefix: str, records: list[dict[str, Any]], cc: Any = None) -
 def newest_blob(prefix: str, cc: Any = None) -> dict[str, Any] | None:
     """Return the newest blob under a prefix as parsed records."""
     cc = cc or container_client()
-    blobs = [
-        b for b in cc.list_blobs() if b.name.startswith(prefix) and b.name.endswith(".jsonl")
-    ]
+    blobs = [b for b in cc.list_blobs() if b.name.startswith(prefix) and b.name.endswith(".jsonl")]
     if not blobs:
         return None
     newest = max(blobs, key=lambda b: b.last_modified)

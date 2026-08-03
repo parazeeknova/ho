@@ -21,8 +21,6 @@ import shutil
 import time
 from typing import TYPE_CHECKING, Any
 
-import httpx
-
 from src.http_client import get_client
 from src.logging import get_logger
 
@@ -179,7 +177,7 @@ class TelegramAgent:
     def is_configured(self) -> bool:
         return bool(self.bot_token and self.chat_id)
 
-    # ── low-level send ──────────────────────────────────────────────
+    # low-level send
 
     async def _send_raw(
         self,
@@ -263,7 +261,7 @@ class TelegramAgent:
                     await asyncio.sleep(1 << attempt)
         return False
 
-    # ── polling / commands ──────────────────────────────────────────
+    # polling / commands
 
     async def start_polling(self) -> None:
         if not self.is_configured:
@@ -314,7 +312,6 @@ class TelegramAgent:
             if not text.startswith("/"):
                 continue
 
-            msg_id = msg.get("message_id", 0)
             cmd = text.split()[0].lower().split("@")[0]
             if cmd == "/status":
                 await self._handle_status()
@@ -664,7 +661,7 @@ class TelegramAgent:
         ]
         await self._send_raw("\n".join(lines))
 
-    # ── notifications ───────────────────────────────────────────────
+    # notifications
 
     async def send_error(self, message: str, dedup_key: str = "") -> None:
         if dedup_key and dedup_key in self._seen_errors:
@@ -766,7 +763,7 @@ class TelegramAgent:
             f"Duration: {duration:.1f}s"
         )
 
-    # ── job card + inline keyboards ─────────────────────────────────
+    # job card + inline keyboards
 
     def format_job_card(self, job: dict[str, Any]) -> str:
         role_raw = str(job.get("role") or "Software Engineer").strip()
@@ -998,7 +995,7 @@ class TelegramAgent:
 
         return sent_count
 
-    # ── categorized alerts (radar v2) ─────────────────────────────────
+    # categorized alerts (radar v2)
 
     _CATEGORY_ICONS: dict[str, str] = {
         "urgent": "[URGENT]",
@@ -1091,7 +1088,7 @@ class TelegramAgent:
         await self._send_raw("\n".join(lines))
         return sent
 
-    # ── proactive stealth & warm-intro signals ──────────────────────
+    # proactive stealth & warm-intro signals
 
     async def notify_stealth_startup(self, startup: dict[str, Any]) -> None:
         """Proactive push alert when a funded company has zero job postings."""

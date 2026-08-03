@@ -140,9 +140,7 @@ async def discover_from_azure(limit: int = 4000) -> list[dict[str, str]]:
                 break
     except Exception as exc:
         logger.warning(f"azure discovery failed: {exc}")
-    logger.info(
-        f"azure discovery: {len(companies)} companies from newest companies blob"
-    )
+    logger.info(f"azure discovery: {len(companies)} companies from newest companies blob")
     return companies
 
 

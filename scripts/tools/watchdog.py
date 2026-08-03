@@ -11,7 +11,7 @@ Each component has a per-item cooldown so crash-loops do not thrash.
 Logs to logs/watchdog.log. Single-instance via lockfile.
 
 Usage:
-    nohup uv run python3 scripts/watchdog.py > /dev/null 2>&1 &
+    nohup uv run python3 scripts/tools/watchdog.py > /dev/null 2>&1 &
     or: systemctl --user enable --now ho-watchdog.service
 """
 
@@ -24,7 +24,7 @@ import sys
 import time
 from pathlib import Path
 
-PROJECT = Path(__file__).resolve().parent.parent
+PROJECT = Path(__file__).resolve().parents[2]
 LOG_PATH = PROJECT / "logs" / "watchdog.log"
 LOCK_PATH = PROJECT / "logs" / "watchdog.lock"
 CHECK_INTERVAL = 60
@@ -84,9 +84,7 @@ def count_of(pidfile_pattern: str) -> int:
     filtering by process comm (python3/python) excludes uv/sh wrappers.
     """
     pat = pidfile_pattern.replace(".", "[.]")
-    code, out = sh(
-        f"ps -eo comm,args | grep '{pat}' | grep -E '^python' | wc -l"
-    )
+    code, out = sh(f"ps -eo comm,args | grep '{pat}' | grep -E '^python' | wc -l")
     m = re.search(r"\d+", out or "0")
     return int(m.group()) if m else 0
 
@@ -177,7 +175,7 @@ class Watchdog:
         once the whole corpus is embedded the process exits cleanly and there is
         nothing more for it to do until fresh jobs are ingested.
         """
-        alive = count_of(r"scripts/embed_obs.py")
+        alive = count_of(r"scripts/embed/embed_obs.py")
         if alive > 0:
             return
         if not self.due("embed_backfill", 900):
@@ -196,13 +194,13 @@ class Watchdog:
         zlib = "/nix/store/61a1nwx3w6rqyaisj5rn1sal1981apm7-zlib-1.3.2/lib"
         run_detached(
             f"cd {PROJECT} && PYTHONPATH={PROJECT} LD_LIBRARY_PATH={zlib} "
-            f"nohup uv run python3 -u scripts/embed_obs.py "
+            f"nohup uv run python3 -u scripts/embed/embed_obs.py "
             f">> {PROJECT / 'logs' / 'embed_obs.out'} 2>&1 &"
         )
 
     def heal_intel_loop(self) -> None:
         """Keep the periodic vector-intel refresh alive."""
-        alive = count_of(r"scripts/intel_loop.py")
+        alive = count_of(r"scripts/intel/intel_loop.py")
         if alive > 0:
             return
         if not self.due("intel_loop", 1800):
@@ -211,13 +209,13 @@ class Watchdog:
         zlib = "/nix/store/61a1nwx3w6rqyaisj5rn1sal1981apm7-zlib-1.3.2/lib"
         run_detached(
             f"cd {PROJECT} && PYTHONPATH={PROJECT} LD_LIBRARY_PATH={zlib} "
-            f"nohup uv run python3 -u scripts/intel_loop.py "
+            f"nohup uv run python3 -u scripts/intel/intel_loop.py "
             f">> {PROJECT / 'logs' / 'intel_loop.out'} 2>&1 &"
         )
 
     def heal_smart_intel(self) -> None:
         """Keep the local smart-intel aggregation loop alive."""
-        alive = count_of(r"scripts/smart_intel_loop.py")
+        alive = count_of(r"scripts/intel/smart_intel_loop.py")
         if alive > 0:
             return
         if not self.due("smart_intel", 1800):
@@ -226,13 +224,13 @@ class Watchdog:
         zlib = "/nix/store/61a1nwx3w6rqyaisj5rn1sal1981apm7-zlib-1.3.2/lib"
         run_detached(
             f"cd {PROJECT} && PYTHONPATH={PROJECT} LD_LIBRARY_PATH={zlib} "
-            f"nohup uv run python3 -u scripts/smart_intel_loop.py "
+            f"nohup uv run python3 -u scripts/intel/smart_intel_loop.py "
             f">> {PROJECT / 'logs' / 'smart_intel_loop.out'} 2>&1 &"
         )
 
     def heal_overnight_monitor(self) -> None:
         """Keep the health-monitoring loop alive (it is not covered elsewhere)."""
-        alive = count_of(r"scripts/overnight_monitor.py")
+        alive = count_of(r"scripts/tools/overnight_monitor.py")
         if alive > 0:
             return
         if not self.due("overnight_monitor", 1800):
@@ -241,7 +239,7 @@ class Watchdog:
         zlib = "/nix/store/61a1nwx3w6rqyaisj5rn1sal1981apm7-zlib-1.3.2/lib"
         run_detached(
             f"cd {PROJECT} && PYTHONPATH={PROJECT} LD_LIBRARY_PATH={zlib} "
-            f"nohup uv run python3 -u scripts/overnight_monitor.py "
+            f"nohup uv run python3 -u scripts/tools/overnight_monitor.py "
             f">> {PROJECT / 'logs' / 'monitor.out'} 2>&1 &"
         )
 
@@ -269,7 +267,7 @@ def acquire_lock() -> bool:
             pid = int(LOCK_PATH.read_text().strip())
             os.kill(pid, 0)
             return False
-        except (ValueError, ProcessLookupError):
+        except ValueError, ProcessLookupError:
             pass
     LOCK_PATH.write_text(str(os.getpid()))
     return True

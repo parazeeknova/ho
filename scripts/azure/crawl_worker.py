@@ -237,7 +237,7 @@ class Indexer:
         self.client = BlobServiceClient.from_connection_string(conn_str)
         self.container_client = self.client.get_container_client(self.container)
 
-    # ── state ────────────────────────────────────────────────────────
+    # state
 
     def _write_blob(self, name: str, body: bytes, overwrite: bool = False) -> None:
         """Write a blob to either the local out dir or Azure."""
@@ -365,7 +365,7 @@ class Indexer:
             if name:
                 cur["name"] = name
 
-    # ── sources ──────────────────────────────────────────────────────
+    # sources
 
     async def harvest_slugs_from_cdx(self, client: AsyncClient) -> None:
         """Harvest tens of thousands of ATS board slugs from Common Crawl's CDX index.
@@ -1068,11 +1068,11 @@ class Indexer:
         """LinkedIn Guest API - public job search, no key required."""
         import re as _re
 
-        title_re = _re.compile(r'base-search-card__title[^>]*>\s*([^<]+?)\s*<')
-        comp_re = _re.compile(r'base-search-card__subtitle[^>]*>\s*<a[^>]*>\s*([^<]+?)\s*<')
-        loc_re = _re.compile(r'job-search-card__location[^>]*>\s*([^<]+?)\s*<')
+        title_re = _re.compile(r"base-search-card__title[^>]*>\s*([^<]+?)\s*<")
+        comp_re = _re.compile(r"base-search-card__subtitle[^>]*>\s*<a[^>]*>\s*([^<]+?)\s*<")
+        loc_re = _re.compile(r"job-search-card__location[^>]*>\s*([^<]+?)\s*<")
         link_re = _re.compile(r'base-card__full-link[^>]*href="([^"]+)"')
-        card_re = _re.compile(r'<li.*?</li>', _re.S)
+        card_re = _re.compile(r"<li.*?</li>", _re.S)
 
         try:
             total = 0
@@ -1118,7 +1118,7 @@ class Indexer:
         except Exception as exc:
             logger.warning(f"linkedin: {exc}")
 
-    # ── main loop ────────────────────────────────────────────────────
+    # main loop
 
     async def resolve_directory_slugs(self, client: AsyncClient) -> None:
         """Probe the Chad directory's companies for live ATS board slugs.
@@ -1141,7 +1141,7 @@ class Indexer:
             srcs = c.get("sources", [])
             try:
                 year = int(c.get("year") or 0)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 year = 0
             if "yc" in srcs and 2021 <= year <= 2026:
                 priority = 0

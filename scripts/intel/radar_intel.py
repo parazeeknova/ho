@@ -23,9 +23,9 @@ The mission is heavy application volume. This engine:
    feeds for an auto-apply pipeline (your friend's project).
 
 Usage:
-    uv run python scripts/radar_intel.py            # analyze + print + export
-    uv run python scripts/radar_intel.py --top 20   # top N recommendations
-    uv run python scripts/radar_intel.py --telegram # push digest to Telegram
+    uv run python scripts/intel/radar_intel.py            # analyze + print + export
+    uv run python scripts/intel/radar_intel.py --top 20   # top N recommendations
+    uv run python scripts/intel/radar_intel.py --telegram # push digest to Telegram
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-PROJECT = Path(__file__).resolve().parent.parent
+PROJECT = Path(__file__).resolve().parents[2]
 if str(PROJECT) not in sys.path:
     sys.path.insert(0, str(PROJECT))
 
@@ -237,7 +237,7 @@ async def main() -> None:
         f"{len(graph.matched)} matched, {len(graph.missed)} missed"
     )
 
-    # ── Recommendations ───────────────────────────────────────────────
+    # Recommendations
     ranked = sorted(
         jobs,
         key=lambda j: (
@@ -263,7 +263,7 @@ async def main() -> None:
         if j["hard_blocks"]:
             print(f"     hard:  {hard_str}")
 
-    # ── Skill gaps you could close for more matches ──────────────────
+    # Skill gaps you could close for more matches
     print("\n=== SKILL GAP INTELLIGENCE (top misses worth learning) ===")
     top_misses = graph.missed.most_common(12)
     for skill, count in top_misses:
@@ -271,7 +271,7 @@ async def main() -> None:
         eff = graph.larp_effort(skill) if larp else "hard"
         print(f"  {skill:<28} missed in {count:4d} jobs | {eff}")
 
-    # ── Export for the auto-applier ──────────────────────────────────
+    # Export for the auto-applier
     outdir = Path(args.export)
     outdir.mkdir(exist_ok=True)
     csv_path = outdir / "recommendations.csv"
@@ -321,7 +321,7 @@ async def main() -> None:
     )
     print(f"\nExported {len(jobs)} jobs -> {csv_path} + {json_path}")
 
-    # ── Telegram digest ──────────────────────────────────────────────
+    # Telegram digest
     if args.telegram:
         try:
             from src.agent.telegram_agent import TelegramAgent

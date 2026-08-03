@@ -52,6 +52,7 @@ def _raw_json_value(raw_markdown: str) -> str:
         return json.dumps(parsed)
     return "{}"
 
+
 async def _ensure_tables() -> MemoryStore:
     store = await MemoryStore.create()
     async with store._pool.acquire() as conn:

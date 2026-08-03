@@ -10,9 +10,9 @@ each volume tarball it:
 Use with care: this overwrites the live volume.
 
 Run:
-    uv run python scripts/checkpoint_restore.py                # latest
-    uv run python scripts/checkpoint_restore.py --dir checkpoints/20260802-123456
-    uv run python scripts/checkpoint_restore.py --vol firecrawl_agent_memory_data  # latest, one vol
+    uv run python scripts/backup/checkpoint_restore.py                # latest
+    uv run python scripts/backup/checkpoint_restore.py --dir checkpoints/20260802-123456
+    uv run python scripts/backup/checkpoint_restore.py --vol firecrawl_agent_memory_data  # latest, one vol
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ import sys
 import tarfile
 from pathlib import Path
 
-PROJECT = Path(__file__).resolve().parent.parent
+PROJECT = Path(__file__).resolve().parents[2]
 CHECKPOINT_DIR = PROJECT / "checkpoints"
 
 # Which container mounts a given volume (so we can restart it safely).
@@ -106,6 +106,7 @@ def _restore_one(vol: str, tar_path: Path) -> bool:
     if container:
         _sh(f"podman start {container} 2>/dev/null")
     return True
+
 
 def main() -> None:
     ap = argparse.ArgumentParser()

@@ -41,7 +41,9 @@ def main() -> None:
     if manifest_path.exists():
         try:
             for m in json.loads(manifest_path.read_text()):
-                if (OUT_ROOT / m["name"]).exists() and (OUT_ROOT / m["name"]).stat().st_size == m["size"]:
+                if (OUT_ROOT / m["name"]).exists() and (OUT_ROOT / m["name"]).stat().st_size == m[
+                    "size"
+                ]:
                     done.add(m["name"])
         except Exception:
             pass
@@ -74,12 +76,17 @@ def main() -> None:
             with open(manifest_path, "w") as mf:
                 json.dump(manifest, mf, indent=2)
             if i % 5 == 0 or size > 50_000_000:
-                print(f"  [{time.strftime('%H:%M:%S')}] {i}/{len(pending)} {b.name} ({size/1e6:.1f} MB)", flush=True)
+                print(
+                    f"  [{time.strftime('%H:%M:%S')}] {i}/{len(pending)} {b.name} ({size / 1e6:.1f} MB)",
+                    flush=True,
+                )
         except Exception as exc:
             print(f"  ERROR {b.name}: {exc}", flush=True)
 
     total_bytes = sum(m["size"] for m in manifest)
-    print(f"DONE: {len(manifest)}/{total} blobs, {total_bytes/1e6:.1f} MB -> {OUT_ROOT}", flush=True)
+    print(
+        f"DONE: {len(manifest)}/{total} blobs, {total_bytes / 1e6:.1f} MB -> {OUT_ROOT}", flush=True
+    )
 
 
 if __name__ == "__main__":

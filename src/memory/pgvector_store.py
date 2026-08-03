@@ -68,7 +68,11 @@ def _first_path(path: str) -> str:
     parts = [p for p in path.split("/") if p]
     if not parts:
         return ""
-    return parts[0][:60] if not parts[0].startswith("jobs") else (parts[1][:60] if len(parts) > 1 else "")
+    return (
+        parts[0][:60]
+        if not parts[0].startswith("jobs")
+        else (parts[1][:60] if len(parts) > 1 else "")
+    )
 
 
 def _build_embed_text(title: str, raw_json: Any) -> str:
@@ -134,6 +138,7 @@ def _build_embed_text(title: str, raw_json: Any) -> str:
     text = re.sub(r"\s+", " ", text).strip()
     parts.append(text[:1200])
     return " | ".join(p for p in parts if p)
+
 
 CREATE_TABLES_SQL = f"""
 CREATE TABLE IF NOT EXISTS processed_jobs (
@@ -551,7 +556,7 @@ class MemoryStore:
         async with self._pool.acquire() as conn:
             await conn.execute("TRUNCATE resume_embeddings")
 
-    # ── obs_embeddings: vector intelligence over the job corpus ────────────────
+    # obs_embeddings: vector intelligence over the job corpus
 
     async def upsert_obs_embedding(
         self, url_hash: str, title: str, company: str, embedding: list[float]
@@ -575,9 +580,7 @@ class MemoryStore:
                 vec,
             )
 
-    async def missing_obs_hashes(
-        self, url_hashes: list[str], limit: int = 2000
-    ) -> list[str]:
+    async def missing_obs_hashes(self, url_hashes: list[str], limit: int = 2000) -> list[str]:
         """Return which of the given url hashes have no embedding yet (batch-safe)."""
         if not url_hashes:
             return []
@@ -1270,7 +1273,7 @@ class MemoryStore:
             row = await conn.fetchrow("SELECT COUNT(*) AS cnt FROM discovered_domains")
             return row["cnt"] if row else 0
 
-    # ── Radar v2 methods ──────────────────────────────────────────────
+    # Radar v2 methods
 
     async def upsert_radar_candidate(self, data: dict[str, Any]) -> None:
         async with self._pool.acquire() as conn:
@@ -1530,9 +1533,7 @@ class MemoryStore:
             except Exception:
                 return {"count": 0, "avg": 0, "median": 0, "error": "salary_stats_failed"}
 
-    async def learned_title_scores(
-        self, min_obs: int = 8, top_k: int = 200
-    ) -> dict[str, float]:
+    async def learned_title_scores(self, min_obs: int = 8, top_k: int = 200) -> dict[str, float]:
         """Learn a per-keyword gate-pass score from historical candidates.
 
         For each space-separated token in ``normalized_role``, count how often a
@@ -1714,7 +1715,7 @@ async def _get_recent_accepts(self: MemoryStore, hours: int = 24) -> list[dict[s
         )
     out: list[dict[str, Any]] = []
     for r in rows:
-        ts = (r["created_at"].timestamp() if r["created_at"] else 0.0)
+        ts = r["created_at"].timestamp() if r["created_at"] else 0.0
         out.append(
             {
                 "company": r["normalized_company"],
@@ -1727,9 +1728,12 @@ async def _get_recent_accepts(self: MemoryStore, hours: int = 24) -> list[dict[s
 
 async def _get_near_miss_count(self: MemoryStore) -> int:
     async with self._pool.acquire() as conn:
-        return await conn.fetchval(
-            "SELECT COUNT(*) FROM radar_candidates WHERE eligibility = 'near_miss'"
-        ) or 0
+        return (
+            await conn.fetchval(
+                "SELECT COUNT(*) FROM radar_candidates WHERE eligibility = 'near_miss'"
+            )
+            or 0
+        )
 
 
 async def _get_top_companies(self: MemoryStore, limit: int = 8) -> list[dict[str, Any]]:
@@ -1799,9 +1803,12 @@ async def _get_sector_signal(self: MemoryStore, limit: int = 6) -> list[dict[str
             """,
             limit,
         )
-        total = await conn.fetchval(
-            "SELECT COUNT(*) FROM radar_candidates WHERE eligibility = 'accepted'"
-        ) or 0
+        total = (
+            await conn.fetchval(
+                "SELECT COUNT(*) FROM radar_candidates WHERE eligibility = 'accepted'"
+            )
+            or 0
+        )
     out: list[dict[str, Any]] = []
     for r in rows:
         cnt = r["cnt"]

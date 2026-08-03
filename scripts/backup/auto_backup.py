@@ -4,18 +4,17 @@ Wraps checkpoint_backup.py and prunes old snapshots so at most KEEP remain.
 Called by the orchestrator after each sweep completes (or manually).
 
 Run:
-    uv run python scripts/auto_backup.py
+    uv run python scripts/backup/auto_backup.py
 """
 
 from __future__ import annotations
 
-import json
 import subprocess
 import sys
 import time
 from pathlib import Path
 
-PROJECT = Path(__file__).resolve().parent.parent
+PROJECT = Path(__file__).resolve().parents[2]
 CHECKPOINT_DIR = PROJECT / "checkpoints"
 KEEP = int(__import__("os").environ.get("AUTO_BACKUP_KEEP", "10"))
 
@@ -32,7 +31,9 @@ def _sh(cmd: str, timeout: int = 1800) -> tuple[int, str]:
 
 def _prune(keep: int = KEEP) -> list[Path]:
     """Delete oldest checkpoint dirs beyond `keep`. Returns removed paths."""
-    dirs = sorted([d for d in CHECKPOINT_DIR.iterdir() if d.is_dir()], key=lambda d: d.stat().st_mtime)
+    dirs = sorted(
+        [d for d in CHECKPOINT_DIR.iterdir() if d.is_dir()], key=lambda d: d.stat().st_mtime
+    )
     removed: list[Path] = []
     while len(dirs) > keep:
         victim = dirs.pop(0)
@@ -44,8 +45,7 @@ def _prune(keep: int = KEEP) -> list[Path]:
 def main() -> int:
     # Snapshot using the same volume-export path as checkpoint_backup.
     rc, out = _sh(
-        f"cd {PROJECT} && PYTHONPATH={PROJECT} "
-        f"uv run python scripts/checkpoint_backup.py",
+        f"cd {PROJECT} && PYTHONPATH={PROJECT} uv run python scripts/backup/checkpoint_backup.py",
         timeout=1800,
     )
     ts = time.strftime("%Y-%m-%dT%H:%M:%S")
@@ -53,7 +53,11 @@ def main() -> int:
         print(f"[{ts}] auto-backup FAILED: {out[-300:]}", flush=True)
         return 1
     removed = _prune()
-    summary = {"ts": ts, "kept": len(list(CHECKPOINT_DIR.iterdir())), "pruned": [p.name for p in removed]}
+    summary = {
+        "ts": ts,
+        "kept": len(list(CHECKPOINT_DIR.iterdir())),
+        "pruned": [p.name for p in removed],
+    }
     print(f"[{ts}] auto-backup done; pruned {len(removed)} -> kept {summary['kept']}", flush=True)
     return 0
 

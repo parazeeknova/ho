@@ -1,8 +1,10 @@
-"""Nightly vector-intel refresh loop: every REFRESH_EVERY seconds, rebuild
-the vector-intel exports (recommendations.json/csv) from the current
-obs_embeddings. Runs detached so the pipeline is untouched.
+"""Periodic local smart-intel refresh loop.
 
-    setsid nohup env PYTHONPATH=$PWD uv run python3 scripts/intel_loop.py > logs/intel_loop.out 2>&1 &
+Runs smart_intel.py every REFRESH_EVERY seconds on the local box (NOT the
+relic). Kept alive by the watchdog. Exports intel/smart_intel.json+csv.
+
+    setsid nohup env PYTHONPATH=$PWD uv run python3 scripts/intel/smart_intel_loop.py \
+        > logs/smart_intel_loop.out 2>&1 &
 """
 
 from __future__ import annotations
@@ -14,11 +16,10 @@ import sys
 import time
 
 REFRESH_EVERY = 1800  # 30 min
+PROJECT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-
-async def run_intel() -> None:
+async def run_once() -> None:
     env = dict(os.environ)
     env["PYTHONPATH"] = PROJECT
     env.setdefault(
@@ -27,10 +28,8 @@ async def run_intel() -> None:
     try:
         proc = await asyncio.create_subprocess_exec(
             sys.executable,
-            os.path.join(PROJECT, "scripts", "vector_intel.py"),
+            os.path.join(PROJECT, "scripts", "smart_intel.py"),
             "--write",
-            "--top-k",
-            "8",
             cwd=PROJECT,
             env=env,
             stdout=asyncio.subprocess.DEVNULL,
@@ -38,20 +37,21 @@ async def run_intel() -> None:
         )
         await asyncio.wait_for(proc.wait(), timeout=600)
     except Exception as e:
-        print(f"intel refresh error: {e}", flush=True)
+        print(f"smart_intel refresh error: {e}", flush=True)
 
 
 async def main() -> None:
     while True:
         t0 = time.monotonic()
         try:
-            await run_intel()
+            await run_once()
             print(
-                f"intel refreshed in {time.monotonic()-t0:.1f}s @ {time.strftime('%H:%M:%S')}",
+                f"smart_intel refreshed in {time.monotonic()-t0:.1f}s @ "
+                f"{time.strftime('%H:%M:%S')}",
                 flush=True,
             )
         except Exception as e:
-            print(f"intel refresh failed: {e}", flush=True)
+            print(f"smart_intel refresh failed: {e}", flush=True)
         await asyncio.sleep(REFRESH_EVERY)
 
 

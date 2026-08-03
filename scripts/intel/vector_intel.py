@@ -15,8 +15,8 @@ Reads ``obs_embeddings`` (built by ``scripts/embed_obs.py``) and derives:
 Everything is numpy + SQL; no LLM tokens, no scipy/sklearn.
 
 Usage:
-    uv run python3 scripts/vector_intel.py [--top-k N] [--write]
-    uv run python3 scripts/vector_intel.py --recompute-centroids
+    uv run python3 scripts/intel/vector_intel.py [--top-k N] [--write]
+    uv run python3 scripts/intel/vector_intel.py --recompute-centroids
 """
 
 from __future__ import annotations
@@ -24,7 +24,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import math
 import re
 from collections import defaultdict
 from typing import Any
@@ -39,7 +38,8 @@ logger = get_logger("vector_intel")
 DIM = 1024
 FOUNDING_TITLE_RX = re.compile(
     r"founding|co[- ]?founder|early|seed|head of eng|principal eng|lead engineer"
-    r"|startup|first hire|founding engineer|staff engineer", re.I
+    r"|startup|first hire|founding engineer|staff engineer",
+    re.I,
 )
 
 
@@ -52,7 +52,8 @@ def _cosine(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b))
 
 
-# ── company graph ──────────────────────────────────────────────────────
+# company graph
+
 
 async def build_company_graph(
     store: MemoryStore, top_k: int = 8
@@ -102,15 +103,15 @@ def label_propagation_communities(
                 counts[labels[j]] += 1
             if not counts:
                 continue
-            best_label = max(counts, key=lambda l: (counts[l], -l))
+            best_label = max(counts, key=lambda label: (counts[label], -label))
             if best_label != labels[i]:
                 labels[i] = best_label
                 changed = True
     # Normalise community ids to 0..k
     remap = {}
-    for l in labels:
-        if l not in remap:
-            remap[l] = len(remap)
+    for label in labels:
+        if label not in remap:
+            remap[label] = len(remap)
     return {name: remap[labels[i]] for i, name in enumerate(names)}
 
 
@@ -160,7 +161,6 @@ async def two_hop_walk(
 
     # find for each accepted company its neighbours, but only if they're not
     # already in the accepted set (so we expand, not revisit)
-    lower_names = {n.lower(): n for n in names}
     accepted_set_lower = {a.lower() for a in accepted}
     neighbour_names: set[str] = set()
     for ac in accepted:
@@ -220,7 +220,7 @@ async def write_intel(
     import os
     from pathlib import Path
 
-    out_dir = Path(__file__).resolve().parent.parent / "intel"
+    out_dir = Path(__file__).resolve().parent.parent.parent / "intel"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # nearest accepted companies for sector tagging of each embedded obs
@@ -271,7 +271,9 @@ async def write_intel(
                 "url": r["url"] or "",
                 "snippet": (r["snippet"] or "")[:200],
                 "community": communities.get(comp) if communities else None,
-                "founder_score": round(founder_scores.get(comp, 0.0), 2) if founder_scores else None,
+                "founder_score": round(founder_scores.get(comp, 0.0), 2)
+                if founder_scores
+                else None,
                 "twin_of": twin_of.get(comp, ""),
                 "freshness": r["last_seen"],
             }
@@ -366,7 +368,9 @@ async def run(top_k: int, write: bool) -> None:
         logger.info(f"job k-NN bridges: {len(bridges)} jobs with nearest-neighbour bridges")
         if bridges:
             b = bridges[0]
-            nbr_txt = "; ".join(f"{n['title'][:35]}@{n['company'][:20]}({n['sim']})" for n in b["neighbours"][:3])
+            nbr_txt = "; ".join(
+                f"{n['title'][:35]}@{n['company'][:20]}({n['sim']})" for n in b["neighbours"][:3]
+            )
             logger.info(f"  sample bridge: {b['title'][:45]} -> {nbr_txt}")
         hops = await two_hop_walk(store, top_k=top_k, limit=40)
         logger.info(f"two-hop walk: {len(hops)} never-gated jobs at neighbour companies")

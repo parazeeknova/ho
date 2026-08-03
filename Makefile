@@ -1,151 +1,101 @@
-.PHONY: check check-types test serve run ncrun match health fc-up fc-down fc-logs dev dev-down start overnight clean-volumes start-daemon stop-daemon graph graph-stop graph-shell graph-reset
+# ho - one target per command type, flags pick the mode.
+#
+#   make run  MODE=overnight|no-cloud|worker|dev
+#   make crawl MODE=crawl|ingest|notor
+#   make intel TOP=N MODE=telegram|smart
+#   make accepted OUTREACH=1 ELIG=all OUT=/tmp/x.csv
+#   make fc ACTION=up|down|logs|status|clean|dev-down|tor-up
+#   make graph ACTION=up|stop|reset|shell
+#   make launch ACTION=start|stop|status|restart
+#   make backup / backup-list / restore DIR=... / autobackup
+#   make analytics / health / serve / check / test
 
-check:
-	uv run ruff format . && uv run ruff check . --fix
+.PHONY: help run crawl intel accepted analytics backup backup-list restore autobackup fc graph launch health serve check test
 
-check-types:
-	uv run mypy . --ignore-missing-imports --exclude 'refs/' --explicit-package-bases
+help:
+	@echo "make <target> [FLAGS]"
+	@echo ""
+	@echo "  run            pipeline            MODE=(default|overnight|no-cloud|worker|dev)"
+	@echo "  crawl          crawler + ingest   MODE=(default|crawl|ingest|notor)"
+	@echo "  intel          recommendations    TOP=N  MODE=(telegram|smart)"
+	@echo "  accepted       dump candidates    OUTREACH=1 (outreach pack)  ELIG=(accepted|near_miss|rejected|all)  OUT=path"
+	@echo "  analytics      system + DB stats"
+	@echo "  backup / backup-list / restore    volume checkpoints (restore DIR=checkpoints/xxx)"
+	@echo "  autobackup     snapshot + prune to 10"
+	@echo "  fc             firecrawl stack    ACTION=(up|down|logs|status|clean|dev-down|tor-up)"
+	@echo "  graph          neo4j              ACTION=(up|stop|reset|shell)"
+	@echo "  launch         detached pipeline  ACTION=(start|stop|status|restart)"
+	@echo "  health / serve / check / test"
 
-test:
-	uv run python -m pytest . -v --ignore=refs
-
-serve:
-	uv run python scripts/serve.py
-
+# Pipeline
+# MODE: (default) | no-cloud | worker | dev | overnight (direct orchestrator)
 run:
-	uv run python scripts/run.py
+	@case "$(MODE)" in \
+	  overnight) OVERNIGHT_LOOP=true PYTHONPATH=$(CURDIR) uv run python -m src.radar.engine.orchestrator ;; \
+	  dev) PYTHONPATH=$(CURDIR) uv run python scripts/run.py --no-pipeline ;; \
+	  worker) PYTHONPATH=$(CURDIR) uv run python scripts/run.py --worker-only ;; \
+	  no-cloud) PYTHONPATH=$(CURDIR) uv run python scripts/run.py --no-cloud ;; \
+	  *) PYTHONPATH=$(CURDIR) uv run python scripts/run.py ;; \
+	esac
 
-# Run the full pipeline with NO cloud (Azure) - for machines without
-# cloud creds. Same as run but skips cloud sync.
-ncrun:
-	uv run python scripts/run.py --no-cloud
+launch:
+	PYTHONPATH=$(CURDIR) uv run python scripts/cli/launch_pipeline.py --$(if $(ACTION),$(ACTION),start)
 
-worker:
-	uv run python scripts/run.py --worker-only
-
-match: health
-	uv run python -m src.radar.orchestrator
-
-overnight: health
-	OVERNIGHT_LOOP=true uv run python -m src.radar.orchestrator
-
-fc-up:
-	@docker compose -f docker-compose.yaml up -d redis playwright-service nuq-postgres searxng neo4j; \
-	podman rm -f firecrawl_rabbitmq_1 2>/dev/null; \
-	podman run -d --name firecrawl_rabbitmq_1 \
-		--network firecrawl_default \
-		--network-alias rabbitmq \
-		--restart no \
-		--entrypoint /bin/bash \
-		rabbitmq:3-management \
-		-c "rm -f /var/lib/rabbitmq/.erlang.cookie; exec docker-entrypoint.sh rabbitmq-server"; \
-	echo "Waiting for rabbitmq..."; \
-	for i in 1 2 3 4 5 6 7 8 9 10; do \
-		if podman exec firecrawl_rabbitmq_1 rabbitmqctl await_startup 2>/dev/null; then break; fi; \
-		sleep 2; \
-	done; \
-	docker compose -f docker-compose.yaml up -d api
-
-fc-down:
-	docker compose -f docker-compose.yaml down
-	podman rm -f firecrawl_rabbitmq_1 2>/dev/null; true
-
-fc-logs:
-	docker compose -f docker-compose.yaml logs -f
-
-dev:
-	uv run python scripts/run.py --no-pipeline
-
-dev-down:
-	docker compose -f docker-compose.yaml down 2>/dev/null; \
-	podman rm -f firecrawl_rabbitmq_1 2>/dev/null; \
-	killall llama-server 2>/dev/null; \
-	true
-
-health:
-	uv run python scripts/health.py
-
-clean-volumes:
-	docker compose -f docker-compose.yaml down -v 2>/dev/null; \
-	podman rm -f firecrawl_rabbitmq_1 2>/dev/null; \
-	rm -rf storage/ 2>/dev/null; \
-	echo "All container volumes and local storage cleared."
-
-start-daemon:
-	@echo "Starting ho in background with nohup..."
-	@OVERNIGHT_LOOP=true nohup uv run python -m src.radar.orchestrator > pipeline.log 2>&1 &
-	@echo "Pipeline running in background. View logs with: tail -f pipeline.log"
-
-stop-daemon:
-	@pkill -f "python -m src.radar.orchestrator" || true
-	@echo "Daemon stopped."
-
-graph:
-	docker compose -f docker-compose.yaml up -d neo4j
-
-graph-stop:
-	docker compose -f docker-compose.yaml stop neo4j
-
-graph-shell:
-	docker compose -f docker-compose.yaml exec neo4j cypher-shell -u neo4j -p password
-
-graph-reset:
-	docker compose -f docker-compose.yaml down -v neo4j 2>/dev/null; \
-	docker compose -f docker-compose.yaml up -d neo4j; \
-	echo "Neo4j reset."
-
-
-intel:
-	uv run python scripts/radar_intel.py
-
-intel-telegram:
-	uv run python scripts/radar_intel.py --telegram
-
-smart-intel:
-	uv run python scripts/smart_intel.py --write
-
-# Azure relic intelligence workers (portable to any VPS). Set
-# AZURE_STORAGE_ACCOUNT/KEY/CONTAINER in the environment first.
-azure-founder:
-	uv run --with azure-storage-blob python scripts/azure/founder_miner.py
-
-azure-funding:
-	uv run --with azure-storage-blob python scripts/azure/funding_tracker.py
-
-# Local analytics: storage + containers + volumes + DB numbers.
-analytics:
-	uv run python scripts/analytics.py
-
-# Local crawl worker + ingest (routed through Tor via torproxy).
-# Writes to crawler_out/ and pulls into Postgres. No cloud needed.
+# Local crawler + ingest (via Tor)
+# MODE: (default = crawl + ingest) | crawl | ingest | notor
 crawl:
-	./scripts/local_crawler.sh
+	PYTHONPATH=$(CURDIR) uv run python scripts/cli/local_crawler.py $(if $(filter notor,$(MODE)),--no-tor,$(if $(MODE),--$(MODE)))
 
-crawl-only:
-	./scripts/local_crawler.sh --crawl
+# Intel / exports
+# TOP=N, MODE=telegram|smart
+intel:
+	@case "$(MODE)" in \
+	  smart) PYTHONPATH=$(CURDIR) uv run python scripts/intel/smart_intel.py --write ;; \
+	  *) PYTHONPATH=$(CURDIR) uv run python scripts/intel/radar_intel.py $(if $(TOP),--top $(TOP)) $(if $(filter telegram,$(MODE)),--telegram) ;; \
+	esac
 
-crawl-ingest:
-	./scripts/local_crawler.sh --ingest
+# Dump accepted candidates. Default: apply-facing jobs columns.
+#   make accepted              -> intel/accepted_jobs.csv
+#   make accepted OUTREACH=1   -> intel/accepted_outreach.csv (founders/funding/socials/news)
+#   make accepted ELIG=all     -> every eligibility
+#   make accepted OUT=/tmp/x.csv
+accepted:
+	PYTHONPATH=$(CURDIR) uv run python scripts/tools/export_accepted.py --out $(if $(OUT),$(OUT),intel/accepted_$(if $(OUTREACH),outreach,jobs).csv) --eligibility $(if $(ELIG),$(ELIG),accepted) --mode $(if $(OUTREACH),outreach,jobs)
 
-crawl-notor:
-	./scripts/local_crawler.sh --no-tor
+analytics:
+	PYTHONPATH=$(CURDIR) uv run python scripts/tools/analytics.py
 
-tor-up:
-	docker compose -f docker-compose.yaml up -d torproxy
+# Firecrawl containers + graph
+# ACTION: up (default) | down | logs | status | clean | dev-down | tor-up
+fc:
+	PYTHONPATH=$(CURDIR) uv run python scripts/cli/firecrawl.py $(if $(ACTION),$(ACTION),up)
 
-# Local volume checkpoint backup / restore (snapshots under checkpoints/).
+# ACTION: up (default) | stop | reset | shell
+graph:
+	PYTHONPATH=$(CURDIR) uv run python scripts/cli/firecrawl.py graph-$(if $(ACTION),$(ACTION),up)
+
+# Backups
 backup:
-	uv run python scripts/checkpoint_backup.py
+	uv run python scripts/backup/checkpoint_backup.py
 
 backup-list:
 	@ls -dt checkpoints/*/ 2>/dev/null || echo "no checkpoints yet"
 
 restore:
-	uv run python scripts/checkpoint_restore.py
+	uv run python scripts/backup/checkpoint_restore.py $(if $(DIR),--dir $(DIR))
 
-restore-dir:
-	uv run python scripts/checkpoint_restore.py --dir $(CKPT)
-
-# Auto-backup: snapshot volumes + prune to latest 10 (also runs per-sweep).
 autobackup:
-	uv run python scripts/auto_backup.py
+	uv run python scripts/backup/auto_backup.py
+
+# Quality / infra
+health:
+	uv run python scripts/tools/health.py
+
+serve:
+	uv run python scripts/serve.py
+
+check:
+	uv run ruff format . && uv run ruff check . --fix
+
+test:
+	uv run python -m pytest . -v --ignore=refs

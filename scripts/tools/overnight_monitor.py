@@ -7,7 +7,6 @@ for the night shift. Run detached:
 from __future__ import annotations
 
 import asyncio
-import os
 import time
 
 from src.logging import get_logger
@@ -59,8 +58,8 @@ async def main() -> None:
             tick = time.monotonic()
             orch = count_of(r"radar[.]engine[.]orchestrator")
             ingest = count_of(r"scripts/azure/ingest[.]py")
-            embed = count_of(r"scripts/embed_obs")
-            wd = count_of(r"scripts/watchdog")
+            embed = count_of(r"scripts/embed/embed_obs")
+            wd = count_of(r"scripts/tools/watchdog")
             stats = await check_once(store)
             line = (
                 f"orch={orch} ingest={ingest} embed={embed} watchdog={wd} "
@@ -68,9 +67,7 @@ async def main() -> None:
                 f"queue={stats['queue_pending']} embedded={stats['embedded']} "
                 f"obs={stats['obs']}"
             )
-            if ticks % REPORT_EVERY == 0 or stats["queue_pending"] > 500:
-                logger.info("MONITOR " + line)
-            elif stats["queue_pending"] % 50 == 0:
+            if ticks % REPORT_EVERY == 0 or stats["queue_pending"] > 500 or stats["queue_pending"] % 50 == 0:
                 logger.info("MONITOR " + line)
             if stats["accepted"] != last_report:
                 logger.info(f"MONITOR accepted delta: {stats['accepted']} (was {last_report})")

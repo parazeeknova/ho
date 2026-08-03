@@ -19,7 +19,7 @@ logger = get_logger("board_registry")
 
 # Master Registry of Verified Seed Boards & Career Portals (284+ tracked company endpoints)
 REGISTERED_BOARDS: list[tuple[str, str, str]] = [
-    # ── 1. BIG TECH / FAANG & GLOBAL MNC INDIA HUBS ──────────────────────────
+    # 1. BIG TECH / FAANG & GLOBAL MNC INDIA HUBS
     (
         "google:careers",
         "https://www.google.com/about/careers/applications/jobs/results/",
@@ -111,7 +111,7 @@ REGISTERED_BOARDS: list[tuple[str, str, str]] = [
     ("target:careers", "https://corporate.target.com/careers", "discovery_index"),
     ("walmart:careers", "https://careers.walmart.com", "discovery_index"),
     ("uberindia:careers", "https://www.uber.com/in/en/careers/", "discovery_index"),
-    # ── 2. TOP INDIAN TECH UNICORNS & HIGH-GROWTH STARTUPS ───────────────────
+    # 2. TOP INDIAN TECH UNICORNS & HIGH-GROWTH STARTUPS
     ("razorpay:ashby", "https://jobs.ashbyhq.com/razorpay", "official_ats"),
     ("swiggy:ashby", "https://jobs.ashbyhq.com/swiggy", "official_ats"),
     ("zomato:ashby", "https://jobs.ashbyhq.com/zomato", "official_ats"),
@@ -211,7 +211,7 @@ REGISTERED_BOARDS: list[tuple[str, str, str]] = [
     ("smallcase:ashby", "https://jobs.ashbyhq.com/smallcase", "official_ats"),
     ("indmoney:careers", "https://indmoney.com/careers", "discovery_index"),
     ("dhan:careers", "https://dhan.co/careers/", "discovery_index"),
-    # ── 3. HIGH-PAYING HFTs & QUANT FINANCE IN INDIA ──────────────────────────
+    # 3. HIGH-PAYING HFTs & QUANT FINANCE IN INDIA
     (
         "tower-research:greenhouse",
         "https://boards.greenhouse.io/towerresearchcapital",
@@ -252,7 +252,7 @@ REGISTERED_BOARDS: list[tuple[str, str, str]] = [
     ("mangroup:careers", "https://www.man.com/careers", "discovery_index"),
     ("worldquant:careers", "https://www.worldquant.com/careers/", "discovery_index"),
     ("aqr:careers", "https://www.aqr.com/About-Us/Careers", "discovery_index"),
-    # ── 4. FRONTIER AI LABS & MODERN AI STARTUPS ──────────────────────────────
+    # 4. FRONTIER AI LABS & MODERN AI STARTUPS
     ("openai:ashby", "https://jobs.ashbyhq.com/openai", "official_ats"),
     ("anthropic:ashby", "https://jobs.ashbyhq.com/anthropic", "official_ats"),
     ("huggingface:ashby", "https://jobs.ashbyhq.com/huggingface", "official_ats"),
@@ -301,7 +301,7 @@ REGISTERED_BOARDS: list[tuple[str, str, str]] = [
     ("voiceflow:ashby", "https://jobs.ashbyhq.com/voiceflow", "official_ats"),
     ("clay:ashby", "https://jobs.ashbyhq.com/clay", "official_ats"),
     ("apollo-io:ashby", "https://jobs.ashbyhq.com/apollo", "official_ats"),
-    # ── 5. DEV TOOLS, CLOUD & AI INFRASTRUCTURE ─────────────────────────────
+    # 5. DEV TOOLS, CLOUD & AI INFRASTRUCTURE
     ("linear:ashby", "https://jobs.ashbyhq.com/linear", "official_ats"),
     ("vercel:ashby", "https://jobs.ashbyhq.com/vercel", "official_ats"),
     ("retool:ashby", "https://jobs.ashbyhq.com/retool", "official_ats"),
@@ -401,7 +401,7 @@ REGISTERED_BOARDS: list[tuple[str, str, str]] = [
     ("beehiiv:ashby", "https://jobs.ashbyhq.com/beehiiv", "official_ats"),
     ("substack:ashby", "https://jobs.ashbyhq.com/substack", "official_ats"),
     ("ghost:careers", "https://ghost.org/about/#jobs", "discovery_index"),
-    # ── 6. TOP UNICORNS & TECH OPERATIONS (Ashby & Greenhouse) ─────────────
+    # 6. TOP UNICORNS & TECH OPERATIONS (Ashby & Greenhouse)
     ("rippling:ashby", "https://jobs.ashbyhq.com/rippling", "official_ats"),
     ("deel:ashby", "https://jobs.ashbyhq.com/deel", "official_ats"),
     ("doordash:ashby", "https://jobs.ashbyhq.com/doordash", "official_ats"),
@@ -443,7 +443,7 @@ REGISTERED_BOARDS: list[tuple[str, str, str]] = [
     ("palantir:lever", "https://jobs.lever.co/palantir", "official_ats"),
     ("spotify:lever", "https://jobs.lever.co/spotify", "official_ats"),
     ("ycombinator:jobs", "https://www.ycombinator.com/jobs", "discovery_index"),
-    # ── 7. FINTECH & CRYPTO (GLOBAL) ─────────────────────────────────────────
+    # 7. FINTECH & CRYPTO (GLOBAL)
     ("kraken:greenhouse", "https://boards.greenhouse.io/kraken", "official_ats"),
     ("gemini:greenhouse", "https://boards.greenhouse.io/gemini", "official_ats"),
     ("circle:greenhouse", "https://boards.greenhouse.io/circle", "official_ats"),
@@ -477,7 +477,7 @@ REGISTERED_BOARDS: list[tuple[str, str, str]] = [
     ("bill:greenhouse", "https://boards.greenhouse.io/billcom", "official_ats"),
     ("toast:greenhouse", "https://boards.greenhouse.io/toasttab", "official_ats"),
     ("squareup:greenhouse", "https://boards.greenhouse.io/squareup", "official_ats"),
-    # ── 8. GAMING & ENTERTAINMENT ────────────────────────────────────────────
+    # 8. GAMING & ENTERTAINMENT
     ("epicgames:careers", "https://www.epicgames.com/site/en-US/careers", "discovery_index"),
     ("riotgames:careers", "https://www.riotgames.com/en/work-with-us", "discovery_index"),
     ("unity:greenhouse", "https://boards.greenhouse.io/unity3d", "official_ats"),
@@ -493,7 +493,7 @@ REGISTERED_BOARDS: list[tuple[str, str, str]] = [
     ("netflix:careers", "https://jobs.netflix.com", "discovery_index"),
     ("disney:careers", "https://jobs.disneycareers.com", "discovery_index"),
     ("warnerbros:careers", "https://careers.wbd.com", "discovery_index"),
-    # ── 9. HEALTHTECH & BIOTECH ──────────────────────────────────────────────
+    # 9. HEALTHTECH & BIOTECH
     ("oscarhealth:greenhouse", "https://boards.greenhouse.io/oscarhealth", "official_ats"),
     ("devotedhealth:greenhouse", "https://boards.greenhouse.io/devotedhealth", "official_ats"),
     ("carbonhealth:greenhouse", "https://boards.greenhouse.io/carbonhealth", "official_ats"),
@@ -511,7 +511,7 @@ REGISTERED_BOARDS: list[tuple[str, str, str]] = [
         "discovery_index",
     ),
     ("teladoc:careers", "https://www.teladochealth.com/careers/", "discovery_index"),
-    # ── 10. PROPTECH, MARKETPLACES & LOGISTICS ──────────────────────────────
+    # 10. PROPTECH, MARKETPLACES & LOGISTICS
     ("faire:greenhouse", "https://boards.greenhouse.io/faire", "official_ats"),
     ("convoy:greenhouse", "https://boards.greenhouse.io/convoy", "official_ats"),
     ("flexport:greenhouse", "https://boards.greenhouse.io/flexport", "official_ats"),
@@ -522,7 +522,7 @@ REGISTERED_BOARDS: list[tuple[str, str, str]] = [
     ("redfin:greenhouse", "https://boards.greenhouse.io/redfin", "official_ats"),
     ("angi:careers", "https://www.angi.com/careers", "discovery_index"),
     ("procore:greenhouse", "https://boards.greenhouse.io/procoretechnologies", "official_ats"),
-    # ── 11. HRTECH & RECRUITING TECH ─────────────────────────────────────────
+    # 11. HRTECH & RECRUITING TECH
     ("lever:careers", "https://www.lever.co/careers", "discovery_index"),
     ("greenhouse:greenhouse", "https://boards.greenhouse.io/greenhouse", "official_ats"),
     ("ashbyhq:ashby", "https://jobs.ashbyhq.com/ashby", "official_ats"),
@@ -533,7 +533,7 @@ REGISTERED_BOARDS: list[tuple[str, str, str]] = [
     ("remote:ashby", "https://jobs.ashbyhq.com/remote", "official_ats"),
     ("oysterhr:ashby", "https://jobs.ashbyhq.com/oysterhr", "official_ats"),
     ("velocityglobal:careers", "https://velocityglobal.com/careers/", "discovery_index"),
-    # ── 12. CYBERSECURITY ────────────────────────────────────────────────────
+    # 12. CYBERSECURITY
     ("crowdstrike:careers", "https://www.crowdstrike.com/careers/", "discovery_index"),
     ("sentinelone:greenhouse", "https://boards.greenhouse.io/sentinelone", "official_ats"),
     ("netskope:greenhouse", "https://boards.greenhouse.io/netskope", "official_ats"),
@@ -554,7 +554,7 @@ REGISTERED_BOARDS: list[tuple[str, str, str]] = [
     ("semgrep:ashby", "https://jobs.ashbyhq.com/semgrep", "official_ats"),
     ("vanta:ashby", "https://jobs.ashbyhq.com/vanta", "official_ats"),
     ("drata:ashby", "https://jobs.ashbyhq.com/drata", "official_ats"),
-    # ── 13. TRAVEL TECH ───────────────────────────────────────────────────────
+    # 13. TRAVEL TECH
     ("airbnb:careers", "https://careers.airbnb.com", "discovery_index"),
     ("booking:careers", "https://careers.booking.com", "discovery_index"),
     ("expedia:careers", "https://careers.expediagroup.com", "discovery_index"),
@@ -564,7 +564,7 @@ REGISTERED_BOARDS: list[tuple[str, str, str]] = [
     ("ixigo:careers", "https://www.ixigo.com/careers", "discovery_index"),
     ("cleartrip:careers", "https://www.cleartrip.com/careers", "discovery_index"),
     ("treebo:careers", "https://www.treebo.com/careers", "discovery_index"),
-    # ── 14. MEDIA & STREAMING ────────────────────────────────────────────────
+    # 14. MEDIA & STREAMING
     ("spotify:careers", "https://www.lifeatspotify.com/jobs", "discovery_index"),
     ("soundcloud:greenhouse", "https://boards.greenhouse.io/soundcloud", "official_ats"),
     ("audible:careers", "https://www.audible.com/careers", "discovery_index"),
@@ -572,7 +572,7 @@ REGISTERED_BOARDS: list[tuple[str, str, str]] = [
     ("jiocinema:careers", "https://www.jio.com/careers", "discovery_index"),
     ("sonyliv:careers", "https://www.sonypictures.com/corp/careers", "discovery_index"),
     ("zee5:careers", "https://www.zee.com/careers/", "discovery_index"),
-    # ── 15. REMOTE-FIRST / GLOBAL DISTRIBUTED COMPANIES ─────────────────────
+    # 15. REMOTE-FIRST / GLOBAL DISTRIBUTED COMPANIES
     ("gitlab:remote", "https://about.gitlab.com/jobs/", "discovery_index"),
     ("automattic:careers", "https://automattic.com/work-with-us/", "discovery_index"),
     ("zapier:remote", "https://zapier.com/jobs", "discovery_index"),
@@ -588,7 +588,7 @@ REGISTERED_BOARDS: list[tuple[str, str, str]] = [
     ("canonical:careers", "https://canonical.com/careers", "discovery_index"),
     ("mozilla:careers", "https://www.mozilla.org/en-US/careers/listings/", "discovery_index"),
     ("wordpress:careers", "https://jobs.automattic.com", "discovery_index"),
-    # ── 16. INDIAN IT SERVICES & GCC / GLOBAL CAPABILITY CENTRES ────────────
+    # 16. INDIAN IT SERVICES & GCC / GLOBAL CAPABILITY CENTRES
     ("ltimindtree:careers", "https://www.ltimindtree.com/careers/", "discovery_index"),
     ("mphasis:careers", "https://careers.mphasis.com", "discovery_index"),
     ("persistent:careers", "https://www.persistent.com/careers/", "discovery_index"),
@@ -606,7 +606,7 @@ REGISTERED_BOARDS: list[tuple[str, str, str]] = [
     ("publicissapient:careers", "https://www.publicissapient.com/careers", "discovery_index"),
     ("virtusa:careers", "https://www.virtusa.com/careers", "discovery_index"),
     ("mastech-digital:careers", "https://www.mastechdigital.com/careers/", "discovery_index"),
-    # ── 17. SEMICONDUCTOR & HARDWARE (EXTENDED) ──────────────────────────────
+    # 17. SEMICONDUCTOR & HARDWARE (EXTENDED)
     ("marvell:careers", "https://careers.marvell.com", "discovery_index"),
     ("mediatek:careers", "https://careers.mediatek.com", "discovery_index"),
     ("skyworks:careers", "https://www.skyworksinc.com/en/Careers", "discovery_index"),
@@ -629,7 +629,7 @@ REGISTERED_BOARDS: list[tuple[str, str, str]] = [
         "https://www.st.com/content/st_com/en/about/st_careers.html",
         "discovery_index",
     ),
-    # ── 18. GLOBAL BANKS & FINANCIAL SERVICES (EXTENDED) ─────────────────────
+    # 18. GLOBAL BANKS & FINANCIAL SERVICES (EXTENDED)
     ("citigroup:careers", "https://jobs.citi.com", "discovery_index"),
     ("bankofamerica:careers", "https://careers.bankofamerica.com", "discovery_index"),
     ("wellsfargo:careers", "https://www.wellsfargojobs.com", "discovery_index"),
@@ -645,7 +645,7 @@ REGISTERED_BOARDS: list[tuple[str, str, str]] = [
     ("icicibank:careers", "https://www.icicicareers.com", "discovery_index"),
     ("kotakbank:careers", "https://www.kotak.com/en/careers.html", "discovery_index"),
     ("sbi:careers", "https://sbi.co.in/web/careers", "discovery_index"),
-    # ── 19. HFT / QUANT (EXTENDED, INTERNATIONAL) ────────────────────────────
+    # 19. HFT / QUANT (EXTENDED, INTERNATIONAL)
     ("virtu:careers", "https://www.virtu.com/careers/", "discovery_index"),
     ("geneva-trading:careers", "https://www.genevatrading.com/careers", "discovery_index"),
     ("qube-rt:careers", "https://www.qube-rt.com/careers", "discovery_index"),
@@ -653,7 +653,7 @@ REGISTERED_BOARDS: list[tuple[str, str, str]] = [
     ("belvederetrading:careers", "https://www.belvederetrading.com/careers/", "discovery_index"),
     ("tradelink:careers", "https://www.tradelink.com/careers", "discovery_index"),
     ("headlandstech:careers", "https://www.headlandstech.com/careers", "discovery_index"),
-    # ── 20. E-COMMERCE & RETAIL TECH (GLOBAL) ────────────────────────────────
+    # 20. E-COMMERCE & RETAIL TECH (GLOBAL)
     ("shopee:careers", "https://careers.shopee.com", "discovery_index"),
     ("lazada:careers", "https://www.lazada.com/careers/", "discovery_index"),
     ("mercadolibre:careers", "https://careers.mercadolibre.com", "discovery_index"),

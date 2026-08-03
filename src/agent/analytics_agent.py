@@ -60,7 +60,7 @@ class AnalyticsAgent:
 
         return ["\n".join(s) for s in sections]
 
-    # ── smarter sections ───────────────────────────────────────────────
+    # smarter sections
 
     async def _section_health(self) -> list[str]:
         """Live pipeline velocity: how fast are matches landing right now."""
@@ -73,9 +73,7 @@ class AnalyticsAgent:
             lines.append(f"  Accepted last 24h: <b>{total24}</b>")
             lines.append(f"  Accepted last 1h:  <b>{n_h1}</b>")
             if rows:
-                lines.append(
-                    f"  Rate: ~{total24 / 24:.1f}/hr ({total24 / 24 / 60:.2f}/min)"
-                )
+                lines.append(f"  Rate: ~{total24 / 24:.1f}/hr ({total24 / 24 / 60:.2f}/min)")
             near = await self.store.get_near_miss_count()
             lines.append(f"  Near-miss (LARP-able): {near}")
         except Exception:
@@ -221,7 +219,7 @@ class AnalyticsAgent:
         return lines
 
     def _load_smart_intel(self) -> dict:
-        """Load intel/smart_intel.json (written by scripts/smart_intel.py)."""
+        """Load intel/smart_intel.json (written by scripts/intel/smart_intel.py)."""
         import json
         from pathlib import Path
 
@@ -242,7 +240,7 @@ class AnalyticsAgent:
             for idx, c in enumerate(fh[:8], 1):
                 fund = (c.get("funding") or [{}])[0]
                 amount = fund.get("amount_usd")
-                amt = f"${amount/1e6:.1f}M" if amount else ""
+                amt = f"${amount / 1e6:.1f}M" if amount else ""
                 stage = fund.get("stage", "")
                 roles = ", ".join(r["role"][:24] for r in c.get("hiring_roles", [])[:2])
                 lines.append(

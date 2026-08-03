@@ -14,7 +14,7 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
 
-PROJECT = Path(__file__).resolve().parent.parent
+PROJECT = Path(__file__).resolve().parents[2]
 DOCKER_COMPOSE = f"docker compose -f {PROJECT}/docker-compose.yaml"
 
 console = Console()
@@ -100,7 +100,7 @@ def main() -> None:
         )
     )
 
-    # ── Cleanup ──
+    # Cleanup
     with Live(Table(), refresh_per_second=4, console=console) as live:
         t = build_table()
         row(t, "Cleanup", "[yellow]stopping stale...[/yellow]", "")
@@ -115,7 +115,7 @@ def main() -> None:
         row(t, "Cleanup", "[green]✓ Clean[/green]", "")
         live.update(t)
 
-    # ── Start everything under a live-updating status table ─────────────
+    # Start everything under a live-updating status table
 
     llama_started = False
     llama_ok = embed_ok = False
@@ -133,7 +133,7 @@ def main() -> None:
         for elapsed in range(deadman):
             t = build_table()
 
-            # ── Launch llama-server processes (first iteration only) ──
+            # Launch llama-server processes (first iteration only)
             if not llama_started:
                 subprocess.Popen(
                     [sys.executable, f"{PROJECT}/scripts/serve.py"],
@@ -157,7 +157,7 @@ def main() -> None:
                 ":8900",
             )
 
-            # ── Launch agent-memory-db (first iteration only) ──
+            # Launch agent-memory-db (first iteration only)
             if elapsed == 2:
                 run(f"{DOCKER_COMPOSE} up -d agent-memory-db", silent=True)
 
@@ -170,7 +170,7 @@ def main() -> None:
                 ":5433",
             )
 
-            # ── Launch firecrawl infra (first iteration only) ──
+            # Launch firecrawl infra (first iteration only)
             if not infra_started:
                 subprocess.Popen(
                     f"{DOCKER_COMPOSE} up -d redis playwright-service nuq-postgres searxng neo4j",
@@ -185,7 +185,7 @@ def main() -> None:
             row(t, "searxng", status_for(check_http("http://localhost:8080")), ":8080")
             row(t, "neo4j", status_for(check_port("localhost", 7687)), ":7687")
 
-            # ── rabbitmq ──
+            # rabbitmq
             if elapsed == 3:
                 run(
                     "podman rm -f firecrawl_rabbitmq_1 2>/dev/null; "
@@ -206,7 +206,7 @@ def main() -> None:
 
             row(t, "playwright", status_for(container_running("firecrawl_playwright")), ":3000")
 
-            # ── firecrawl api ──
+            # firecrawl api
             if elapsed == 6:
                 subprocess.Popen(
                     f"{DOCKER_COMPOSE} up -d api",
@@ -225,7 +225,7 @@ def main() -> None:
 
             live.update(t)
 
-            # ── All up? Break early ──
+            # All up? Break early
             all_up = (
                 llama_ok
                 and embed_ok
@@ -239,7 +239,7 @@ def main() -> None:
 
             time.sleep(1)
 
-    # ── Final status ──
+    # Final status
     t = build_table()
     row(t, "GeneralCompute (gemma-4-31B-it)", STATUS_UP, "Cloud API")
     row(t, "llama-server (Embed)", status_for(embed_ok), ":8900")

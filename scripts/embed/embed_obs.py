@@ -1,7 +1,7 @@
 """Batch-embed the job corpus into ``obs_embeddings`` via the local embed server.
 
 Usage:
-    uv run --with azure-storage-blob python3 scripts/embed_obs.py [--all] [--limit N]
+    uv run --with azure-storage-blob python3 scripts/embed/embed_obs.py [--all] [--limit N]
 
 Checkpointed and resumable: rows that already have an embedding are skipped,
 so re-running just continues from where it stopped. Software-role titles are
@@ -56,9 +56,7 @@ async def run(limit: int | None, all_corpus: bool) -> None:
             await asyncio.sleep(THROTTLE)
         total += ok
         rate = ok / max(time.monotonic() - t0, 0.001)
-        logger.info(
-            f"embedded {ok} obs this pass (running total {total}, ~{rate:.0f}/s)"
-        )
+        logger.info(f"embedded {ok} obs this pass (running total {total}, ~{rate:.0f}/s)")
         if ok < len(obs):
             # Embed server rate-limited or text filtered out; don't spin.
             await asyncio.sleep(2)
@@ -67,7 +65,9 @@ async def run(limit: int | None, all_corpus: bool) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Embed job corpus into obs_embeddings")
-    ap.add_argument("--all", action="store_true", help="embed whole corpus (not just software-first)")
+    ap.add_argument(
+        "--all", action="store_true", help="embed whole corpus (not just software-first)"
+    )
     ap.add_argument("--limit", type=int, default=None, help="max observations to embed this run")
     args = ap.parse_args()
     asyncio.run(run(args.limit, args.all))

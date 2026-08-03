@@ -15,7 +15,7 @@ Pulls the following signals together (no LLM, runs on the local box):
 
 Writes intel/smart_intel.json + .csv for the friend's auto-applier and the
 Telegram analytics. Run from the local box (NOT the relic):
-    uv run python3 scripts/smart_intel.py [--write]
+    uv run python3 scripts/intel/smart_intel.py [--write]
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ from src.memory.pgvector_store import MemoryStore
 
 logger = get_logger("smart_intel")
 
-OUT_DIR = Path(__file__).resolve().parent.parent / "intel"
+OUT_DIR = Path(__file__).resolve().parent.parent.parent / "intel"
 
 
 async def _funding_hiring(store: MemoryStore) -> list[dict[str, Any]]:

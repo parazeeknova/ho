@@ -225,9 +225,7 @@ class LlmQueueConfig:
     estimated_tokens_per_minute: int = field(
         default_factory=lambda: _env_int("LLM_QUEUE_TPM", 400000)
     )
-    max_in_flight: int = field(
-        default_factory=lambda: _env_int("LLM_QUEUE_MAX_IN_FLIGHT", 30)
-    )
+    max_in_flight: int = field(default_factory=lambda: _env_int("LLM_QUEUE_MAX_IN_FLIGHT", 30))
     match_token_budget: int = field(
         default_factory=lambda: _env_int("LLM_QUEUE_MATCH_TOKENS", 2000)
     )

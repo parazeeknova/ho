@@ -8,23 +8,21 @@ Uses ``podman volume export`` where available (tar stream of the volume), with
 a raw-copy fallback via ``cp -a`` of the volume's ``_data`` directory.
 
 Run:
-    uv run python scripts/checkpoint_backup.py            # all ho volumes
-    uv run python scripts/checkpoint_backup.py --vol firecrawl_agent_memory_data
+    uv run python scripts/backup/checkpoint_backup.py            # all ho volumes
+    uv run python scripts/backup/checkpoint_backup.py --vol firecrawl_agent_memory_data
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import subprocess
 import sys
 import tarfile
-import tempfile
 import time
 from pathlib import Path
 
-PROJECT = Path(__file__).resolve().parent.parent
+PROJECT = Path(__file__).resolve().parents[2]
 CHECKPOINT_DIR = PROJECT / "checkpoints"
 
 # Default ho-stack named volumes.
@@ -106,7 +104,7 @@ def main() -> None:
             method = "tar" if ok else None
         size = dest_tar.stat().st_size if dest_tar.exists() else 0
         if ok:
-            print(f"  OK {vol}: {size/1e6:.1f} MB ({method})")
+            print(f"  OK {vol}: {size / 1e6:.1f} MB ({method})")
             manifest.append({"volume": vol, "file": dest_tar.name, "size": size, "method": method})
         else:
             print(f"  FAIL {vol}")

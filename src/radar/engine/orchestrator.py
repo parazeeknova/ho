@@ -112,7 +112,7 @@ def _hash_board_url(board_url: str) -> str:
     return hashlib.sha256(board_url.encode()).hexdigest()[:8]
 
 
-# ── Source persistence ───────────────────────────────────────────────
+# Source persistence
 
 
 def _save_source_checkpoint(source_id: str, board_url: str, origin: str = "discovery") -> None:
@@ -146,7 +146,7 @@ async def _persist_discovered_sources(
     return count
 
 
-# ── Company discovery ────────────────────────────────────────────────
+# Company discovery
 
 
 async def _discover_new_companies() -> list[dict[str, Any]]:
@@ -201,9 +201,7 @@ async def _discover_new_companies() -> list[dict[str, Any]]:
         batch_cap = int(os.environ.get("AZURE_DISCOVERY_BATCH", "300"))
         fresh = fresh[:batch_cap]
         results = fresh
-        logger.info(
-            f"Azure discovery: {len(results)} new companies ({skipped} already registered)"
-        )
+        logger.info(f"Azure discovery: {len(results)} new companies ({skipped} already registered)")
         _DISCOVERY_METRICS["sources_added"] = _DISCOVERY_METRICS.get("sources_added", 0) + len(
             results
         )
@@ -346,7 +344,7 @@ async def _discover_new_companies() -> list[dict[str, Any]]:
     return deduped
 
 
-# ── Source polling ───────────────────────────────────────────────────
+# Source polling
 
 
 async def _scrape_indexes() -> list[JobObservation]:
@@ -453,7 +451,7 @@ async def _poll_board(board: dict[str, str], app: FirecrawlApp) -> list[JobObser
     return observations
 
 
-# ── Posting fetch + gates ────────────────────────────────────────────
+# Posting fetch + gates
 
 
 def _json_to_markdown(raw_json: Any) -> str:
@@ -552,9 +550,7 @@ async def _load_ungated_observations(store: MemoryStore, limit: int = 400) -> li
                 # still rank first via score_sql.
                 safe = [kw for kw, _ in known if kw and kw.replace("-", "").isalnum()]
                 if safe:
-                    conds = " OR ".join(
-                        f"lower(o.title) LIKE '%{kw}%'" for kw in safe[:120]
-                    )
+                    conds = " OR ".join(f"lower(o.title) LIKE '%{kw}%'" for kw in safe[:120])
                     known_kw_filter = f"({conds})"
 
         async with store._pool.acquire() as conn:
@@ -585,8 +581,7 @@ async def _load_ungated_observations(store: MemoryStore, limit: int = 400) -> li
             # the budget isn't spent on stale listings the gate would reject as
             # source_stale.
             fresh_bonus = (
-                "CASE WHEN o.last_seen > extract(epoch from now()) - 3*86400 "
-                "THEN 0 ELSE 1 END"
+                "CASE WHEN o.last_seen > extract(epoch from now()) - 3*86400 THEN 0 ELSE 1 END"
             )
             # Content-rich: prefer obs whose raw_json actually carries a JD body
             # (text/lists/description/...), so the sweep doesn't grind on thin
@@ -867,7 +862,7 @@ async def _persist_rejected(
         pass
 
 
-# ── Queue ranking ────────────────────────────────────────────────────
+# Queue ranking
 
 
 def _rank_for_queue(candidates: list[JobCandidate]) -> list[JobCandidate]:
@@ -907,7 +902,7 @@ def _group_key(c: JobCandidate) -> str:
     return make_canonical_id(c.normalized_company, c.normalized_role, c.normalized_location)
 
 
-# ── Post-LLM enrichment ──────────────────────────────────────────────
+# Post-LLM enrichment
 
 
 def _as_list(val: Any) -> list[Any]:
@@ -1023,7 +1018,7 @@ async def _persist_full(store: MemoryStore, c: JobCandidate) -> None:
         pass
 
 
-# ── Telegram ─────────────────────────────────────────────────────────
+# Telegram
 
 
 async def _notify_telegram(
@@ -1219,7 +1214,7 @@ def _card(c: JobCandidate) -> dict[str, Any]:
     }
 
 
-# ── Graph handlers ───────────────────────────────────────────────────
+# Graph handlers
 
 
 async def _dispatch_company_events(
@@ -1368,7 +1363,7 @@ async def _outreach_handler(entry: FrontierEntry) -> list[FrontierEntry]:
     return []
 
 
-# ── job_processor ────────────────────────────────────────────────────
+# job_processor
 
 
 async def _job_processor(entry: FrontierEntry) -> list[FrontierEntry]:
@@ -1464,7 +1459,7 @@ async def _job_processor(entry: FrontierEntry) -> list[FrontierEntry]:
     return []
 
 
-# ── Main pipeline ────────────────────────────────────────────────────
+# Main pipeline
 
 
 async def _run_radar_pipeline() -> None:
@@ -2004,7 +1999,7 @@ async def _run_radar_pipeline() -> None:
                     )
                     _sp.Popen(
                         f"cd {_root} && PYTHONPATH={_root} "
-                        f"nohup uv run python scripts/auto_backup.py "
+                        f"nohup uv run python scripts/backup/auto_backup.py "
                         f">> logs/auto_backup.log 2>&1 &",
                         shell=True,
                         start_new_session=True,
