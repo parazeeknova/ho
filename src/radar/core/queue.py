@@ -23,6 +23,7 @@ import heapq
 import json
 import re
 import time
+import traceback
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -128,7 +129,7 @@ async def enqueue_candidate(candidate: JobCandidate, priority: int = 50, store: 
                     candidate.canonical_id,
                     candidate.extra.get("version", 1),
                     priority,
-                    json.dumps(_candidate_to_payload(candidate)),
+                    _candidate_to_payload(candidate),
                 )
             if res == "INSERT 0 1":
                 return True
@@ -166,6 +167,15 @@ def _candidate_from_payload(payload: dict[str, Any] | str) -> JobCandidate:
             payload = json.loads(payload)
         except Exception:
             payload = {}
+    if isinstance(payload, str):
+        # Legacy rows written while the jsonb codec double-encoded
+        # pre-serialized strings: unwrap the nested JSON text once more.
+        try:
+            payload = json.loads(payload)
+        except Exception:
+            payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
     return JobCandidate(
         canonical_id=payload.get("canonical_id", ""),
         source=payload.get("source", ""),
@@ -218,7 +228,11 @@ async def _db_claim(store: Any, limit: int) -> list[tuple[int, int, JobCandidate
                 )
         except Exception:
             pass
-        logger.warning("DB queue claim failed", exception=str(e))
+        logger.warning(
+            "DB queue claim failed",
+            exception=str(e),
+            traceback=traceback.format_exc(),
+        )
     return claimed
 
 

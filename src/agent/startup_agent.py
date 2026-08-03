@@ -23,10 +23,40 @@ from src.logging import get_logger
 console = Console()
 
 _PLACEHOLDER_COMPANY_RX = re.compile(
-    r"not.?specified|unknown|n\.?a\.?|tbd|placeholder|no.?company|"
-    r"^company$|^job listing$|^-+$",
+    r"not.?specified|unknown|n[./]?a\.?|tbd|placeholder|no.?company|"
+    r"^company$|^job listing$|^-+$|well.?known",
     re.I,
 )
+
+# Discovery adapters sometimes register article headlines / newsletter titles
+# as "companies" (HN titles, news blurbs). OSINT on those names is pure noise:
+# the search returns unrelated top stories and the LLM attributes them to the
+# placeholder. A real company name is short, title-cased and noun-led.
+_HEADLINE_START_RX = re.compile(
+    r"^(what|how|why|when|where|who|after|before|he|she|they|we|this|that|"
+    r"the|a|an|in|on|at|is|are|was|were|leaves|leaving|quits|quitting|"
+    r"raises|raised|builds|building|launches|launched|sells|selling|"
+    r"moves|moving|breaks|breaks|turns|turning|from|inside|meet|why)\b",
+    re.I,
+)
+
+
+def _is_plausible_company_name(company: str) -> bool:
+    """True only for names that plausibly identify a real company.
+
+    Rejects placeholders and sentence-like discovery artifacts (long
+    headline strings, verb-led phrases) so OSINT never runs against a
+    name that cannot resolve to a real business.
+    """
+    name = (company or "").strip()
+    if not name or _PLACEHOLDER_COMPANY_RX.search(name):
+        return False
+    if len(name) > 45:
+        return False
+    words = name.split()
+    if len(words) >= 6:
+        return False
+    return not bool(_HEADLINE_START_RX.match(name))
 
 
 def _company_domain(company: str) -> str:
@@ -36,9 +66,38 @@ def _company_domain(company: str) -> str:
     when the OSINT layer could not identify a real company.
     """
     name = (company or "").strip()
-    if not name or _PLACEHOLDER_COMPANY_RX.search(name):
+    if not _is_plausible_company_name(name):
         return ""
     return name.lower().replace(" ", "").strip() + ".com"
+
+
+# Cross-company signal pollution guard: SearXNG returns the same generic top
+# stories for many queries, so the LLM can attribute the same signal (e.g.
+# "Open-sourced Kimi-K3 on GitHub") to unrelated companies. A normalized
+# signal already seen for a different company is dropped.
+_SIGNAL_LOG: list[tuple[str, frozenset[str]]] = []
+
+
+def _signal_tokens(sig: str) -> frozenset[str]:
+    toks = {t for t in re.sub(r"[^a-z0-9 ]", " ", sig.lower()).split() if len(t) > 2}
+    return frozenset(toks)
+
+
+def _signal_is_pollution(sig: str, company_key: str) -> bool:
+    """True when the same signal text was already recorded for another company."""
+    toks = _signal_tokens(sig)
+    if not toks:
+        return False
+    for seen_company, seen_toks in _SIGNAL_LOG:
+        if seen_company == company_key:
+            continue
+        overlap = len(toks & seen_toks) / min(len(toks), len(seen_toks))
+        if overlap >= 0.6:
+            return True
+    _SIGNAL_LOG.append((company_key, toks))
+    if len(_SIGNAL_LOG) > 500:
+        _SIGNAL_LOG[:200] = []
+    return False
 
 
 logger = get_logger("startup_agent")
@@ -303,7 +362,7 @@ class StartupAgent:
         hammering.
         """
         company = str(job.get("company") or "").strip()
-        if not company or company in ("N/A", "Unknown", "Company"):
+        if not _is_plausible_company_name(company):
             return job
         if self.store is not None:
             cached = await self._get_cached_osint(company)
@@ -477,6 +536,10 @@ class StartupAgent:
             "6. founder_socials (array of strings): legacy field with LinkedIn/X URLs.\n"
             "7. company_news (string|null): one-sentence recent news summary.\n\n"
             "CRITICAL RULES:\n"
+            f"- Everything you extract MUST be specifically about '{company}'.\n"
+            "  If a search result concerns a DIFFERENT company (another firm's\n"
+            "  product, funding, founder or news), discard it entirely - do not\n"
+            "  fold it into any field.\n"
             "- All URLs MUST be valid https:// links. Return null if no valid URL found.\n"
             "- Missing fields must be explicit null, never invented.\n"
             "- NEVER guess or fabricate email addresses. Return null for email unless\n"
@@ -544,7 +607,17 @@ class StartupAgent:
 
         signals = extracted.get("osint_signals")
         if isinstance(signals, list):
-            job["osint_signals"] = [str(s) for s in signals[:2]]
+            kept = []
+            for s in signals[:2]:
+                sig = str(s)
+                if _signal_is_pollution(sig, company.lower()):
+                    logger.info(
+                        f"OSINT signal dropped as cross-company pollution for {company}",
+                        signal=sig[:80],
+                    )
+                    continue
+                kept.append(sig)
+            job["osint_signals"] = kept
 
         if job["is_startup"]:
             job["match_percent"] = min(99, job.get("match_percent", 0) + 10)

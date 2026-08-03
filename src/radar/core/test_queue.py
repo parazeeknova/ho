@@ -241,3 +241,37 @@ class TestVectorGate:
 
         assert ctx.calls == 1
         assert results[0].eligibility == EligibilityState.ACCEPTED
+
+
+class TestCandidateFromPayload:
+    def test_plain_dict_payload(self) -> None:
+        from src.radar.core.queue import _candidate_from_payload
+
+        c = _candidate_from_payload(
+            {"canonical_id": "abc", "source": "lever", "direct_apply_url": "https://x", "extra": {}}
+        )
+        assert c.canonical_id == "abc"
+
+    def test_clean_json_string_payload(self) -> None:
+        import json
+
+        from src.radar.core.queue import _candidate_from_payload
+
+        c = _candidate_from_payload(json.dumps({"canonical_id": "abc"}))
+        assert c.canonical_id == "abc"
+
+    def test_legacy_double_encoded_payload(self) -> None:
+        import json
+
+        from src.radar.core.queue import _candidate_from_payload
+
+        # Rows written while the jsonb codec double-encoded pre-serialized
+        # strings: the stored value is a JSON string containing JSON text.
+        c = _candidate_from_payload(json.dumps(json.dumps({"canonical_id": "abc"})))
+        assert c.canonical_id == "abc"
+
+    def test_garbage_payload_survives(self) -> None:
+        from src.radar.core.queue import _candidate_from_payload
+
+        c = _candidate_from_payload("not json at all")
+        assert c.canonical_id == ""

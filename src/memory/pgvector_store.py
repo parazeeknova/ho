@@ -472,15 +472,20 @@ class MemoryStore:
 
         async def _init(conn) -> None:
             await register_vector(conn)
+            # Every pool connection must share the same jsonb codec. Registering
+            # it only on the startup connection left later-spawned connections
+            # on asyncpg's default codec, so the same row could decode as a
+            # JSON string on one connection and a dict on another (and INSERTs
+            # would double-encode pre-serialized strings through json.dumps).
+            await conn.set_type_codec(
+                "jsonb", encoder=json.dumps, decoder=json.loads, schema="pg_catalog"
+            )
 
         pool = await asyncpg.create_pool(
             cfg.dsn, min_size=cfg.min_pool, max_size=cfg.max_pool, init=_init
         )
         async with pool.acquire() as conn:
             await register_vector(conn)
-            await conn.set_type_codec(
-                "jsonb", encoder=json.dumps, decoder=json.loads, schema="pg_catalog"
-            )
             await conn.execute(CREATE_TABLES_SQL)
             # Lightweight column migrations for tables that predate schema
             # additions (CREATE TABLE IF NOT EXISTS won't touch them).
@@ -1798,8 +1803,11 @@ class MemoryStore:
             return None
         if time.time() >= (row.get("expires_at") or 0):
             return None
+        data = row.get("data")
         try:
-            return json.loads(row.get("data") or "{}")
+            if isinstance(data, str):
+                return json.loads(data or "{}")
+            return data if isinstance(data, dict) else None
         except Exception:
             return None
 
