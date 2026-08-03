@@ -10,7 +10,28 @@ import { LeverAdapter } from "./ats/lever.js";
 import { WorkdayAdapter } from "./ats/workday.js";
 import { GenericAdapter } from "./ats/generic.js";
 import { ActivityWatchdog } from "./utils/activity.js";
-import { getDeferredFieldCount, resetDeferredFieldCount } from "./ats/shared/screener.js";
+import { getBlankedRequiredCount, getDeferredFieldCount, resetBlankedRequiredCount, resetDeferredFieldCount } from "./ats/shared/screener.js";
+
+// Rejects when a promise has not settled within `ms`. Used so a best-effort
+// captcha attempt can never stall the run indefinitely.
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`operation timed out after ${ms}ms`)),
+      ms
+    );
+    promise.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      }
+    );
+  });
+}
 
 interface AdapterRegistration {
   pattern: RegExp;
@@ -231,35 +252,76 @@ async function main() {
 
     const adapter = getAdapterForUrl(payload.url, stagehand);
 
-    // Anti-bot watchdog: if a captcha/challenge blocks the form, abort loudly
-    // (status failed, error CAPTCHA_DETECTED) instead of silently grinding
-    // through fill/RPC timeouts. The Python worker turns this into a Telegram
-    // notification to the user. Polled while the fill runs. A captcha-blocked
-    // fill does NOT throw on its own (the walk just finds no fields), so the
-    // fill is raced against an abort signal: detection rejects the race even
-    // when the adapter would otherwise "complete" with a blank form.
+    // Anti-bot watchdog: if a captcha/challenge blocks the form, do NOT abort
+    // the moment it is detected — attempt to solve it once (click the visible
+    // checkbox/challenge), and only fail the run (status failed, error
+    // CAPTCHA_DETECTED) if it is STILL blocking after that attempt. The Python
+    // worker turns this into a Telegram notification to the user. Polled while
+    // the fill runs and stays armed through submit, so a captcha blocking the
+    // submit button is caught the same way. A captcha-blocked fill does NOT
+    // throw on its own (the walk just finds no fields), so the fill and submit
+    // are raced against an abort signal: an unresolved challenge rejects the
+    // race even when the adapter would otherwise "complete" with a blank form.
     const captchaWatchMs = parseInt(process.env.AUTOFILL_CAPTCHA_WATCH_MS || "8000", 10);
+    const captchaAttemptTimeoutMs = parseInt(
+      process.env.AUTOFILL_CAPTCHA_ATTEMPT_TIMEOUT_MS || "20000",
+      10
+    );
     let captchaMessage: string | null = null;
     let rejectCaptcha: ((err: Error) => void) | null = null;
     const captchaAbort = new Promise<never>((_, reject) => {
       rejectCaptcha = reject;
     });
+    // The watchdog stays armed through fill AND submit; once nothing races
+    // captchaAbort any more (e.g. after a successful submit), a late rejection
+    // must not crash the process as an unhandled rejection.
+    captchaAbort.catch(() => {});
+    let captchaAttempted = false;
     const captchaTimer = setInterval(async () => {
       if (captchaMessage) return;
       try {
         const hit = await adapter.detectCaptcha();
-        if (hit) {
-          captchaMessage = hit;
-          clearInterval(captchaTimer);
-          rejectCaptcha?.(
-            new Error(`CAPTCHA_DETECTED: ${hit} blocked the application form`)
+        if (!hit) {
+          // Nothing blocking now (or a previous attempt cleared it).
+          captchaAttempted = false;
+          return;
+        }
+        // A concurrent tick is already attempting; wait for it to settle.
+        if (captchaAttempted) return;
+        // First sighting of a challenge: try to solve it once before declaring
+        // failure. The fill keeps running in parallel; only a challenge that
+        // survives the attempt aborts the run.
+        captchaAttempted = true;
+        try {
+          const attempted = await withTimeout(
+            adapter.attemptCaptcha(),
+            captchaAttemptTimeoutMs
+          );
+          console.log(`[Runner] Captcha attempt (clicked: ${attempted}); re-checking...`);
+        } catch (attemptErr: any) {
+          console.warn(
+            "[Runner] Captcha attempt failed:",
+            attemptErr?.message || String(attemptErr)
           );
         }
+        const after = await adapter.detectCaptcha();
+        if (!after) {
+          // The attempt cleared the challenge — keep watching, and allow a
+          // future challenge its own single attempt.
+          captchaAttempted = false;
+          return;
+        }
+        captchaMessage = after;
+        clearInterval(captchaTimer);
+        rejectCaptcha?.(
+          new Error(`CAPTCHA_DETECTED: ${after} blocked the application form`)
+        );
       } catch (_) {}
     }, captchaWatchMs);
 
     // Execute filling process with RPC helper
     resetDeferredFieldCount();
+    resetBlankedRequiredCount();
     const fillPromise = adapter.fill(payload, askPythonRpc);
     try {
       await Promise.race([fillPromise, captchaAbort]);
@@ -282,8 +344,6 @@ async function main() {
         process.exit(1);
       }
       throw fillErr;
-    } finally {
-      clearInterval(captchaTimer);
     }
 
     // Save screenshot safely
@@ -307,6 +367,7 @@ async function main() {
       // AUTOFILL_REVIEW_HOLD_MS) so a human can inspect the filled answers;
       // any action — or the hold timeout — closes without submitting.
       watchdog?.stop();
+      clearInterval(captchaTimer);
       console.log(
         "[Runner] Submission disabled — browser window remaining open for review. " +
           "Any action (or the hold timeout) closes without submitting."
@@ -336,20 +397,20 @@ async function main() {
     }
 
     if (payload.mode === "auto") {
-      if (getDeferredFieldCount() > 0) {
-        // A question was deferred (overnight, no human): its field is blank.
-        // Never submit an incomplete application — abort for the morning
-        // digest / resume flow instead. The worker marks the job deferred
-        // (the skipped event is kept deferred when questions are pending).
+      if (getDeferredFieldCount() > 0 || getBlankedRequiredCount() > 0) {
+        // A question was deferred (overnight, no human) or a required field
+        // failed to commit. Never submit an incomplete application — abort
+        // for the morning digest / resume flow instead. The worker keeps the
+        // job retryable (skipped/deferred), never submitted.
         console.log(
-          "[Runner] Deferred question(s) remain; not submitting. " +
+          `[Runner] ${getDeferredFieldCount()} deferred + ${getBlankedRequiredCount()} required-blank question(s) remain; not submitting. ` +
             "Job stays deferred for the morning digest / resume flow."
         );
         emitStatus({
           jobId: payload.jobId,
           status: "skipped",
           screenshotPath: screenshotPath,
-          message: "Deferred questions remain; application not submitted."
+          message: "Deferred/blank required questions remain; application not submitted."
         });
         watchdog?.stop();
         rl.close();
@@ -358,21 +419,116 @@ async function main() {
       }
       console.log("[Runner] Auto mode enabled. Submitting application immediately...");
       // The watchdog stays armed through submit so a stuck submit is also
-      // killed, then disarms once the outcome is reported.
-      await adapter.submit();
+      // killed, and a captcha blocking the submit button is attempted once and
+      // then aborts the run; it disarms once the outcome is reported.
+      //
+      // Verified-submit retry model (user-specified):
+      //   submit attempt 1
+      //     -> retryable failure (validation banner / submit button visible)
+      //        -> recheck missing fields (ONCE)
+      //        -> submit attempt 2
+      //           -> retryable failure -> submit attempt 3
+      //              -> still failing -> FAILED with the last error banner
+      //   Only a CONFIRMATION page (success-URL redirect or inline
+      //   confirmation text) yields `submitted`.
+      const MAX_SUBMIT_ATTEMPTS = 3;
+      let lastError: string | undefined;
+      let rechecked = false;
+      for (let attempt = 1; attempt <= MAX_SUBMIT_ATTEMPTS; attempt++) {
+        let outcome: any;
+        try {
+          outcome = await Promise.race([adapter.submit(), captchaAbort]);
+        } catch (submitErr: any) {
+          if (captchaMessage) {
+            clearInterval(captchaTimer);
+            throw new Error(`CAPTCHA_DETECTED: ${captchaMessage} blocked the application form`);
+          }
+          throw submitErr;
+        }
+
+        if (outcome?.confirmed) {
+          // Confirmation page reached — the application is truly submitted.
+          clearInterval(captchaTimer);
+          // Capture post-submit evidence: the confirmation page.
+          let confirmShot = screenshotPath;
+          try {
+            const pages = stagehand.context.pages();
+            const activePage = adapter.getActivePage();
+            confirmShot = screenshotPath.replace(/\.png$/, "-confirm.png");
+            await activePage.screenshot({ path: confirmShot, fullPage: true });
+            console.log(`[Runner] Confirmation screenshot saved to ${confirmShot}`);
+          } catch (_) {
+            console.warn("[Runner] Could not capture confirmation screenshot.");
+          }
+          emitStatus({
+            jobId: payload.jobId,
+            status: "submitted",
+            screenshotPath: confirmShot,
+            message: "Application filled and submitted automatically (confirmation verified)."
+          });
+          watchdog?.stop();
+          rl.close();
+          await stagehand.close();
+          process.exit(0);
+        }
+
+        // Not confirmed. If retryable and we still have attempts (and have
+        // not yet rechecked), recheck missing fields then try again.
+        lastError = outcome?.error;
+        if (outcome?.retryable) {
+          console.warn(
+            `[Runner] Submit attempt ${attempt}/${MAX_SUBMIT_ATTEMPTS} not confirmed: ${lastError ?? "validation likely failed"}`
+          );
+          if (attempt < MAX_SUBMIT_ATTEMPTS) {
+            if (!rechecked) {
+              rechecked = true;
+              console.log("[Runner] Rechecking missing required fields before retry...");
+              try {
+                const stillBlank = await adapter.recheckMissingFields(askPythonRpc);
+                if (stillBlank > 0) {
+                  console.warn(`[Runner] Recheck found ${stillBlank} required field(s) still blank.`);
+                }
+              } catch (recheckErr: any) {
+                console.warn("[Runner] Recheck failed:", recheckErr?.message || recheckErr);
+              }
+            }
+            continue;
+          }
+        }
+
+        // Exhausted attempts or non-retryable: mark failed with the reason.
+        clearInterval(captchaTimer);
+        const failMsg =
+          lastError ||
+          `submit not confirmed after ${MAX_SUBMIT_ATTEMPTS} attempts (no success or error outcome)`;
+        console.error(`[Runner] Submission failed: ${failMsg}`);
+        emitStatus({
+          jobId: payload.jobId,
+          status: "failed",
+          screenshotPath: screenshotPath,
+          error: `Submit not confirmed: ${failMsg}`,
+        });
+        watchdog?.stop();
+        rl.close();
+        await stagehand.close();
+        process.exit(1);
+      }
+      // Unreachable safety net.
+      clearInterval(captchaTimer);
       emitStatus({
         jobId: payload.jobId,
-        status: "submitted",
+        status: "failed",
         screenshotPath: screenshotPath,
-        message: "Application filled and submitted automatically."
+        error: "submit loop exited without a terminal outcome",
       });
       watchdog?.stop();
       rl.close();
       await stagehand.close();
-      process.exit(0);
+      process.exit(1);
     } else {
       // Review mode: Emit awaiting_review and await action from single dispatcher
       watchdog?.stop();
+      clearInterval(captchaTimer);
       emitStatus({
         jobId: payload.jobId,
         status: "awaiting_review",
@@ -388,14 +544,39 @@ async function main() {
 
       if (action === "submit") {
         console.log("[Runner] Callback 'submit' received. Submitting...");
-        await adapter.submit();
+        let outcome: any;
+        try {
+          outcome = await Promise.race([adapter.submit(), captchaAbort]);
+        } catch (submitErr) {
+          if (captchaMessage) {
+            clearInterval(captchaTimer);
+            throw new Error(`CAPTCHA_DETECTED: ${captchaMessage} blocked the application form`);
+          }
+          throw submitErr;
+        }
+        clearInterval(captchaTimer);
+        if (!outcome?.confirmed) {
+          // The ATS did not reach a confirmation page — never report submitted.
+          const failMsg = outcome?.error ?? "submit not confirmed";
+          console.error(`[Runner] Submit not confirmed after user review: ${failMsg}`);
+          emitStatus({
+            jobId: payload.jobId,
+            status: "failed",
+            screenshotPath: screenshotPath,
+            error: `Submit not confirmed: ${failMsg}`,
+          });
+          rl.close();
+          await stagehand.close();
+          process.exit(1);
+        }
         emitStatus({
           jobId: payload.jobId,
           status: "submitted",
           screenshotPath: screenshotPath,
-          message: "Application submitted after user review."
+          message: "Application submitted after user review (confirmation verified)."
         });
       } else {
+        clearInterval(captchaTimer);
         console.log("[Runner] Callback 'skip' received. Skipping submission...");
         emitStatus({
           jobId: payload.jobId,
