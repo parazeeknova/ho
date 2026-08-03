@@ -125,6 +125,27 @@ export function chooseOption(candidates: string[], optionTexts: string[]): strin
   return null;
 }
 
+/**
+ * True when a committed form value is consistent with the intended answer.
+ * Mirrors the matching rules used to pick options (exact, then substring,
+ * then a forgiving edit distance) so a value that the option resolver would
+ * have chosen counts as committed, while a different option (e.g. "No"
+ * committed where the answer was "Yes") is flagged. Empty strings never match.
+ */
+export function valuesConsistent(answer: string, committed: string): boolean {
+  const a = normalizeOptionText(answer);
+  const c = normalizeOptionText(committed);
+  if (!a || !c) return false;
+  if (a === c) return true;
+  // The answer is a leading token/phrase of the committed option text
+  // ("No" vs "No, I will require immediate visa sponsorship").
+  if (c.includes(a)) return true;
+  if (a.includes(c)) return true;
+  const threshold = Math.max(1, Math.min(2, Math.floor(a.length / 4)));
+  const tokens = a.split(/\s+/).filter(Boolean);
+  return tokens.some((tok) => tok && editDistance(tok, c) <= threshold);
+}
+
 /** CSS attribute-value escaping (values are alphanumeric in practice). */
 export function cssEscape(text: string): string {
   return (text || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
@@ -165,6 +186,10 @@ export function translateToDate(answer: string): Date | null {
     const yy = md[3].length === 2 ? 2000 + +md[3] : +md[3];
     return new Date(yy, +md[1] - 1, +md[2]);
   }
+  // A bare year (e.g. "2027") — common for "Expected graduation year"
+  // fields. Default to December 31 of that year.
+  const yr = a.match(/^(19|20)\d{2}$/);
+  if (yr) return new Date(+yr[0], 11, 31);
   return null;
 }
 
