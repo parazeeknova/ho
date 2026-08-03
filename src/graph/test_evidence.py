@@ -70,7 +70,7 @@ class TestEvidenceUncertaintyHook:
     def test_evidence_score_lowers_uncertainty(self) -> None:
         node = GraphNode(id="n1", node_type=NodeType.COMPANY, data={"name": "Acme"})
         node.confidence = Confidence(score=0.1)  # graph says low confidence
-        adjacency = {"edges_out": set(), "edges_in": set()}
+        adjacency: dict = {"edges_out": set(), "edges_in": set()}
         from src.graph.entity import CAPABILITY_GRAPH
 
         base = compute_uncertainty_score(node, adjacency, CAPABILITY_GRAPH)
