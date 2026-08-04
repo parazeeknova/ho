@@ -46,7 +46,9 @@ async def test_deterministic_question_answering():
 
 
 @pytest.mark.asyncio
-async def test_sensitive_questions_never_answered_by_llm():
+async def test_sensitive_questions_never_answered_by_llm(tmp_path):
+    """Identity questions are never LLM-answered or guessed: without a grilled
+    fact they resolve to ASK_USER; with one they answer deterministically."""
     mock_cm = MagicMock()
     mock_cm.chat = AsyncMock(
         return_value='{"Why this role?": "I admire Twilio\'s developer-first API culture.", '
@@ -54,7 +56,8 @@ async def test_sensitive_questions_never_answered_by_llm():
         '"Are you Hispanic/Latino?": "Yes"}'
     )
 
-    rag = ScreenerRAG(context_manager=mock_cm, exact_answers={})
+    persona_json = tmp_path / "persona.json"
+    persona_json.write_text(json.dumps({"name": "", "version": 1, "answers": []}))
     questions = [
         "Disability Status",
         "Are you Hispanic/Latino?",
@@ -62,7 +65,11 @@ async def test_sensitive_questions_never_answered_by_llm():
         "Why this role?",
     ]
 
-    with patch("autofill.rag.get_config", return_value=_cfg()):
+    with (
+        patch("autofill.rag.PERSONA_JSON", persona_json),
+        patch("autofill.rag.get_config", return_value=_cfg()),
+    ):
+        rag = ScreenerRAG(context_manager=mock_cm, exact_answers={})
         answers = await rag.answer_questions(questions)
 
     assert answers["Disability Status"] == "__ASK_USER__"
@@ -73,9 +80,48 @@ async def test_sensitive_questions_never_answered_by_llm():
     # Only the non-sensitive question was sent to the LLM.
     prompt = mock_cm.chat.call_args.args[0]
     assert "Disability Status" not in prompt
-    assert "Veteran Status" not in prompt
-    assert "Are you Hispanic/Latino?" not in prompt
-    assert "Why this role?" in prompt
+
+
+@pytest.mark.asyncio
+async def test_sensitive_questions_answer_from_grilled_persona(tmp_path):
+    """With grilled facts present, identity questions resolve deterministically
+    and the LLM is never invoked for them."""
+    mock_cm = MagicMock()
+    mock_cm.chat = AsyncMock(return_value='{"Why this role?": "I admire Twilio."}')
+    persona_json = tmp_path / "persona.json"
+    persona_json.write_text(
+        json.dumps(
+            {
+                "name": "Test",
+                "version": 1,
+                "answers": [
+                    {
+                        "category": "disability",
+                        "question": "Do you have a disability?",
+                        "answer": "No",
+                    },
+                    {
+                        "category": "veteran_status",
+                        "question": "Are you a veteran?",
+                        "answer": "No",
+                    },
+                ],
+            }
+        )
+    )
+    questions = ["Disability Status", "Veteran Status"]
+
+    with (
+        patch("autofill.rag.PERSONA_JSON", persona_json),
+        patch("autofill.rag.get_config", return_value=_cfg()),
+    ):
+        rag = ScreenerRAG(context_manager=mock_cm, exact_answers={})
+        answers = await rag.answer_questions(questions)
+
+    assert answers["Disability Status"] == "No"
+    assert answers["Veteran Status"] == "No"
+    # Both resolved from the grilled persona: the LLM was never invoked.
+    assert mock_cm.chat.called is False
 
 
 @pytest.mark.asyncio
