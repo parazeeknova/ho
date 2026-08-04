@@ -998,17 +998,44 @@ export class WorkdayAdapter extends ATSAdapter {
       return;
     }
     const result = await rpc("cover_letter", {});
-    const coverLetter = (result?.answer ?? "").toString().trim();
-    if (!coverLetter) return;
-    const ta = page.locator("textarea").nth(target.index);
-    await ta.fill(coverLetter);
-    await randomSleep(200, 400);
-    const committed = await ta.inputValue().catch(() => "");
-    if (committed) {
-      filled.push(target.label || "Cover Letter");
-      console.log("[Workday] Cover letter filled (LLM-generated, JD-personalized).");
-    } else {
-      blanked.push({ label: target.label || "Cover Letter", reason: "cover letter did not commit" });
+    const pdfPath = result?.pdf_path;
+    let attached = false;
+    
+    if (pdfPath) {
+      // Look for a file input specifically for cover letter or just any file input in a generic document upload section.
+      const clFileInputs = [
+        'input[type="file"][data-automation-id="coverLetter"]',
+        'input[type="file"][name*="coverLetter" i]',
+        'input[type="file"][data-automation-id="file-upload-input"]',
+      ];
+      for (const sel of clFileInputs) {
+        const fileInput = page.locator(sel).first();
+        if (await fileInput.isVisible().catch(() => false) || await fileInput.count() > 0) {
+          try {
+            await fileInput.setInputFiles(pdfPath);
+            console.log("[Workday] Cover letter PDF uploaded successfully.");
+            attached = true;
+            break;
+          } catch (e) {
+            // Ignore and try next
+          }
+        }
+      }
+    }
+
+    if (!attached) {
+      const coverLetter = (result?.answer ?? "").toString().trim();
+      if (!coverLetter) return;
+      const ta = page.locator("textarea").nth(target.index);
+      await ta.fill(coverLetter);
+      await randomSleep(200, 400);
+      const committed = await ta.inputValue().catch(() => "");
+      if (committed) {
+        filled.push(target.label || "Cover Letter");
+        console.log("[Workday] Cover letter filled (LLM-generated, JD-personalized).");
+      } else {
+        blanked.push({ label: target.label || "Cover Letter", reason: "cover letter did not commit" });
+      }
     }
   }
 
@@ -1137,7 +1164,7 @@ export class WorkdayAdapter extends ATSAdapter {
           (jobCtx.location ? ` (${jobCtx.location})` : "")
       );
 
-      const screener = new Screener(this.controls, "WorkdayAdapter", profile, rpc);
+      const screener = new Screener(this.controls, "WorkdayAdapter", profile, rpc, true);
       const filled: string[] = [];
       const blanked: Array<{ label: string; reason: string }> = [];
       const processedKeys = new Set<string>();
@@ -1345,7 +1372,8 @@ export class WorkdayAdapter extends ATSAdapter {
         this.controls,
         "WorkdayAdapter",
         this.profile,
-        rpc ?? (async () => ({ answer: "" }))
+        rpc ?? (async () => ({ answer: "" })),
+        true
       );
       const filled: string[] = [];
       const blanked: { label: string; reason: string }[] = [];

@@ -247,7 +247,7 @@ export class AshbyAdapter extends ATSAdapter {
           (jobCtx.location ? ` (${jobCtx.location})` : "")
       );
 
-      const screener = new Screener(this.controls, "AshbyAdapter", profile, rpc);
+      const screener = new Screener(this.controls, "AshbyAdapter", profile, rpc, true);
       const filled: string[] = [];
       const blanked: Array<{ label: string; reason: string }> = [];
       const processedKeys = new Set<string>();
@@ -268,6 +268,13 @@ export class AshbyAdapter extends ATSAdapter {
         await this.controls.closeMenu().catch(() => {});
         await randomSleep(900, 1400);
       }
+
+      // Cover letter: LLM-generated once via the "cover_letter" RPC (the walk
+      // skips cover-letter fields via skipCoverLetterFields, so nothing else
+      // resolves them). Ashby renders it as a long-answer textarea question in
+      // the form; a few boards add a custom file-upload question — attach the
+      // generated PDF there when present, else fill the text.
+      await this.fillCoverLetter(rpc);
 
       const finalDom = await this.collectQuestions();
       const requiredBlanks = await auditBlanks({
@@ -471,7 +478,7 @@ export class AshbyAdapter extends ATSAdapter {
       if (PRE_FILLED_LABELS.has(norm(f.label))) continue;
       // Try to resolve it via the screener machinery (may itself fail to
       // commit — that is recorded and re-audited below).
-      const screener = new Screener(this.controls, "AshbyAdapter", this.profile, rpc ?? (async () => ({ answer: "" })));
+      const screener = new Screener(this.controls, "AshbyAdapter", this.profile, rpc ?? (async () => ({ answer: "" })), true);
       const filled: string[] = [];
       const blanked: { label: string; reason: string }[] = [];
       const skipped = new Set<string>();
@@ -530,6 +537,129 @@ export class AshbyAdapter extends ATSAdapter {
       console.warn(`[Ashby] Resume upload not confirmed (attempt ${attempt + 1}); retrying...`);
     }
     return false;
+  }
+
+  /**
+   * Dedicated cover-letter path. Generate the letter ONCE via the
+   * "cover_letter" RPC, then commit it to the board:
+   *  - Ashby custom upload questions carry an `input[type="file"]` inside a
+   *    `[data-field-path]` row — attach the generated PDF there;
+   *  - otherwise the board renders a long-answer textarea — fill the text.
+   * Cover-letter fields are skipped by the walk (skipCoverLetterFields), so
+   * nothing else resolves them and the generated letter is never duplicated.
+   */
+  private async fillCoverLetter(rpc: RpcHelper): Promise<void> {
+    const page = this.getPage();
+    const result = await rpc("cover_letter", {});
+    const pdfPath = result?.pdf_path;
+    const text = (result?.answer ?? "").toString().trim();
+
+    if (!pdfPath && !text) {
+      console.log("[Ashby] Cover letter skipped: RPC had nothing to ground it on.");
+      return;
+    }
+
+    // Locate cover-letter rows. collectQuestions() deliberately skips rows
+    // with file inputs, so probe the DOM directly with the same question
+    // subtree/label logic the walker uses.
+    const rows = await page
+      .evaluate(() => {
+        const out: Array<{ id: string; label: string; hasFile: boolean; hasTextarea: boolean }> = [];
+        const [norm] = [
+          (t: string) =>
+            (t || "").replace(/\s+/g, " ").trim().replace(/^\*+|\*+$/g, ""),
+        ];
+        const entries = Array.from(document.querySelectorAll("div[data-field-path]"));
+        for (const entryEl of entries) {
+          const el = entryEl as HTMLElement;
+          if (el.closest(".ashby-survey-form-container, [class*='survey-form']")) continue;
+          const labelRaw = norm(
+            (el.querySelector('label[class*="question"], label')?.textContent || el.getAttribute("aria-label") || "").toString()
+          );
+          const lower = labelRaw.toLowerCase();
+          if (
+            !/cover letter|cover_letter|^additional information$|anything else you|more about you|tell us about yourself|anything you would like/.test(lower)
+          ) {
+            continue;
+          }
+          out.push({
+            id: (el.getAttribute("data-field-path") || "").trim(),
+            label: labelRaw,
+            hasFile: !!el.querySelector('input[type="file"]'),
+            hasTextarea: !!el.querySelector("textarea"),
+          });
+        }
+        return out;
+      })
+      .catch(() => []);
+
+    if (rows.length === 0) {
+      console.log("[Ashby] No cover-letter question in the DOM; nothing committed.");
+      return;
+    }
+
+    let committed = false;
+    for (const row of rows) {
+      if (row.hasFile && pdfPath) {
+        const input = page
+          .locator(`div[data-field-path="${row.id}"] input[type="file"]`)
+          .first();
+        if ((await input.count().catch(() => 0)) > 0) {
+          try {
+            await input.setInputFiles(pdfPath);
+            await randomSleep(1200, 1800);
+            const baseName = pdfPath.split(/[\\/]/).pop() || "";
+            const attached = await page
+              .evaluate(
+                (fileName: string) => {
+                  const i = Array.from(document.querySelectorAll('div[data-field-path] input[type="file"]'))
+                    .find((x) => (x as HTMLInputElement).files && (x as HTMLInputElement).files!.length > 0) as HTMLInputElement | null;
+                  if (i && i.files && i.files.length > 0) {
+                    const n = (i.files[0].name || "").toLowerCase();
+                    if (n.includes("cover") || n.includes(fileName.toLowerCase())) return true;
+                  }
+                  const chip = Array.from(document.querySelectorAll('div[data-field-path]'))
+                    .map((x) => ((x as HTMLElement).textContent || ""))
+                    .find((t) => t.toLowerCase().includes(fileName.toLowerCase()));
+                  return !!chip;
+                },
+                baseName
+              )
+              .catch(() => false);
+            if (attached) {
+              console.log(`[Ashby] Cover letter PDF attached to "${row.label}".`);
+              committed = true;
+              continue;
+            }
+            console.warn(`[Ashby] Cover letter PDF upload not confirmed for "${row.label}"; falling back to text.`);
+          } catch (e: any) {
+            console.warn(`[Ashby] Cover letter PDF attach failed: ${e?.message || e}; falling back to text.`);
+          }
+        }
+      }
+
+      if (row.hasTextarea && text && !committed) {
+        const ta = page.locator(`div[data-field-path="${row.id}"] textarea`).first();
+        if ((await ta.count().catch(() => 0)) > 0) {
+          await ta.fill(text);
+          let value = await ta.inputValue().catch(() => "");
+          if (!value) {
+            await ta.fill(text);
+            value = await ta.inputValue().catch(() => "");
+          }
+          if (value) {
+            console.log("[Ashby] Cover letter filled as text (long-answer field).");
+            committed = true;
+          } else {
+            console.warn("[Ashby] Cover letter text did not commit to the textarea; left blank.");
+          }
+        }
+      }
+    }
+
+    if (!committed) {
+      console.warn("[Ashby] Cover letter could not be committed in any form.");
+    }
   }
 
   private async hasValue(f: FormField): Promise<boolean> {

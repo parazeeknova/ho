@@ -1150,19 +1150,45 @@ export class GenericAdapter extends ATSAdapter {
         return match ?? null;
       })
       .catch(() => null);
-    if (!target) return;
+    // Allow it to proceed even if target (textarea) is not found so PDF can be uploaded.
     const result = await rpc("cover_letter", {});
-    const coverLetter = (result?.answer ?? "").toString().trim();
-    if (!coverLetter) return;
-    const ta = page.locator("textarea").nth(target.index);
-    await ta.fill(coverLetter);
-    await randomSleep(200, 400);
-    const committed = await ta.inputValue().catch(() => "");
-    if (committed) {
-      filled.push(target.label || "Cover Letter");
-      console.log("[Generic] Cover letter filled (LLM-generated, JD-personalized).");
-    } else {
-      blanked.push({ label: target.label || "Cover Letter", reason: "cover letter did not commit" });
+    const pdfPath = result?.pdf_path;
+    let attached = false;
+
+    if (pdfPath) {
+      const clFileInputs = [
+        'input[type="file"][name*="cover" i]',
+        'input[type="file"][id*="cover" i]',
+        'input[type="file"][aria-label*="cover" i]',
+      ];
+      for (const sel of clFileInputs) {
+        const fileInput = page.locator(sel).first();
+        if (await fileInput.isVisible().catch(() => false) || await fileInput.count() > 0) {
+          try {
+            await fileInput.setInputFiles(pdfPath);
+            console.log("[Generic] Cover letter PDF uploaded successfully.");
+            attached = true;
+            break;
+          } catch (e) {
+            // Ignore
+          }
+        }
+      }
+    }
+
+    if (!attached && target) {
+      const coverLetter = (result?.answer ?? "").toString().trim();
+      if (!coverLetter) return;
+      const ta = page.locator("textarea").nth(target.index);
+      await ta.fill(coverLetter);
+      await randomSleep(200, 400);
+      const committed = await ta.inputValue().catch(() => "");
+      if (committed) {
+        filled.push(target.label || "Cover Letter");
+        console.log("[Generic] Cover letter filled (LLM-generated, JD-personalized).");
+      } else {
+        blanked.push({ label: target.label || "Cover Letter", reason: "cover letter did not commit" });
+      }
     }
   }
 
@@ -1253,7 +1279,7 @@ export class GenericAdapter extends ATSAdapter {
     const jsonModel = await this.fetchJsonQuestions();
     this._jsonModel = jsonModel;
     this.profile = profile;
-    const screener = new Screener(this.controls, "GenericAdapter", profile, rpc);
+    const screener = new Screener(this.controls, "GenericAdapter", profile, rpc, true);
     const filled: string[] = [];
     const blanked: BlankEntry[] = [];
     const processedKeys = new Set<string>();
@@ -1456,7 +1482,8 @@ export class GenericAdapter extends ATSAdapter {
         this.controls,
         "GenericAdapter",
         this.profile,
-        rpc ?? (async () => ({ answer: "" }))
+        rpc ?? (async () => ({ answer: "" })),
+        true
       );
       const filled: string[] = [];
       const blanked: { label: string; reason: string }[] = [];

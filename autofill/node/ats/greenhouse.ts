@@ -10,13 +10,16 @@ import {
   verifySubmitOutcome,
 } from "./shared/audit.js";
 import { FormControls } from "./shared/controls.js";
-import { escapePromptValue, normalizeOptionText } from "./shared/matching.js";
+import { escapePromptValue, normalizeOptionText, valuesConsistent } from "./shared/matching.js";
 import {
   fieldKey,
   FormField,
+  IDENTITY_FILLS,
+  isProfileDrivenField,
   JsonFieldSource,
   mergeFormInventory,
   PRE_FILLED_LABELS,
+  PROFILE_FILLS,
   unprocessedFields,
 } from "./shared/model.js";
 import { Screener, setBlankedRequiredCount } from "./shared/screener.js";
@@ -26,7 +29,9 @@ import { Screener, setBlankedRequiredCount } from "./shared/screener.js";
 export {
   checkboxAction,
   fieldKey,
+  isCoverLetterField,
   isLocationAutocomplete,
+  isProfileDrivenField,
   mergeFormInventory,
   unprocessedFields,
 } from "./shared/model.js";
@@ -642,7 +647,7 @@ export class GreenhouseAdapter extends ATSAdapter {
       const blanked: Array<{ label: string; reason: string }> = [];
       const processedKeys = new Set<string>();
       const userSkippedKeys = new Set<string>();
-      const screener = new Screener(controls, "GreenhouseAdapter", profile, rpc);
+      const screener = new Screener(controls, "GreenhouseAdapter", profile, rpc, true);
 
       // Iterative re-scan: conditional questions (e.g. Race, which renders only
       // after "Are you Hispanic/Latino?" is answered) appear in the DOM only
@@ -651,6 +656,25 @@ export class GreenhouseAdapter extends ATSAdapter {
       for (let pass = 0; pass < 30; pass++) {
         const domFields = await this.collectQuestions();
         const inventory = this.mergeInventory(jsonModel, domFields);
+        // Identity/profile fields were already filled deterministically before
+        // the walk. Mark any whose committed value already matches the profile
+        // value as processed so the walk never re-fills them — a second fill
+        // with human typing would append ("Aman" -> "AmanAman"). Fields still
+        // empty (e.g. conditional identity fields that only render later) stay
+        // unmarked and get filled by the walk's own profile path.
+        for (const field of inventory) {
+          if (processedKeys.has(fieldKey(field)) || !isProfileDrivenField(field)) {
+            continue;
+          }
+          const labelKey = normalizeOptionText(field.label);
+          const profileKey = PROFILE_FILLS[labelKey] ?? IDENTITY_FILLS[labelKey];
+          const pv = profileKey ? (this.profile as any)?.[profileKey] : undefined;
+          if (!pv) continue;
+          const committed = await controls.readFieldValue(field).catch(() => "");
+          if (committed && valuesConsistent(String(pv), committed)) {
+            processedKeys.add(fieldKey(field));
+          }
+        }
         const newFields = unprocessedFields(inventory, processedKeys);
         if (pass === 0) {
           console.log(
@@ -702,27 +726,150 @@ export class GreenhouseAdapter extends ATSAdapter {
       }
 
       // Cover letter: LLM-generated, personalized to the job description.
-      const clField = await this.findCoverLetterField();
-      if (clField) {
-        const coverLetterResult = await rpc("cover_letter", {});
-        const coverLetter = (coverLetterResult?.answer ?? "").toString().trim();
-        if (coverLetter) {
-          await clField.fill(coverLetter);
+      // Wait (poll) for the cover letter block to render — it is often
+      // conditionally shown after other fields settle.
+      const clBlock = page
+        .locator('#cover_letter_section, .cover-letter-section, [data-testid="cover_letter"]')
+        .first();
+      let clBlockVisible = false;
+      for (let i = 0; i < 20; i++) {
+        if (await clBlock.isVisible().catch(() => false)) {
+          clBlockVisible = true;
+          break;
+        }
+        await randomSleep(400, 700);
+      }
+      if (!clBlockVisible) {
+        console.log("[GreenhouseAdapter] Cover letter block not rendered; skipping.");
+      }
+      const coverLetterResult = await rpc("cover_letter", {});
+      const pdfPath = coverLetterResult?.pdf_path;
+      const clFileSel =
+        'input#cover_letter[type="file"], input[name*="cover_letter"][type="file"], ' +
+        'input[name="job_application[answers_attributes][][cover_letter]"]';
+      const clFileInput = page.locator(clFileSel).first();
+      // The file input must be probed independently of the generic block
+      // section selector — boards render the cover-letter affordance in
+      // different arrangements (a plain textarea, a hidden upload input, or an
+      // "attach"/dropbox button that reveals the input). Greenhouse's file
+      // inputs are `visually-hidden` (class hidden, clickable via the dropbox),
+      // so only presence matters — setInputFiles works on hidden inputs and
+      // never requires visibility.
+      const hasFileInput = (await clFileInput.count().catch(() => 0)) > 0;
+      // Frame-aware verification mirrors the resume path: page.evaluate is
+      // exposed by Stagehand's wrapper (locator.evaluate is not), and the
+      // check accepts EITHER the input's own FileList or the rendered dropbox
+      // showing the uploaded file name (boards swap the DOM after a commit).
+      const coverBaseName = pdfPath?.split(/[\\/]/).pop() || "";
+      const fileAttached = async (): Promise<boolean> => {
+        return page
+          .evaluate(
+            (baseName: string) => {
+              const input = document.querySelector(
+                'input#cover_letter[type="file"], ' +
+                  'input[name*="cover_letter"][type="file"]'
+              ) as HTMLInputElement | null;
+              if (input && input.files && input.files.length > 0) return true;
+              if (!baseName) return false;
+              const drop = document.querySelector(
+                '[data-testid="cover_letter-dropbox"], .file-upload, [class*="file-upload"]'
+              );
+              const text = drop ? (drop.textContent || "") : "";
+              return (
+                text.includes(baseName) ||
+                text.replace(/\s+/g, "").includes(baseName)
+              );
+            },
+            coverBaseName
+          )
+          .catch(() => false);
+      };
+      let pdfAttached = false;
+      if (pdfPath) {
+        let attached = false;
+        if (hasFileInput) {
+          try {
+            await clFileInput.setInputFiles(pdfPath);
+            // Give the board time to register / re-render (same settle as the
+            // resume upload) before verifying, then retry verification once.
+            await randomSleep(1200, 1800);
+            attached = await fileAttached();
+            if (!attached) {
+              await randomSleep(800, 1200);
+              attached = await fileAttached();
+            }
+          } catch (e: any) {
+            console.warn(`[GreenhouseAdapter] Failed to attach cover letter PDF: ${e.message}`);
+          }
+        }
+
+        if (!attached && hasFileInput) {
+          // Fallback: the attach button must be clicked to reveal the input.
+          const attachBtn = page
+            .locator('button[data-testid="cover_letter-attach"]')
+            .first();
+          if (await attachBtn.isVisible().catch(() => false)) {
+            await attachBtn.click();
+            await randomSleep(300, 500);
+            try {
+              await clFileInput.setInputFiles(pdfPath);
+              attached = await fileAttached();
+              if (attached) {
+                console.log(
+                  "[GreenhouseAdapter] Cover letter PDF uploaded successfully via button click."
+                );
+              }
+            } catch (e: any) {
+              console.warn(
+                `[GreenhouseAdapter] Failed to attach cover letter PDF after button click: ${e.message}`
+              );
+            }
+          }
+        }
+
+        pdfAttached = attached;
+        if (attached) {
+          console.log("[GreenhouseAdapter] Cover letter PDF uploaded successfully.");
+          await randomSleep(500, 900);
+        }
+      } else {
+        console.log(
+          "[GreenhouseAdapter] Cover letter PDF unavailable " +
+            "(generation failed or LLM had nothing); using the text answer instead."
+        );
+      }
+
+      // If the PDF never registered (no file input / upload failed / PDF
+      // generation failed) but we have the text, fill the textarea as the
+      // fallback — a cover letter is never dropped just because the PDF
+      // step failed.
+      const coverLetterText = (coverLetterResult?.answer ?? "").toString().trim();
+      if (coverLetterText && !pdfAttached) {
+        const clField = await this.findCoverLetterField();
+        if (clField) {
+          await clField.fill(coverLetterText);
           let value = await clField.inputValue().catch(() => "");
           if (!value) {
-            await clField.fill(coverLetter);
+            await clField.fill(coverLetterText);
             value = await clField.inputValue().catch(() => "");
           }
           if (value) {
-            console.log("[GreenhouseAdapter] Cover letter filled (LLM-generated, JD-personalized).");
+            console.log("[GreenhouseAdapter] Cover letter filled as text (fallback).");
           } else {
-            console.warn("[GreenhouseAdapter] Cover letter did not commit; left blank.");
+            console.warn("[GreenhouseAdapter] Cover letter text did not commit; left blank.");
           }
         } else {
-          console.log("[GreenhouseAdapter] Cover letter skipped: LLM had nothing to ground it on.");
+          console.log(
+            "[GreenhouseAdapter] Cover letter text unavailable in the DOM " +
+              "(no visible textarea/file input); nothing committed."
+          );
         }
+      } else if (!coverLetterText) {
+        console.log("[GreenhouseAdapter] Cover letter skipped: LLM had nothing to ground it on.");
       } else {
-        console.log("[GreenhouseAdapter] No cover letter field on this form; skipping generation.");
+        console.log(
+          `[GreenhouseAdapter] Cover letter ${pdfPath ? "attached as PDF" : "left as-is"}.`
+        );
       }
 
       // Definitive final sweep: rescan the ENTIRE form and fill ANY input still
@@ -834,7 +981,8 @@ export class GreenhouseAdapter extends ATSAdapter {
         controls,
         "GreenhouseAdapter",
         this.profile,
-        rpc ?? (async () => ({ answer: "" }))
+        rpc ?? (async () => ({ answer: "" })),
+        true
       );
       const filled: string[] = [];
       const blanked: { label: string; reason: string }[] = [];
