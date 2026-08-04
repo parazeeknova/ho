@@ -226,6 +226,29 @@ async def test_resolve_overnight_defers_select_with_options() -> None:
 
 
 @pytest.mark.asyncio
+async def test_resolve_overnight_skips_optional_question() -> None:
+    """A question the form does NOT mark required (no asterisk) is skipped
+    overnight instead of deferring the whole job for the digest."""
+    rag = _rag()
+    rag.kb_answer = AsyncMock(return_value=None)
+    rag.answer_questions = AsyncMock(return_value={"If other, please specify": ASK_USER})
+    bridge = _bridge()
+    bridge.ask = AsyncMock(return_value=None)
+
+    answer, source = await resolve_question(
+        rag,
+        bridge,
+        "If other, please specify",
+        kind="text",
+        overnight=True,
+        required=False,
+    )
+
+    assert (answer, source) == ("", "decline")
+    bridge.ask.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_resolve_scoped_question_display_qualifies_with_jd_country() -> None:
     rag = _rag()
     rag.kb_answer = AsyncMock(return_value=None)

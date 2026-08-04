@@ -197,6 +197,10 @@ export class Screener {
         question: field.label,
         kind: rpcKind,
         options: optionTexts,
+        // Whether the form marks this field required (its label has the
+        // asterisk). Overnight, an UNRESOLVED optional question is skipped
+        // rather than deferred; the Python side decides with this flag.
+        required: !!field.required,
       });
     } catch (rpcErr: any) {
       // A deferred question (overnight, no human) must NOT abort the whole

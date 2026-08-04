@@ -225,6 +225,7 @@ async def _stream_runner(
                                 overnight=overnight,
                                 timeout=question_timeout,
                                 job_context=job_context,
+                                required=bool(args.get("required", True)),
                             )
                         except TelegramNotConfiguredError as tg_err:
                             print(f"\n[Python CLI] ERROR: {tg_err}")

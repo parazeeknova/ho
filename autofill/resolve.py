@@ -129,6 +129,7 @@ async def resolve_question(
     overnight: bool = False,
     timeout: float = 300.0,
     job_context: dict[str, Any] | None = None,
+    required: bool = True,
 ) -> tuple[str, str]:
     """Resolve one screener question. Returns ``(answer, source)``.
 
@@ -218,6 +219,13 @@ async def resolve_question(
         return (answer.strip(), "llm")
 
     if overnight:
+        # Overnight (no human present): an unresolved question either defers
+        # the job for the morning digest or — when the form does NOT mark it
+        # required (no asterisk) — is skipped. Leaving a blank optional field
+        # is strictly better than stalling the run on a question the form
+        # itself does not require (e.g. "If other, please specify").
+        if not required:
+            return ("", "decline")
         raise DeferredError(q, kind=kind, options=options)
 
     if bridge is None or not bridge.is_configured:

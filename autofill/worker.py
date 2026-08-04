@@ -863,6 +863,7 @@ class AutofillWorker:
                                     overnight=overnight,
                                     timeout=question_timeout,
                                     job_context=job_context,
+                                    required=bool(args.get("required", True)),
                                 )
                             except TelegramNotConfiguredError as tg_err:
                                 logger.error(
