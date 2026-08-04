@@ -12,7 +12,6 @@ Candidate Profile:
 - Are you willing to relocate for this role?: yes, not in third world countries
 - What is your nationality?: Indian
 - Are you legally authorized to work in India?: Yes
-- Are you authorized to work in the country? (India): Yes, only in India
 - Are you legally authorized to work in the United States?: No
 - Do you require visa sponsorship?: Yes
 - What is your current annual cash compensation?: Nil
@@ -26,9 +25,6 @@ Candidate Profile:
 - Disability Status: No
 - Do you have experience with Kubernetes?: Yes
 - What is your current or more recent job title?: Co-Founder
-- Country: India +91
-- Attach: India +91
-- Are you open to working in person in our San Francisco or New York office 2-3 times a week?: Yes
 - Are you legally authorized to work in the country where the job is located?: No, I am only authorized to work in India
 - Will you now or in the future require company sponsorship to retain or extend your work authorization in the country where the job is located?: Yes
 - Race: Asian
@@ -47,13 +43,10 @@ Candidate Profile:
 - Do you agree to Agoda’s use of personal data from your application to improve our recruitment experience? We may collaborate and share your data with third-party providers for recruitment purposes and you may ask to remove your data at any time.: Yes
 - Do you allow us to provide you TEXT/SMS updates of your interview process? We may engage with a service provider to do so.: Yes
 - Email me about other job openings within the Booking Holding’s entities and recruitment-related newsletters: No
-- What is your current company?: N/A
-- Project Password: N/A
 - X Profile: https://x.com/amancooks
 - Do you have any prior experience in Trust and Safety?✱: No
 - Have you worked on reporting content on Social media platforms/web or both?✱: Yes
 - Are you aware of content violation policies and what are the requirements for sending enforcements?✱: No
-- What is your Current Fixed CTC (in LPA)?✱: N/A
 - What are your favorite books or blogs on software development and why?: Clean Code by Robert C Martin
 - What type of computer and internet connection do you have? If you get the job, would you be willing to ensure you have good equipment (e.g. MacBook Pro with 16GB RAM and a fast internet connection)? Please be specific.✱: 16GB RAM, Ryzen 5800h, 200mbps+ connection
 - Start date: Immediately
@@ -61,7 +54,21 @@ Candidate Profile:
 - Graduation Date: 18/05/27
 - When is your expected graduation date?: 18 May 2027
 - What is your expected graduation date?: 18 May 2027
+- Are you authorized to work in the country? (India): Yes, only in India
 
+- If you selected other, please specify which one: Vellore Institute of Technology
+- How would you describe your gender identity? (mark all that apply): Man
+- How would you describe your racial/ethnic background? (mark all that apply): South Asian
+- How would you describe your sexual orientation? (mark all that apply): Asexual
+- Do you identify as transgender?: No
+- Do you have a disability or chronic condition (physical, visual, auditory, cognitive, mental, emotional, or other) that substantially limits one or more of your major life activities, including mobility, communication (seeing, hearing, speaking), and learning?: No
+- Are you a veteran or active member of the United States Armed Forces?: No, I am not a veteran or active member
+- Are you authorized to work in the country? (India): No
+- Are you authorized to work in the country? (India): No
+- Are you authorized to work in the country? (India): No
+- Are you authorized to work in the country? (India): No
+- Are you authorized to work in the country? (India): No
+- Are you authorized to work in the country? (India): No
 From Resume:
 - Experience: Delivered 5 high-impact projects with a 4.8+ client rating and generated six-figure revenue within the first two
 - Achievements: • NPTEL: Introduction to Machine Learning | Introduction to Japanese Language and Culture

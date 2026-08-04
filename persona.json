@@ -1,6 +1,6 @@
 {
   "name": "Aman Aziz",
-  "version": 135,
+  "version": 147,
   "identity": {
     "firstName": "Aman",
     "lastName": "Aziz",
@@ -36,12 +36,6 @@
       "category": "work_authorization",
       "question": "Are you legally authorized to work in India?",
       "answer": "Yes"
-    },
-    {
-      "category": "authorization",
-      "question": "Are you authorized to work in the country? (India)",
-      "answer": "Yes, only in India",
-      "country": "india"
     },
     {
       "category": "work_authorization",
@@ -107,21 +101,6 @@
       "category": "general",
       "question": "What is your current or more recent job title?",
       "answer": "Co-Founder"
-    },
-    {
-      "category": "general",
-      "question": "Country",
-      "answer": "India +91"
-    },
-    {
-      "category": "general",
-      "question": "Attach",
-      "answer": "India +91"
-    },
-    {
-      "category": "general",
-      "question": "Are you open to working in person in our San Francisco or New York office 2-3 times a week?",
-      "answer": "Yes"
     },
     {
       "category": "authorization",
@@ -214,16 +193,6 @@
       "answer": "No"
     },
     {
-      "category": "current_comp",
-      "question": "What is your current company?",
-      "answer": "N/A"
-    },
-    {
-      "category": "general",
-      "question": "Project Password",
-      "answer": "N/A"
-    },
-    {
       "category": "general",
       "question": "X Profile",
       "answer": "https://x.com/amancooks"
@@ -242,11 +211,6 @@
       "category": "general",
       "question": "Are you aware of content violation policies and what are the requirements for sending enforcements?\u2731",
       "answer": "No"
-    },
-    {
-      "category": "general",
-      "question": "What is your Current Fixed CTC (in LPA)?\u2731",
-      "answer": "N/A"
     },
     {
       "category": "general",
@@ -282,6 +246,47 @@
       "category": "expected_graduation",
       "question": "What is your expected graduation date?",
       "answer": "18 May 2027"
+    },
+    {
+      "category": "authorization",
+      "question": "Are you authorized to work in the country? (India)",
+      "answer": "Yes, only in India",
+      "country": "india"
+    },
+    {
+      "category": "general",
+      "question": "If you selected other, please specify which one",
+      "answer": "Vellore Institute of Technology"
+    },
+    {
+      "category": "general",
+      "question": "How would you describe your gender identity? (mark all that apply)",
+      "answer": "Man"
+    },
+    {
+      "category": "general",
+      "question": "How would you describe your racial/ethnic background? (mark all that apply)",
+      "answer": "South Asian"
+    },
+    {
+      "category": "general",
+      "question": "How would you describe your sexual orientation? (mark all that apply)",
+      "answer": "Asexual"
+    },
+    {
+      "category": "general",
+      "question": "Do you identify as transgender?",
+      "answer": "No"
+    },
+    {
+      "category": "general",
+      "question": "Do you have a disability or chronic condition (physical, visual, auditory, cognitive, mental, emotional, or other) that substantially limits one or more of your major life activities, including mobility, communication (seeing, hearing, speaking), and learning?",
+      "answer": "No"
+    },
+    {
+      "category": "general",
+      "question": "Are you a veteran or active member of the United States Armed Forces?",
+      "answer": "No, I am not a veteran or active member"
     }
   ]
 }
