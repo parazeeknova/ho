@@ -878,3 +878,79 @@ async def test_answer_prompt_includes_motivation_rule() -> None:
     assert answers["Why are you looking for a new role?"] == "Growth and domain fit."
     system_prompt = mock_cm.chat.await_args.kwargs.get("system_prompt", "")
     assert "MOTIVATION / INTENT" in system_prompt
+
+
+@pytest.mark.asyncio
+async def test_identity_answers_resolve_from_grilled_persona(tmp_path):
+    """Identity facts answer deterministically from persona.json categories."""
+    persona_json = tmp_path / "persona.json"
+    persona_json.write_text(
+        json.dumps(
+            {
+                "name": "Harsh Sahu",
+                "version": 2,
+                "answers": [
+                    {
+                        "category": "gender_identity",
+                        "question": "What is your gender?",
+                        "answer": "Male",
+                    },
+                    {
+                        "category": "disability",
+                        "question": "Do you have a disability?",
+                        "answer": "No",
+                    },
+                    {
+                        "category": "veteran_status",
+                        "question": "Are you a veteran?",
+                        "answer": "No",
+                    },
+                    {
+                        "category": "employee_relation",
+                        "question": "Related to anyone employed?",
+                        "answer": "No",
+                    },
+                ],
+            }
+        )
+    )
+    with patch("autofill.rag.PERSONA_JSON", persona_json):
+        rag = ScreenerRAG(exact_answers={}, scoped_answers={}, profile=MagicMock(), store=None)
+        assert await rag.kb_answer("Select your gender") == "Male"
+        assert await rag.kb_answer("Do you identify as a person with a disability?") == "No"
+        assert await rag.kb_answer("Are you a veteran of the U.S. Armed Forces?") == "No"
+        assert await rag.kb_answer("Are you related to anyone employed at our company?") == "No"
+
+
+@pytest.mark.asyncio
+async def test_identity_answers_never_guessed_without_persona(tmp_path):
+    """Without a grilled value, identity questions stay unresolved (ASK_USER)."""
+    persona_json = tmp_path / "persona.json"
+    persona_json.write_text(json.dumps({"name": "", "version": 1, "answers": []}))
+    with patch("autofill.rag.PERSONA_JSON", persona_json):
+        rag = ScreenerRAG(exact_answers={}, scoped_answers={}, profile=MagicMock(), store=None)
+        assert await rag.kb_answer("Select your gender") is None
+        assert await rag.kb_answer("Are you a person with a disability?") is None
+        assert await rag.kb_answer("What is your ethnicity?") is None
+
+
+@pytest.mark.asyncio
+async def test_identity_category_loader_first_entry_wins(tmp_path):
+    persona_json = tmp_path / "persona.json"
+    persona_json.write_text(
+        json.dumps(
+            {
+                "name": "",
+                "version": 1,
+                "answers": [
+                    {"category": "gender_identity", "question": "A", "answer": "Male"},
+                    {"category": "gender_identity", "question": "B", "answer": "Female"},
+                    {"category": "general", "question": "C", "answer": "ignored"},
+                ],
+            }
+        )
+    )
+    with patch("autofill.rag.PERSONA_JSON", persona_json):
+        rag = ScreenerRAG(exact_answers={}, scoped_answers={}, profile=MagicMock(), store=None)
+        assert rag._category_answers["gender_identity"] == "Male"
+        assert "general" not in rag._category_answers

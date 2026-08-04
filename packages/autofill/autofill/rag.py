@@ -293,6 +293,46 @@ _PERSONAL_RULES: list[tuple[re.Pattern, str]] = [
         ),
         "expected_graduation",
     ),
+    # Identity / protected-class facts: answered ONLY from the grilled persona
+    # (deterministic tier below). Never guessed by the LLM — without a grilled
+    # value these stay unresolved and the caller asks the user.
+    (
+        re.compile(
+            r"\bgender\b|male|female|non.?binary|\bman\b|\bwoman\b|how do you (identify|describe)",
+            re.I,
+        ),
+        "gender_identity",
+    ),
+    (re.compile(r"pronoun|she/her|he/him|they/them", re.I), "pronouns"),
+    (
+        re.compile(
+            r"sexual orientation|lgbtq|gay|lesbian|bisexual|pansexual|asexual|\bstraight\b|queer",
+            re.I,
+        ),
+        "sexual_orientation",
+    ),
+    (
+        re.compile(
+            r"ethni|race\b|hispanic|latino|asian|black|white|african|pacific islander|"
+            r"indigenous|native american",
+            re.I,
+        ),
+        "ethnicity",
+    ),
+    (re.compile(r"disab", re.I), "disability"),
+    (
+        re.compile(r"veteran|armed forces|military service|active duty", re.I),
+        "veteran_status",
+    ),
+    (
+        re.compile(
+            r"relat(ed|ion|ionship).*(employ|work)|family member.*(employ|work)|"
+            r"anyone.*work(ing|s)? (at|for)|referral.*employee|employee.*referral|"
+            r"current employee",
+            re.I,
+        ),
+        "employee_relation",
+    ),
 ]
 
 # Personal-fact categories that resolve from configured data (no guessing, no prompting).
@@ -308,6 +348,19 @@ _EXPECTED_COMP_KEYS = {"expected_comp"}
 # lands in the form: "immeditely"/"immediate"/"asap" -> "Immediately",
 # "2 weeks"/"two weeks" -> "2 weeks", "1 month"/"one month" -> "1 month".
 _START_DATE_KEYS = {"start_date"}
+
+# Identity / protected-class categories: resolved deterministically from the
+# grilled persona answers (keyed by category), never by the LLM. Without a
+# grilled value the question stays unresolved (ASK_USER), never fabricated.
+_IDENTITY_KEYS = {
+    "gender_identity",
+    "pronouns",
+    "sexual_orientation",
+    "ethnicity",
+    "disability",
+    "veteran_status",
+    "employee_relation",
+}
 
 
 def _normalize_start_date(answer: str) -> str | None:
@@ -766,6 +819,27 @@ class ScreenerRAG:
             self._scoped_answers: dict[tuple[str, str], str] = dict(scoped_answers)
         else:
             self._scoped_answers = self._load_scoped_answers()
+        # Identity / protected-class answers keyed by category from persona.json
+        # (e.g. "disability" -> "No"). Injectable for tests.
+        self._category_answers = self._load_category_answers()
+
+    def _load_category_answers(self) -> dict[str, str]:
+        """Deterministic identity facts keyed by persona.json category.
+
+        First entry per category wins (the grill stores one answer per
+        category; learn() entries for unrelated categories are ignored here).
+        """
+        try:
+            data = json.loads(PERSONA_JSON.read_text())
+        except OSError, json.JSONDecodeError:
+            return {}
+        out: dict[str, str] = {}
+        for entry in data.get("answers", []):
+            category = (entry.get("category") or "general").strip().lower()
+            answer = (entry.get("answer") or "").strip()
+            if category in _IDENTITY_KEYS and answer and category not in out:
+                out[category] = answer
+        return out
 
     def _load_scoped_answers(self) -> dict[tuple[str, str], str]:
         """Scoped answers keyed by (category, country) from persona.json.
@@ -1129,6 +1203,19 @@ class ScreenerRAG:
             _, key = matched_rule
             if key in _EXPECTED_COMP_KEYS:
                 return min_salary
+            # Identity / protected-class facts resolve ONLY from the grilled
+            # persona (category-keyed). Never guessed, never LLM-invented —
+            # without a grilled value the sensitive guard below leaves the
+            # question unresolved so the caller asks the user.
+            if key in _IDENTITY_KEYS:
+                identity_ans = self._category_answers.get(key)
+                if identity_ans:
+                    logger.info(
+                        "Identity answer matched",
+                        category=key,
+                        question=q,
+                    )
+                    return identity_ans
             # start_date answers are normalized in the exact/persona tiers above.
             return None
 

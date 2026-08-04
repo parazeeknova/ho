@@ -54,6 +54,31 @@ WIZARD_QUESTIONS: list[tuple[str, str]] = [
     ("work_authorization", "Are you legally authorized to work in India?"),
     ("work_authorization", "Are you legally authorized to work in the United States?"),
     ("visa_sponsorship", "Would you need visa sponsorship for roles abroad?"),
+    (
+        "gender_identity",
+        "What is your gender? (or say Prefer not to answer)",
+    ),
+    ("pronouns", "What are your pronouns? (or say N/A)"),
+    (
+        "sexual_orientation",
+        "What is your sexual orientation? (or say Prefer not to answer)",
+    ),
+    (
+        "ethnicity",
+        "What is your ethnicity / race? (or say Prefer not to answer)",
+    ),
+    (
+        "disability",
+        "Do you have a disability? (Yes / No / Prefer not to answer)",
+    ),
+    (
+        "veteran_status",
+        "Are you a veteran of any armed forces? (Yes / No / Prefer not to answer)",
+    ),
+    (
+        "employee_relation",
+        "Are you related to anyone employed at the company? (Yes / No)",
+    ),
     ("current_compensation", "What is your current compensation? (or say N/A if not earning)"),
     ("expected_compensation", "What are your salary expectations? (include currency)"),
     ("equity", "Do you currently hold any equity, RSUs, or ESOPs?"),
