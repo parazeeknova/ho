@@ -336,6 +336,10 @@ class AutofillWorker:
         silently falls back to no persistent profile.
         """
         base = Path(__file__).resolve().parent.parent / "node" / "artifacts" / "profiles"
+        # Namespace the pool per worker instance (AUTOFILL_WORKER_ID): fixed
+        # profile-0..N names made two worker processes fight over the same
+        # Chrome user-data dir (SingletonLock) — the in-use set is per-process.
+        worker_id = os.getenv("AUTOFILL_WORKER_ID", "0")
         try:
             pool_size = int(os.getenv("AUTOFILL_PROFILE_POOL_SIZE", "4"))
         except TypeError, ValueError:
@@ -345,7 +349,7 @@ class AutofillWorker:
         base.mkdir(parents=True, exist_ok=True)
         dirs: list[str] = []
         for i in range(pool_size):
-            d = base / f"profile-{i}"
+            d = base / f"profile-{worker_id}-{i}"
             d.mkdir(parents=True, exist_ok=True)
             dirs.append(str(d))
         return dirs

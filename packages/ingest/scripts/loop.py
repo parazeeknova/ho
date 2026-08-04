@@ -153,6 +153,7 @@ async def _spawn_radar(children: list[Child], workers: int) -> None:
 
 async def _spawn_worker(children: list[Child]) -> None:
     env = _base_env()
+    env.setdefault("AUTOFILL_WORKER_ID", "loop")
     child = Child(
         "autofill-worker",
         [sys.executable, "-m", "autofill.worker"],
