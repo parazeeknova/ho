@@ -122,6 +122,23 @@ def has_env(source: str) -> bool:
     return bool(os.environ.get(source))
 
 
+def _missing_wizard_categories(persona_json: Path) -> set[str]:
+    """Wizard question categories not yet answered in persona.json.
+
+    Lets init-memory notice that the grill gained new questions (e.g. the
+    identity facts tier) instead of silently rebuilding from the old file.
+    """
+    try:
+        from grill_persona import WIZARD_QUESTIONS
+
+        data = json.loads(persona_json.read_text())
+    except Exception:
+        return set()
+    answered = {(a.get("category") or "").strip() for a in data.get("answers", [])}
+    expected = {category for category, _ in WIZARD_QUESTIONS}
+    return expected - answered
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Build the user memory base for a fresh checkout.")
     parser.add_argument("--no-resume", action="store_true", help="Skip resume indexing")
@@ -190,12 +207,26 @@ async def main() -> None:
     if args.grill:
         await run_script("grill_persona.py")
     elif persona_json.exists():
-        ux.bullet("persona.json exists. Rebuild persona memory from it? [Y/n]", style="white")
-        answer = input("").strip().lower()
-        if answer in ("", "y", "yes"):
-            await run_script("build_persona.py")
+        missing = _missing_wizard_categories(persona_json)
+        if missing:
+            ux.bullet(
+                "persona.json exists but is missing wizard questions: "
+                + ", ".join(sorted(missing))
+                + ". Run the interactive grill to answer them? [Y/n]",
+                style="white",
+            )
+            answer = input("").strip().lower()
+            if answer in ("", "y", "yes"):
+                await run_script("grill_persona.py")
+            else:
+                ux.chip("info", "Skipping grill; persona.json left as-is.")
         else:
-            ux.chip("info", "Skipping persona rebuild.")
+            ux.bullet("persona.json exists. Rebuild persona memory from it? [Y/n]", style="white")
+            answer = input("").strip().lower()
+            if answer in ("", "y", "yes"):
+                await run_script("build_persona.py")
+            else:
+                ux.chip("info", "Skipping persona rebuild.")
     elif args.no_grill:
         ux.chip(
             "warn",
