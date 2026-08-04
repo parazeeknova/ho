@@ -123,21 +123,28 @@ def has_env(source: str) -> bool:
     return bool(os.environ.get(source))
 
 
-def _missing_wizard_categories(persona_json: Path) -> set[str]:
-    """Wizard question categories not yet answered in persona.json.
+def _missing_persona_items(persona_json: Path) -> set[str]:
+    """Wizard questions and identity contact fields not yet answered.
 
     Lets init-memory notice that the grill gained new questions (e.g. the
-    identity facts tier) instead of silently rebuilding from the old file.
+    identity facts tier, the twitter field) instead of silently rebuilding
+    from the old file.
     """
     try:
-        from grill_persona import WIZARD_QUESTIONS
+        from grill_persona import CONTACT_FIELDS, WIZARD_QUESTIONS
 
         data = json.loads(persona_json.read_text())
     except Exception:
         return set()
+    missing: set[str] = set()
     answered = {(a.get("category") or "").strip() for a in data.get("answers", [])}
     expected = {category for category, _ in WIZARD_QUESTIONS}
-    return expected - answered
+    missing |= expected - answered
+    identity = data.get("identity") or {}
+    for field in CONTACT_FIELDS:
+        if not (identity.get(field) or "").strip():
+            missing.add(field)
+    return missing
 
 
 async def main() -> None:
@@ -205,10 +212,10 @@ async def main() -> None:
     if args.grill:
         await run_script("grill_persona.py")
     elif persona_json.exists():
-        missing = _missing_wizard_categories(persona_json)
+        missing = _missing_persona_items(persona_json)
         if missing:
             ux.bullet(
-                "persona.json exists but is missing wizard questions: "
+                "persona.json exists but is missing: "
                 + ", ".join(sorted(missing))
                 + ". Run the interactive grill to answer them? [Y/n]",
                 style="white",

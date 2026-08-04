@@ -170,7 +170,7 @@ async def embed_chunks(
 async def main() -> None:
     import ux
 
-    ux.banner("PERSONA BUILDER", "persona.json  ->  persona_embeddings + resume_summary")
+    ux.chip("info", "PERSONA BUILDER  -  persona.json -> persona_embeddings + resume_summary")
     answers = load_persona()
     identity = load_identity()
     chunks = render_chunks(answers, identity)
