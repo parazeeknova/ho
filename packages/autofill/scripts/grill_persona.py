@@ -21,6 +21,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -39,19 +40,15 @@ logger = get_logger("grill_persona")
 
 PERSONA_JSON = ROOT / "data" / "persona.json"
 
-IDENTITY_FIELDS = (
-    "firstName",
-    "lastName",
-    "email",
-    "phone",
-    "linkedin",
-    "github",
-    "website",
-)
+CONTACT_FIELDS = ("email", "phone", "linkedin", "github", "website")
+LINK_FIELDS = {"linkedin", "github", "website"}
 
 WIZARD_QUESTIONS: list[tuple[str, str]] = [
     ("current_location", "Where are you currently based?"),
-    ("work_model", "How do you prefer to work - remote, hybrid, or onsite?"),
+    (
+        "work_model",
+        "How do you prefer to work? (remote / hybrid / onsite)",
+    ),
     ("relocation", "Are you open to relocating? Any regions you'd avoid?"),
     ("nationality", "What is your nationality?"),
     ("work_authorization", "Are you legally authorized to work in India?"),
@@ -86,25 +83,31 @@ async def _resume_defaults() -> dict[str, str]:
     """Extract identity defaults from the indexed resume header, if any."""
     try:
         from autofill.profile import _regex_extract
-        from autofill.rag import _embed_text
         from src.memory.pgvector_store import MemoryStore
 
         store = await MemoryStore.create()
         try:
             if not await store.chunk_count():
                 return {}
-            emb = await _embed_text("candidate contact information resume header")
-            if not emb:
-                return {}
-            rows = await store.search_similar_chunks(emb, top_k=8)
-            parts = [
-                r["content"].strip()
-                for r in rows
-                if r.get("section") == "header" and r.get("content", "").strip()
-            ]
+            # Fetch the header section directly: an embedding-similarity search
+            # ranks the sparse name row out of the top hits, but the name must
+            # never be missed.
+            async with store._pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT content FROM resume_embeddings
+                    WHERE section = 'header'
+                    ORDER BY id
+                    LIMIT 30
+                    """
+                )
+            parts = [r["content"].strip() for r in rows if r.get("content", "").strip()]
             if not parts:
                 return {}
-            return _regex_extract(" | ".join(parts))
+            joined = "\n".join(parts)
+            found = _regex_extract(joined)
+            found["name"] = _extract_name(joined)
+            return found
         finally:
             await store.close()
     except Exception as e:
@@ -120,6 +123,40 @@ def _norm(value: str) -> str:
     return v
 
 
+def _sanitize_link(value: str) -> str:
+    """Normalize a contact link to an absolute https:// URL.
+
+    The TS ProfileSchema validates links as URLs, and a bare
+    ``linkedin.com/in/...`` fails ``z.string().url()`` — so anything without
+    a scheme gets ``https://`` prepended (the old value is already absolute).
+    """
+    v = value.strip()
+    if v and not re.match(r"^[a-zA-Z][a-zA-Z0-9+.\-]*://", v):
+        v = "https://" + v
+    return v
+
+
+def _extract_name(text: str) -> str:
+    """Pull the full name from the resume header.
+
+    Scans for a name-shaped line: 2+ alphabetic words (hyphens/apostrophes
+    allowed, no digits/dots/slashes/@), first word capitalised — so the
+    contact row, tagline and bullet lines never match. Handles both plain
+    (``Harsh Sahu``) and markdown-table (``| Harsh | Sahu |``) header rows.
+    """
+    for line in text.splitlines():
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        words = " ".join(cells).split()
+        if len(words) < 2:
+            continue
+        if any(not re.fullmatch(r"[A-Za-z][A-Za-z'\-]*", w) for w in words[:3]):
+            continue
+        if not (words[0][0].isupper() and words[1][0].isupper()):
+            continue
+        return " ".join(words[:3]).strip()
+    return ""
+
+
 def identity_mismatches(saved: dict, resume: dict) -> list[tuple[str, str, str]]:
     """Return (field, saved, resume) for saved values differing from resume extraction."""
     out: list[tuple[str, str, str]] = []
@@ -133,16 +170,42 @@ def identity_mismatches(saved: dict, resume: dict) -> list[tuple[str, str, str]]
 def grill_identity(data: dict, resume: dict) -> dict:
     identity = dict(data.get("identity", {}))
     ux.section(1, 3, "Identity & Contact", "Enter keeps the current value, if any")
-    for field in IDENTITY_FIELDS:
+
+    # Full name comes from the resume (or the existing persona) — never ask
+    # for first/last name separately unless nothing is known at all.
+    existing_name = (
+        data.get("name", "")
+        or " ".join(
+            filter(None, (identity.get("firstName", ""), identity.get("lastName", "")))
+        ).strip()
+    )
+    resume_name = resume.get("name", "")
+    default_name = existing_name or resume_name
+    label = "full name (from resume)" if resume_name and not existing_name else "full name"
+    name = _ask(label, default_name)
+    if name:
+        data["name"] = name
+        parts = name.split(None, 1)
+        identity["firstName"] = parts[0]
+        identity["lastName"] = parts[1] if len(parts) > 1 else ""
+
+    for field in CONTACT_FIELDS:
         existing = identity.get(field, "")
         default = existing or resume.get(field, "")
         label = f"{field} (from resume)" if default and not existing else field
         value = _ask(label, default)
         if value:
-            identity[field] = value
-    name = _ask("full name", data.get("name", "") or identity.get("firstName", ""))
-    if name:
-        data["name"] = name
+            identity[field] = _sanitize_link(value) if field in LINK_FIELDS else value
+
+    # Nothing known about the name anywhere: ask explicitly.
+    if not name and not identity.get("firstName"):
+        first = _ask("first name")
+        if first:
+            identity["firstName"] = first
+        last = _ask("last name")
+        if last:
+            identity["lastName"] = last
+
     data["identity"] = identity
     return data
 

@@ -1,6 +1,7 @@
 """Resume loader: download, extract, verify, interactive review, embed-index."""
 
 import hashlib
+import re
 import subprocess
 import tempfile
 import urllib.request
@@ -43,6 +44,35 @@ def download_resume(url: str) -> tuple[Path, str]:
     return Path(path), content_type
 
 
+_TABLE_SEP_RX = re.compile(r"^\|?[\s:\-|]+\|?\s*$")
+
+
+def cleanup_markdown_tables(text: str) -> str:
+    """Flatten markdown-table artifacts from PDF extraction into plain text.
+
+    Resume PDFs are frequently table-heavy; markitdown converts every
+    tabular layout into a markdown table, which then leaks pipe rows and
+    ``--- | ---`` separators into resume chunks, the resume summary and the
+    identity extraction. Table separator rows are dropped and true table
+    rows (leading ``|``) are joined cell-by-cell.
+    """
+    out: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if _TABLE_SEP_RX.match(stripped):
+            continue
+        if stripped.startswith("|"):
+            cells = [c.strip() for c in stripped.strip("|").split("|")]
+            cells = [c for c in cells if c]
+            if cells:
+                out.append(" ".join(cells))
+            continue
+        out.append(stripped)
+    return "\n".join(out)
+
+
 def extract_text(path: Path) -> str:
     """Try markitdown first, then pymupdf, then pypdf as last resort."""
 
@@ -55,7 +85,7 @@ def extract_text(path: Path) -> str:
         text = result.text_content
         if text and len(text) > 100:
             print("    using markitdown")
-            return text
+            return cleanup_markdown_tables(text)
         print(f"    markitdown returned {len(text)} chars, trying next...")
     except Exception as e:
         print(f"    markitdown: {e}")
@@ -74,7 +104,7 @@ def extract_text(path: Path) -> str:
         text = "\n\n".join(parts)
         if text and len(text) > 100:
             print("    using pymupdf")
-            return text
+            return cleanup_markdown_tables(text)
         print(f"    pymupdf returned {len(text)} chars, trying next...")
     except Exception as e:
         print(f"    pymupdf: {e}")
@@ -92,7 +122,7 @@ def extract_text(path: Path) -> str:
         text = "\n\n".join(parts)
         if text and len(text) > 50:
             print(f"    using pypdf ({len(text)} chars)")
-            return text
+            return cleanup_markdown_tables(text)
         print(f"    pypdf returned {len(text)} chars, trying next...")
     except Exception as e:
         print(f"    pypdf: {e}")

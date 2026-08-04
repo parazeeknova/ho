@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -90,13 +91,18 @@ def render_chunks(
 
 
 def _clean(text: str) -> str:
-    # Collapse markdown-table artifacts and long runs of whitespace.
+    # Collapse markdown-table artifacts and long runs of whitespace. Table
+    # separator rows are dropped, cell pipes are flattened inside a line, and
+    # dashed separator runs are collapsed (resume PDFs convert to tables).
     lines = [
         ln.strip(" |")
         for ln in text.splitlines()
         if ln.strip(" |") and not set(ln.strip()) <= set("-|")
     ]
-    return " ".join(lines).strip()
+    joined = " ".join(lines)
+    joined = re.sub(r"\s*\|\s*", " ", joined)
+    joined = re.sub(r"\s*-{3,}\s*", " ", joined)
+    return re.sub(r"\s{2,}", " ", joined).strip()
 
 
 async def resume_summary(store: MemoryStore) -> str:
