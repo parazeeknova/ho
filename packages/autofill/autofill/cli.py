@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import contextlib
+import html
 import json
 import os
 import sys
@@ -32,9 +33,9 @@ load_dotenv()
 
 
 def _format_pending(entry: dict[str, Any]) -> str:
-    q = entry.get("question") or "?"
+    q = html.escape(entry.get("question") or "?")
     options = entry.get("options") or []
-    hint = f"  [{', '.join(str(o) for o in options[:6])}]" if options else ""
+    hint = f"  [{', '.join(html.escape(str(o)) for o in options[:6])}]" if options else ""
     return f"• {q}{hint}"
 
 
@@ -305,8 +306,9 @@ async def _stream_runner(
                     )
                     if bridge.is_configured:
                         text = (
-                            f"⛔ <b>Deferred</b>: {payload.get('company', 'Company')} — "
-                            f"{payload.get('role', 'Position')}\n"
+                            f"⛔ <b>Deferred</b>: "
+                            f"{html.escape(str(payload.get('company', 'Company')))} — "
+                            f"{html.escape(str(payload.get('role', 'Position')))}\n"
                             f'<a href="{payload["url"]}">Open posting →</a>\n'
                             f"Needs your input ({len(deferred_questions)}):\n"
                             + "\n".join(_format_pending(q) for q in deferred_questions[:6])

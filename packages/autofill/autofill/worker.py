@@ -6,6 +6,7 @@ import asyncio
 import binascii
 import contextlib
 import datetime as _dt
+import html
 import json
 import os
 import random
@@ -565,9 +566,9 @@ class AutofillWorker:
     ) -> str:
         lines = [f"<b>{title}</b>", ""]
         for i, r in enumerate(rows, 1):
-            role = r.get("role") or "Position"
-            company = r.get("company") or "Company"
-            link = r.get("apply_link") or ""
+            role = html.escape(str(r.get("role") or "Position"))
+            company = html.escape(str(r.get("company") or "Company"))
+            link = html.escape(str(r.get("apply_link") or ""), quote=True)
             questions = r.get("pending_questions") or []
             lines.append(f"<b>{i}. {company}</b> — {role}")
             if link:
@@ -576,7 +577,7 @@ class AutofillWorker:
                 lines.append(f"    Needs input ({len(questions)}):")
                 for entry in questions[:6]:
                     if isinstance(entry, str):
-                        lines.append(f"    • {entry}")
+                        lines.append(f"    • {html.escape(entry)}")
                     else:
                         lines.append(f"    • {AutofillWorker._format_pending(entry)}")
             lines.append("")
@@ -1143,8 +1144,8 @@ class AutofillWorker:
         """Mark a job deferred (needs user input) and alert via Telegram."""
         await self.db.mark_deferred(job_id, questions=questions, reason="needs user input")
         if bridge.is_configured:
-            role_str = str(role or "Position")
-            company_str = str(company or "Company")
+            role_str = html.escape(str(role or "Position"))
+            company_str = html.escape(str(company or "Company"))
             text = (
                 f"⛔ <b>Deferred</b>: {company_str} — {role_str}\n"
                 f'<a href="{apply_link}">Open posting →</a>\n'
@@ -1175,8 +1176,8 @@ class AutofillWorker:
                 error=error_msg,
             )
             return
-        role_str = str(role or "Position")
-        company_str = str(company or "Company")
+        role_str = html.escape(str(role or "Position"))
+        company_str = html.escape(str(company or "Company"))
         text = (
             f"🛡️ <b>Captcha blocked</b>: {company_str} — {role_str}\n"
             f'<a href="{apply_link}">Open posting →</a>\n'
@@ -1193,9 +1194,9 @@ class AutofillWorker:
 
     @staticmethod
     def _format_pending(entry: dict[str, Any]) -> str:
-        q = entry.get("question") or "?"
+        q = html.escape(entry.get("question") or "?")
         options = entry.get("options") or []
-        hint = f"  [{', '.join(str(o) for o in options[:6])}]" if options else ""
+        hint = f"  [{', '.join(html.escape(str(o)) for o in options[:6])}]" if options else ""
         return f"• {q}{hint}"
 
     async def _record_fill(

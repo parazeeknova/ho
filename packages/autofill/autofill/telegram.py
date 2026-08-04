@@ -251,12 +251,17 @@ class TelegramQuestionBridge:
         return self._match_reply_to_option(answer, opts, numbered)
 
     async def send(self, text: str) -> bool:
-        """Send a plain message (deferral alerts, morning digest). No reply flow."""
+        """Send a plain message (deferral alerts, morning digest). No reply flow.
+
+        Rendered as HTML (callers build the markup); dynamic text must be
+        escaped by the caller.
+        """
         if not self.is_configured or not text:
             return False
         payload: dict[str, Any] = {
             "chat_id": self._primary_chat_id,
             "text": text,
+            "parse_mode": "HTML",
             "disable_web_page_preview": True,
         }
         try:
