@@ -12,6 +12,13 @@ import asyncpg
 from src.configuration import PostgresConfig, get_config
 from src.logging import get_logger
 
+
+def now_utc() -> Any:
+    from datetime import UTC, datetime
+
+    return datetime.now(UTC)
+
+
 logger = get_logger("autofill.db")
 
 CREATE_TABLE_SQL = """
@@ -65,6 +72,34 @@ CREATE TABLE IF NOT EXISTS autofill_fills (
 );
 CREATE INDEX IF NOT EXISTS idx_autofill_fills_job ON autofill_fills(job_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_autofill_fills_expiry ON autofill_fills(expires_at);
+
+-- Telegram question mailbox: single-poller answer routing. The ingest
+-- TelegramAgent is the ONLY getUpdates consumer; the autofill bridge sends a
+-- question, drops its message ids here, and the agent writes the user's reply
+-- (or callback button press) back into the row. The bridge polls this table,
+-- never Telegram, whenever the agent is alive — so two pollers never race on
+-- the same bot token.
+CREATE TABLE IF NOT EXISTS telegram_question_mailbox (
+    question_id TEXT PRIMARY KEY,
+    chat_id     TEXT NOT NULL,
+    message_ids BIGINT[] NOT NULL,
+    question    TEXT NOT NULL,
+    state       TEXT NOT NULL DEFAULT 'pending',
+    answer      TEXT,
+    asked_at    TIMESTAMPTZ DEFAULT NOW(),
+    answered_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_telegram_mailbox_msgs
+    ON telegram_question_mailbox USING GIN (message_ids);
+
+-- Which process currently owns getUpdates polling (the ingest TelegramAgent
+-- heartbeats here every poll cycle). The bridge uses the row's freshness to
+-- decide whether to route answers through the mailbox or fall back to its own
+-- direct polling (standalone CLI runs without the agent).
+CREATE TABLE IF NOT EXISTS telegram_poller_state (
+    poller_id TEXT PRIMARY KEY,
+    last_seen TIMESTAMPTZ DEFAULT NOW()
+);
 """
 
 
@@ -287,6 +322,105 @@ class AutofillDB:
                 """
             )
             return dict(rows[0])
+
+    async def open_mailbox_question(
+        self, question_id: str, chat_id: str, message_ids: list[int], question: str
+    ) -> None:
+        """Register a pending question whose reply the agent must capture."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO telegram_question_mailbox (question_id, chat_id, message_ids, question)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (question_id) DO NOTHING
+                """,
+                question_id,
+                chat_id,
+                message_ids,
+                question,
+            )
+
+    async def append_mailbox_message_ids(self, question_id: str, message_ids: list[int]) -> None:
+        """Track extra sent messages (hint / continuation chunks) for a question."""
+        if not message_ids:
+            return
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE telegram_question_mailbox "
+                "SET message_ids = message_ids || $2 WHERE question_id = $1",
+                question_id,
+                message_ids,
+            )
+
+    async def poll_mailbox_question(self, question_id: str) -> tuple[str, str | None] | None:
+        """Return ``(state, answer)`` for a question, or None when unknown."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT state, answer FROM telegram_question_mailbox WHERE question_id = $1",
+                question_id,
+            )
+            if not row:
+                return None
+            return row["state"], row["answer"]
+
+    async def close_mailbox_question(self, question_id: str, state: str) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE telegram_question_mailbox SET state = $2 WHERE question_id = $1",
+                question_id,
+                state,
+            )
+
+    async def answer_mailbox_message(self, message_id: int, answer: str) -> bool:
+        """Record the user's reply/callback against a pending question.
+
+        Called by the single Telegram poller (the ingest TelegramAgent) for
+        every incoming message or callback that replies to a sent question.
+        Returns True when the message matched a pending question.
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT question_id FROM telegram_question_mailbox
+                WHERE state = 'pending' AND $1::bigint = ANY(message_ids)
+                ORDER BY asked_at DESC
+                LIMIT 1
+                """,
+                message_id,
+            )
+            if not row:
+                return False
+            await conn.execute(
+                "UPDATE telegram_question_mailbox "
+                "SET state = 'answered', answer = $2, answered_at = NOW() "
+                "WHERE question_id = $1",
+                row["question_id"],
+                answer,
+            )
+            return True
+
+    async def heartbeat_poller(self, poller_id: str = "ingest") -> None:
+        """Stamp this process as the live getUpdates consumer."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO telegram_poller_state (poller_id, last_seen)
+                VALUES ($1, NOW())
+                ON CONFLICT (poller_id) DO UPDATE SET last_seen = NOW()
+                """,
+                poller_id,
+            )
+
+    async def poller_alive(self, max_age_seconds: float = 25.0, poller_id: str = "ingest") -> bool:
+        """True when the ingest TelegramAgent is actively polling."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT last_seen FROM telegram_poller_state WHERE poller_id = $1",
+                poller_id,
+            )
+            if not row or row["last_seen"] is None:
+                return False
+            return (now_utc() - row["last_seen"]).total_seconds() <= max_age_seconds
 
     async def get_job(self, job_id: str) -> dict[str, Any] | None:
         """Fetch job details by ID."""

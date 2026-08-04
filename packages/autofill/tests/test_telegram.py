@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from autofill.telegram import (
+    _SKIP_SENTINEL,
     TelegramNotConfiguredError,
     TelegramQuestionBridge,
     TelegramSendError,
@@ -15,6 +16,8 @@ def _bridge(bot_token: str = "test-token", chat_id: str = "123") -> TelegramQues
     bridge = TelegramQuestionBridge(bot_token=bot_token, chat_id=chat_id)
     # Mark the bridge warm so _fast_forward() short-circuits (no network).
     bridge._last_update_id = 1
+    # Standalone mode for tests: never reach the DB or the mailbox path.
+    bridge._poller_alive = AsyncMock(return_value=False)  # type: ignore[method-assign]
     return bridge
 
 
@@ -682,3 +685,45 @@ async def test_ask_dropdown_prompts_as_dropdown() -> None:
     assert result == "Bachelor's Degree"
     question_sent = bridge.ask.await_args.args[0]
     assert "dropdown" in question_sent
+
+
+# ---------------------------------------------------------------------------
+# Mailbox answer interpretation (no network / DB needed).
+# ---------------------------------------------------------------------------
+
+
+def _mailbox_bridge() -> TelegramQuestionBridge:
+    bridge = TelegramQuestionBridge(bot_token="t", chat_id="123")
+    bridge._poller_alive = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    return bridge
+
+
+def test_interpret_mailbox_plain_answer() -> None:
+    bridge = _mailbox_bridge()
+    assert bridge._interpret_mailbox_answer(" Yes ", None, False) == " Yes "
+    assert bridge._interpret_mailbox_answer("skip", None, False) is _SKIP_SENTINEL
+    assert bridge._interpret_mailbox_answer(None, None, False) is None
+
+
+def test_interpret_mailbox_option_button() -> None:
+    bridge = _mailbox_bridge()
+    opts = ["Bachelor's Degree", "Master's Degree"]
+    assert bridge._interpret_mailbox_answer("opt:1", opts, False) == "Master's Degree"
+    # opt: is ignored for numbered lists (no such buttons there).
+    assert bridge._interpret_mailbox_answer("opt:0", opts, True) is None
+    assert bridge._interpret_mailbox_answer("opt:9", opts, False) is None
+
+
+def test_interpret_mailbox_option_text() -> None:
+    bridge = _mailbox_bridge()
+    opts = ["Bachelor's Degree", "Master's Degree"]
+    assert bridge._interpret_mailbox_answer("bachelor's", opts, False) == "Bachelor's Degree"
+    assert bridge._interpret_mailbox_answer("2", opts, True) == "Master's Degree"
+    assert bridge._interpret_mailbox_answer("#1", opts, True) == "Bachelor's Degree"
+    assert bridge._interpret_mailbox_answer("0", opts, True) is None
+    assert bridge._interpret_mailbox_answer("nonsense", opts, False) is None
+
+
+def test_interpret_mailbox_skip_via_button() -> None:
+    bridge = _mailbox_bridge()
+    assert bridge._interpret_mailbox_answer("skip", ["Yes", "No"], False) is _SKIP_SENTINEL

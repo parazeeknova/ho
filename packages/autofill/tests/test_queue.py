@@ -340,3 +340,46 @@ async def test_queue_summary_counts(db: AutofillDB):
     assert summary["errored"] == 1
     assert summary["deferred"] == 1
     assert summary["failed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_mailbox_round_trip(db: AutofillDB):
+    await db.heartbeat_poller("ingest")
+    assert await db.poller_alive() is True
+
+    await db.open_mailbox_question("q-1", "123", [111, 112], "Question?")
+    await db.append_mailbox_message_ids("q-1", [113])
+    assert await db.poll_mailbox_question("q-1") == ("pending", None)
+
+    assert await db.answer_mailbox_message(113, "Yes") is True
+    assert await db.poll_mailbox_question("q-1") == ("answered", "Yes")
+    # An unrelated message must not match any pending question.
+    assert await db.answer_mailbox_message(999, "stray") is False
+
+
+@pytest.mark.asyncio
+async def test_mailbox_skip_callback_routes(db: AutofillDB):
+    await db.open_mailbox_question("q-2", "123", [201], "Pick one")
+    assert await db.answer_mailbox_message(201, "skip") is True
+    assert await db.poll_mailbox_question("q-2") == ("answered", "skip")
+
+
+@pytest.mark.asyncio
+async def test_poller_alive_staleness(db: AutofillDB):
+    await db.heartbeat_poller("ingest")
+    assert await db.poller_alive() is True
+    async with db._pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE telegram_poller_state SET last_seen = NOW() - INTERVAL '60 seconds'"
+        )
+    assert await db.poller_alive() is False
+    assert await db.poller_alive(max_age_seconds=120) is True
+
+
+@pytest.mark.asyncio
+async def test_close_mailbox_question(db: AutofillDB):
+    await db.open_mailbox_question("q-3", "123", [301], "Done?")
+    await db.close_mailbox_question("q-3", "timed_out")
+    assert await db.poll_mailbox_question("q-3") == ("timed_out", None)
+    # A late reply to a closed question must not resurrect it.
+    assert await db.answer_mailbox_message(301, "late") is False

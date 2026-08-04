@@ -187,6 +187,61 @@ class TelegramAgent:
         self._poll_task: asyncio.Task[None] | None = None
         self._seen_errors: set[str] = set()
         self._stealth_notified: set[str] = set()
+        self._mailbox_db: Any | None = None
+
+    async def _question_mailbox_db(self) -> Any:
+        """Lazy shared DB handle for the autofill question mailbox."""
+        if self._mailbox_db is None:
+            from autofill.db import AutofillDB
+
+            self._mailbox_db = await AutofillDB.create()
+        return self._mailbox_db
+
+    async def _heartbeat_poller(self) -> None:
+        """Stamp this process as the live getUpdates consumer so the autofill
+        bridge routes question answers through the mailbox instead of polling
+        the same token."""
+        try:
+            db = await self._question_mailbox_db()
+            await db.heartbeat_poller()
+        except Exception:
+            pass
+
+    async def _capture_mailbox_answer(self, upd: dict[str, Any]) -> None:
+        """Record a reply or button press aimed at a pending autofill question.
+
+        The autofill bridge is the only writer of pending questions; this agent
+        is the single getUpdates consumer, so it hands answers back through the
+        shared mailbox table. Callbacks are matched by the message they were
+        pressed on, text replies by ``reply_to_message``.
+        """
+        answer: str | None = None
+        target_id: int | None = None
+        msg = upd.get("message") or {}
+        cb = upd.get("callback_query") or {}
+        if cb:
+            cb_msg = cb.get("message") or {}
+            target_id = cb_msg.get("message_id")
+            data = cb.get("data")
+            answer = str(data) if data is not None else None
+        elif msg:
+            sender = msg.get("from") or {}
+            reply_to = (msg.get("reply_to_message") or {}).get("message_id")
+            text = (msg.get("text") or "").strip()
+            if reply_to is not None and not sender.get("is_bot") and text:
+                target_id = reply_to
+                answer = text
+        if target_id is None or answer is None:
+            return
+        try:
+            db = await self._question_mailbox_db()
+            if await db.answer_mailbox_message(target_id, answer):
+                logger.info(
+                    "Routed Telegram answer to pending autofill question",
+                    message_id=target_id,
+                )
+        except Exception as e:
+            logger.debug("Mailbox answer routing failed", source="telegram", exception=str(e))
 
     @property
     def _chat_ids(self) -> list[str]:
@@ -308,6 +363,7 @@ class TelegramAgent:
         self._update_id = 0
         while True:
             try:
+                await self._heartbeat_poller()
                 await self._process_updates()
             except asyncio.CancelledError:
                 return
@@ -316,7 +372,10 @@ class TelegramAgent:
             await asyncio.sleep(5)
 
     async def _process_updates(self) -> None:
-        params: dict[str, Any] = {"timeout": 3, "allowed_updates": ["message"]}
+        params: dict[str, Any] = {
+            "timeout": 3,
+            "allowed_updates": ["message", "callback_query"],
+        }
         if self._update_id > 0:
             params["offset"] = self._update_id + 1
 
@@ -330,6 +389,7 @@ class TelegramAgent:
 
         for upd in data.get("result", []):
             self._update_id = max(self._update_id, upd.get("update_id", 0))
+            await self._capture_mailbox_answer(upd)
             msg = upd.get("message", {})
             chat = msg.get("chat", {})
             sender_id = str(chat.get("id", ""))

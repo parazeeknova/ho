@@ -12,6 +12,7 @@ import asyncio
 import os
 import re
 import time
+import uuid
 from typing import Any
 
 import httpx
@@ -79,14 +80,19 @@ _SKIP_SENTINEL = object()
 class TelegramQuestionBridge:
     """Send screener questions to the user on Telegram and collect replies.
 
-    Only polls ``getUpdates`` while a question is pending, so interference with
-    the scraper pipeline's command bot (same token) is limited to that window.
+    Answer routing never races the ingest pipeline's command bot on the same
+    token: when the ingest TelegramAgent is the live ``getUpdates`` consumer
+    (heartbeat fresh in ``telegram_poller_state``), questions are answered via
+    the shared ``telegram_question_mailbox`` table — the agent captures the
+    reply and the bridge polls the DB row, never Telegram. Direct ``getUpdates``
+    polling is only used when no other poller is alive (standalone CLI runs).
     """
 
     def __init__(self, bot_token: str | None = None, chat_id: str | None = None) -> None:
         self.bot_token = bot_token if bot_token is not None else os.getenv("TELEGRAM_BOT_TOKEN", "")
         self.chat_id = chat_id if chat_id is not None else os.getenv("TELEGRAM_CHAT_ID", "")
         self._last_update_id = 0
+        self._db_ref: Any | None = None
         # Message ids of every chunk sent for the current question. A reply to
         # ANY of them (or a plain message) counts as the answer.
         self._option_msg_ids: set[int] = set()
@@ -107,6 +113,21 @@ class TelegramQuestionBridge:
         ids = self._chat_ids
         return ids[0] if ids else ""
 
+    async def _db(self) -> Any:
+        if self._db_ref is None:
+            from autofill.db import AutofillDB
+
+            self._db_ref = await AutofillDB.create()
+        return self._db_ref
+
+    async def _poller_alive(self) -> bool:
+        """True when the ingest TelegramAgent is the active getUpdates consumer."""
+        try:
+            db = await self._db()
+            return await db.poller_alive()
+        except Exception:
+            return False
+
     async def ask(self, question: str, timeout: float = DEFAULT_QUESTION_TIMEOUT) -> str | None:
         """Send a question to Telegram and wait for the user's answer.
 
@@ -120,7 +141,9 @@ class TelegramQuestionBridge:
                 "TELEGRAM_CHAT_ID to answer personal screener questions."
             )
 
-        await self._fast_forward()
+        use_mailbox = await self._poller_alive()
+        if not use_mailbox:
+            await self._fast_forward()
         msg_id = await self._send_question(question)
         if msg_id is None:
             raise TelegramSendError(f"Telegram question not sent: {question}")
@@ -128,6 +151,12 @@ class TelegramQuestionBridge:
         # plain question; replies to it (or plain messages) are the answer.
         self._option_msg_ids = {msg_id}
 
+        if use_mailbox:
+            return await self._collect_mailbox(question, None, False, timeout)
+        return await self._collect_direct(timeout)
+
+    async def _collect_direct(self, timeout: float) -> str | None:
+        """Poll getUpdates directly (no other poller alive: standalone mode)."""
         deadline = time.monotonic() + timeout
         while True:
             remaining = deadline - time.monotonic()
@@ -143,6 +172,83 @@ class TelegramQuestionBridge:
                 if reply is not None:
                     return reply
             await asyncio.sleep(min(1.0, max(0.05, remaining)))
+
+    async def _collect_mailbox(
+        self,
+        question: str,
+        opts: list[str] | None,
+        numbered: bool,
+        timeout: float,
+    ) -> str | None:
+        """Wait for the ingest agent to route the user's answer into the mailbox.
+
+        Never touches getUpdates. If the agent dies mid-ask (heartbeat goes
+        stale), fall back to direct polling so the question is not lost.
+        """
+        qid = f"q-{uuid.uuid4().hex[:12]}"
+        db = await self._db()
+        await db.open_mailbox_question(
+            qid, self._primary_chat_id, sorted(self._option_msg_ids), question
+        )
+        registered: set[int] = set(self._option_msg_ids)
+        deadline = time.monotonic() + timeout
+        hinted = False
+        done = False
+        try:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+
+                state_answer = await db.poll_mailbox_question(qid)
+                if state_answer and state_answer[0] == "answered":
+                    picked = self._interpret_mailbox_answer(state_answer[1], opts, numbered)
+                    if picked is _SKIP_SENTINEL:
+                        done = True
+                        return None
+                    if picked is not None:
+                        done = True
+                        return picked
+                    # A human reply that matched no option: send a one-time
+                    # hint and keep waiting — never silently fill a bad answer.
+                    if opts is not None and not hinted:
+                        await self._send_hint(opts, numbered)
+                        new_ids = sorted(self._option_msg_ids - registered)
+                        if new_ids:
+                            await db.append_mailbox_message_ids(qid, new_ids)
+                            registered |= set(new_ids)
+                        hinted = True
+
+                if not await self._poller_alive():
+                    break
+                await asyncio.sleep(1.0)
+
+            # Poller died mid-ask: take over getUpdates for the remaining time.
+            await self._fast_forward()
+            if opts is None:
+                return await self._collect_direct(timeout=remaining)
+            return await self._collect_direct_options(
+                min(self._option_msg_ids), opts, numbered, timeout=remaining
+            )
+        finally:
+            await db.close_mailbox_question(qid, "answered" if done else "timed_out")
+
+    def _interpret_mailbox_answer(
+        self, answer: str | None, opts: list[str] | None, numbered: bool
+    ) -> str | None | Any:
+        """Map a stored mailbox answer (text or callback data) to a result."""
+        if not answer:
+            return None
+        if answer == "skip":
+            return _SKIP_SENTINEL
+        if opts is None:
+            return answer
+        if answer.startswith("opt:") and not numbered:
+            try:
+                return opts[int(answer[4:])]
+            except ValueError, IndexError:
+                return None
+        return self._match_reply_to_option(answer, opts, numbered)
 
     async def send(self, text: str) -> bool:
         """Send a plain message (deferral alerts, morning digest). No reply flow."""
@@ -299,12 +405,22 @@ class TelegramQuestionBridge:
             # they answer with an option label they saw on the form.
             return await self.ask_dropdown(question, timeout=timeout)
 
-        await self._fast_forward()
+        use_mailbox = await self._poller_alive()
+        if not use_mailbox:
+            await self._fast_forward()
         numbered = len(opts) > 7
         msg_id = await self._send_options(question, opts, numbered)
         if msg_id is None:
             raise TelegramSendError(f"Telegram options not sent: {question}")
 
+        if use_mailbox:
+            return await self._collect_mailbox(question, opts, numbered, timeout)
+        return await self._collect_direct_options(msg_id, opts, numbered, timeout)
+
+    async def _collect_direct_options(
+        self, anchor_msg_id: int, opts: list[str], numbered: bool, timeout: float
+    ) -> str | None:
+        """Direct getUpdates collection for an options question (standalone mode)."""
         deadline = time.monotonic() + timeout
         hinted = False
         while True:
@@ -315,7 +431,7 @@ class TelegramQuestionBridge:
             updates = await self._fetch_updates(timeout=min(_MAX_POLL_TIMEOUT, remaining + 1))
             for upd in updates:
                 self._last_update_id = max(self._last_update_id, upd.get("update_id", 0))
-                picked = self._extract_option_pick(upd, msg_id, opts, numbered)
+                picked = self._extract_option_pick(upd, anchor_msg_id, opts, numbered)
                 if picked is _SKIP_SENTINEL:
                     return None
                 if picked is not None:
@@ -342,7 +458,6 @@ class TelegramQuestionBridge:
                 "Telegram prompting unavailable: set TELEGRAM_BOT_TOKEN and "
                 "TELEGRAM_CHAT_ID to answer personal screener questions."
             )
-        await self._fast_forward()
         msg = (
             f"{question}\n\n(Note: this is a dropdown on the application form. "
             "Reply with the exact option you saw, or a close match.)"
@@ -512,6 +627,10 @@ class TelegramQuestionBridge:
         reply = self._extract_reply_any(upd)
         if reply is None:
             return None
+        return self._match_reply_to_option(reply, opts, numbered)
+
+    def _match_reply_to_option(self, reply: str, opts: list[str], numbered: bool) -> str | None:
+        """Resolve a typed reply to an option (exact, numbered, then fuzzy)."""
         low = reply.strip().lower()
         # 1) Exact option text (case-insensitive).
         for o in opts:
@@ -535,10 +654,7 @@ class TelegramQuestionBridge:
                     return None
         # 3) Fuzzy text match for answers typed as a normal message that are
         #    not the exact option label (e.g. "bachelor's" -> "Bachelor's Degree").
-        fuzzy = self._fuzzy_option(reply, opts)
-        if fuzzy is not None:
-            return fuzzy
-        return None
+        return self._fuzzy_option(reply, opts)
 
     @staticmethod
     def _fuzzy_option(reply: str, opts: list[str]) -> str | None:
