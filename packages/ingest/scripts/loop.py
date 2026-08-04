@@ -62,7 +62,7 @@ def _base_env() -> dict[str, str]:
     if env.get("PYTHONPATH"):
         _paths.append(env["PYTHONPATH"])
     env["PYTHONPATH"] = os.pathsep.join(_paths)
-    _wd_env = PROJECT / ".watchdog.env"
+    _wd_env = PROJECT / "scripts" / ".watchdog.env"
     if _wd_env.exists():
         for _line in _wd_env.read_text().splitlines():
             _line = _line.strip()
