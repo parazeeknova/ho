@@ -331,7 +331,7 @@ def grill_answers(data: dict, ask_all: bool = False) -> dict:
         if already and not ask_all:
             skipped += 1
             entry = by_question.get(question) or (by_category.get(category) or [None])[0]
-            if entry and entry not in kept:
+            if entry is not None and entry not in kept:
                 kept.append(entry)
             continue
         prev = _previous_answer(category, question, by_question, by_category)
