@@ -1,5 +1,6 @@
 """Unit tests for the anti-fraud worker helpers (proxy template / resume copy)."""
 
+import pathlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -106,19 +107,40 @@ def test_profile_pool_never_reallocates_same_dir_concurrently(
     asyncio.run(run())
 
 
-def test_per_job_resume_copies_to_company_named_file(tmp_path: pytest.TempPathFactory) -> None:
+def test_per_job_resume_copies_to_name_named_file(tmp_path: pytest.TempPathFactory) -> None:
     resume = tmp_path / "resume.pdf"
     resume.write_bytes(b"%PDF-1.4 fake")
-    out = _per_job_resume(str(resume), "Acme Corp", "Aman", "Aziz")
+    out = _per_job_resume(
+        str(resume), first_name="Aman", last_name="Aziz", job_id="job-abc12345"
+    )
     assert out is not None
-    import pathlib
-
     dest = pathlib.Path(out)
     assert dest.exists()
-    assert dest.name == "Aman_Aziz_Acme_Corp_Resume.pdf"
+    assert dest.name == "Aman_Aziz_Resume.pdf"
     assert dest.read_bytes() == b"%PDF-1.4 fake"
     # Idempotent: second call returns the same path.
-    assert _per_job_resume(str(resume), "Acme Corp", "Aman", "Aziz") == out
+    assert (
+        _per_job_resume(
+            str(resume), first_name="Aman", last_name="Aziz", job_id="job-abc12345"
+        )
+        == out
+    )
+
+
+def test_per_job_resume_basename_constant_across_jobs(tmp_path: pytest.TempPathFactory) -> None:
+    """The uploaded basename is <First>_<Last>_Resume.pdf for every job; the
+    per-job subdirectory (not the basename) isolates concurrent jobs."""
+    resume = tmp_path / "resume.pdf"
+    resume.write_bytes(b"%PDF-1.4 fake")
+    a = _per_job_resume(
+        str(resume), first_name="Aman", last_name="Aziz", job_id="job-aaa"
+    )
+    b = _per_job_resume(
+        str(resume), first_name="Aman", last_name="Aziz", job_id="job-bbb"
+    )
+    assert a and b
+    assert pathlib.Path(a).name == pathlib.Path(b).name == "Aman_Aziz_Resume.pdf"
+    assert pathlib.Path(a).parent != pathlib.Path(b).parent
 
 
 def test_per_job_resume_falls_back_to_stem_without_names(
@@ -126,20 +148,18 @@ def test_per_job_resume_falls_back_to_stem_without_names(
 ) -> None:
     resume = tmp_path / "cv.pdf"
     resume.write_bytes(b"%PDF-1.4 fake")
-    out = _per_job_resume(str(resume), "Acme")
-    import pathlib
-
+    out = _per_job_resume(str(resume))
     assert out is not None
-    assert pathlib.Path(out).name == "cv_Acme_Resume.pdf"
+    assert pathlib.Path(out).name == "cv_Resume.pdf"
 
 
 def test_per_job_resume_none_when_no_resume() -> None:
-    assert _per_job_resume(None, "Acme") is None
+    assert _per_job_resume(None) is None
 
 
 def test_per_job_resume_missing_source_passthrough(tmp_path: pytest.TempPathFactory) -> None:
     missing = str(tmp_path / "nope.pdf")
-    assert _per_job_resume(missing, "Acme") == missing
+    assert _per_job_resume(missing) == missing
 
 
 def test_format_digest_accepts_custom_title() -> None:

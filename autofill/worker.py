@@ -152,34 +152,44 @@ def _pick_voice() -> str:
     return random.choice(_VOICE_SEEDS)
 
 
+def _safe_segment(segment: str) -> str:
+    """Sanitize a path segment (job id) for use as a directory name."""
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", str(segment or "unknown")).strip("._")
+    return cleaned or "unknown"
+
+
 def _per_job_resume(
     resume_path: str | None,
-    company: Any,
     first_name: str = "",
     last_name: str = "",
+    job_id: str = "",
 ) -> str | None:
-    """Point this job's resume at a company-named temp copy.
+    """Point this job's resume at a name-based temp copy.
 
     Every application otherwise uploads the same generic basename (e.g.
     ``resume.pdf``), a small "identical resume across applications" signal. A
-    per-job copy named ``<First>_<Last>_<Company>_Resume.pdf`` varies the
-    uploaded filename without touching the resume content. Returns the new
-    path, or the original when nothing needs copying.
+    per-job copy named ``<First>_<Last>_Resume.pdf`` (inside a per-job
+    subdirectory so concurrent jobs for the same person never clobber each
+    other) varies the uploaded filename without touching the resume content.
+    Returns the new path, or the original when nothing needs copying.
     """
     if not resume_path:
         return None
     src = Path(resume_path)
     if not src.exists():
         return resume_path
-    company_slug = re.sub(r"[^A-Za-z0-9]+", "_", str(company or "")).strip("_") or "Company"
     name_slug = re.sub(r"[^A-Za-z0-9]+", "_", f"{first_name}_{last_name}").strip("_")
     if not name_slug:
         name_slug = src.stem
-    dest_dir = Path(__file__).resolve().parent / "node" / "artifacts" / "resumes"
+    dest_dir = Path(__file__).resolve().parent / "node" / "artifacts" / "resumes" / _safe_segment(job_id)
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / f"{name_slug}_{company_slug}_Resume{src.suffix}"
+    dest = dest_dir / f"{name_slug}_Resume{src.suffix}"
     if not dest.exists():
-        shutil.copy2(src, dest)
+        # Atomic: write to a temp file first so a concurrent reader (or a
+        # parallel worker process) never observes a half-written resume.
+        tmp = dest.with_suffix(dest.suffix + ".tmp")
+        shutil.copy2(src, tmp)
+        os.replace(tmp, dest)
     return str(dest)
 
 
@@ -605,9 +615,9 @@ class AutofillWorker:
             profile = await build_profile(store=store)
             profile.resumePath = _per_job_resume(
                 await resolve_resume_path(),
-                job.get("company"),
                 first_name=profile.firstName,
                 last_name=profile.lastName,
+                job_id=job_id,
             )
             rag = ScreenerRAG(profile=profile, store=store)
             bridge = TelegramQuestionBridge()
@@ -803,12 +813,32 @@ class AutofillWorker:
                             await self._record_fill(
                                 job_id, "cover letter", answer or None, source=source
                             )
+                            
+                            pdf_path = None
+                            if answer:
+                                try:
+                                    from autofill.pdf import create_cover_letter_pdf
+
+                                    pdf_path = create_cover_letter_pdf(
+                                        answer,
+                                        first_name=profile.firstName,
+                                        last_name=profile.lastName,
+                                        job_id=job_id,
+                                    )
+                                except Exception as pdf_err:  # never fail the RPC over a PDF
+                                    logger.warning(
+                                        "Cover letter PDF generation failed; falling back to text",
+                                        job_id=job_id,
+                                        error=str(pdf_err),
+                                    )
+                                    pdf_path = None
+                                
                             if process.stdin and not process.stdin.is_closing():
                                 rpc_resp = json.dumps(
                                     {
                                         "type": "RPC_RESPONSE",
                                         "id": req_id,
-                                        "result": {"answer": answer, "source": source},
+                                        "result": {"answer": answer, "source": source, "pdf_path": pdf_path},
                                     }
                                 )
                                 process.stdin.write(f"{rpc_resp}\n".encode())
