@@ -1,5 +1,7 @@
 """Unit tests for Phase 3 ScreenerRAG integration."""
 
+import json
+
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -466,14 +468,32 @@ def test_authorization_policy_question_names_country_wins() -> None:
 
 
 @pytest.mark.asyncio
-async def test_learn_scoped_qualifies_question_text() -> None:
+async def test_learn_scoped_qualifies_question_text(tmp_path) -> None:
+    """A country-scoped answer is stored under (category, country) — never the
+    global exact tier — and the write is isolated from the real persona.json."""
     rag = ScreenerRAG(exact_answers={}, scoped_answers={}, store=None)
-    ok = await rag.learn("Are you authorized to work in the country?", "No", country="india")
+    persona_json = tmp_path / "persona.json"
+    persona_json.write_text(json.dumps({"name": "T", "version": 1, "answers": []}))
+    persona_txt = tmp_path / "persona.txt"
+    persona_txt.write_text("Candidate Profile:\n- x: y\n\nFrom Resume:\n- stuff\n")
+    with (
+        patch("autofill.rag.PERSONA_JSON", persona_json),
+        patch("autofill.rag.PERSONA_TXT", persona_txt),
+    ):
+        ok = await rag.learn(
+            "Are you authorized to work in the country?", "No", country="united states"
+        )
 
     assert ok is True
     # Learned under the scoped map, not the global exact tier.
-    assert rag._scoped_answers[("authorization", "india")] == "No"
+    assert rag._scoped_answers[("authorization", "united states")] == "No"
     assert rag.exact_answer("Are you authorized to work in the country?") is None
+    data = json.loads(persona_json.read_text())
+    assert any(
+        e.get("question") == "Are you authorized to work in the country? (United States)"
+        and e.get("country") == "united states"
+        for e in data["answers"]
+    )
 
 
 def _persona_store(rows):

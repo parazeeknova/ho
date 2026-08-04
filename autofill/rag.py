@@ -404,6 +404,18 @@ _COUNTRY_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("kenya", re.compile(r"\bkenya\b|\bkenyan\b", re.I)),
     ("egypt", re.compile(r"\begypt\b|\begyptian\b", re.I)),
     ("morocco", re.compile(r"\bmorocco\b|\bmoroccan\b", re.I)),
+    ("lithuania", re.compile(r"\blithuania\b|\blithuanian\b|\bvilnius\b|\bkaunas\b", re.I)),
+    ("estonia", re.compile(r"\bestonia\b|\bestonian\b|\btallinn\b", re.I)),
+    ("latvia", re.compile(r"\blatvia\b|\blatvian\b|\briga\b", re.I)),
+    ("bulgaria", re.compile(r"\bbulgaria\b|\bbulgarian\b|\bsofia\b", re.I)),
+    ("croatia", re.compile(r"\bcroatia\b|\bcroatian\b|\bzagreb\b", re.I)),
+    ("serbia", re.compile(r"\bserbia\b|\bserbian\b|\bbelgrade\b", re.I)),
+    ("slovakia", re.compile(r"\bslovakia\b|\bslovak\b|\bbratislava\b", re.I)),
+    ("slovenia", re.compile(r"\bslovenia\b|\bslovenia\b|\bljubljana\b", re.I)),
+    ("luxembourg", re.compile(r"\bluxembourg\b", re.I)),
+    ("iceland", re.compile(r"\biceland\b|\bicelandic\b|\breykjavik\b", re.I)),
+    ("cyprus", re.compile(r"\bcyprus\b|\bcypriot\b|\bnicosia\b", re.I)),
+    ("malta", re.compile(r"\bmalta\b|\bmaltese\b|\bvalletta\b", re.I)),
 ]
 
 # City -> country fallback for job locations that name a city but no country.
@@ -515,6 +527,20 @@ _CITY_COUNTRIES: dict[str, str] = {
     "tel aviv": "israel",
     "istanbul": "turkey",
     "budapest": "hungary",
+    # Europe (additional)
+    "vilnius": "lithuania",
+    "kaunas": "lithuania",
+    "tallinn": "estonia",
+    "riga": "latvia",
+    "sofia": "bulgaria",
+    "zagreb": "croatia",
+    "belgrade": "serbia",
+    "bratislava": "slovakia",
+    "ljubljana": "slovenia",
+    "luxembourg city": "luxembourg",
+    "reykjavik": "iceland",
+    "nicosia": "cyprus",
+    "valletta": "malta",
     # Middle East / Africa
     "dubai": "united arab emirates",
     "abu dhabi": "united arab emirates",
@@ -568,6 +594,117 @@ _CITY_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(rf"\b{re.escape(city)}\b", re.I), country)
     for city, country in _CITY_COUNTRIES.items()
 ]
+
+# Geographic regions for deterministic residence decisions. The candidate's
+# home country (India) maps to "asia"; a residence question naming a region
+# ("based in Europe?", "resident within Europe?") resolves against it.
+_REGION_COUNTRIES: dict[str, set[str]] = {
+    "europe": {
+        "united kingdom", "germany", "france", "netherlands", "belgium",
+        "switzerland", "austria", "ireland", "sweden", "norway", "denmark",
+        "finland", "poland", "hungary", "czech republic", "spain", "portugal",
+        "italy", "greece", "ukraine", "romania", "lithuania", "estonia",
+        "latvia", "bulgaria", "croatia", "serbia", "slovakia", "slovenia",
+        "luxembourg", "iceland", "cyprus", "malta", "turkey",
+    },
+    "asia": {
+        "india", "china", "hong kong", "japan", "south korea", "taiwan",
+        "vietnam", "thailand", "indonesia", "malaysia", "philippines",
+        "singapore", "israel", "turkey",
+    },
+    "north america": {"united states", "canada"},
+    "south america": {"brazil", "argentina", "chile", "colombia"},
+    "latin america": {"mexico", "brazil", "argentina", "chile", "colombia"},
+    "middle east": {"israel", "turkey", "united arab emirates", "saudi arabia", "qatar"},
+    "africa": {"south africa", "nigeria", "kenya", "egypt", "morocco"},
+    "oceania": {"australia", "new zealand"},
+}
+
+_REGION_PATTERNS: list[tuple[re.Pattern, str]] = [
+    (
+        re.compile(
+            r"\beurope(an|a|ans)?\b|european (union|timezone)|euro zone|"
+            r"scandinavia|nordic|baltic|benelux|\beu\b|\be\.e\b",
+            re.I,
+        ),
+        "europe",
+    ),
+    (
+        re.compile(r"\b(asia|asian)\b|southeast asia|south east asia|\bapac\b", re.I),
+        "asia",
+    ),
+    (re.compile(r"north america", re.I), "north america"),
+    (re.compile(r"south america", re.I), "south america"),
+    (re.compile(r"latin america|\blatam\b", re.I), "latin america"),
+    (re.compile(r"middle east|\bmena\b", re.I), "middle east"),
+    (re.compile(r"\bafrica(n)?\b|\bemea\b", re.I), "africa"),
+    (re.compile(r"oceania|australasia|\banz\b", re.I), "oceania"),
+]
+
+# Current-residence phrasing — strictly candidate-centric. "This position is
+# based in Bangkok" describes the JOB (a willingness/relocation fact, not the
+# candidate's residence), so only you-centric forms ("are you based in",
+# "do you live in", "your current location") count. Deliberately excludes
+# "relocate"/"willing to move" — those express intent and stay LLM-driven.
+_RESIDENCE_QUERY_RE = re.compile(
+    r"are you (currently )?(based|located|residing|living|a resident|in residence)|"
+    r"you (are|'re|were) (currently )?(based|located|residing|living)|"
+    r"you currently (based|located|residing|living)|"
+    r"(do|did) you (currently )?(live|living|reside|stay)|"
+    r"are you (living|residing|based|located|staying)|"
+    r"physically (based|located) in|"
+    r"which country (are|do) you|country (do|are) you currently|"
+    r"where are you (currently )?(based|located|living)|"
+    r"what is your current location|current location|"
+    r"are you in (europe|the eu)|reside (in|within)",
+    re.I,
+)
+
+# "Which country are you currently based in?"-style free-text questions.
+_WHICH_COUNTRY_RE = re.compile(
+    r"which country|in which country|country do you (live|reside|work|stay) in|"
+    r"country/region.*based|country.*(based|located) in",
+    re.I,
+)
+
+# "Where are you located now?"-style free-text questions.
+_WHERE_LOCATED_RE = re.compile(
+    r"where are you (currently )?(based|located|living|staying)|"
+    r"what is your current location|current location",
+    re.I,
+)
+
+# Willingness complement in a residence question ("based in X or willing to
+# relocate?"). When the form offers an option that expresses the willingness
+# separately, the intent decision stays LLM-driven; only plain Yes/No selects
+# resolve deterministically on the residence facet.
+_WILLING_COMPLEMENT_RE = re.compile(
+    r"or (willing|open) to|plan (to|on) relocat|willing to relocat|"
+    r"open to relocat|willing to (move|work from|commute|work|relocate)|"
+    r"would you be willing|are you (willing|open)|you.?d be willing|"
+    r"\bwilling to\b|you (are|be) willing",
+    re.I,
+)
+_WILLING_OPTION_RE = re.compile(
+    r"open to relocat|willing to (relocat|move)|not (currently )?(based|located) in|"
+    r"willing to work from|relocat\b|can relocat",
+    re.I,
+)
+
+# Ability / mandatory in-office or commute phrasing — a current physical
+# constraint, not an intent or a position requirement ("are you able to work
+# from our SF office", "can you commute", "within commuting distance"). A
+# statement like "this position requires full-time on-site presence in
+# Bangkok" describes the job, and the candidate's willingness to meet it is
+# the LLM's call. Willingness phrasing is also excluded explicitly.
+_OFFICE_ABILITY_RE = re.compile(
+    r"able to (work|commute|be)|can you (work|commute)|"
+    r"commut|within (commuting )?distance|"
+    r"in.?office (policy|days|schedule)|"
+    r"work from (our |the )?office|"
+    r"office .{0,16}(days|times) per (week|day)|days a week|days/week",
+    re.I,
+)
 
 # Question categories whose answers are scoped to a country: the answer is
 # only valid for the country named in the question (or derived from the job
@@ -655,6 +792,80 @@ def _mentioned_countries(text: str) -> set[str]:
     return {name for name, pat in _COUNTRY_PATTERNS if pat.search(text or "")}
 
 
+def _countries_of_text(text: str) -> set[str]:
+    """Every country named in a text, via country names and city fallbacks.
+
+    Unlike ``_country_from_text`` this returns the whole set (first-match is
+    not enough for an OR question like "based in Paris or Tel Aviv?").
+    """
+    out = set(_mentioned_countries(text))
+    for city, country in _CITY_COUNTRIES.items():
+        if re.search(rf"\b{re.escape(city)}\b", text or "", re.I):
+            out.add(country)
+    return out
+
+
+def _regions_of_text(text: str) -> set[str]:
+    """Region names ("europe", "asia", ...) mentioned in a text."""
+    return {name for pat, name in _REGION_PATTERNS if pat.search(text or "")}
+
+
+def region_of_country(country: str | None) -> str | None:
+    """Region containing a canonical country name, or None."""
+    if not country:
+        return None
+    for region, countries in _REGION_COUNTRIES.items():
+        if country in countries:
+            return region
+    return None
+
+
+def _country_title(name: str) -> str:
+    """Human-readable title for a canonical country key ("india" -> "India")."""
+    return (name or "").strip().title()
+
+
+def _pick_stance_option(options: list[str], want_yes: bool) -> str | None:
+    """Pick the exact option expressing a stance for a residence/office
+    question ("Yes, currently based in X" vs "No / not based in X")."""
+    best: str | None = None
+    best_score = -1
+    for o in options or []:
+        t = (o or "").strip().lower()
+        if not t:
+            continue
+        if want_yes:
+            score = 3 if t.startswith("yes") else (1 if "yes" in t else 0)
+        else:
+            score = (
+                3
+                if t.startswith("no")
+                else (2 if re.search(r"not (currently )?(based|located|resident|in)", t) else (1 if "no" in t else 0))
+            )
+        if score > best_score:
+            best_score, best = score, o
+    return best if best_score > 0 else None
+
+
+def _answer_stance(answer: str) -> str | None:
+    """Unambiguous Yes/No stance of a free-text answer, or None.
+
+    Used to refuse persisting self-contradictory work-authorization facts
+    (e.g. a "No" for the candidate's own home country).
+    """
+    t = (answer or "").strip().lower()
+    if not t:
+        return None
+    m = re.match(r"^(yes|no)\b", t)
+    if m:
+        return m.group(1)
+    if re.search(r"only authorized", t) or re.search(r"not authorized", t):
+        return "no"
+    if re.search(r"authorized to work", t):
+        return "yes"
+    return None
+
+
 def _country_from_text(text: str) -> str | None:
     """First country mentioned in a text (by position), or None.
 
@@ -701,13 +912,29 @@ def is_scoped_question(question: str) -> bool:
     )
 
 
+# Boards annotate multi-select questions with an option-instruction suffix
+# ("(mark all that apply)", "(select all that apply)", "(check all that
+# apply)") that varies per board. Strip it during normalisation so a KB answer
+# learned on one board's phrasing ("How would you describe your gender
+# identity? (mark all that apply)") also answers another board's identical
+# question without the suffix (or with a different suffix).
+_OPTION_INSTRUCTION_RE = re.compile(
+    r"[\s(]*?(?:mark|select|choose|check|tick)\s+all\s+that\s+apply[\s)]*$",
+    re.I,
+)
+
+
 def _normalise_question(text: str) -> str:
     """Normalise question text for deterministic exact matching.
 
     Mirrors the Node adapter's ``normalise``: collapse whitespace, strip
-    leading/trailing asterisks, lowercase.
+    leading/trailing asterisks, lowercase. Also strips a trailing
+    "select/mark all that apply" option-instruction suffix so the same
+    question spelled differently across boards matches the KB.
     """
-    t = re.sub(r"\s+", " ", (text or "").strip()).strip("*")
+    t = (text or "").strip()
+    t = _OPTION_INSTRUCTION_RE.sub("", t)
+    t = re.sub(r"\s+", " ", t).strip("*")
     return t.lower()
 
 
@@ -926,9 +1153,26 @@ class ScreenerRAG:
         )
 
     def _match_custom_answer(self, q: str, q_lower: str) -> str | None:
-        """Return a configured customAnswers value if it fuzzy-matches the question."""
+        """Return a configured customAnswers value if it matches the question.
+
+        An exact (normalised) key match wins first: the persona answers include
+        the full learned question ("How would you describe your gender
+        identity? (mark all that apply)"), which must beat a shorter custom
+        key ("Gender") — otherwise Gender -> Male answers the gender-identity
+        question with the wrong value and shadows the learned exact tier.
+        Without an exact match, keys match on word boundaries only: "gender"
+        must not substring-match "transgender" (or "gender identity"
+        questions), or a single custom answer would answer unrelated
+        questions.
+        """
         for custom_key, custom_val in self.profile.customAnswers.items():
-            if custom_key.lower() in q_lower or q_lower in custom_key.lower():
+            if _normalise_question(custom_key) == _normalise_question(q):
+                return custom_val
+        for custom_key, custom_val in self.profile.customAnswers.items():
+            k = custom_key.lower().strip()
+            if not k:
+                continue
+            if re.search(rf"\b{re.escape(k)}\b", q_lower):
                 return custom_val
         return None
 
@@ -1044,6 +1288,92 @@ class ScreenerRAG:
         want_yes = home is not None and job_country is not None and job_country == home
         return _pick_authorization_answer(list(options or []), want_yes=want_yes)
 
+    def resolve_residence_policy(
+        self, question: str, options: list[str], job_context: dict[str, Any] | None
+    ) -> str | None:
+        """Deterministic answer for a current-residence / work-geography question.
+
+        The candidate's current residence is a fact (they are based in India),
+        not a guess — the LLM has repeatedly asserted "Yes" to "are you based
+        in Europe?". Policy:
+        - "which country are you currently based in?"        -> home country,
+        - "where are you located now?"                        -> profile location,
+        - "based in <place>?" where place == home             -> the "Yes" option,
+        - "based in <place>?" where place != home             -> the "No" option,
+        - composite ("based in X or willing to relocate?")    -> None when the
+          form's options express willingness separately (LLM picks the intent
+          option); plain Yes/No selects resolve on the residence facet,
+        - otherwise                                          -> None (fall
+          through to persona / LLM).
+        Returns an exact option text, a raw free-text value, or None.
+        """
+        q = (question or "").strip()
+        ql = q.lower()
+        if not ql or not _RESIDENCE_QUERY_RE.search(ql):
+            return None
+        home = self.home_country()
+        if not home:
+            return None
+
+        if _WHICH_COUNTRY_RE.search(ql):
+            return _country_title(home)
+        if _WHERE_LOCATED_RE.search(ql):
+            location = (self.profile.location or "").strip()
+            if location:
+                return location
+
+        # Composite questions: the willingness facet is the LLM's to decide
+        # (the candidate is willing to relocate, so a blanket "No" would be
+        # wrong). Only when the form offers no way to express that willingness
+        # (plain Yes/No) does the residence facet answer deterministically.
+        if _WILLING_COMPLEMENT_RE.search(ql):
+            if not options:
+                return None
+            if any(_WILLING_OPTION_RE.search(o or "") for o in options):
+                return None
+
+        q_countries = _countries_of_text(ql)
+        q_regions = _regions_of_text(ql)
+        if not q_countries and not q_regions:
+            return None
+        home_region = region_of_country(home)
+        home_in_q = home in q_countries or any(
+            home in _REGION_COUNTRIES.get(r, set()) for r in q_regions
+        ) or home_region in q_regions
+        # No real options (kb_answer / text fields): return the raw stance so
+        # the caller maps it onto the form's Yes/No option via match_option.
+        if not options:
+            return "Yes" if home_in_q else "No"
+        return _pick_stance_option(list(options or []), want_yes=home_in_q)
+
+    def resolve_work_location_policy(
+        self, question: str, options: list[str], job_context: dict[str, Any] | None
+    ) -> str | None:
+        """Deterministic answer for ability/mandate in-office and commute
+        questions ("are you able to work from our SF office 5 days a week?",
+        "can you commute to the office?", "in-office policy").
+
+        A commute to a foreign office is physically impossible from India, so
+        the answer is the "No" option whenever the office's country differs
+        from the candidate's home country. Willingness phrasing ("willing to
+        work onsite") and same-country offices fall through to the LLM.
+        Returns an exact option text or None.
+        """
+        ql = (question or "").strip().lower()
+        if not ql or not _OFFICE_ABILITY_RE.search(ql):
+            return None
+        if _WILLING_COMPLEMENT_RE.search(ql):
+            return None
+        home = self.home_country()
+        if not home:
+            return None
+        office_country = self.target_country(question, job_context)
+        if office_country and office_country != home:
+            if not options:
+                return "No"
+            return _pick_stance_option(list(options or []), want_yes=False)
+        return None
+
     async def kb_answer(
         self, question: str, job_context: dict[str, Any] | None = None
     ) -> str | None:
@@ -1126,6 +1456,18 @@ class ScreenerRAG:
         if exact is not None:
             return _normalize_start_date(exact) if key in _START_DATE_KEYS else exact
 
+        # Deterministic geography: current residence and office-commute facts
+        # must beat fuzzy persona embeddings, which have leaked wrong "Yes"
+        # answers (an "open to SF office" entry answering "able to work from
+        # our SF office five days per week?"). Custom/exact answers above still
+        # win, so an explicit user answer is never overridden.
+        geo = self.resolve_residence_policy(q, [], job_context)
+        if geo is not None:
+            return geo
+        geo = self.resolve_work_location_policy(q, [], job_context)
+        if geo is not None:
+            return geo
+
         persona_ans = await self._lookup_persona(q, q_lower)
         if persona_ans is not None:
             return _normalize_start_date(persona_ans) if key in _START_DATE_KEYS else persona_ans
@@ -1185,6 +1527,28 @@ class ScreenerRAG:
                 else:
                     answers[q] = kb
                     continue
+            # Residence / office-geography facts: the deterministic policies
+            # need the form's options, which kb_answer never sees. Apply them
+            # here (with options) so the batch path matches the per-field
+            # walker's resolve_question behavior — a "based in Europe?" select
+            # must never reach the LLM, which has answered it "Yes" before.
+            for policy in (
+                self.resolve_residence_policy,
+                self.resolve_work_location_policy,
+            ):
+                geo = policy(q, list(s["options"] or []), job_context)
+                if geo is None:
+                    continue
+                if s["kind"] in ("select", "multi") and s["options"]:
+                    picked = _select_answer_matches(geo, s["options"])
+                    if picked:
+                        answers[q] = picked
+                        break
+                else:
+                    answers[q] = geo
+                    break
+            if q in answers:
+                continue
             # Protected-class questions never reach the LLM: without a confident
             # KB answer they are a user prompt, never a generated guess.
             # Country-scoped work-authorization/visa questions ARE allowed
@@ -1403,6 +1767,43 @@ candidate has submitted; never copy phrasing verbatim across applications.
                     country=scope_country,
                 )
                 return False
+            if not self._persona_json_has((category, scope_country), question, answer):
+                # Refuse facts that contradict the candidate's known status:
+                # - never learn "not authorized" for the candidate's own home
+                #   country (they ARE authorized there),
+                # - never learn "authorized" for a foreign country (they are
+                #   only authorized in India),
+                # - never learn "no visa needed" abroad (they always need
+                #   sponsorship outside their home country).
+                stance = _answer_stance(answer)
+                home = self.home_country()
+                if stance is not None:
+                    if category == "authorization":
+                        if scope_country == home and stance == "no":
+                            logger.warning(
+                                "Scoped learn refused: negative authorization for home country",
+                                country=scope_country,
+                            )
+                            return False
+                        if home and scope_country != home and stance == "yes":
+                            logger.warning(
+                                "Scoped learn refused: positive authorization outside home country",
+                                country=scope_country,
+                            )
+                            return False
+                    elif category == "visa" and home and scope_country != home and stance == "no":
+                        logger.warning(
+                            "Scoped learn refused: no visa needed outside home country",
+                            country=scope_country,
+                        )
+                        return False
+            else:
+                logger.info(
+                    "Scoped learn skipped: already persisted on disk",
+                    category=category,
+                    country=scope_country,
+                )
+                return False
             self._scoped_answers[(category, scope_country)] = answer
         else:
             if self.store is not None:
@@ -1412,6 +1813,11 @@ candidate has submitted; never copy phrasing verbatim across applications.
                         return False
                 except Exception as e:
                     logger.warning("Learn dedup check failed", error=str(e))
+            if self._persona_json_has((category, None), question, answer):
+                logger.info(
+                    "Learn skipped: already persisted on disk", question=question
+                )
+                return False
             self._exact_answers[_normalise_question(question)] = answer
 
         content = f"Q: {question}\nA: {answer}"
@@ -1454,10 +1860,47 @@ candidate has submitted; never copy phrasing verbatim across applications.
         )
         return True
 
+    def _persona_json_has(
+        self,
+        key: tuple[str, str | None],
+        question: str,
+        answer: str,
+    ) -> bool:
+        """True when an identical row (same category+country key and same
+        question+answer) is already persisted in persona.json.
+
+        Guards against duplicate rows accumulating on disk even when the
+        in-memory dedupe indexes disagree (fresh process, store unavailable).
+        """
+        try:
+            data = json.loads(PERSONA_JSON.read_text())
+        except (OSError, json.JSONDecodeError):
+            return False
+        category, country = key
+        norm = _normalise_question(question)
+        want = (answer or "").strip()
+        for entry in data.get("answers", []):
+            entry_category = (str(entry.get("category") or "")).strip().lower()
+            entry_country = (str(entry.get("country") or "")).strip().lower() or None
+            if (entry_category, entry_country) != (category, country):
+                continue
+            if _normalise_question(entry.get("question") or "") != norm:
+                continue
+            if (entry.get("answer") or "").strip() == want:
+                return True
+        return False
+
     def _append_persona_json(
         self, question: str, answer: str, category: str, country: str | None = None
     ) -> None:
-        """Durably append a learned Q&A to persona.json (atomic write)."""
+        """Durably append a learned Q&A to persona.json (atomic write).
+
+        Never duplicates a row: a scoped entry replaces every row sharing the
+        same (category, country) key, and a general entry replaces every row
+        sharing the same normalised question, so repeated learn calls cannot
+        accumulate contradictory versions (the last-wins load made an old
+        "No" for India silently overwrite a newer "Yes").
+        """
         try:
             data = json.loads(PERSONA_JSON.read_text())
         except (OSError, json.JSONDecodeError):
@@ -1470,7 +1913,21 @@ candidate has submitted; never copy phrasing verbatim across applications.
         }
         if country:
             entry["country"] = country
-        data.setdefault("answers", []).append(entry)
+        answers = data.setdefault("answers", [])
+        norm = _normalise_question(question)
+        answers[:] = [
+            e
+            for e in answers
+            if not (
+                country
+                and (str(e.get("country") or "").strip().lower() or None) == country
+                and (str(e.get("category") or "").strip().lower() or None) == category
+            )
+            and not (
+                not country and _normalise_question(e.get("question") or "") == norm
+            )
+        ]
+        answers.append(entry)
         tmp = PERSONA_JSON.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(data, indent=2) + "\n")
         os.replace(tmp, PERSONA_JSON)
