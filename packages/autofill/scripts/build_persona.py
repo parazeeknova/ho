@@ -30,6 +30,7 @@ for _p in (REPO, REPO / "packages" / "ingest", ROOT):
         sys.path.insert(0, str(_p))
 
 load_dotenv()
+os.environ["LOG_LEVEL"] = "WARNING"  # quiet JSON log spam in setup scripts
 
 from src.configuration import get_config  # noqa: E402
 from src.logging import get_logger  # noqa: E402

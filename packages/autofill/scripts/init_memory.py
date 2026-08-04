@@ -35,6 +35,7 @@ for _p in (REPO, REPO / "packages" / "ingest", ROOT):
         sys.path.insert(0, str(_p))
 
 load_dotenv()
+os.environ["LOG_LEVEL"] = "WARNING"  # quiet JSON log spam in setup scripts
 
 import ux  # noqa: E402
 from src.configuration import get_config  # noqa: E402
@@ -157,10 +158,7 @@ async def main() -> None:
     )
     args = parser.parse_args()
 
-    ux.banner(
-        "USER MEMORY INITIALIZATION",
-        "one-command setup  ·  resume + persona RAG base",
-    )
+    ux.chip("info", "USER MEMORY INITIALIZATION  -  resume + persona RAG base")
 
     # 1. Postgres
     ux.section(1, 4, "Postgres")

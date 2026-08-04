@@ -33,6 +33,8 @@ for _p in (REPO, REPO / "packages" / "ingest", ROOT):
         sys.path.insert(0, str(_p))
 
 import ux  # noqa: E402
+
+os.environ["LOG_LEVEL"] = "WARNING"  # quiet JSON log spam in setup scripts
 from rich.prompt import Prompt  # noqa: E402
 from src.logging import get_logger  # noqa: E402
 
@@ -233,7 +235,7 @@ def identity_mismatches(saved: dict, resume: dict) -> list[tuple[str, str, str]]
     return out
 
 
-def grill_identity(data: dict, resume: dict) -> dict:
+def grill_identity(data: dict, resume: dict, ask_all: bool = False) -> dict:
     identity = dict(data.get("identity", {}))
     ux.section(1, 3, "Identity & Contact", "Enter keeps the current value, if any")
 
@@ -246,9 +248,11 @@ def grill_identity(data: dict, resume: dict) -> dict:
         ).strip()
     )
     resume_name = resume.get("name", "")
-    default_name = existing_name or resume_name
-    label = "full name (from resume)" if resume_name and not existing_name else "full name"
-    name = _ask(label, default_name)
+    name = ""
+    if ask_all or not (existing_name or resume_name):
+        default_name = existing_name or resume_name
+        label = "full name (from resume)" if resume_name and not existing_name else "full name"
+        name = _ask(label, default_name)
     if name:
         name = _normalize_answer(name)
         data["name"] = name
@@ -258,6 +262,8 @@ def grill_identity(data: dict, resume: dict) -> dict:
 
     for field in CONTACT_FIELDS:
         existing = identity.get(field, "")
+        if existing and not ask_all:
+            continue
         default = existing or resume.get(field, "")
         label = f"{field} (from resume)" if default and not existing else field
         value = _ask(label, default)
@@ -303,7 +309,7 @@ def _previous_answer(
     return {}
 
 
-def grill_answers(data: dict) -> dict:
+def grill_answers(data: dict, ask_all: bool = False) -> dict:
     stored = data.get("answers", [])
     by_question = {a["question"]: a for a in stored}
     by_category: dict[str, list[dict]] = {}
@@ -312,8 +318,22 @@ def grill_answers(data: dict) -> dict:
 
     ux.section(2, 3, "Personal Q&A", "Free-form answers; dropdowns get closest option")
     answers: list[dict] = []
+    kept: list[dict] = []
     seen: set[str] = set()
+    skipped = 0
     for category, question in WIZARD_QUESTIONS:
+        # Re-grills only ask what is still missing: a question is skipped when
+        # it already has an answer (or its single-question category does),
+        # unless --all forces a full re-ask. Skipped questions keep their
+        # stored entries — the saved list must NEVER shrink from a skip.
+        multi = sum(1 for c, _ in WIZARD_QUESTIONS if c == category) > 1
+        already = question in by_question or (not multi and bool(by_category.get(category)))
+        if already and not ask_all:
+            skipped += 1
+            entry = by_question.get(question) or (by_category.get(category) or [None])[0]
+            if entry and entry not in kept:
+                kept.append(entry)
+            continue
         prev = _previous_answer(category, question, by_question, by_category)
         answer = _ask(question, prev.get("answer", ""))
         if not answer:
@@ -338,7 +358,11 @@ def grill_answers(data: dict) -> dict:
         if answer:
             answers.append({"category": "general", "question": question, "answer": answer})
 
-    data["answers"] = answers
+    wizard_cats = {c for c, _ in WIZARD_QUESTIONS}
+    extra_kept = [a for a in stored if a.get("category") not in wizard_cats and a not in kept]
+    data["answers"] = kept + extra_kept + answers
+    if skipped and not ask_all:
+        ux.chip("info", f"Skipped {skipped} already-answered question(s) (--all to re-ask)")
     return data
 
 
@@ -357,6 +381,11 @@ def main() -> None:
         action="store_true",
         help="Write persona.json without rebuilding memory",
     )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Re-ask every question even when already answered",
+    )
     args = parser.parse_args()
 
     ux.banner("CANDIDATE PERSONA GRILL", "interactive wizard  ·  identity + personal Q&A")
@@ -364,8 +393,8 @@ def main() -> None:
     resume = asyncio.run(_resume_defaults())
     if resume:
         ux.chip("info", f"Prefilling identity defaults from resume ({len(resume)} fields)")
-    data = grill_identity(data, resume)
-    data = grill_answers(data)
+    data = grill_identity(data, resume, ask_all=args.all)
+    data = grill_answers(data, ask_all=args.all)
     save_persona(data)
 
     for field, saved_value, resume_value in identity_mismatches(data.get("identity", {}), resume):

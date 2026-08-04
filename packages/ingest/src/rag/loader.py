@@ -28,9 +28,6 @@ def download_resume(url: str) -> tuple[Path, str]:
     content = resp.read()
     content_type = resp.headers.get("Content-Type", "")
 
-    print(f"  Content-Type: {content_type}")
-    print(f"  Size: {len(content)} bytes")
-
     # If it's HTML pretending to be a PDF, save as HTML
     if content.startswith(b"<!") or b"<!doctype" in content[:100].lower():
         print("  Detected HTML response, saving as .html")
@@ -84,7 +81,6 @@ def extract_text(path: Path) -> str:
         result = md.convert(str(path))
         text = result.text_content
         if text and len(text) > 100:
-            print("    using markitdown")
             return cleanup_markdown_tables(text)
         print(f"    markitdown returned {len(text)} chars, trying next...")
     except Exception as e:
@@ -103,7 +99,6 @@ def extract_text(path: Path) -> str:
         doc.close()
         text = "\n\n".join(parts)
         if text and len(text) > 100:
-            print("    using pymupdf")
             return cleanup_markdown_tables(text)
         print(f"    pymupdf returned {len(text)} chars, trying next...")
     except Exception as e:
@@ -121,7 +116,6 @@ def extract_text(path: Path) -> str:
                 parts.append(t)
         text = "\n\n".join(parts)
         if text and len(text) > 50:
-            print(f"    using pypdf ({len(text)} chars)")
             return cleanup_markdown_tables(text)
         print(f"    pypdf returned {len(text)} chars, trying next...")
     except Exception as e:
@@ -202,18 +196,7 @@ def load_resume(default_url: str | None = None) -> tuple[str, dict[str, str]]:
 
     path, content_type = download_resume(url)
 
-    print("  Extracting...")
     text = extract_text(path)
-
-    checks = verify_extraction(text)
-    for key, val in checks.items():
-        if key not in ("passes", "length"):
-            status = "PASS" if val else "FAIL"
-            print(f"    [{status}] {key}")
-    print(f"    [INFO] extracted {checks['length']} chars")
-
-    if not checks["passes"]:
-        print("  WARNING: Some extraction checks failed, continuing anyway...")
 
     if not is_non_interactive:
         while True:
@@ -235,7 +218,6 @@ def load_resume(default_url: str | None = None) -> tuple[str, dict[str, str]]:
                 return load_resume()
 
     chunks = chunk_resume(text)
-    print(f"  Sections: {list(chunks.keys())}")
 
     path.unlink(missing_ok=True)
     return text, chunks

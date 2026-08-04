@@ -13,6 +13,9 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
+
+os.environ["LOG_LEVEL"] = "WARNING"  # quiet JSON log spam in setup scripts
 import asyncio
 import sys
 from pathlib import Path
@@ -57,7 +60,7 @@ async def main() -> None:
     )
     args = parser.parse_args()
 
-    ux.banner("RESUME INDEXER", "extract  ·  chunk  ·  embed  ·  store")
+    ux.chip("info", "RESUME INDEXER - extract  ·  chunk  ·  embed  ·  store")
 
     with ux.console.status("Extracting resume text...", spinner="dots"):
         try:
@@ -78,8 +81,6 @@ async def main() -> None:
             sys.exit(1)
 
     ux.chip("ok", f"Extracted {len(full_text)} chars across {len(chunks)} sections")
-    for section, text in chunks.items():
-        ux.bullet(f"{section}: {len(text)} chars", style="white")
 
     if args.dry_run:
         ux.chip("info", "Dry run: not writing to the database.")
