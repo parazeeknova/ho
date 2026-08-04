@@ -10,9 +10,12 @@
   },
   "dependencies": {
     "@browserbasehq/stagehand": "^3.7.1",
+    "imapflow": "^1.6.5",
+    "mailparser": "^3.9.14",
     "zod": "^3.24.1"
   },
   "devDependencies": {
+    "@types/mailparser": "^3.4.6",
     "@types/node": "^22.10.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
