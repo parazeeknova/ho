@@ -219,3 +219,38 @@ export const IDENTITY_FILLS: Record<string, keyof Profile> = {
 
 /** Questions answered by the fixed deterministic identity fills before the walk. */
 export const PRE_FILLED_LABELS = new Set(["first name", "last name", "email", "phone"]);
+
+/**
+ * True when a field is driven deterministically from the profile (identity /
+ * profile fills) rather than resolved by the walk. These are typically
+ * pre-filled before the walk begins, so the walk must never re-process them.
+ */
+export function isProfileDrivenField(f: FormField): boolean {
+  const key = normalizeBlankLabel(f.label);
+  return key in IDENTITY_FILLS || key in PROFILE_FILLS;
+}
+
+/**
+ * True for a free-text cover-letter prompt (a textarea asking for a cover
+ * letter or an open "anything you would like us to know" blurb). Boards with a
+ * dedicated cover-letter path (greenhouse/generic/workday) generate the letter
+ * ONCE via the "cover_letter" RPC (PDF upload with text fallback) — so the walk
+ * must never resolve these via "answer_question", which would both burn a
+ * second LLM generation and pre-fill the textarea before the PDF path runs.
+ */
+export function isCoverLetterField(f: { label: string; kind?: string }): boolean {
+  const kind = f.kind ?? "text";
+  if (kind === "select" || kind === "multi" || kind === "radio" || kind === "checkbox") {
+    return false;
+  }
+  const label = normalizeBlankLabel(f.label);
+  return (
+    /cover letter|cover_letter/.test(label) ||
+    /^additional information$/.test(label) ||
+    /anything else you|more about you|tell us about yourself|anything you would like/.test(label)
+  );
+}
+
+function normalizeBlankLabel(label: string): string {
+  return (label || "").replace(/\s+/g, " ").trim().toLowerCase();
+}

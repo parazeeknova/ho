@@ -7,6 +7,7 @@ import {
   fieldKey,
   FormField,
   IDENTITY_FILLS,
+  isCoverLetterField,
   isLocationAutocomplete,
   PROFILE_FILLS,
 } from "./model.js";
@@ -64,7 +65,10 @@ export class Screener {
     protected controls: FormControls,
     protected tagName: string,
     protected profile: Profile,
-    protected rpc: RpcHelper
+    protected rpc: RpcHelper,
+    /** Boards with a dedicated cover-letter path skip cover-letter fields in
+     *  the walk — those are generated once via the "cover_letter" RPC. */
+    protected skipCoverLetterFields = false
   ) {}
 
   async process(
@@ -73,6 +77,17 @@ export class Screener {
     blanked: BlankEntry[],
     userSkippedKeys: Set<string>
   ): Promise<void> {
+    // Cover-letter prompts are handled by the adapter's dedicated path (PDF
+    // upload with text fallback) — never resolved here. Silently skipped: no
+    // blanked entry, since the dedicated path fills it after the walk.
+    if (this.skipCoverLetterFields && isCoverLetterField(field)) {
+      console.log(
+        `[${this.controls.tagName}] Cover-letter field "${escapePromptValue(field.label)}" ` +
+          "left for the dedicated cover-letter path."
+      );
+      return;
+    }
+
     const key = normalizeQuestionLabel(field.label);
 
     // Identity + profile-driven fields are filled deterministically from the

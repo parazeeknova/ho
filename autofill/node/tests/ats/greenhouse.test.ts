@@ -6,6 +6,8 @@ import {
   editDistance,
   fieldKey,
   isLocationAutocomplete,
+  isCoverLetterField,
+  isProfileDrivenField,
   normalizeOptionText,
   parseRemixJobContext,
   parseRemixQuestionsModel,
@@ -412,6 +414,59 @@ describe("mergeFormInventory", () => {
   it("falls back to DOM-only inventory when there is no JSON model", () => {
     const merged = mergeFormInventory(null, domFields);
     assert.equal(merged.length, domFields.length);
+  });
+});
+
+describe("isProfileDrivenField", () => {
+  const mk = (label: string, kind: FormField["kind"] = "text"): FormField => ({
+    label,
+    id: "x",
+    kind,
+    required: false,
+    options: [],
+    optionTargets: [],
+  });
+
+  it("marks identity fields (first name, email, phone)", () => {
+    assert.equal(isProfileDrivenField(mk("First Name")), true);
+    assert.equal(isProfileDrivenField(mk("What is your email address?")), true);
+    assert.equal(isProfileDrivenField(mk("Phone (e.g. +91 99999 99999)")), true);
+  });
+
+  it("marks profile fields (linkedin, github, website)", () => {
+    assert.equal(isProfileDrivenField(mk("LinkedIn Profile")), true);
+    assert.equal(isProfileDrivenField(mk("Portfolio URL")), true);
+  });
+
+  it("does not mark ordinary screener questions", () => {
+    assert.equal(isProfileDrivenField(mk("Race", "radio")), false);
+    assert.equal(isProfileDrivenField(mk("Are you currently based in Europe?", "select")), false);
+    assert.equal(isProfileDrivenField(mk("")), false);
+  });
+});
+
+describe("isCoverLetterField", () => {
+  const mk = (label: string, kind: FormField["kind"] = "text"): FormField => ({
+    label,
+    id: "x",
+    kind,
+    required: false,
+    options: [],
+    optionTargets: [],
+  });
+
+  it("marks cover-letter prompts and open blurb textareas", () => {
+    assert.equal(isCoverLetterField(mk("Cover Letter")), true);
+    assert.equal(isCoverLetterField(mk("Please add your cover letter below")), true);
+    assert.equal(isCoverLetterField(mk("Anything else you would like us to know?")), true);
+    assert.equal(isCoverLetterField(mk("Tell us about yourself")), true);
+    assert.equal(isCoverLetterField(mk("Additional Information")), true);
+  });
+
+  it("never marks structured questions (selects, radios, checkboxes)", () => {
+    assert.equal(isCoverLetterField(mk("Do you need visa sponsorship?", "select")), false);
+    assert.equal(isCoverLetterField(mk("Race", "radio")), false);
+    assert.equal(isCoverLetterField(mk("")), false);
   });
 });
 

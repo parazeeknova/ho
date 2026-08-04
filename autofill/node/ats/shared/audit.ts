@@ -1,4 +1,4 @@
-import { FormField, PRE_FILLED_LABELS, fieldKey } from "./model.js";
+import { FormField, PRE_FILLED_LABELS, fieldKey, isCoverLetterField } from "./model.js";
 import { BlankEntry } from "./screener.js";
 import { normalizeOptionText, escapePromptValue } from "./matching.js";
 import { randomSleep } from "../../utils/evasion.js";
@@ -37,6 +37,10 @@ export async function auditBlanks<T extends { label: string; required: boolean }
   const transcript = params.transcript;
   const required: BlankEntry[] = [];
   for (const field of params.fields) {
+    // Cover-letter prompts are handled by the adapter's dedicated path (PDF
+    // upload with text fallback), which runs after the walk — never count a
+    // still-empty cover-letter textarea as a required blank here.
+    if (isCoverLetterField(field)) continue;
     if (await params.readValue(field)) continue;
     const reason = blankReason(field.label, transcript);
     if (field.required) {
@@ -69,6 +73,7 @@ export async function finalReverify(params: {
   const stillBlank: BlankEntry[] = [];
   for (const field of fields) {
     if (PRE_FILLED_LABELS.has(normalizeOptionText(field.label))) continue;
+    if (isCoverLetterField(field)) continue; // dedicated cover-letter path owns it
     if (params.skippedKeys?.has(fieldKey(field))) continue;
     if (!(await params.isEmpty(field))) continue;
     stillBlank.push({
