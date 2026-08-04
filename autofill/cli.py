@@ -24,7 +24,7 @@ from autofill.telegram import (
     TelegramQuestionBridge,
     TelegramSendError,
 )
-from autofill.worker import is_overnight, run_worker
+from autofill.worker import _per_job_resume, is_overnight, run_worker
 from src.memory.pgvector_store import MemoryStore
 
 load_dotenv()
@@ -106,16 +106,31 @@ async def _stream_runner(
                             "[Python CLI] Submission is disabled in this phase — "
                             "the form was filled and verified, nothing was applied."
                         )
-                        print(
-                            "Review the filled answers in the browser, "
-                            "then press Enter to close it."
-                        )
-                        with contextlib.suppress(EOFError):
-                            input("[Python CLI] Press Enter to close: ")
-                        if process.stdin:
-                            action_payload = json.dumps({"action": "skip"}) + "\n"
-                            process.stdin.write(action_payload.encode())
-                            await process.stdin.drain()
+                        if sys.stdin.isatty():
+                            print(
+                                "Review the filled answers in the browser, "
+                                "then press Enter to close it."
+                            )
+                            with contextlib.suppress(EOFError):
+                                input("[Python CLI] Press Enter to close: ")
+                            if process.stdin:
+                                action_payload = json.dumps({"action": "skip"}) + "\n"
+                                process.stdin.write(action_payload.encode())
+                                await process.stdin.drain()
+                        else:
+                            # Non-interactive stdin (pipe or background): do NOT
+                            # send "skip" — that closes the browser before the
+                            # review window. The runner's own
+                            # AUTOFILL_REVIEW_HOLD_MS timer resolves "skip" and
+                            # emits the terminal "skipped" status below; keep
+                            # reading the runner's output until then.
+                            hold_ms = int(
+                                os.environ.get("AUTOFILL_REVIEW_HOLD_MS", "360000")
+                            )
+                            print(
+                                "[Python CLI] Non-interactive stdin detected — "
+                                f"browser will stay open for review (hold: {hold_ms} ms)."
+                            )
                         continue
 
                     choice = (
@@ -162,12 +177,33 @@ async def _stream_runner(
 
                     if method == "cover_letter":
                         answer, source = await resolve_cover_letter(rag, job_context=job_context)
+                        pdf_path = None
+                        if answer:
+                            try:
+                                from autofill.pdf import create_cover_letter_pdf
+
+                                pdf_path = create_cover_letter_pdf(
+                                    answer,
+                                    first_name=rag.profile.firstName,
+                                    last_name=rag.profile.lastName,
+                                    job_id=job_id,
+                                )
+                            except Exception as pdf_err:
+                                print(
+                                    f"[Python CLI] Cover letter PDF generation failed "
+                                    f"({pdf_err}); falling back to text."
+                                )
+                                pdf_path = None
                         if process.stdin:
                             rpc_resp = json.dumps(
                                 {
                                     "type": "RPC_RESPONSE",
                                     "id": req_id,
-                                    "result": {"answer": answer, "source": source},
+                                    "result": {
+                                        "answer": answer,
+                                        "source": source,
+                                        "pdf_path": pdf_path,
+                                    },
                                 }
                             )
                             process.stdin.write(f"{rpc_resp}\n".encode())
@@ -313,7 +349,13 @@ async def run_apply(url: str, mode: str = "review"):
         )
         store = None
     profile = await build_profile(store=store)
-    profile.resumePath = await resolve_resume_path()
+    job_id = f"job-{uuid.uuid4().hex[:8]}"
+    profile.resumePath = _per_job_resume(
+        await resolve_resume_path(),
+        first_name=profile.firstName,
+        last_name=profile.lastName,
+        job_id=job_id,
+    )
     if not profile.resumePath:
         print(
             "[Python CLI] WARNING: No resume available to upload "
@@ -324,7 +366,6 @@ async def run_apply(url: str, mode: str = "review"):
     bridge = TelegramQuestionBridge()
     question_timeout = float(os.getenv("AUTOFILL_QUESTION_TIMEOUT", "300"))
     overnight = is_overnight()
-    job_id = f"job-{uuid.uuid4().hex[:8]}"
 
     if overnight:
         mode = "auto"
@@ -365,7 +406,12 @@ async def run_resume(job_id: str, review: bool = False):
 
         store = await MemoryStore.create()
         profile = await build_profile(store=store)
-        profile.resumePath = await resolve_resume_path()
+        profile.resumePath = _per_job_resume(
+            await resolve_resume_path(),
+            first_name=profile.firstName,
+            last_name=profile.lastName,
+            job_id=job_id,
+        )
         rag = ScreenerRAG(profile=profile, store=store)
         bridge = TelegramQuestionBridge()
         question_timeout = float(os.getenv("AUTOFILL_QUESTION_TIMEOUT", "300"))
