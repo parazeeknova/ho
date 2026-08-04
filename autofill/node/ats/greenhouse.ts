@@ -2,7 +2,8 @@ import { Stagehand } from "@browserbasehq/stagehand";
 import * as fs from "fs";
 import { ATSAdapter, RpcHelper } from "./base.js";
 import { JobPayload, Profile } from "../types.js";
-import { randomSleep } from "../utils/evasion.js";
+import { randomSleep, typingDelayMs } from "../utils/evasion.js";
+import { gmailConfigured, waitForGreenhouseCode } from "../utils/gmail.js";
 import {
   auditBlanks,
   finalReverify,
@@ -111,6 +112,20 @@ export function parseRemixJobContext(
   } catch {
     return null;
   }
+}
+
+/**
+ * A detected email-verification prompt: the code input(s) a board shows after
+ * the submit click. `segmented` is true when the code is entered one digit per
+ * input box (an OTP row).
+ */
+interface VerificationPrompt {
+  /** CSS selector matching the code input(s). */
+  selector: string;
+  /** True when the code is entered one digit per input box. */
+  segmented: boolean;
+  /** CSS selector scoping the prompt's container ("" when unknown). */
+  containerSel: string;
 }
 
 export class GreenhouseAdapter extends ATSAdapter {
@@ -954,12 +969,367 @@ export class GreenhouseAdapter extends ATSAdapter {
     await this.stagehand.act("Click the Submit Application button");
     await randomSleep(500, 1000);
 
+    // Email-verification gate: some boards require a code emailed to the
+    // applicant before the application lands. The prompt appears right after
+    // the submit click; when present, fetch the code from Gmail via IMAP and
+    // enter it, then let verifySubmitOutcome confirm the final state.
+    const verificationHandled = await this.handleEmailVerification(page);
+    if (!verificationHandled) {
+      console.log("[GreenhouseAdapter] No email-verification prompt detected; proceeding.");
+    }
+
     return verifySubmitOutcome(page, {
       tag: "Greenhouse",
       successUrlRe: /thanks|submitted|confirmation|success|applied|complete/i,
       submitButtonSelector:
         "input[type='submit'], button[type='submit'], button:has-text('Submit Application')",
     });
+  }
+
+  /**
+   * Detect an email-verification code prompt on the current page. Returns
+   * null when none is visible (the common case — most boards submit directly).
+   * The input is matched by its id/name/placeholder/aria-label or its
+   * associated label text (e.g. "Enter the code we sent to your email").
+   */
+  private async detectVerificationPrompt(page: any): Promise<VerificationPrompt | null> {
+    // WARNING: only anonymous arrows may be used in page context (tsx
+    // keepNames wraps inferred-name arrows in __name(), which throws there).
+    const raw = await page
+      .evaluate(() => {
+        const [norm, verificationish, isVisible] = [
+          (t: string) => (t || "").replace(/\s+/g, " ").trim().toLowerCase(),
+          (t: string): boolean => {
+            // A verification prompt is worded "Verification code", "Security
+            // code", "one-time code", "Enter the/your code", or "code we
+            // sent". Reject lookalikes like "Zip code" / "Area code" / country
+            // dialing codes, which would otherwise swallow the OTP.
+            if (/(area code|zip ?code|postal|dial|country code|sort code)/.test(t)) {
+              return false;
+            }
+            return (
+              /verification/.test(t) ||
+              /security code/.test(t) ||
+              /confirmation code/.test(t) ||
+              /one[- ]?time (code|pin)/.test(t) ||
+              /enter (the|your)? ?code/.test(t) ||
+              /code we sent/.test(t) ||
+              /^code/.test(t)
+            );
+          },
+          (el: Element): boolean => {
+            const r = el.getBoundingClientRect();
+            if (r.width < 2 || r.height < 2) return false;
+            const st = window.getComputedStyle(el);
+            return st.display !== "none" && st.visibility !== "hidden";
+          },
+        ];
+        const out: Array<{
+          id: string;
+          name: string;
+          selector: string;
+          segmented: boolean;
+          containerSel: string;
+        }> = [];
+        const inputs = Array.from(
+          document.querySelectorAll(
+            "input[type='text'], input[type='tel'], input[type='number'], input:not([type])"
+          )
+        );
+        for (const el of inputs) {
+          const inp = el as HTMLInputElement;
+          if (!isVisible(inp)) continue;
+          const id = inp.id || "";
+          const name = inp.name || "";
+          const placeholder = inp.getAttribute("placeholder") || "";
+          const aria = inp.getAttribute("aria-label") || "";
+          let label = "";
+          if (id) {
+            const fl = document.querySelector(`label[for="${id}"]`);
+            if (fl) label = fl.textContent || "";
+          }
+          if (!label) {
+            const wrap = inp.closest("label");
+            if (wrap) label = wrap.textContent || "";
+          }
+          const hay = norm([id, name, placeholder, aria, label].join(" "));
+          if (!hay || !verificationish(hay)) continue;
+          let selector = "";
+          if (id) selector = `#${CSS.escape(id)}`;
+          else if (name) selector = `input[name="${CSS.escape(name)}"]`;
+          else selector = `input[type="${inp.type}"]`;
+          // Scope the prompt's container so the Verify click never leaves the
+          // dialog/form: nearest id'd ancestor, verification-ish class, or form.
+          let containerSel = "";
+          let node: Element | null = inp;
+          for (let d = 0; d < 5 && node; d++) {
+            node = node.parentElement;
+            if (!node) break;
+            if (node.id) {
+              containerSel = `#${CSS.escape(node.id)}`;
+              break;
+            }
+            const cls = (node.className || "").toString();
+            if (/(verification|verify|code)/i.test(cls)) {
+              const parts = cls
+                .split(/\s+/)
+                .filter((c: string) => c && /[a-zA-Z0-9_-]/.test(c))
+                .slice(0, 3);
+              if (parts.length) {
+                containerSel = parts.map((c: string) => `.${CSS.escape(c)}`).join("");
+                break;
+              }
+            }
+            if (node.tagName.toLowerCase() === "form") {
+              containerSel = "form";
+              break;
+            }
+          }
+          out.push({
+            id,
+            name,
+            selector,
+            segmented: inp.maxLength > 0 && inp.maxLength <= 2,
+            containerSel,
+          });
+        }
+        // An OTP row: several boxes share one name/class — flag them all.
+        const counts = new Map<string, number>();
+        for (const o of out) {
+          const key = o.name || o.selector;
+          counts.set(key, (counts.get(key) || 0) + 1);
+        }
+        for (const o of out) {
+          if ((counts.get(o.name || o.selector) || 0) > 1) o.segmented = true;
+        }
+        return out;
+      })
+      .catch(() => null);
+    if (!raw || raw.length === 0) return null;
+    const entries = raw.sort(
+      (a: { segmented: boolean }, b: { segmented: boolean }) =>
+        (a.segmented ? 0 : 1) - (b.segmented ? 0 : 1)
+    );
+    const primary = entries[0];
+    const segmented = primary.segmented;
+    const selector = segmented && primary.name ? `input[name="${primary.name}"]` : primary.selector;
+    return { selector, segmented, containerSel: primary.containerSel || "" };
+  }
+
+  /**
+   * Handle the post-submit email-verification gate. Polls briefly for the
+   * verification prompt; when found, waits for the code email via IMAP and
+   * enters it. Returns true when the prompt was handled (code entered and the
+   * Verify/Confirm control clicked). Never throws — a missing prompt, missing
+   * Gmail credentials, or an email timeout just returns false so the normal
+   * submit-outcome verification takes over.
+   */
+  private async handleEmailVerification(page: any): Promise<boolean> {
+    if (!gmailConfigured()) {
+      console.log(
+        "[GreenhouseAdapter] GMAIL_EMAIL/GMAIL_APP_PASSWORD not set; " +
+          "email-verification codes cannot be fetched."
+      );
+      return false;
+    }
+    let prompt: VerificationPrompt | null = null;
+    for (let i = 0; i < 12; i++) {
+      prompt = await this.detectVerificationPrompt(page);
+      if (prompt) break;
+      await randomSleep(700, 1000);
+    }
+    if (!prompt) return false;
+
+    console.log("[GreenhouseAdapter] Verification code prompt detected. Waiting for email...");
+    console.log(
+      `[GreenhouseAdapter] Prompt shape: segmented=${prompt.segmented} ` +
+        `selector=${prompt.selector} container=${prompt.containerSel ?? "(none)"}`
+    );
+    // Dump the prompt wrapper's markup so the submit control can be matched
+    // exactly (inputs are empty at this point, so no code is ever logged).
+    const promptDom = await page
+      .evaluate(
+        (sel: string) => {
+          const el = document.querySelector(sel);
+          return el ? el.outerHTML.slice(0, 2500) : "(no element)";
+        },
+        prompt.containerSel || prompt.selector
+      )
+      .catch(() => "(evaluate failed)");
+    console.log(
+      `[GreenhouseAdapter] Prompt DOM (${
+        prompt.containerSel || prompt.selector
+      }):\n${promptDom}`
+    );
+    let code: string;
+    try {
+      code = await waitForGreenhouseCode();
+    } catch (err: any) {
+      console.warn(
+        `[GreenhouseAdapter] Verification code fetch failed: ${err?.message || err}`
+      );
+      return false;
+    }
+    if (!code) {
+      console.warn("[GreenhouseAdapter] No verification code extracted from email; skipping.");
+      return false;
+    }
+
+    const entered = await this.fillVerificationCode(page, prompt, code);
+    await randomSleep(800, 1400);
+    // Give the board a moment to validate and advance past the prompt.
+    let cleared = false;
+    for (let i = 0; i < 10; i++) {
+      if (!(await this.detectVerificationPrompt(page))) {
+        cleared = true;
+        break;
+      }
+      await randomSleep(500, 800);
+    }
+    // The Greenhouse OTP wrapper renders its feedback into
+    // #email-verification-error (not a [role=alert], so the shared outcome
+    // detector never sees it). Surface it when the prompt never cleared.
+    const feedback = await page
+      .evaluate(
+        () =>
+          document.getElementById("email-verification-error")?.textContent?.trim() ?? ""
+      )
+      .catch(() => "");
+    if (feedback) {
+      console.warn(`[GreenhouseAdapter] Verification feedback: ${feedback}`);
+    }
+    if (cleared) {
+      // The code validated and the prompt cleared, but Greenhouse only returns
+      // the (still-filled) form — its email says "After you enter the code,
+      // resubmit your application". Press the main submit once more so the
+      // application actually lands.
+      const resubmitted = await this.clickMainSubmit(page);
+      console.log(
+        resubmitted
+          ? "[GreenhouseAdapter] Verification accepted; resubmitted the application."
+          : "[GreenhouseAdapter] Verification accepted, but no submit button found to resubmit."
+      );
+    }
+    return entered;
+  }
+
+  /** Click the form's main submit button (the post-verification resubmit
+   *  Greenhouse asks for after the emailed code is accepted). */
+  private async clickMainSubmit(page: any): Promise<boolean> {
+    const sel =
+      "input[type='submit'], button[type='submit'], button:has-text('Submit Application')";
+    const loc = page.locator(sel).first();
+    if (!(await loc.isVisible().catch(() => false))) return false;
+    await loc.click().catch(() => {});
+    return true;
+  }
+
+  /** Type text into a focused input. Stagehand's locator wrapper exposes
+   *  neither pressSequentially nor (in some builds) page.keyboard, so prefer
+   *  page-level keyboard typing and fall back to a native fill. */
+  private async typeChar(page: any, box: any, text: string): Promise<void> {
+    if (typeof page?.keyboard?.type === "function") {
+      try {
+        await page.keyboard.type(text, { delay: typingDelayMs() });
+        return;
+      } catch {
+        // fall through to fill
+      }
+    }
+    await box.fill(text).catch(() => {});
+  }
+
+  /** Type the code into the prompt's input(s) and click the Verify control. */
+  private async fillVerificationCode(
+    page: any,
+    prompt: VerificationPrompt,
+    code: string
+  ): Promise<boolean> {
+    const loc = page.locator(prompt.selector);
+    const count = await loc.count().catch(() => 0);
+    if (count === 0) return false;
+    if (prompt.segmented && count > 1) {
+      // Greenhouse's segmented OTP spreads a full paste across all 8 boxes, so
+      // fill the whole code into the first box first (deterministic); fall
+      // back to per-box entry if the board doesn't spread it.
+      await loc.first().click().catch(() => {});
+      await loc.first().fill(code).catch(() => {});
+      await randomSleep(400, 700);
+      let committed = await this.readVerificationCode(page, prompt);
+      if (committed !== code) {
+        await loc.first().fill("").catch(() => {});
+        const n = Math.min(count, code.length);
+        for (let i = 0; i < n; i++) {
+          const box = loc.nth(i);
+          await box.click();
+          await this.typeChar(page, box, code[i]);
+        }
+        if (code.length > n) {
+          await loc.nth(n - 1).click();
+          await this.typeChar(page, loc.nth(n - 1), code.slice(n));
+        }
+        await randomSleep(400, 700);
+        committed = await this.readVerificationCode(page, prompt);
+      }
+      if (committed !== code) {
+        console.warn(
+          `[GreenhouseAdapter] Verification code not fully committed (got "${committed}"); submitting anyway.`
+        );
+      }
+    } else {
+      const box = loc.first();
+      await box.click();
+      await box.fill(code).catch(() => {});
+    }
+    await randomSleep(500, 900);
+    console.log("[GreenhouseAdapter] Verification code entered.");
+    // Click the verification submit control. Lots of boards have no dedicated
+    // Verify/Confirm button — Greenhouse's email instructs the applicant to
+    // "resubmit your application" after entering the code, i.e. the form's own
+    // Submit button completes the code step. Try container-scoped controls
+    // first, then page-wide Verify/Confirm, then the generic submit.
+    const containerSel = prompt.containerSel ? `${prompt.containerSel} ` : "";
+    const btnSelectors = [
+      `${containerSel}button[type="submit"]`,
+      `${containerSel}input[type="submit"]`,
+      `${containerSel}button:has-text("Verify")`,
+      `${containerSel}button:has-text("Confirm")`,
+      `${containerSel}button:has-text("Submit")`,
+      `${containerSel}button:has-text("Resubmit")`,
+      `button:has-text("Verify")`,
+      `button:has-text("Confirm")`,
+      `input[type="submit"]`,
+      `button[type="submit"]`,
+      `button:has-text("Submit Application")`,
+      `button:has-text("Resubmit")`,
+    ];
+    for (const sel of btnSelectors) {
+      const btn = page.locator(sel).first();
+      if (!(await btn.isVisible().catch(() => false))) continue;
+      const ok = await btn
+        .click()
+        .then(() => true)
+        .catch(() => false);
+      if (ok) {
+        console.log("[GreenhouseAdapter] Verification code submitted.");
+        return true;
+      }
+    }
+    console.warn(
+      "[GreenhouseAdapter] No verification submit button found; code entered but not confirmed."
+    );
+    return false;
+  }
+
+  /** Concatenate the committed value(s) of the prompt's code input(s). */
+  private async readVerificationCode(page: any, prompt: VerificationPrompt): Promise<string> {
+    const loc = page.locator(prompt.selector);
+    const count = await loc.count().catch(() => 0);
+    let out = "";
+    for (let i = 0; i < count; i++) {
+      out += (await loc.nth(i).inputValue().catch(() => "")) || "";
+    }
+    return out;
   }
 
   /**
