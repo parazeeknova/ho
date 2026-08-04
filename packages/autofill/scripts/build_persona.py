@@ -138,22 +138,6 @@ async def resume_summary(store: MemoryStore) -> str:
     return "\n".join(parts[:40])
 
 
-def render_persona_txt(
-    answers: list[dict[str, str]], resume: str, identity: dict[str, str] | None = None
-) -> str:
-    blocks = ["Candidate Profile:"]
-    for field, value in (identity or {}).items():
-        if value:
-            blocks.append(f"- {field}: {value}")
-    for a in answers:
-        blocks.append(f"- {a['question']}: {a['answer']}")
-    if resume:
-        blocks.append("")
-        blocks.append("From Resume:")
-        blocks.append(resume)
-    return "\n".join(blocks) + "\n"
-
-
 async def embed_chunks(
     chunks: list[dict[str, str]],
 ) -> list[dict[str, Any]]:
