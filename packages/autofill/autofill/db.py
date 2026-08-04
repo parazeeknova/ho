@@ -422,6 +422,19 @@ class AutofillDB:
                 return False
             return (now_utc() - row["last_seen"]).total_seconds() <= max_age_seconds
 
+    async def last_applied(self) -> dict[str, Any] | None:
+        """Most recently applied job (role/company/applied_at), if any."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT role, company, applied_at FROM autofill_queue
+                WHERE applied_at IS NOT NULL
+                ORDER BY applied_at DESC
+                LIMIT 1
+                """
+            )
+            return dict(row) if row else None
+
     async def get_job(self, job_id: str) -> dict[str, Any] | None:
         """Fetch job details by ID."""
         async with self._pool.acquire() as conn:

@@ -8,6 +8,7 @@ export const ProfileSchema = z.object({
   linkedin: z.string().url().nullable().optional(),
   github: z.string().url().nullable().optional(),
   website: z.string().url().nullable().optional(),
+  twitter: z.string().url().nullable().optional(),
   preferredName: z.string().nullable().optional(),
   location: z.string().nullable().optional(),
   resumePath: z.string().nullable().optional(),

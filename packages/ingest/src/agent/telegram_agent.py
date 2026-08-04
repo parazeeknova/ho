@@ -72,11 +72,13 @@ async def autofill_queue_lines() -> list[str]:
     except Exception:
         return []
     need_review = s.get("deferred", 0) + s.get("awaiting_review", 0)
+    remaining = s.get("pending", 0) + s.get("filling", 0)
     return [
         "<b>Autofill Queue</b>",
         f"▪ Applied: <b>{s.get('applied', 0)}</b>",
-        f"▪ Failed: <b>{s.get('failed', 0)}</b>",
+        f"▪ Remaining: <b>{remaining}</b>",
         f"▪ Need Review: <b>{need_review}</b>",
+        f"▪ Failed: <b>{s.get('failed', 0)}</b>",
         f"▪ Open: <b>{s.get('open', 0)}</b>",
     ]
 
@@ -390,6 +392,14 @@ class TelegramAgent:
         for upd in data.get("result", []):
             self._update_id = max(self._update_id, upd.get("update_id", 0))
             await self._capture_mailbox_answer(upd)
+            cb = upd.get("callback_query") or {}
+            if cb:
+                cb_data = cb.get("data") or ""
+                cb_msg = cb.get("message") or {}
+                cb_chat = cb_msg.get("chat") or {}
+                if str(cb_chat.get("id", "")) in self._chat_ids and cb_data == "persona":
+                    await self._send_full_persona()
+                continue
             msg = upd.get("message", {})
             chat = msg.get("chat", {})
             sender_id = str(chat.get("id", ""))
@@ -790,13 +800,25 @@ class TelegramAgent:
 
             cfg_persona = get_config().candidate.persona.strip()
             if cfg_persona:
+                _skip_prefixes = (
+                    "firstName",
+                    "lastName",
+                    "email",
+                    "phone",
+                    "linkedin",
+                    "github",
+                    "website",
+                    "twitter",
+                )
                 persona_lines = [
                     line_str.strip()
                     for line_str in cfg_persona.split("\n")
                     if line_str.strip()
                     and not line_str.strip().lower().startswith("candidate profile")
+                    and not line_str.strip().lstrip("- ").lower().startswith(_skip_prefixes)
                 ]
-                short_persona = "\n".join(persona_lines[:3]) if persona_lines else cfg_persona[:200]
+                short_persona = "\n".join(persona_lines[:4]) if persona_lines else cfg_persona[:200]
+                full_persona = cfg_persona[:3000]
         except Exception:
             pass
 
@@ -829,6 +851,31 @@ class TelegramAgent:
             )
 
         lines.extend(["", "<i>Beginning discovery and polling sweeps...</i>"])
+        reply_markup = None
+        if full_persona:
+            reply_markup = {
+                "inline_keyboard": [[{"text": "📄 View Full Persona", "callback_data": "persona"}]]
+            }
+        await self._send_raw("\n".join(lines), reply_markup=reply_markup)
+
+    async def _send_full_persona(self) -> None:
+        """Post the complete candidate persona (identity + answers + resume)."""
+        try:
+            from src.configuration import get_config
+
+            persona = get_config().candidate.persona.strip()
+        except Exception:
+            persona = ""
+        if not persona:
+            await self._send_raw("No persona configured yet — run `npm run init-memory`.")
+            return
+        lines = [
+            "<b>Full Persona</b>",
+            "",
+            f"<code>{html.escape(persona[:3800])}</code>",
+        ]
+        if len(persona) > 3800:
+            lines.append(f"\n<i>…truncated ({len(persona)} chars)</i>")
         await self._send_raw("\n".join(lines))
 
     async def send_stage_progress(

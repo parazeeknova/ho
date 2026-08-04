@@ -40,8 +40,8 @@ logger = get_logger("grill_persona")
 
 PERSONA_JSON = ROOT / "data" / "persona.json"
 
-CONTACT_FIELDS = ("email", "phone", "linkedin", "github", "website")
-LINK_FIELDS = {"linkedin", "github", "website"}
+CONTACT_FIELDS = ("email", "phone", "linkedin", "github", "website", "twitter")
+LINK_FIELDS = {"linkedin", "github", "website", "twitter"}
 
 WIZARD_QUESTIONS: list[tuple[str, str]] = [
     ("current_location", "Where are you currently based?"),

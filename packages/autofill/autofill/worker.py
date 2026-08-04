@@ -305,6 +305,7 @@ class AutofillWorker:
         self._running = False
         self._running_tasks: set[asyncio.Task] = set()
         self._summary_task: asyncio.Task[None] | None = None
+        self._status_task: asyncio.Task[None] | None = None
         # Count of jobs this worker has STARTED processing; used to skip the
         # inter-job spacing delay before the very first job of a batch.
         self._jobs_started = 0
@@ -419,10 +420,11 @@ class AutofillWorker:
                 logger.warning("Debug ledger flush failed", error=str(e))
 
     async def start(self) -> None:
-        """Start the worker polling loop and the daily digest scheduler."""
+        """Start the worker polling loop, status heartbeat and daily digest."""
         self._running = True
         logger.info("AutofillWorker started polling loop...")
         self._summary_task = asyncio.create_task(self._daily_summary_loop())
+        self._status_task = asyncio.create_task(self._status_loop())
         try:
             while self._running:
                 # The slot is acquired BEFORE claiming and only released when
@@ -468,12 +470,71 @@ class AutofillWorker:
         if self._summary_task:
             self._summary_task.cancel()
             self._summary_task = None
+        if self._status_task:
+            self._status_task.cancel()
+            self._status_task = None
         for task in list(self._running_tasks):
             if not task.done():
                 task.cancel()
         logger.info("AutofillWorker stopped and active tasks cancelled.")
 
     # ── morning digest ──────────────────────────────────────────────
+
+    async def _status_loop(self) -> None:
+        """Occasional Telegram status heartbeat (queue + last applied).
+
+        Interval in minutes via AUTOFILL_STATUS_INTERVAL_MIN (default 30;
+        0 disables). Only sent while jobs remain open so a drained queue
+        stops nagging.
+        """
+        interval_min = int(os.getenv("AUTOFILL_STATUS_INTERVAL_MIN", "30"))
+        if interval_min <= 0:
+            logger.info("Periodic status messages disabled (AUTOFILL_STATUS_INTERVAL_MIN=0)")
+            return
+        bridge = TelegramQuestionBridge()
+        while self._running:
+            try:
+                await asyncio.sleep(interval_min * 60)
+                if not self._running:
+                    return
+                summary = await self.db.queue_summary()
+                open_jobs = summary.get("open", 0) + summary.get("pending", 0)
+                if open_jobs == 0 and summary.get("applied", 0) > 0:
+                    continue
+                text = await self._format_status_message(summary)
+                if text:
+                    ok = await bridge.send(text)
+                    if ok:
+                        logger.info("Periodic status sent", interval_minutes=interval_min)
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                logger.warning("Status loop error", error=str(e))
+                await asyncio.sleep(60)
+
+    async def _format_status_message(self, summary: dict[str, Any]) -> str | None:
+        """Compact queue status message: applied / remaining / review / failed."""
+        try:
+            last = await self.db.last_applied()
+        except Exception:
+            last = None
+        need_review = summary.get("deferred", 0) + summary.get("awaiting_review", 0)
+        remaining = summary.get("pending", 0) + summary.get("filling", 0)
+        lines = [
+            "📊 <b>Autofill Status</b>",
+            f"▪ Applied: <b>{summary.get('applied', 0)}</b>",
+            f"▪ Remaining: <b>{remaining}</b>",
+            f"▪ Need Review: <b>{need_review}</b>",
+            f"▪ Failed: <b>{summary.get('failed', 0)}</b>",
+        ]
+        if last and last.get("applied_at") is not None:
+            role = str(last.get("role") or "Position")
+            company = str(last.get("company") or "Company")
+            when = last["applied_at"].astimezone().strftime("%H:%M")
+            lines.append(
+                f"▪ Last applied: <b>{html.escape(company)}</b> — {html.escape(role)} ({when})"
+            )
+        return "\n".join(lines)
 
     async def _daily_summary_loop(self) -> None:
         """Send the daily morning digest of deferred jobs at AUTOFILL_DAILY_SUMMARY."""

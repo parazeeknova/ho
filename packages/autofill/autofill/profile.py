@@ -26,6 +26,7 @@ _IDENTITY_FIELDS = (
     "linkedin",
     "github",
     "website",
+    "twitter",
     "preferredName",
 )
 
@@ -33,6 +34,7 @@ _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 _PHONE_RE = re.compile(r"\+?[\d][\d\s().-]{7,}\d")
 _LINKEDIN_RE = re.compile(r"(?:https?://)?(?:www\.)?linkedin\.com/in/[\w.-]+", re.I)
 _GITHUB_RE = re.compile(r"(?:https?://)?(?:www\.)?github\.com/[\w.-]+", re.I)
+_TWITTER_RE = re.compile(r"(?:https?://)?(?:www\.)?(?:x|twitter)\.com/[A-Za-z0-9_]+", re.I)
 _WEBSITE_RE = re.compile(r"(?:https?://)?[\w-]+(?:\.[\w-]+)+(?:/[\w./-]*)?", re.I)
 
 
@@ -44,6 +46,7 @@ class Profile(BaseModel):
     linkedin: str | None = Field(default="https://linkedin.com/in/johndoe")
     github: str | None = Field(default="https://github.com/johndoe")
     website: str | None = Field(default="https://johndoe.dev")
+    twitter: str | None = Field(default=None, alias="twitter")
     preferredName: str | None = Field(default=None, alias="preferred_name")
     location: str | None = Field(default=None, alias="location")
     resumePath: str | None = Field(default=None, alias="resume_path")
@@ -83,6 +86,10 @@ def _regex_extract(text: str) -> dict[str, str]:
     if m:
         found["github"] = m.group(0)
         text = text.replace(m.group(0), " ", 1)
+    m = _TWITTER_RE.search(text)
+    if m:
+        found["twitter"] = m.group(0)
+        text = _TWITTER_RE.sub(" ", text)
     m = _PHONE_RE.search(text)
     if m:
         found["phone"] = m.group(0).strip()
