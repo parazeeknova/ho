@@ -428,7 +428,7 @@ async function main() {
         screenshotPath: screenshotPath,
         message: "Form filled successfully. Submission is disabled in this phase."
       });
-      const holdMs = parseInt(process.env.AUTOFILL_REVIEW_HOLD_MS || "600000", 10);
+      const holdMs = parseInt(process.env.AUTOFILL_REVIEW_HOLD_MS || "360000", 10);
       await new Promise<"submit" | "skip">((resolve) => {
         actionCallbackResolver = resolve;
         if (holdMs > 0) {
