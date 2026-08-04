@@ -330,7 +330,10 @@ def grill_answers(data: dict, ask_all: bool = False) -> dict:
         already = question in by_question or (not multi and bool(by_category.get(category)))
         if already and not ask_all:
             skipped += 1
-            entry = by_question.get(question) or (by_category.get(category) or [None])[0]
+            entry = by_question.get(question)
+            if entry is None:
+                cat_entries = by_category.get(category) or []
+                entry = cat_entries[0] if cat_entries else None
             if entry is not None and entry not in kept:
                 kept.append(entry)
             continue
