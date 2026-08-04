@@ -61,7 +61,8 @@ WIZARD_QUESTIONS: list[tuple[str, str]] = [
     ("pronouns", "What are your pronouns? (or say N/A)"),
     (
         "sexual_orientation",
-        "What is your sexual orientation? (or say Prefer not to answer)",
+        "What is your sexual orientation? "
+        "(heterosexual / homosexual / bisexual / pansexual / asexual / prefer not to answer)",
     ),
     (
         "ethnicity",
@@ -102,6 +103,46 @@ def _ask(label: str, default: str = "") -> str:
     except EOFError, KeyboardInterrupt:
         return default
     return value.strip()
+
+
+_YES_ALIASES = {"y", "yes", "yeah", "yep", "sure"}
+_NO_ALIASES = {"n", "no", "nope", "nah"}
+_PREFER_NOT_ALIASES = {
+    "prefer not to answer",
+    "prefer not to say",
+    "prefer not",
+    "prefer not say",
+    "decline",
+    "decline to answer",
+    "decline to state",
+    "skip",
+    "pnta",
+    "-",
+}
+_NA_ALIASES = {"n/a", "na", "not applicable", "none", "--"}
+
+
+def _normalize_answer(value: str, category: str = "") -> str:
+    """Sanitize a grilled answer before it lands in persona.json.
+
+    Collapses internal whitespace and maps common phrasings to canonical
+    values: yes/no aliases -> "Yes"/"No", "prefer not to say" family ->
+    "Prefer not to answer", "n/a" family -> "N/A". Free-text answers
+    (compensation, availability, working hours) pass through cleanly.
+    """
+    v = re.sub(r"\s+", " ", (value or "")).strip()
+    if not v:
+        return v
+    low = v.lower().strip(" .")
+    if low in _PREFER_NOT_ALIASES:
+        return "Prefer not to answer"
+    if low in _YES_ALIASES:
+        return "Yes"
+    if low in _NO_ALIASES:
+        return "No"
+    if low in _NA_ALIASES:
+        return "N/A"
+    return v
 
 
 async def _resume_defaults() -> dict[str, str]:
@@ -209,6 +250,7 @@ def grill_identity(data: dict, resume: dict) -> dict:
     label = "full name (from resume)" if resume_name and not existing_name else "full name"
     name = _ask(label, default_name)
     if name:
+        name = _normalize_answer(name)
         data["name"] = name
         parts = name.split(None, 1)
         identity["firstName"] = parts[0]
@@ -220,7 +262,13 @@ def grill_identity(data: dict, resume: dict) -> dict:
         label = f"{field} (from resume)" if default and not existing else field
         value = _ask(label, default)
         if value:
-            identity[field] = _sanitize_link(value) if field in LINK_FIELDS else value
+            if field in LINK_FIELDS:
+                value = _sanitize_link(value)
+            elif field == "email":
+                value = _normalize_answer(value).lower()
+            else:
+                value = _normalize_answer(value)
+            identity[field] = value
 
     # Nothing known about the name anywhere: ask explicitly.
     if not name and not identity.get("firstName"):
@@ -268,6 +316,9 @@ def grill_answers(data: dict) -> dict:
     for category, question in WIZARD_QUESTIONS:
         prev = _previous_answer(category, question, by_question, by_category)
         answer = _ask(question, prev.get("answer", ""))
+        if not answer:
+            continue
+        answer = _normalize_answer(answer, category)
         if not answer:
             continue
         final_question = (
