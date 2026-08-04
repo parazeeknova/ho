@@ -216,7 +216,7 @@ def _candidate_persona_paths() -> list[str]:
     if env_file:
         paths.append(env_file)
     for cwd in (os.getcwd(), str(Path(__file__).resolve().parents[3])):
-        paths.append(os.path.join(cwd, "packages", "autofill", "data", "persona.json"))
+        paths.append(os.path.join(cwd, "data", "persona.json"))
     return paths
 
 

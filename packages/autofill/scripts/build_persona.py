@@ -38,7 +38,7 @@ from src.memory.pgvector_store import MemoryStore  # noqa: E402
 
 logger = get_logger("build_persona")
 
-PERSONA_JSON = ROOT / "data" / "persona.json"
+PERSONA_JSON = REPO / "data" / "persona.json"  # repo root
 
 # Resume sections to fold into the persona.json resume_summary field.
 _RESUME_SECTIONS = ("header", "skills", "experience", "education", "achievements")

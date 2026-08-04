@@ -208,7 +208,7 @@ async def main() -> None:
 
     # 4. Persona -> persona_embeddings + resume_summary in persona.json
     ux.section(4, 4, "Persona")
-    persona_json = ROOT / "data" / "persona.json"
+    persona_json = REPO / "data" / "persona.json"
     if args.grill:
         await run_script("grill_persona.py")
     elif persona_json.exists():

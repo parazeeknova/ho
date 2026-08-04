@@ -19,7 +19,7 @@ from autofill.profile import Profile
 logger = get_logger("autofill.rag")
 
 ROOT = Path(__file__).resolve().parent.parent
-PERSONA_JSON = ROOT / "data" / "persona.json"
+PERSONA_JSON = Path(__file__).resolve().parents[3] / "data" / "persona.json"  # repo root
 
 # Sentinel returned when an answer is a personal fact we must not fabricate.
 # The CLI prompts the user for these; the worker leaves them blank.

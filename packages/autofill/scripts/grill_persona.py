@@ -40,7 +40,7 @@ from src.logging import get_logger  # noqa: E402
 
 logger = get_logger("grill_persona")
 
-PERSONA_JSON = ROOT / "data" / "persona.json"
+PERSONA_JSON = REPO / "data" / "persona.json"  # repo root
 
 CONTACT_FIELDS = ("email", "phone", "linkedin", "github", "website", "twitter")
 LINK_FIELDS = {"linkedin", "github", "website", "twitter"}
