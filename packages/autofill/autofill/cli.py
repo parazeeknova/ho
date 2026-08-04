@@ -31,6 +31,13 @@ from autofill.worker import is_overnight, run_worker
 load_dotenv()
 
 
+def _format_pending(entry: dict[str, Any]) -> str:
+    q = entry.get("question") or "?"
+    options = entry.get("options") or []
+    hint = f"  [{', '.join(str(o) for o in options[:6])}]" if options else ""
+    return f"• {q}{hint}"
+
+
 async def _stream_runner(
     payload: dict[str, Any],
     rag: ScreenerRAG,
@@ -47,6 +54,8 @@ async def _stream_runner(
         f"[Python CLI] Spawning Stagehand Node runner for {payload['url']} "
         f"(ID: {job_id}, Mode: {payload['mode']})..."
     )
+
+    deferred_questions: list[dict[str, Any]] = []
 
     try:
         process = await asyncio.create_subprocess_exec(
@@ -218,7 +227,9 @@ async def _stream_runner(
                                 await process.stdin.drain()
                             continue
                         except DeferredError as deferred:
-                            # Overnight: no human present — record for the digest.
+                            # Overnight: no human present — collect the question
+                            # for one grouped digest entry + Telegram message at
+                            # the end of the run (never a row per question).
                             pending = {
                                 "question": deferred.question,
                                 "kind": deferred.kind,
@@ -228,39 +239,7 @@ async def _stream_runner(
                                 f"\n[Python CLI] DEFERRED ({len(pending['options'] or [])} "
                                 f"options): {deferred.question}"
                             )
-                            try:
-                                db = await AutofillDB.create()
-                                try:
-                                    deferred_id = await db.enqueue_job(
-                                        apply_link=payload["url"], apply_mode="review"
-                                    )
-                                    await db.mark_deferred(
-                                        deferred_id,
-                                        questions=[pending],
-                                        reason="needs user input",
-                                    )
-                                    print(
-                                        f"[Python CLI] Recorded as {deferred_id} — "
-                                        "listed in the morning digest; resume with "
-                                        f"`python -m autofill resume {deferred_id}`"
-                                    )
-                                    if bridge.is_configured:
-                                        option_hint = ""
-                                        if pending["options"]:
-                                            option_hint = "\n" + " | ".join(pending["options"][:6])
-                                        text = (
-                                            f"⛔ <b>Deferred</b>: "
-                                            f"{payload.get('company', 'Company')} — "
-                                            f"{payload.get('role', 'Position')}\n"
-                                            f'<a href="{payload["url"]}">Open posting →</a>\n'
-                                            f"Needs your input:\n"
-                                            f"• {deferred.question}{option_hint}"
-                                        )
-                                        await bridge.send(text)
-                                finally:
-                                    await db.close()
-                            except Exception as db_err:
-                                print(f"[Python CLI] WARNING: could not record deferral: {db_err}")
+                            deferred_questions.append(pending)
 
                             if process.stdin:
                                 rpc_resp = json.dumps(
@@ -299,6 +278,44 @@ async def _stream_runner(
         stderr_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await stderr_task
+
+    if deferred_questions:
+        final_status = (final_event or {}).get("status")
+        if final_status == "submitted":
+            print(
+                f"[Python CLI] {len(deferred_questions)} deferred question(s) remain "
+                "but the application was submitted; nothing recorded."
+            )
+        else:
+            try:
+                db = await AutofillDB.create()
+                try:
+                    deferred_id = await db.enqueue_job(
+                        apply_link=payload["url"], apply_mode="review"
+                    )
+                    await db.mark_deferred(
+                        deferred_id,
+                        questions=deferred_questions,
+                        reason="needs user input",
+                    )
+                    print(
+                        f"[Python CLI] Recorded as {deferred_id} — listed in the "
+                        "morning digest; resume with "
+                        f"`python -m autofill resume {deferred_id}`"
+                    )
+                    if bridge.is_configured:
+                        text = (
+                            f"⛔ <b>Deferred</b>: {payload.get('company', 'Company')} — "
+                            f"{payload.get('role', 'Position')}\n"
+                            f'<a href="{payload["url"]}">Open posting →</a>\n'
+                            f"Needs your input ({len(deferred_questions)}):\n"
+                            + "\n".join(_format_pending(q) for q in deferred_questions[:6])
+                        )
+                        await bridge.send(text)
+                finally:
+                    await db.close()
+            except Exception as db_err:
+                print(f"[Python CLI] WARNING: could not record deferral: {db_err}")
 
     return final_event
 
