@@ -23,12 +23,29 @@ def _bridge(bot_token: str = "token", chat_id: str = "123") -> TelegramQuestionB
     return TelegramQuestionBridge(bot_token=bot_token, chat_id=chat_id)
 
 
+def _rag(**stubs) -> MagicMock:
+    """A resolve_question-ready mock: every deterministic policy is stubbed to
+    None so only the behaviors a test explicitly overrides take effect."""
+    rag = MagicMock()
+    rag.kb_answer = AsyncMock(return_value=None)
+    rag.answer_questions = AsyncMock(return_value={})
+    rag.resolve_visa_policy = MagicMock(return_value=None)
+    rag.resolve_authorization_policy = MagicMock(return_value=None)
+    rag.resolve_residence_policy = MagicMock(return_value=None)
+    rag.resolve_work_location_policy = MagicMock(return_value=None)
+    rag.learn = AsyncMock(return_value=True)
+    rag.target_country = MagicMock(return_value=None)
+    for name, value in stubs.items():
+        setattr(rag, name, value)
+    return rag
+
+
 # ── resolve_question ───────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
 async def test_resolve_text_known_kb_no_prompt() -> None:
-    rag = MagicMock()
+    rag = _rag()
     rag.kb_answer = AsyncMock(return_value=None)
     rag.answer_questions = AsyncMock(return_value={"Where are you based?": "Hyderabad"})
     bridge = _bridge()
@@ -44,7 +61,7 @@ async def test_resolve_text_known_kb_no_prompt() -> None:
 
 @pytest.mark.asyncio
 async def test_resolve_select_maps_kb_answer_to_option() -> None:
-    rag = MagicMock()
+    rag = _rag()
     rag.kb_answer = AsyncMock(return_value="No")
     bridge = _bridge()
     bridge.ask_options = AsyncMock()
@@ -64,7 +81,7 @@ async def test_resolve_select_maps_kb_answer_to_option() -> None:
 
 @pytest.mark.asyncio
 async def test_resolve_select_unmappable_kb_asks_with_options() -> None:
-    rag = MagicMock()
+    rag = _rag()
     rag.kb_answer = AsyncMock(return_value="Flexible")
     rag.answer_questions = AsyncMock(return_value={})  # LLM can't map it either
     rag.resolve_visa_policy = MagicMock(return_value=None)
@@ -91,7 +108,7 @@ async def test_resolve_select_unmappable_kb_asks_with_options() -> None:
 
 @pytest.mark.asyncio
 async def test_resolve_text_unknown_asks_and_learns() -> None:
-    rag = MagicMock()
+    rag = _rag()
     rag.kb_answer = AsyncMock(return_value=None)
     rag.answer_questions = AsyncMock(return_value={"Are you a current employee?": ASK_USER})
     rag.learn = AsyncMock(return_value=True)
@@ -108,7 +125,7 @@ async def test_resolve_text_unknown_asks_and_learns() -> None:
 
 @pytest.mark.asyncio
 async def test_resolve_decline_leaves_blank() -> None:
-    rag = MagicMock()
+    rag = _rag()
     rag.kb_answer = AsyncMock(return_value=None)
     rag.answer_questions = AsyncMock(return_value={"Q1": ASK_USER})
     rag.learn = AsyncMock()
@@ -126,7 +143,7 @@ async def test_resolve_decline_leaves_blank() -> None:
 async def test_resolve_dismissed_select_maps_to_decline_option() -> None:
     """Zero-blank: dismissing a dropdown prompt fills the form's own decline
     option (e.g. "I don't wish to answer") instead of leaving the field empty."""
-    rag = MagicMock()
+    rag = _rag()
     rag.kb_answer = AsyncMock(return_value=None)
     rag.answer_questions = AsyncMock(return_value={})  # LLM can't answer
     rag.resolve_visa_policy = MagicMock(return_value=None)
@@ -150,7 +167,7 @@ async def test_resolve_dismissed_select_maps_to_decline_option() -> None:
 
 @pytest.mark.asyncio
 async def test_resolve_dismissed_select_without_decline_option_stays_blank() -> None:
-    rag = MagicMock()
+    rag = _rag()
     rag.kb_answer = AsyncMock(return_value=None)
     rag.answer_questions = AsyncMock(return_value={})  # LLM can't answer
     rag.resolve_visa_policy = MagicMock(return_value=None)
@@ -172,7 +189,7 @@ async def test_resolve_dismissed_select_without_decline_option_stays_blank() -> 
 
 @pytest.mark.asyncio
 async def test_resolve_overnight_defers_without_prompting() -> None:
-    rag = MagicMock()
+    rag = _rag()
     rag.kb_answer = AsyncMock(return_value=None)
     rag.answer_questions = AsyncMock(return_value={"Q1": ASK_USER})
     bridge = _bridge()
@@ -187,7 +204,7 @@ async def test_resolve_overnight_defers_without_prompting() -> None:
 
 @pytest.mark.asyncio
 async def test_resolve_overnight_defers_select_with_options() -> None:
-    rag = MagicMock()
+    rag = _rag()
     rag.kb_answer = AsyncMock(return_value=None)
     rag.answer_questions = AsyncMock(return_value={})  # LLM can't answer
     rag.resolve_visa_policy = MagicMock(return_value=None)
@@ -210,7 +227,7 @@ async def test_resolve_overnight_defers_select_with_options() -> None:
 
 @pytest.mark.asyncio
 async def test_resolve_scoped_question_display_qualifies_with_jd_country() -> None:
-    rag = MagicMock()
+    rag = _rag()
     rag.kb_answer = AsyncMock(return_value=None)
     rag.answer_questions = AsyncMock(
         return_value={"Are you authorized to work in the country?": ASK_USER}
@@ -239,7 +256,7 @@ async def test_resolve_scoped_question_display_qualifies_with_jd_country() -> No
 
 @pytest.mark.asyncio
 async def test_resolve_scoped_question_asks_for_country_and_learns_it() -> None:
-    rag = MagicMock()
+    rag = _rag()
     rag.kb_answer = AsyncMock(return_value=None)
     rag.answer_questions = AsyncMock(
         return_value={"Are you authorized to work in the country?": ASK_USER}
@@ -269,7 +286,7 @@ async def test_resolve_scoped_question_asks_for_country_and_learns_it() -> None:
 
 @pytest.mark.asyncio
 async def test_resolve_unconfigured_raises() -> None:
-    rag = MagicMock()
+    rag = _rag()
     rag.kb_answer = AsyncMock(return_value=None)
     rag.answer_questions = AsyncMock(return_value={"Q1": ASK_USER})
     bridge = TelegramQuestionBridge(bot_token="", chat_id="")
@@ -308,7 +325,7 @@ def test_match_option_forgives_small_typo() -> None:
 
 @pytest.mark.asyncio
 async def test_resolve_cover_letter_uses_generate_cover_letter() -> None:
-    rag = MagicMock()
+    rag = _rag()
     rag.generate_cover_letter = AsyncMock(return_value="A structured cover letter.")
 
     text, source = await resolve_cover_letter(rag, job_context={"title": "Role"})
@@ -319,7 +336,7 @@ async def test_resolve_cover_letter_uses_generate_cover_letter() -> None:
 
 @pytest.mark.asyncio
 async def test_resolve_cover_letter_falls_back_when_ungrounded() -> None:
-    rag = MagicMock()
+    rag = _rag()
     rag.generate_cover_letter = AsyncMock(return_value="   ")
 
     text, source = await resolve_cover_letter(rag, job_context={})

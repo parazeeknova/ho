@@ -183,6 +183,23 @@ async def resolve_question(
         if auth_pick is not None:
             return (auth_pick, "kb")
 
+    # Current-residence and office-commute geography policies: a question like
+    # "are you based in Europe?" or "able to work from our SF office?" is a
+    # deterministic fact (the candidate is based in India), never a guess.
+    if rag is not None:
+        for policy in (
+            rag.resolve_residence_policy,
+            rag.resolve_work_location_policy,
+        ):
+            geo_pick = policy(q, list(options or []), job_context)
+            if geo_pick is not None:
+                if kind in ("select", "multi") and options:
+                    picked = match_option(geo_pick, list(options))
+                    if picked:
+                        return (picked, "kb")
+                    continue
+                return (geo_pick.strip(), "kb")
+
     # Tier 3: grounded LLM (persona + resume + JD, with options for selects).
     # Select answers are validated against the real options inside
     # answer_questions — a non-option is never filled. Only what survives to
