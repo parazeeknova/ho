@@ -32,7 +32,9 @@ def _rag(**stubs) -> MagicMock:
     rag.resolve_visa_policy = MagicMock(return_value=None)
     rag.resolve_authorization_policy = MagicMock(return_value=None)
     rag.resolve_residence_policy = MagicMock(return_value=None)
+    rag.resolve_relocation_policy = MagicMock(return_value=None)
     rag.resolve_work_location_policy = MagicMock(return_value=None)
+    rag.resolve_affiliation_policy = MagicMock(return_value=None)
     rag.learn = AsyncMock(return_value=True)
     rag.target_country = MagicMock(return_value=None)
     for name, value in stubs.items():
@@ -246,6 +248,67 @@ async def test_resolve_overnight_skips_optional_question() -> None:
 
     assert (answer, source) == ("", "decline")
     bridge.ask.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_resolve_overnight_required_affiliation_no_negative_deferrals() -> None:
+    """A REQUIRED affiliation question whose form offers no negative stance is
+    deferred overnight (never silently blanked) and asked by day (never
+    guessed by the LLM, which fabricates a company)."""
+    rag = _rag()
+    rag.resolve_affiliation_policy = MagicMock(return_value="")  # no negative option
+    rag.kb_answer = AsyncMock(return_value=None)
+    rag.answer_questions = AsyncMock(
+        return_value={"Are you related to a current Acme employee?": ASK_USER}
+    )
+    bridge = _bridge()
+    bridge.ask = AsyncMock(return_value="No")
+    bridge.ask_options = AsyncMock(return_value="No")
+    bridge.ask_dropdown = AsyncMock(return_value="No")
+
+    # Overnight + required -> deferred, not blanked.
+    with pytest.raises(DeferredError):
+        await resolve_question(
+            rag,
+            bridge,
+            "Are you related to a current Acme employee?",
+            kind="select",
+            options=["Yes"],
+            overnight=True,
+            required=True,
+        )
+
+    # Day + required -> asked via Telegram, and the LLM never ran.
+    answer, source = await resolve_question(
+        rag,
+        bridge,
+        "Are you related to a current Acme employee?",
+        kind="select",
+        options=["Yes"],
+        overnight=False,
+        required=True,
+    )
+    assert (answer, source) == ("No", "telegram")
+    rag.answer_questions.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_resolve_optional_affiliation_no_negative_blanked() -> None:
+    """An OPTIONAL affiliation question with no negative stance is blanked."""
+    rag = _rag()
+    rag.resolve_affiliation_policy = MagicMock(return_value="")
+    rag.kb_answer = AsyncMock(return_value=None)
+    bridge = _bridge()
+
+    answer, source = await resolve_question(
+        rag,
+        bridge,
+        "Are you related to a current Acme employee?",
+        kind="text",
+        overnight=True,
+        required=False,
+    )
+    assert (answer, source) == ("", "decline")
 
 
 @pytest.mark.asyncio

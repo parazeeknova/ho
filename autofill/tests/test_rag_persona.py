@@ -626,3 +626,33 @@ async def test_learn_scoped_replace_updates_row_on_disk(tmp_path):
     data = json.loads(persona_json.read_text())
     assert len(data["answers"]) == 1
     assert data["answers"][0]["answer"] == "Yes, I will require visa sponsorship"
+
+
+@pytest.mark.asyncio
+async def test_append_persona_txt_dedupes_across_calls(tmp_path):
+    """Repeated learn() calls must never pile up duplicate lines in
+    persona.txt, and a changed answer for the same question replaces the old
+    line instead of adding a conflicting second one."""
+    persona_json = tmp_path / "persona.json"
+    persona_txt = tmp_path / "persona.txt"
+    persona_json.write_text(json.dumps({"name": "T", "version": 1, "answers": []}))
+    persona_txt.write_text("Candidate Profile:\n\nFrom Resume:\n- stuff\n")
+
+    with (
+        patch("autofill.rag.PERSONA_JSON", persona_json),
+        patch("autofill.rag.PERSONA_TXT", persona_txt),
+        patch.object(ScreenerRAG, "_embed", new=AsyncMock(return_value=None)),
+    ):
+        rag = ScreenerRAG(exact_answers={}, scoped_answers={}, store=None)
+        await rag.learn("Do you require visa sponsorship?", "Yes", country="germany")
+        await rag.learn("Do you require visa sponsorship?", "Yes", country="germany")
+        await rag.learn(
+            "Do you require visa sponsorship?",
+            "Yes, I will require visa sponsorship",
+            country="germany",
+        )
+
+    txt = persona_txt.read_text()
+    assert txt.count("Do you require visa sponsorship?") == 1
+    assert "Yes, I will require visa sponsorship" in txt
+    assert "Yes, I will require visa sponsorship" in txt.split("From Resume:")[0]
