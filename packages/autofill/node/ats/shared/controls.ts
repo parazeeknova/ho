@@ -180,12 +180,24 @@ export class FormControls {
    * Fill a visible locator. With human typing enabled and a short-enough
    * value, type per-keystroke (real keydown/keyup events + human cadence)
    * instead of committing via the native setter with zero key events.
+   *
+   * Typing APPENDS to existing content (locator.type) — a field that already
+   * holds the target value is skipped entirely, and a field holding any other
+   * value is cleared first, so a re-fill (identity pre-fill followed by the
+   * walk) can never produce "Aman" -> "AmanAman".
    */
   private async fillLikeHuman(locator: any, value: string): Promise<void> {
-    if (humanTypingEnabled() && value.length <= humanTypingMaxLength()) {
-      await locator.type(value, { delay: typingDelayMs() });
+    const want = (value ?? "").trim();
+    if (!want) return;
+    const current = await locator.inputValue().catch(() => "");
+    if (current.trim() === want) return;
+    if (humanTypingEnabled() && want.length <= humanTypingMaxLength()) {
+      if (current) {
+        await locator.fill("").catch(() => undefined);
+      }
+      await locator.type(want, { delay: typingDelayMs() });
     } else {
-      await locator.fill(value);
+      await locator.fill(want);
     }
   }
 

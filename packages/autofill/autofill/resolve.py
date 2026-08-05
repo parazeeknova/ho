@@ -127,6 +127,7 @@ async def resolve_question(
     overnight: bool = False,
     timeout: float = 300.0,
     job_context: dict[str, Any] | None = None,
+    required: bool = True,
 ) -> tuple[str, str]:
     """Resolve one screener question. Returns ``(answer, source)``.
 
@@ -181,24 +182,90 @@ async def resolve_question(
         if auth_pick is not None:
             return (auth_pick, "kb")
 
+    # Current-residence, relocation-willingness, and office-commute geography
+    # policies: a question like "are you based in Europe?", "willing to
+    # relocate to Bangkok?", or "able to work from our SF office?" is a
+    # deterministic fact (the candidate is based in India, relocates to
+    # first-world but not third-world countries), never a guess.
+    if rag is not None:
+        for policy in (
+            rag.resolve_residence_policy,
+            rag.resolve_relocation_policy,
+            rag.resolve_work_location_policy,
+        ):
+            geo_pick = policy(q, list(options or []), job_context)
+            if geo_pick is not None:
+                if kind in ("select", "multi") and options:
+                    picked = match_option(geo_pick, list(options))
+                    if picked:
+                        return (picked, "kb")
+                    continue
+                return (geo_pick.strip(), "kb")
+
+    # Affiliation / employment / relationship questions: the candidate has no
+    # such affiliations, so the answer is the form's negative option — never a
+    # company the LLM picks from the options (it has fabricated prior
+    # employment). When the form offers no negative stance, do NOT guess: a
+    # required affiliation question falls through to defer/ask below, and only
+    # an optional one is left blank.
+    if rag is not None:
+        aff_pick = rag.resolve_affiliation_policy(q, list(options or []), job_context)
+        if aff_pick is not None:
+            if kind in ("select", "multi") and options and aff_pick:
+                picked = match_option(aff_pick, list(options))
+                if picked:
+                    return (picked, "kb")
+                # The negative stance is a decline option ("I don't wish to
+                # answer") that match_option excludes: fill it directly so the
+                # field is never silently blank (mirrors the zero-blank path).
+                if is_decline_option(aff_pick):
+                    return (aff_pick, "decline-option")
+                # A non-option negative stance: never fall through to the LLM
+                # (it fabricates a company).
+                return ("", "decline")
+            if aff_pick:
+                return (aff_pick.strip(), "kb")
+            # No negative stance offered. An optional field is blanked; a
+            # required one must be deferred (overnight) or asked (day) — the
+            # tiers below already handle that, and answer_questions returns
+            # __ASK_USER__ for an unanswered affiliation question (never the
+            # LLM, which would fabricate a company).
+            if not required:
+                return ("", "decline")
+            fall_through_affiliation = True
+        else:
+            fall_through_affiliation = False
+    else:
+        fall_through_affiliation = False
+
     # Tier 3: grounded LLM (persona + resume + JD, with options for selects).
     # Select answers are validated against the real options inside
     # answer_questions — a non-option is never filled. Only what survives to
-    # __ASK_USER__ reaches Telegram below.
-    spec: dict[str, Any] = {
-        "question": q,
-        "kind": kind,
-        "options": list(options or []),
-    }
-    answer = (
-        (await rag.answer_questions([spec], job_context=job_context)).get(q, ASK_USER)
-        if rag is not None
-        else ASK_USER
-    )
-    if answer != ASK_USER and (answer or "").strip():
-        return (answer.strip(), "llm")
+    # __ASK_USER__ reaches Telegram below. Unresolved AFFILIATION questions
+    # never reach the LLM — answer_questions guards them (returns __ASK_USER__)
+    # and the LLM has fabricated prior employment.
+    if not fall_through_affiliation:
+        spec: dict[str, Any] = {
+            "question": q,
+            "kind": kind,
+            "options": list(options or []),
+        }
+        answer = (
+            (await rag.answer_questions([spec], job_context=job_context)).get(q, ASK_USER)
+            if rag is not None
+            else ASK_USER
+        )
+        if answer != ASK_USER and (answer or "").strip():
+            return (answer.strip(), "llm")
 
     if overnight:
+        # Overnight (no human present): an unresolved question either defers
+        # the job for the morning digest or — when the form does NOT mark it
+        # required (no asterisk) — is skipped. Leaving a blank optional field
+        # is strictly better than stalling the run on a question the form
+        # itself does not require (e.g. "If other, please specify").
+        if not required:
+            return ("", "decline")
         raise DeferredError(q, kind=kind, options=options)
 
     if bridge is None or not bridge.is_configured:

@@ -1,5 +1,5 @@
-import type { Profile } from "../../types";
-import { normalizeOptionText } from "./matching";
+import { normalizeOptionText } from "./matching.js";
+import type { Profile } from "../../types.js";
 
 /** A single rendered radio/checkbox option and its click target. */
 export interface GroupOption {
@@ -106,7 +106,7 @@ export function fieldKey(f: FormField): string {
  */
 export function unprocessedFields(
   fields: FormField[],
-  processedKeys: ReadonlySet<string>,
+  processedKeys: ReadonlySet<string>
 ): FormField[] {
   return fields.filter((f) => !processedKeys.has(fieldKey(f)));
 }
@@ -123,7 +123,7 @@ export function unprocessedFields(
  */
 export function mergeFormInventory(
   jsonFields: JsonFieldSource[] | null,
-  domFields: FormField[],
+  domFields: FormField[]
 ): FormField[] {
   const out: FormField[] = [];
   const seen = new Set<string>();
@@ -145,7 +145,8 @@ export function mergeFormInventory(
 
   for (const df of domFields) {
     const jf =
-      (df.name ? jsonByName.get(df.name) : undefined) || jsonByLabel.get(normalizeLabel(df.label));
+      (df.name ? jsonByName.get(df.name) : undefined) ||
+      jsonByLabel.get(normalizeLabel(df.label));
     if (jf) {
       add({
         ...df,
@@ -183,14 +184,14 @@ export const PROFILE_FILLS: Record<string, keyof Profile> = {
 export const IDENTITY_FILLS: Record<string, keyof Profile> = {
   "first name": "firstName",
   "legal first name": "firstName",
-  firstname: "firstName",
+  "firstname": "firstName",
   "given name": "firstName",
   "given name(s)": "firstName",
   "given names": "firstName",
   "last name": "lastName",
   "legal last name": "lastName",
-  lastname: "lastName",
-  surname: "lastName",
+  "lastname": "lastName",
+  "surname": "lastName",
   "family name": "lastName",
   "family name(s)": "lastName",
   "family names": "lastName",
@@ -218,3 +219,38 @@ export const IDENTITY_FILLS: Record<string, keyof Profile> = {
 
 /** Questions answered by the fixed deterministic identity fills before the walk. */
 export const PRE_FILLED_LABELS = new Set(["first name", "last name", "email", "phone"]);
+
+/**
+ * True when a field is driven deterministically from the profile (identity /
+ * profile fills) rather than resolved by the walk. These are typically
+ * pre-filled before the walk begins, so the walk must never re-process them.
+ */
+export function isProfileDrivenField(f: FormField): boolean {
+  const key = normalizeBlankLabel(f.label);
+  return key in IDENTITY_FILLS || key in PROFILE_FILLS;
+}
+
+/**
+ * True for a free-text cover-letter prompt (a textarea asking for a cover
+ * letter or an open "anything you would like us to know" blurb). Boards with a
+ * dedicated cover-letter path (greenhouse/generic/workday) generate the letter
+ * ONCE via the "cover_letter" RPC (PDF upload with text fallback) — so the walk
+ * must never resolve these via "answer_question", which would both burn a
+ * second LLM generation and pre-fill the textarea before the PDF path runs.
+ */
+export function isCoverLetterField(f: { label: string; kind?: string }): boolean {
+  const kind = f.kind ?? "text";
+  if (kind === "select" || kind === "multi" || kind === "radio" || kind === "checkbox") {
+    return false;
+  }
+  const label = normalizeBlankLabel(f.label);
+  return (
+    /cover letter|cover_letter/.test(label) ||
+    /^additional information$/.test(label) ||
+    /anything else you|more about you|tell us about yourself|anything you would like/.test(label)
+  );
+}
+
+function normalizeBlankLabel(label: string): string {
+  return (label || "").replace(/\s+/g, " ").trim().toLowerCase();
+}

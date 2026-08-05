@@ -1,7 +1,76 @@
-import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+import {
+  FormControls,
+  sanitizeNumberAnswer,
+  cleanPlaceholderValue,
+  firstUrl,
+} from "../../ats/shared/controls.js";
 
-import { sanitizeNumberAnswer, cleanPlaceholderValue, firstUrl } from "../../ats/shared/controls";
+/**
+ * A FormControls whose page serves a single controllable locator. Records the
+ * fill/type calls so tests can assert exactly how a value was committed.
+ */
+function makeControls(initialValue: string) {
+  const calls: Array<{ op: string; value: string }> = [];
+  let value = initialValue;
+  const locator = {
+    isVisible: async () => true,
+    inputValue: async () => value,
+    fill: async (v: string) => {
+      calls.push({ op: "fill", value: v });
+      value = v;
+    },
+    type: async (v: string) => {
+      calls.push({ op: "type", value: v });
+      value = v;
+    },
+  };
+  const page = { locator: () => ({ first: () => locator }) };
+  const stagehand = { context: { pages: () => [page] } };
+  const controls = new FormControls(stagehand as any);
+  return { controls, calls, readValue: () => value };
+}
+
+describe("fillField / fillLikeHuman (no-append typing)", () => {
+  it("skips a field that already holds the target value (identity re-fill)", async () => {
+    const { controls, calls } = makeControls("Aman");
+    await controls.fillField("#first_name", "Aman", "", "firstName");
+    assert.deepEqual(calls, []);
+  });
+
+  it("clears existing content before typing so a re-fill never appends", async () => {
+    const { controls, calls, readValue } = makeControls("Ama");
+    await controls.fillField("#first_name", "Aman", "", "firstName");
+    // The wrong/partial value must be cleared first, then typed fresh.
+    assert.deepEqual(
+      calls.map((c) => `${c.op}:${c.value}`),
+      ["fill:", "type:Aman"]
+    );
+    assert.equal(readValue(), "Aman");
+  });
+
+  it("fills an empty field by typing (human typing enabled)", async () => {
+    const { controls, calls, readValue } = makeControls("");
+    await controls.fillField("#email", "aman@example.com", "", "email");
+    assert.deepEqual(
+      calls.map((c) => `${c.op}:${c.value}`),
+      ["type:aman@example.com"]
+    );
+    assert.equal(readValue(), "aman@example.com");
+  });
+
+  it("uses the native setter (fill) for long values over the typing cap", async () => {
+    const { controls, calls, readValue } = makeControls("");
+    const long = "x".repeat(700);
+    await controls.fillField("#desc", long, "", "desc");
+    assert.deepEqual(
+      calls.map((c) => `${c.op}:${c.value.length}`),
+      ["fill:700"]
+    );
+    assert.equal(readValue(), long);
+  });
+});
 
 describe("sanitizeNumberAnswer", () => {
   it("passes a plain integer through", () => {
@@ -61,7 +130,7 @@ describe("firstUrl", () => {
   it("extracts the first URL from a comma-separated list", () => {
     assert.equal(
       firstUrl("https://linkedin.com/in/me, https://github.com/me, https://me.dev"),
-      "https://linkedin.com/in/me",
+      "https://linkedin.com/in/me"
     );
   });
 

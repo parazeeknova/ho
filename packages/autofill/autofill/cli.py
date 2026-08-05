@@ -1,12 +1,10 @@
 import argparse
 import asyncio
 import contextlib
-import html
 import json
 import os
 import sys
 import uuid
-from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
@@ -27,16 +25,9 @@ from autofill.telegram import (
     TelegramQuestionBridge,
     TelegramSendError,
 )
-from autofill.worker import is_overnight, run_worker
+from autofill.worker import _per_job_resume, is_overnight, run_worker
 
 load_dotenv()
-
-
-def _format_pending(entry: dict[str, Any]) -> str:
-    q = html.escape(entry.get("question") or "?")
-    options = entry.get("options") or []
-    hint = f"  [{', '.join(html.escape(str(o)) for o in options[:6])}]" if options else ""
-    return f"• {q}{hint}"
 
 
 async def _stream_runner(
@@ -50,13 +41,11 @@ async def _stream_runner(
     """Spawn the Node runner, stream status events, handle RPC answers and
     review decisions. Returns the final status event (submitted/failed/skipped).
     """
-    node_dir = str(Path(__file__).resolve().parent.parent / "node")
+    node_dir = os.path.join(os.path.dirname(__file__), "node")
     print(
         f"[Python CLI] Spawning Stagehand Node runner for {payload['url']} "
         f"(ID: {job_id}, Mode: {payload['mode']})..."
     )
-
-    deferred_questions: list[dict[str, Any]] = []
 
     try:
         process = await asyncio.create_subprocess_exec(
@@ -117,16 +106,29 @@ async def _stream_runner(
                             "[Python CLI] Submission is disabled in this phase — "
                             "the form was filled and verified, nothing was applied."
                         )
-                        print(
-                            "Review the filled answers in the browser, "
-                            "then press Enter to close it."
-                        )
-                        with contextlib.suppress(EOFError):
-                            input("[Python CLI] Press Enter to close: ")
-                        if process.stdin:
-                            action_payload = json.dumps({"action": "skip"}) + "\n"
-                            process.stdin.write(action_payload.encode())
-                            await process.stdin.drain()
+                        if sys.stdin.isatty():
+                            print(
+                                "Review the filled answers in the browser, "
+                                "then press Enter to close it."
+                            )
+                            with contextlib.suppress(EOFError):
+                                input("[Python CLI] Press Enter to close: ")
+                            if process.stdin:
+                                action_payload = json.dumps({"action": "skip"}) + "\n"
+                                process.stdin.write(action_payload.encode())
+                                await process.stdin.drain()
+                        else:
+                            # Non-interactive stdin (pipe or background): do NOT
+                            # send "skip" — that closes the browser before the
+                            # review window. The runner's own
+                            # AUTOFILL_REVIEW_HOLD_MS timer resolves "skip" and
+                            # emits the terminal "skipped" status below; keep
+                            # reading the runner's output until then.
+                            hold_ms = int(os.environ.get("AUTOFILL_REVIEW_HOLD_MS", "360000"))
+                            print(
+                                "[Python CLI] Non-interactive stdin detected — "
+                                f"browser will stay open for review (hold: {hold_ms} ms)."
+                            )
                         continue
 
                     choice = (
@@ -173,12 +175,33 @@ async def _stream_runner(
 
                     if method == "cover_letter":
                         answer, source = await resolve_cover_letter(rag, job_context=job_context)
+                        pdf_path = None
+                        if answer:
+                            try:
+                                from autofill.pdf import create_cover_letter_pdf
+
+                                pdf_path = create_cover_letter_pdf(
+                                    answer,
+                                    first_name=rag.profile.firstName,
+                                    last_name=rag.profile.lastName,
+                                    job_id=job_id,
+                                )
+                            except Exception as pdf_err:
+                                print(
+                                    f"[Python CLI] Cover letter PDF generation failed "
+                                    f"({pdf_err}); falling back to text."
+                                )
+                                pdf_path = None
                         if process.stdin:
                             rpc_resp = json.dumps(
                                 {
                                     "type": "RPC_RESPONSE",
                                     "id": req_id,
-                                    "result": {"answer": answer, "source": source},
+                                    "result": {
+                                        "answer": answer,
+                                        "source": source,
+                                        "pdf_path": pdf_path,
+                                    },
                                 }
                             )
                             process.stdin.write(f"{rpc_resp}\n".encode())
@@ -200,6 +223,7 @@ async def _stream_runner(
                                 overnight=overnight,
                                 timeout=question_timeout,
                                 job_context=job_context,
+                                required=bool(args.get("required", True)),
                             )
                         except TelegramNotConfiguredError as tg_err:
                             print(f"\n[Python CLI] ERROR: {tg_err}")
@@ -228,9 +252,7 @@ async def _stream_runner(
                                 await process.stdin.drain()
                             continue
                         except DeferredError as deferred:
-                            # Overnight: no human present — collect the question
-                            # for one grouped digest entry + Telegram message at
-                            # the end of the run (never a row per question).
+                            # Overnight: no human present — record for the digest.
                             pending = {
                                 "question": deferred.question,
                                 "kind": deferred.kind,
@@ -240,7 +262,39 @@ async def _stream_runner(
                                 f"\n[Python CLI] DEFERRED ({len(pending['options'] or [])} "
                                 f"options): {deferred.question}"
                             )
-                            deferred_questions.append(pending)
+                            try:
+                                db = await AutofillDB.create()
+                                try:
+                                    deferred_id = await db.enqueue_job(
+                                        apply_link=payload["url"], apply_mode="review"
+                                    )
+                                    await db.mark_deferred(
+                                        deferred_id,
+                                        questions=[pending],
+                                        reason="needs user input",
+                                    )
+                                    print(
+                                        f"[Python CLI] Recorded as {deferred_id} — "
+                                        "listed in the morning digest; resume with "
+                                        f"`python -m autofill resume {deferred_id}`"
+                                    )
+                                    if bridge.is_configured:
+                                        option_hint = ""
+                                        if pending["options"]:
+                                            option_hint = "\n" + " | ".join(pending["options"][:6])
+                                        text = (
+                                            f"⛔ <b>Deferred</b>: "
+                                            f"{payload.get('company', 'Company')} — "
+                                            f"{payload.get('role', 'Position')}\n"
+                                            f'<a href="{payload["url"]}">Open posting →</a>\n'
+                                            f"Needs your input:\n"
+                                            f"• {deferred.question}{option_hint}"
+                                        )
+                                        await bridge.send(text)
+                                finally:
+                                    await db.close()
+                            except Exception as db_err:
+                                print(f"[Python CLI] WARNING: could not record deferral: {db_err}")
 
                             if process.stdin:
                                 rpc_resp = json.dumps(
@@ -280,45 +334,6 @@ async def _stream_runner(
         with contextlib.suppress(asyncio.CancelledError):
             await stderr_task
 
-    if deferred_questions:
-        final_status = (final_event or {}).get("status")
-        if final_status == "submitted":
-            print(
-                f"[Python CLI] {len(deferred_questions)} deferred question(s) remain "
-                "but the application was submitted; nothing recorded."
-            )
-        else:
-            try:
-                db = await AutofillDB.create()
-                try:
-                    deferred_id = await db.enqueue_job(
-                        apply_link=payload["url"], apply_mode="review"
-                    )
-                    await db.mark_deferred(
-                        deferred_id,
-                        questions=deferred_questions,
-                        reason="needs user input",
-                    )
-                    print(
-                        f"[Python CLI] Recorded as {deferred_id} — listed in the "
-                        "morning digest; resume with "
-                        f"`python -m autofill resume {deferred_id}`"
-                    )
-                    if bridge.is_configured:
-                        text = (
-                            f"⛔ <b>Deferred</b>: "
-                            f"{html.escape(str(payload.get('company', 'Company')))} — "
-                            f"{html.escape(str(payload.get('role', 'Position')))}\n"
-                            f'<a href="{payload["url"]}">Open posting →</a>\n'
-                            f"Needs your input ({len(deferred_questions)}):\n"
-                            + "\n".join(_format_pending(q) for q in deferred_questions[:6])
-                        )
-                        await bridge.send(text)
-                finally:
-                    await db.close()
-            except Exception as db_err:
-                print(f"[Python CLI] WARNING: could not record deferral: {db_err}")
-
     return final_event
 
 
@@ -333,7 +348,13 @@ async def run_apply(url: str, mode: str = "review"):
         )
         store = None
     profile = await build_profile(store=store)
-    profile.resumePath = await resolve_resume_path()
+    job_id = f"job-{uuid.uuid4().hex[:8]}"
+    profile.resumePath = _per_job_resume(
+        await resolve_resume_path(),
+        first_name=profile.firstName,
+        last_name=profile.lastName,
+        job_id=job_id,
+    )
     if not profile.resumePath:
         print(
             "[Python CLI] WARNING: No resume available to upload "
@@ -344,7 +365,6 @@ async def run_apply(url: str, mode: str = "review"):
     bridge = TelegramQuestionBridge()
     question_timeout = float(os.getenv("AUTOFILL_QUESTION_TIMEOUT", "300"))
     overnight = is_overnight()
-    job_id = f"job-{uuid.uuid4().hex[:8]}"
 
     if overnight:
         mode = "auto"
@@ -385,7 +405,12 @@ async def run_resume(job_id: str, review: bool = False):
 
         store = await MemoryStore.create()
         profile = await build_profile(store=store)
-        profile.resumePath = await resolve_resume_path()
+        profile.resumePath = _per_job_resume(
+            await resolve_resume_path(),
+            first_name=profile.firstName,
+            last_name=profile.lastName,
+            job_id=job_id,
+        )
         rag = ScreenerRAG(profile=profile, store=store)
         bridge = TelegramQuestionBridge()
         question_timeout = float(os.getenv("AUTOFILL_QUESTION_TIMEOUT", "300"))
@@ -458,9 +483,7 @@ async def run_resume(job_id: str, review: bool = False):
         await db.close()
 
 
-async def enqueue_command(
-    url: str, mode: str = "review", role: str | None = None, company: str | None = None
-):
+async def enqueue_command(url: str, mode: str = "review", role: str = None, company: str = None):
     db = await AutofillDB.create()
     try:
         job_id = await db.enqueue_job(apply_link=url, role=role, company=company, apply_mode=mode)

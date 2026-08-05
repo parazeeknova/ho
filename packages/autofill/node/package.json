@@ -13,9 +13,12 @@
   },
   "dependencies": {
     "@browserbasehq/stagehand": "^3.7.1",
+    "imapflow": "^1.6.5",
+    "mailparser": "^3.9.14",
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@types/mailparser": "^3.4.6",
     "@types/node": "^24.13.3",
     "oxfmt": "^0.62.0",
     "oxlint": "^1.77.0",

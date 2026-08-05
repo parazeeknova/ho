@@ -6,7 +6,6 @@ import asyncio
 import binascii
 import contextlib
 import datetime as _dt
-import html
 import json
 import os
 import random
@@ -15,9 +14,6 @@ import secrets
 import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from autofill.proxyrelay import ProxyRelay
 
 from dotenv import load_dotenv
 from src.logging import get_logger
@@ -39,11 +35,14 @@ from autofill.telegram import (
     TelegramSendError,
 )
 
+if TYPE_CHECKING:
+    from autofill.proxyrelay import ProxyRelay
+
 logger = get_logger("autofill.worker")
 
 # Repo root (worker.py lives in autofill/). Used to locate docker-compose.yaml
 # for the torproxy lifecycle commands.
-_PROJECT_ROOT = Path(__file__).resolve().parents[3]  # repo root
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 def is_overnight() -> bool:
@@ -156,34 +155,50 @@ def _pick_voice() -> str:
     return random.choice(_VOICE_SEEDS)
 
 
+def _safe_segment(segment: str) -> str:
+    """Sanitize a path segment (job id) for use as a directory name."""
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", str(segment or "unknown")).strip("._")
+    return cleaned or "unknown"
+
+
 def _per_job_resume(
     resume_path: str | None,
-    company: Any,
     first_name: str = "",
     last_name: str = "",
+    job_id: str = "",
 ) -> str | None:
-    """Point this job's resume at a company-named temp copy.
+    """Point this job's resume at a name-based temp copy.
 
     Every application otherwise uploads the same generic basename (e.g.
     ``resume.pdf``), a small "identical resume across applications" signal. A
-    per-job copy named ``<First>_<Last>_<Company>_Resume.pdf`` varies the
-    uploaded filename without touching the resume content. Returns the new
-    path, or the original when nothing needs copying.
+    per-job copy named ``<First>_<Last>_Resume.pdf`` (inside a per-job
+    subdirectory so concurrent jobs for the same person never clobber each
+    other) varies the uploaded filename without touching the resume content.
+    Returns the new path, or the original when nothing needs copying.
     """
     if not resume_path:
         return None
     src = Path(resume_path)
     if not src.exists():
         return resume_path
-    company_slug = re.sub(r"[^A-Za-z0-9]+", "_", str(company or "")).strip("_") or "Company"
     name_slug = re.sub(r"[^A-Za-z0-9]+", "_", f"{first_name}_{last_name}").strip("_")
     if not name_slug:
         name_slug = src.stem
-    dest_dir = Path(__file__).resolve().parent.parent / "node" / "artifacts" / "resumes"
+    dest_dir = (
+        Path(__file__).resolve().parent.parent
+        / "node"
+        / "artifacts"
+        / "resumes"
+        / _safe_segment(job_id)
+    )
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / f"{name_slug}_{company_slug}_Resume{src.suffix}"
+    dest = dest_dir / f"{name_slug}_Resume{src.suffix}"
     if not dest.exists():
-        shutil.copy2(src, dest)
+        # Atomic: write to a temp file first so a concurrent reader (or a
+        # parallel worker process) never observes a half-written resume.
+        tmp = dest.with_suffix(dest.suffix + ".tmp")
+        shutil.copy2(src, tmp)
+        os.replace(tmp, dest)
     return str(dest)
 
 
@@ -210,7 +225,7 @@ async def _ensure_torproxy() -> None:
             "docker",
             "compose",
             "-f",
-            str(_PROJECT_ROOT / "packages" / "ingest" / "docker-compose.yaml"),
+            str(_PROJECT_ROOT / "docker-compose.yaml"),
             "up",
             "-d",
             "torproxy",
@@ -227,7 +242,7 @@ async def _ensure_torproxy() -> None:
         await asyncio.sleep(1)
     logger.warning(
         "torproxy not ready on :9050; browser runs will fail to connect "
-        "(start it with: npm run fc -- tor-up)"
+        "(start it with: make tor-up)"
     )
 
 
@@ -238,7 +253,7 @@ async def _read_tor_cookie_hex() -> str:
             "docker",
             "compose",
             "-f",
-            str(_PROJECT_ROOT / "packages" / "ingest" / "docker-compose.yaml"),
+            str(_PROJECT_ROOT / "docker-compose.yaml"),
             "ps",
             "-q",
             "torproxy",
@@ -305,7 +320,6 @@ class AutofillWorker:
         self._running = False
         self._running_tasks: set[asyncio.Task] = set()
         self._summary_task: asyncio.Task[None] | None = None
-        self._status_task: asyncio.Task[None] | None = None
         # Count of jobs this worker has STARTED processing; used to skip the
         # inter-job spacing delay before the very first job of a batch.
         self._jobs_started = 0
@@ -336,11 +350,7 @@ class AutofillWorker:
         ``min_size`` (the worker's concurrency) so a concurrent runner never
         silently falls back to no persistent profile.
         """
-        base = Path(__file__).resolve().parent.parent / "node" / "artifacts" / "profiles"
-        # Namespace the pool per worker instance (AUTOFILL_WORKER_ID): fixed
-        # profile-0..N names made two worker processes fight over the same
-        # Chrome user-data dir (SingletonLock) — the in-use set is per-process.
-        worker_id = os.getenv("AUTOFILL_WORKER_ID", "0")
+        base = Path(__file__).resolve().parent / "node" / "artifacts" / "profiles"
         try:
             pool_size = int(os.getenv("AUTOFILL_PROFILE_POOL_SIZE", "4"))
         except TypeError, ValueError:
@@ -350,7 +360,7 @@ class AutofillWorker:
         base.mkdir(parents=True, exist_ok=True)
         dirs: list[str] = []
         for i in range(pool_size):
-            d = base / f"profile-{worker_id}-{i}"
+            d = base / f"profile-{i}"
             d.mkdir(parents=True, exist_ok=True)
             dirs.append(str(d))
         return dirs
@@ -420,11 +430,10 @@ class AutofillWorker:
                 logger.warning("Debug ledger flush failed", error=str(e))
 
     async def start(self) -> None:
-        """Start the worker polling loop, status heartbeat and daily digest."""
+        """Start the worker polling loop and the daily digest scheduler."""
         self._running = True
         logger.info("AutofillWorker started polling loop...")
         self._summary_task = asyncio.create_task(self._daily_summary_loop())
-        self._status_task = asyncio.create_task(self._status_loop())
         try:
             while self._running:
                 # The slot is acquired BEFORE claiming and only released when
@@ -470,71 +479,12 @@ class AutofillWorker:
         if self._summary_task:
             self._summary_task.cancel()
             self._summary_task = None
-        if self._status_task:
-            self._status_task.cancel()
-            self._status_task = None
         for task in list(self._running_tasks):
             if not task.done():
                 task.cancel()
         logger.info("AutofillWorker stopped and active tasks cancelled.")
 
     # ── morning digest ──────────────────────────────────────────────
-
-    async def _status_loop(self) -> None:
-        """Occasional Telegram status heartbeat (queue + last applied).
-
-        Interval in minutes via AUTOFILL_STATUS_INTERVAL_MIN (default 30;
-        0 disables). Only sent while jobs remain open so a drained queue
-        stops nagging.
-        """
-        interval_min = int(os.getenv("AUTOFILL_STATUS_INTERVAL_MIN", "30"))
-        if interval_min <= 0:
-            logger.info("Periodic status messages disabled (AUTOFILL_STATUS_INTERVAL_MIN=0)")
-            return
-        bridge = TelegramQuestionBridge()
-        while self._running:
-            try:
-                await asyncio.sleep(interval_min * 60)
-                if not self._running:
-                    return
-                summary = await self.db.queue_summary()
-                open_jobs = summary.get("open", 0) + summary.get("pending", 0)
-                if open_jobs == 0 and summary.get("applied", 0) > 0:
-                    continue
-                text = await self._format_status_message(summary)
-                if text:
-                    ok = await bridge.send(text)
-                    if ok:
-                        logger.info("Periodic status sent", interval_minutes=interval_min)
-            except asyncio.CancelledError:
-                return
-            except Exception as e:
-                logger.warning("Status loop error", error=str(e))
-                await asyncio.sleep(60)
-
-    async def _format_status_message(self, summary: dict[str, Any]) -> str | None:
-        """Compact queue status message: applied / remaining / review / failed."""
-        try:
-            last = await self.db.last_applied()
-        except Exception:
-            last = None
-        need_review = summary.get("deferred", 0) + summary.get("awaiting_review", 0)
-        remaining = summary.get("pending", 0) + summary.get("filling", 0)
-        lines = [
-            "📊 <b>Autofill Status</b>",
-            f"▪ Applied: <b>{summary.get('applied', 0)}</b>",
-            f"▪ Remaining: <b>{remaining}</b>",
-            f"▪ Need Review: <b>{need_review}</b>",
-            f"▪ Failed: <b>{summary.get('failed', 0)}</b>",
-        ]
-        if last and last.get("applied_at") is not None:
-            role = str(last.get("role") or "Position")
-            company = str(last.get("company") or "Company")
-            when = last["applied_at"].astimezone().strftime("%H:%M")
-            lines.append(
-                f"▪ Last applied: <b>{html.escape(company)}</b> — {html.escape(role)} ({when})"
-            )
-        return "\n".join(lines)
 
     async def _daily_summary_loop(self) -> None:
         """Send the daily morning digest of deferred jobs at AUTOFILL_DAILY_SUMMARY."""
@@ -631,9 +581,9 @@ class AutofillWorker:
     ) -> str:
         lines = [f"<b>{title}</b>", ""]
         for i, r in enumerate(rows, 1):
-            role = html.escape(str(r.get("role") or "Position"))
-            company = html.escape(str(r.get("company") or "Company"))
-            link = html.escape(str(r.get("apply_link") or ""), quote=True)
+            role = r.get("role") or "Position"
+            company = r.get("company") or "Company"
+            link = r.get("apply_link") or ""
             questions = r.get("pending_questions") or []
             lines.append(f"<b>{i}. {company}</b> — {role}")
             if link:
@@ -642,7 +592,7 @@ class AutofillWorker:
                 lines.append(f"    Needs input ({len(questions)}):")
                 for entry in questions[:6]:
                     if isinstance(entry, str):
-                        lines.append(f"    • {html.escape(entry)}")
+                        lines.append(f"    • {entry}")
                     else:
                         lines.append(f"    • {AutofillWorker._format_pending(entry)}")
             lines.append("")
@@ -685,9 +635,9 @@ class AutofillWorker:
             profile = await build_profile(store=store)
             profile.resumePath = _per_job_resume(
                 await resolve_resume_path(),
-                job.get("company"),
                 first_name=profile.firstName,
                 last_name=profile.lastName,
+                job_id=job_id,
             )
             rag = ScreenerRAG(profile=profile, store=store)
             bridge = TelegramQuestionBridge()
@@ -707,7 +657,7 @@ class AutofillWorker:
             }
             payload_str = json.dumps(job_payload)
 
-            node_dir = str(Path(__file__).resolve().parent.parent / "node")
+            node_dir = os.path.join(os.path.dirname(__file__), "node")
 
             process_env = {**os.environ}
             # Per-job identity: one session id drives BOTH the residential proxy
@@ -717,7 +667,7 @@ class AutofillWorker:
             # both defeated. A per-job writing-tone seed varies answer phrasing.
             session_id = _new_session_id()
             voice_seed = _pick_voice()
-            proxy_relay = None
+            proxy_relay: Any = None
             profile_dir = await self._acquire_profile()
             if profile_dir:
                 process_env["AUTOFILL_USER_DATA_DIR"] = profile_dir
@@ -883,12 +833,36 @@ class AutofillWorker:
                             await self._record_fill(
                                 job_id, "cover letter", answer or None, source=source
                             )
+
+                            pdf_path = None
+                            if answer:
+                                try:
+                                    from autofill.pdf import create_cover_letter_pdf
+
+                                    pdf_path = create_cover_letter_pdf(
+                                        answer,
+                                        first_name=profile.firstName,
+                                        last_name=profile.lastName,
+                                        job_id=job_id,
+                                    )
+                                except Exception as pdf_err:  # never fail the RPC over a PDF
+                                    logger.warning(
+                                        "Cover letter PDF generation failed; falling back to text",
+                                        job_id=job_id,
+                                        error=str(pdf_err),
+                                    )
+                                    pdf_path = None
+
                             if process.stdin and not process.stdin.is_closing():
                                 rpc_resp = json.dumps(
                                     {
                                         "type": "RPC_RESPONSE",
                                         "id": req_id,
-                                        "result": {"answer": answer, "source": source},
+                                        "result": {
+                                            "answer": answer,
+                                            "source": source,
+                                            "pdf_path": pdf_path,
+                                        },
                                     }
                                 )
                                 process.stdin.write(f"{rpc_resp}\n".encode())
@@ -913,6 +887,7 @@ class AutofillWorker:
                                     overnight=overnight,
                                     timeout=question_timeout,
                                     job_context=job_context,
+                                    required=bool(args.get("required", True)),
                                 )
                             except TelegramNotConfiguredError as tg_err:
                                 logger.error(
@@ -1209,8 +1184,8 @@ class AutofillWorker:
         """Mark a job deferred (needs user input) and alert via Telegram."""
         await self.db.mark_deferred(job_id, questions=questions, reason="needs user input")
         if bridge.is_configured:
-            role_str = html.escape(str(role or "Position"))
-            company_str = html.escape(str(company or "Company"))
+            role_str = str(role or "Position")
+            company_str = str(company or "Company")
             text = (
                 f"⛔ <b>Deferred</b>: {company_str} — {role_str}\n"
                 f'<a href="{apply_link}">Open posting →</a>\n'
@@ -1241,8 +1216,8 @@ class AutofillWorker:
                 error=error_msg,
             )
             return
-        role_str = html.escape(str(role or "Position"))
-        company_str = html.escape(str(company or "Company"))
+        role_str = str(role or "Position")
+        company_str = str(company or "Company")
         text = (
             f"🛡️ <b>Captcha blocked</b>: {company_str} — {role_str}\n"
             f'<a href="{apply_link}">Open posting →</a>\n'
@@ -1259,9 +1234,9 @@ class AutofillWorker:
 
     @staticmethod
     def _format_pending(entry: dict[str, Any]) -> str:
-        q = html.escape(entry.get("question") or "?")
+        q = entry.get("question") or "?"
         options = entry.get("options") or []
-        hint = f"  [{', '.join(html.escape(str(o)) for o in options[:6])}]" if options else ""
+        hint = f"  [{', '.join(str(o) for o in options[:6])}]" if options else ""
         return f"• {q}{hint}"
 
     async def _record_fill(
