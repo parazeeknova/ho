@@ -1,6 +1,6 @@
 {
   "name": "Aman Aziz",
-  "version": 147,
+  "version": 148,
   "identity": {
     "firstName": "Aman",
     "lastName": "Aziz",
@@ -23,11 +23,6 @@
       "answer": "remote, hybrid, onsite"
     },
     {
-      "category": "relocation",
-      "question": "Are you willing to relocate for this role?",
-      "answer": "yes, not in third world countries"
-    },
-    {
       "category": "nationality",
       "question": "What is your nationality?",
       "answer": "Indian"
@@ -48,9 +43,9 @@
       "answer": "Yes"
     },
     {
-      "category": "current_compensation",
-      "question": "What is your current annual cash compensation?",
-      "answer": "Nil"
+      "category": "projects",
+      "question": "What is your flagship personal project?",
+      "answer": "Larify (https://larity.itssingularity.com) — my flagship personal project and something I am proud of."
     },
     {
       "category": "expected_compensation",
@@ -95,7 +90,7 @@
     {
       "category": "general",
       "question": "Do you have experience with Kubernetes?",
-      "answer": "Yes"
+      "answer": "No"
     },
     {
       "category": "general",
@@ -125,7 +120,7 @@
     {
       "category": "general",
       "question": "School",
-      "answer": "Aalborg University"
+      "answer": "Vellore Institute of Technology"
     },
     {
       "category": "general",
@@ -136,16 +131,6 @@
       "category": "general",
       "question": "How did you hear about this job?",
       "answer": "Google"
-    },
-    {
-      "category": "relocation",
-      "question": "Do you currently live or are you willing to relocate to the job\u2019s location?",
-      "answer": "I am willing to relocate to this job's location."
-    },
-    {
-      "category": "relocation",
-      "question": "This position is based in Bangkok, Thailand and requires full-time, on-site work. Are you willing and able to relocate to Bangkok for this role, if offered the position? (Hybrid - 2 days WFH, 3 days in office)",
-      "answer": "Yes"
     },
     {
       "category": "current_location",
@@ -159,7 +144,7 @@
     },
     {
       "category": "general",
-      "question": "How frequently do you write production codes? \u2022 Daily \u2022 Weekly \u2022 Monthly \u2022 Rarely",
+      "question": "How frequently do you write production codes? • Daily • Weekly • Monthly • Rarely",
       "answer": "Daily"
     },
     {
@@ -179,7 +164,7 @@
     },
     {
       "category": "general",
-      "question": "Do you agree to Agoda\u2019s use of personal data from your application to improve our recruitment experience? We may collaborate and share your data with third-party providers for recruitment purposes and you may ask to remove your data at any time.",
+      "question": "Do you agree to Agoda’s use of personal data from your application to improve our recruitment experience? We may collaborate and share your data with third-party providers for recruitment purposes and you may ask to remove your data at any time.",
       "answer": "Yes"
     },
     {
@@ -189,7 +174,7 @@
     },
     {
       "category": "general",
-      "question": "Email me about other job openings within the Booking Holding\u2019s entities and recruitment-related newsletters",
+      "question": "Email me about other job openings within the Booking Holding’s entities and recruitment-related newsletters",
       "answer": "No"
     },
     {
@@ -199,17 +184,17 @@
     },
     {
       "category": "general",
-      "question": "Do you have any prior experience in Trust and Safety?\u2731",
+      "question": "Do you have any prior experience in Trust and Safety?✱",
       "answer": "No"
     },
     {
       "category": "general",
-      "question": "Have you worked on reporting content on Social media platforms/web or both?\u2731",
+      "question": "Have you worked on reporting content on Social media platforms/web or both?✱",
       "answer": "Yes"
     },
     {
       "category": "general",
-      "question": "Are you aware of content violation policies and what are the requirements for sending enforcements?\u2731",
+      "question": "Are you aware of content violation policies and what are the requirements for sending enforcements?✱",
       "answer": "No"
     },
     {
@@ -219,7 +204,7 @@
     },
     {
       "category": "general",
-      "question": "What type of computer and internet connection do you have? If you get the job, would you be willing to ensure you have good equipment (e.g. MacBook Pro with 16GB RAM and a fast internet connection)? Please be specific.\u2731",
+      "question": "What type of computer and internet connection do you have? If you get the job, would you be willing to ensure you have good equipment (e.g. MacBook Pro with 16GB RAM and a fast internet connection)? Please be specific.✱",
       "answer": "16GB RAM, Ryzen 5800h, 200mbps+ connection"
     },
     {
@@ -229,7 +214,7 @@
     },
     {
       "category": "general",
-      "question": "How did you come to learn about Xsolla? We're delighted to know more about your journey to discovering our company. (Events, Friends, LinkedIn etc.)\u2731",
+      "question": "How did you come to learn about Xsolla? We're delighted to know more about your journey to discovering our company. (Events, Friends, LinkedIn etc.)✱",
       "answer": "LinkedIn"
     },
     {
@@ -288,5 +273,39 @@
       "question": "Are you a veteran or active member of the United States Armed Forces?",
       "answer": "No, I am not a veteran or active member"
     }
-  ]
+  ],
+  "compensation_by_currency": {
+    "INR": {
+      "annual": "₹960,000",
+      "monthly": "₹80,000"
+    },
+    "USD": {
+      "annual": "$100,000",
+      "monthly": "$8,300"
+    },
+    "EUR": {
+      "annual": "€65,000",
+      "monthly": "€5,400"
+    },
+    "GBP": {
+      "annual": "£55,000",
+      "monthly": "£4,600"
+    },
+    "CAD": {
+      "annual": "C$95,000",
+      "monthly": "C$7,900"
+    },
+    "AUD": {
+      "annual": "A$100,000",
+      "monthly": "A$8,300"
+    },
+    "SGD": {
+      "annual": "S$80,000",
+      "monthly": "S$6,700"
+    },
+    "CHF": {
+      "annual": "CHF 95,000",
+      "monthly": "CHF 7,900"
+    }
+  }
 }

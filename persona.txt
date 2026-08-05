@@ -9,12 +9,11 @@ Candidate Profile:
 - website: https://aamn.dev/tldr
 - What is your current location?: Bhopal, India
 - Which work model are you comfortable with? (remote/hybrid/onsite): remote, hybrid, onsite
-- Are you willing to relocate for this role?: yes, not in third world countries
 - What is your nationality?: Indian
 - Are you legally authorized to work in India?: Yes
 - Are you legally authorized to work in the United States?: No
 - Do you require visa sponsorship?: Yes
-- What is your current annual cash compensation?: Nil
+- What is your flagship personal project?: Larify (https://larity.itssingularity.com) — my flagship personal project and something I am proud of.
 - What is your expected compensation?: 80000 INR/ month
 - Do you hold any equity in your current company?: No
 - How soon can you join?: Immediately
@@ -23,17 +22,15 @@ Candidate Profile:
 - Veteran Status: No
 - Are you Hispanic/Latino?: No
 - Disability Status: No
-- Do you have experience with Kubernetes?: Yes
+- Do you have experience with Kubernetes?: No
 - What is your current or more recent job title?: Co-Founder
 - Are you legally authorized to work in the country where the job is located?: No, I am only authorized to work in India
 - Will you now or in the future require company sponsorship to retain or extend your work authorization in the country where the job is located?: Yes
 - Race: Asian
 - Degree: Bachelor's Degree
-- School: Aalborg University
+- School: Vellore Institute of Technology
 - Discipline: Computer Science
 - How did you hear about this job?: Google
-- Do you currently live or are you willing to relocate to the job’s location?: I am willing to relocate to this job's location.
-- This position is based in Bangkok, Thailand and requires full-time, on-site work. Are you willing and able to relocate to Bangkok for this role, if offered the position? (Hybrid - 2 days WFH, 3 days in office): Yes
 - In which country/region are you currently based?: India
 - What is your total number of years of professional software development experience, excluding internships and freelance work?: 0-4 Years
 - How frequently do you write production codes? • Daily • Weekly • Monthly • Rarely: Daily
@@ -54,8 +51,6 @@ Candidate Profile:
 - Graduation Date: 18/05/27
 - When is your expected graduation date?: 18 May 2027
 - What is your expected graduation date?: 18 May 2027
-- Are you authorized to work in the country? (India): Yes, only in India
-
 - If you selected other, please specify which one: Vellore Institute of Technology
 - How would you describe your gender identity? (mark all that apply): Man
 - How would you describe your racial/ethnic background? (mark all that apply): South Asian
@@ -63,13 +58,8 @@ Candidate Profile:
 - Do you identify as transgender?: No
 - Do you have a disability or chronic condition (physical, visual, auditory, cognitive, mental, emotional, or other) that substantially limits one or more of your major life activities, including mobility, communication (seeing, hearing, speaking), and learning?: No
 - Are you a veteran or active member of the United States Armed Forces?: No, I am not a veteran or active member
-- Are you authorized to work in the country? (India): No
-- Are you authorized to work in the country? (India): No
-- Are you authorized to work in the country? (India): No
-- Are you authorized to work in the country? (India): No
-- Are you authorized to work in the country? (India): No
-- Are you authorized to work in the country? (India): No
-From Resume:
+
+- Are you authorized to work in the country? (India): NoFrom Resume:
 - Experience: Delivered 5 high-impact projects with a 4.8+ client rating and generated six-figure revenue within the first two
 - Achievements: • NPTEL: Introduction to Machine Learning | Introduction to Japanese Language and Culture
 - Experience: Translated ambiguous requirements into precise UX flows and production-ready systems, including clients with zero
