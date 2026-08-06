@@ -25,7 +25,7 @@ The mission is heavy application volume. This engine:
 Usage:
     uv run python scripts/intel/radar_intel.py            # analyze + print + export
     uv run python scripts/intel/radar_intel.py --top 20   # top N recommendations
-    uv run python scripts/intel/radar_intel.py --telegram # push digest to Telegram
+    uv run python scripts/intel/radar_intel.py --discord # push digest to Discord
 """
 
 from __future__ import annotations
@@ -192,7 +192,7 @@ def classify(
 async def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--top", type=int, default=20)
-    ap.add_argument("--telegram", action="store_true")
+    ap.add_argument("--discord", action="store_true", help="push digest to Discord")
     ap.add_argument("--export", default=str(PROJECT / "intel"))
     args = ap.parse_args()
 
@@ -323,20 +323,20 @@ async def main() -> None:
     )
     print(f"\nExported {len(jobs)} jobs -> {csv_path} + {json_path}")
 
-    # Telegram digest
-    if args.telegram:
+    # Discord digest
+    if args.discord:
         try:
-            from src.agent.telegram_agent import TelegramAgent
+            from src.agent.discord_agent import DiscordAgent
 
-            ta = TelegramAgent()
+            ta = DiscordAgent()
             if ta.is_configured:
-                lines = ["<b>🧠 Radar Intelligence Digest</b>", ""]
-                lines.append(f"Analyzed <b>{len(jobs)}</b> gated jobs.")
+                lines = ["**🧠 Radar Intelligence Digest**", ""]
+                lines.append(f"Analyzed **{len(jobs)}** gated jobs.")
                 lines.append(
                     f"Graph: {len(graph.matched)} known skills, {len(graph.missed)} gaps learned."
                 )
                 lines.append("")
-                lines.append("<b>Top LARP plays:</b>")
+                lines.append("**Top LARP plays:**")
                 larp_jobs = [
                     j
                     for j in ranked
@@ -344,14 +344,14 @@ async def main() -> None:
                 ][:8]
                 for j in larp_jobs:
                     larp_str = ", ".join(j["larp_skills"][:3])
-                    lines.append(f"▪ <b>{j['company']}</b> — {j['role'][:40]} ({j['match']}%)")
-                    lines.append(f"   LARP: <i>{larp_str}</i>")
+                    lines.append(f"• **{j['company']}** — {j['role'][:40]} ({j['match']}%)")
+                    lines.append(f"   LARP: {larp_str}")
                     if j["apply_url"]:
-                        lines.append(f'   <a href="{j["apply_url"]}">Apply →</a>')
-                await ta._send_raw("\n".join(lines))
-                print("Telegram digest sent")
+                        lines.append(f"   <{j['apply_url']}>")
+                await ta._send("\n".join(lines))
+                print("Discord digest sent")
         except Exception as exc:
-            print(f"telegram digest failed: {exc}")
+            print(f"discord digest failed: {exc}")
 
 
 if __name__ == "__main__":

@@ -25,11 +25,11 @@ import contextlib
 import re
 from typing import Any
 
-from autofill.rag import ASK_USER, is_scoped_question, qualify_question
-from autofill.telegram import (
-    TelegramNotConfiguredError,
+from autofill.discord import (
+    DiscordNotConfiguredError,
     edit_distance,
 )
+from autofill.rag import ASK_USER, is_scoped_question, qualify_question
 
 # Sent RPC error marker that aborts a fill: the job was deferred overnight.
 DEFER_MARKER = "AUTOFILL_DEFER"
@@ -137,8 +137,8 @@ async def resolve_question(
     (a dropped prompt was mapped to the form's own decline option — still a
     committed value, never blank) or ``"decline"`` (user skipped and the form
     offers no decline option). Raises ``DeferredError`` (overnight),
-    ``TelegramNotConfiguredError`` (day, prompting unavailable) or
-    ``TelegramSendError`` (day, the question could not be delivered).
+    ``DiscordNotConfiguredError`` (day, prompting unavailable) or
+    ``DiscordSendError`` (day, the question could not be delivered).
 
     ``job_context`` carries the extracted job description (title, company,
     location, description) so open-ended answers personalise to the role and
@@ -269,9 +269,9 @@ async def resolve_question(
         raise DeferredError(q, kind=kind, options=options)
 
     if bridge is None or not bridge.is_configured:
-        raise TelegramNotConfiguredError(
-            "Telegram prompting unavailable: set TELEGRAM_BOT_TOKEN and "
-            f"TELEGRAM_CHAT_ID. Unanswered question: {q}"
+        raise DiscordNotConfiguredError(
+            "Discord prompting unavailable: set DISCORD_BOT_TOKEN and "
+            f"DISCORD_CHANNEL_ID. Unanswered question: {q}"
         )
 
     # Country-scoped questions are asked with the country named so the answer
@@ -323,7 +323,7 @@ async def resolve_question(
             if scope_country:
                 learn_kwargs["country"] = scope_country
         await rag.learn(q, picked, **learn_kwargs)
-    return (picked, "telegram")
+    return (picked, "discord")
 
 
 async def resolve_cover_letter(

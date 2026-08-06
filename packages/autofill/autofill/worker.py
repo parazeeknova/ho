@@ -20,6 +20,11 @@ from src.logging import get_logger
 from src.memory.pgvector_store import MemoryStore
 
 from autofill.db import AutofillDB
+from autofill.discord import (
+    DiscordNotConfiguredError,
+    DiscordQuestionBridge,
+    DiscordSendError,
+)
 from autofill.profile import build_profile
 from autofill.rag import ScreenerRAG
 from autofill.resolve import (
@@ -29,11 +34,6 @@ from autofill.resolve import (
     resolve_question,
 )
 from autofill.resume import resolve_resume_path
-from autofill.telegram import (
-    TelegramNotConfiguredError,
-    TelegramQuestionBridge,
-    TelegramSendError,
-)
 
 if TYPE_CHECKING:
     from autofill.proxyrelay import ProxyRelay
@@ -489,7 +489,7 @@ class AutofillWorker:
     async def _daily_summary_loop(self) -> None:
         """Send the daily morning digest of deferred jobs at AUTOFILL_DAILY_SUMMARY."""
         summary_time = os.getenv("AUTOFILL_DAILY_SUMMARY", "08:00")
-        bridge = TelegramQuestionBridge()
+        bridge = DiscordQuestionBridge()
         while self._running:
             try:
                 next_time = _next_digest_time(summary_time)
@@ -505,7 +505,7 @@ class AutofillWorker:
                 logger.warning("Morning digest loop error", error=str(e))
                 await asyncio.sleep(60)
 
-    async def _send_daily_digest(self, bridge: TelegramQuestionBridge) -> None:
+    async def _send_daily_digest(self, bridge: DiscordQuestionBridge) -> None:
         """Query deferred jobs and send one summary message, if any exist."""
         rows = await self.db.get_pending_summary_jobs()
         if not rows:
@@ -536,7 +536,7 @@ class AutofillWorker:
         if not rows:
             logger.info("End-of-run summary: no deferred jobs to report")
             return
-        bridge = TelegramQuestionBridge()
+        bridge = DiscordQuestionBridge()
         if not bridge.is_configured:
             logger.warning("End-of-run summary skipped: Telegram not configured")
             return
@@ -548,7 +548,7 @@ class AutofillWorker:
             logger.warning("End-of-run summary send failed", count=len(rows))
 
     @staticmethod
-    async def _send_chunked(bridge: TelegramQuestionBridge, text: str, max_len: int = 3900) -> bool:
+    async def _send_chunked(bridge: DiscordQuestionBridge, text: str, max_len: int = 3900) -> bool:
         """Send ``text`` to Telegram, splitting it into <= ``max_len`` chunks on
         paragraph boundaries when it exceeds Telegram's 4096-char message cap.
         Returns True only when every chunk was delivered."""
@@ -640,7 +640,7 @@ class AutofillWorker:
                 job_id=job_id,
             )
             rag = ScreenerRAG(profile=profile, store=store)
-            bridge = TelegramQuestionBridge()
+            bridge = DiscordQuestionBridge()
             question_timeout = float(os.getenv("AUTOFILL_QUESTION_TIMEOUT", "300"))
             overnight = is_overnight()
             run_mode = "auto" if overnight else apply_mode
@@ -888,7 +888,7 @@ class AutofillWorker:
                                     job_context=job_context,
                                     required=bool(args.get("required", True)),
                                 )
-                            except TelegramNotConfiguredError as tg_err:
+                            except DiscordNotConfiguredError as tg_err:
                                 logger.error(
                                     "Cannot answer question without Telegram",
                                     job_id=job_id,
@@ -905,7 +905,7 @@ class AutofillWorker:
                                     process.stdin.write(f"{rpc_resp}\n".encode())
                                     await process.stdin.drain()
                                 continue
-                            except TelegramSendError as send_err:
+                            except DiscordSendError as send_err:
                                 # A question that could not be delivered is NOT a
                                 # user decline: abort loudly via the RPC error
                                 # (the screener rethrows real RPC failures)
@@ -1176,7 +1176,7 @@ class AutofillWorker:
         job_id: str,
         apply_link: str,
         questions: list[dict[str, Any]],
-        bridge: TelegramQuestionBridge,
+        bridge: DiscordQuestionBridge,
         role: Any = None,
         company: Any = None,
     ) -> None:
@@ -1195,7 +1195,7 @@ class AutofillWorker:
 
     async def _notify_captcha(
         self,
-        bridge: TelegramQuestionBridge,
+        bridge: DiscordQuestionBridge,
         job_id: str,
         apply_link: str,
         error_msg: str,

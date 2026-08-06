@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "description": "ho monorepo - ingest radar pipeline (Python) + autofill product (Python + TypeScript)",
-  "workspaces": ["packages/autofill/node"],
+  "workspaces": [
+    "packages/autofill/node"
+  ],
   "packageManager": "bun@1.3.13",
   "scripts": {
     "init-memory": "PYTHONPATH=.:packages/ingest:packages/autofill uv run python packages/autofill/scripts/init_memory.py",
@@ -19,7 +21,6 @@
     "crawl:ingest": "PYTHONPATH=.:packages/ingest:packages/autofill uv run python packages/ingest/scripts/cli/local_crawler.py --ingest",
     "crawl:no-tor": "PYTHONPATH=.:packages/ingest:packages/autofill uv run python packages/ingest/scripts/cli/local_crawler.py --no-tor",
     "intel": "PYTHONPATH=.:packages/ingest:packages/autofill uv run python packages/ingest/scripts/intel/radar_intel.py",
-    "intel:telegram": "PYTHONPATH=.:packages/ingest:packages/autofill uv run python packages/ingest/scripts/intel/radar_intel.py --telegram",
     "intel:smart": "PYTHONPATH=.:packages/ingest:packages/autofill uv run python packages/ingest/scripts/intel/smart_intel.py --write",
     "intel:planning": "PYTHONPATH=.:packages/ingest:packages/autofill uv run python packages/ingest/scripts/intel/planning_pass.py --write",
     "accepted": "PYTHONPATH=.:packages/ingest:packages/autofill uv run python packages/ingest/scripts/tools/export_accepted.py --out intel/accepted_jobs.csv --eligibility accepted --mode jobs",
@@ -42,6 +43,7 @@
     "lint": "bun run --filter 'autofill-node*' lint",
     "format": "bun run --filter 'autofill-node*' format",
     "format:check": "bun run --filter 'autofill-node*' format:check",
-    "typecheck": "bun run --filter 'autofill-node*' typecheck"
+    "typecheck": "bun run --filter 'autofill-node*' typecheck",
+    "intel:discord": "PYTHONPATH=.:packages/ingest:packages/autofill uv run python packages/ingest/scripts/intel/radar_intel.py --discord"
   }
 }

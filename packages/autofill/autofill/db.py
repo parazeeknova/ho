@@ -73,13 +73,12 @@ CREATE TABLE IF NOT EXISTS autofill_fills (
 CREATE INDEX IF NOT EXISTS idx_autofill_fills_job ON autofill_fills(job_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_autofill_fills_expiry ON autofill_fills(expires_at);
 
--- Telegram question mailbox: single-poller answer routing. The ingest
--- TelegramAgent is the ONLY getUpdates consumer; the autofill bridge sends a
+-- Discord question mailbox: single-gateway answer routing. The ingest
+-- DiscordAgent is the ONLY gateway consumer; the autofill bridge sends a
 -- question, drops its message ids here, and the agent writes the user's reply
--- (or callback button press) back into the row. The bridge polls this table,
--- never Telegram, whenever the agent is alive — so two pollers never race on
--- the same bot token.
-CREATE TABLE IF NOT EXISTS telegram_question_mailbox (
+-- (or button press) back into the row. The bridge polls this table, never
+-- Discord, so two gateway clients never race on the same bot token.
+CREATE TABLE IF NOT EXISTS discord_question_mailbox (
     question_id TEXT PRIMARY KEY,
     chat_id     TEXT NOT NULL,
     message_ids BIGINT[] NOT NULL,
@@ -89,14 +88,13 @@ CREATE TABLE IF NOT EXISTS telegram_question_mailbox (
     asked_at    TIMESTAMPTZ DEFAULT NOW(),
     answered_at TIMESTAMPTZ
 );
-CREATE INDEX IF NOT EXISTS idx_telegram_mailbox_msgs
-    ON telegram_question_mailbox USING GIN (message_ids);
+CREATE INDEX IF NOT EXISTS idx_discord_mailbox_msgs
+    ON discord_question_mailbox USING GIN (message_ids);
 
--- Which process currently owns getUpdates polling (the ingest TelegramAgent
--- heartbeats here every poll cycle). The bridge uses the row's freshness to
--- decide whether to route answers through the mailbox or fall back to its own
--- direct polling (standalone CLI runs without the agent).
-CREATE TABLE IF NOT EXISTS telegram_poller_state (
+-- Which process currently owns the Discord gateway (the ingest DiscordAgent
+-- heartbeats here on every event). The bridge uses the row's freshness to
+-- decide whether answers can be routed through the mailbox.
+CREATE TABLE IF NOT EXISTS discord_poller_state (
     poller_id TEXT PRIMARY KEY,
     last_seen TIMESTAMPTZ DEFAULT NOW()
 );
@@ -330,7 +328,7 @@ class AutofillDB:
         async with self._pool.acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO telegram_question_mailbox (question_id, chat_id, message_ids, question)
+                INSERT INTO discord_question_mailbox (question_id, chat_id, message_ids, question)
                 VALUES ($1, $2, $3, $4)
                 ON CONFLICT (question_id) DO NOTHING
                 """,
@@ -346,7 +344,7 @@ class AutofillDB:
             return
         async with self._pool.acquire() as conn:
             await conn.execute(
-                "UPDATE telegram_question_mailbox "
+                "UPDATE discord_question_mailbox "
                 "SET message_ids = message_ids || $2 WHERE question_id = $1",
                 question_id,
                 message_ids,
@@ -356,7 +354,7 @@ class AutofillDB:
         """Return ``(state, answer)`` for a question, or None when unknown."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT state, answer FROM telegram_question_mailbox WHERE question_id = $1",
+                "SELECT state, answer FROM discord_question_mailbox WHERE question_id = $1",
                 question_id,
             )
             if not row:
@@ -366,7 +364,7 @@ class AutofillDB:
     async def close_mailbox_question(self, question_id: str, state: str) -> None:
         async with self._pool.acquire() as conn:
             await conn.execute(
-                "UPDATE telegram_question_mailbox SET state = $2 WHERE question_id = $1",
+                "UPDATE discord_question_mailbox SET state = $2 WHERE question_id = $1",
                 question_id,
                 state,
             )
@@ -381,7 +379,7 @@ class AutofillDB:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                SELECT question_id FROM telegram_question_mailbox
+                SELECT question_id FROM discord_question_mailbox
                 WHERE state = 'pending' AND $1::bigint = ANY(message_ids)
                 ORDER BY asked_at DESC
                 LIMIT 1
@@ -391,7 +389,7 @@ class AutofillDB:
             if not row:
                 return False
             await conn.execute(
-                "UPDATE telegram_question_mailbox "
+                "UPDATE discord_question_mailbox "
                 "SET state = 'answered', answer = $2, answered_at = NOW() "
                 "WHERE question_id = $1",
                 row["question_id"],
@@ -404,7 +402,7 @@ class AutofillDB:
         async with self._pool.acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO telegram_poller_state (poller_id, last_seen)
+                INSERT INTO discord_poller_state (poller_id, last_seen)
                 VALUES ($1, NOW())
                 ON CONFLICT (poller_id) DO UPDATE SET last_seen = NOW()
                 """,
@@ -415,7 +413,7 @@ class AutofillDB:
         """True when the ingest TelegramAgent is actively polling."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT last_seen FROM telegram_poller_state WHERE poller_id = $1",
+                "SELECT last_seen FROM discord_poller_state WHERE poller_id = $1",
                 poller_id,
             )
             if not row or row["last_seen"] is None:

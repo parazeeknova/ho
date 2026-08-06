@@ -3,6 +3,7 @@
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from autofill.discord import DiscordNotConfiguredError, DiscordQuestionBridge
 from autofill.rag import ASK_USER, default_visa_option
 from autofill.resolve import (
     DEFER_MARKER,
@@ -11,15 +12,14 @@ from autofill.resolve import (
     resolve_cover_letter,
     resolve_question,
 )
-from autofill.telegram import TelegramNotConfiguredError, TelegramQuestionBridge
 from autofill.worker import (
     _next_digest_time,
     is_overnight,
 )
 
 
-def _bridge(bot_token: str = "token", chat_id: str = "123") -> TelegramQuestionBridge:
-    return TelegramQuestionBridge(bot_token=bot_token, chat_id=chat_id)
+def _bridge(bot_token: str = "token", chat_id: str = "123") -> DiscordQuestionBridge:
+    return DiscordQuestionBridge(bot_token=bot_token, chat_id=chat_id)
 
 
 def _rag(**stubs) -> MagicMock:
@@ -100,7 +100,7 @@ async def test_resolve_select_unmappable_kb_asks_with_options() -> None:
         overnight=False,
     )
 
-    assert (answer, source) == ("Remote", "telegram")
+    assert (answer, source) == ("Remote", "discord")
     bridge.ask_options.assert_awaited_once_with("Work model?", ["Remote", "Onsite"], timeout=300.0)
     rag.learn.assert_awaited_once_with("Work model?", "Remote")
 
@@ -118,7 +118,7 @@ async def test_resolve_text_unknown_asks_and_learns() -> None:
         rag, bridge, "Are you a current employee?", kind="text", overnight=False
     )
 
-    assert (answer, source) == ("Yes", "telegram")
+    assert (answer, source) == ("Yes", "discord")
     rag.learn.assert_awaited_once_with("Are you a current employee?", "Yes")
 
 
@@ -283,7 +283,7 @@ async def test_resolve_overnight_required_affiliation_no_negative_deferrals() ->
         overnight=False,
         required=True,
     )
-    assert (answer, source) == ("No", "telegram")
+    assert (answer, source) == ("No", "discord")
     rag.answer_questions.assert_not_called()
 
 
@@ -327,7 +327,7 @@ async def test_resolve_scoped_question_display_qualifies_with_jd_country() -> No
         job_context={"location": "Bengaluru, India"},
     )
 
-    assert (answer, source) == ("No", "telegram")
+    assert (answer, source) == ("No", "discord")
     displayed = bridge.ask.await_args.args[0]
     assert displayed == "Are you authorized to work in the country? (India)"
     rag.learn.assert_awaited_once_with(
@@ -357,7 +357,7 @@ async def test_resolve_scoped_question_asks_for_country_and_learns_it() -> None:
         overnight=False,
     )
 
-    assert (answer, source) == ("No (India)", "telegram")
+    assert (answer, source) == ("No (India)", "discord")
     displayed = bridge.ask.await_args.args[0]
     assert "country could not be detected" in displayed
     rag.learn.assert_awaited_once_with(
@@ -370,9 +370,9 @@ async def test_resolve_unconfigured_raises() -> None:
     rag = _rag()
     rag.kb_answer = AsyncMock(return_value=None)
     rag.answer_questions = AsyncMock(return_value={"Q1": ASK_USER})
-    bridge = TelegramQuestionBridge(bot_token="", chat_id="")
+    bridge = DiscordQuestionBridge(bot_token="", chat_id="")
 
-    with pytest.raises(TelegramNotConfiguredError):
+    with pytest.raises(DiscordNotConfiguredError):
         await resolve_question(rag, bridge, "Q1", kind="text", overnight=False)
 
 

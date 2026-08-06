@@ -11,6 +11,11 @@ from dotenv import load_dotenv
 from src.memory.pgvector_store import MemoryStore
 
 from autofill.db import AutofillDB
+from autofill.discord import (
+    DiscordNotConfiguredError,
+    DiscordQuestionBridge,
+    DiscordSendError,
+)
 from autofill.profile import build_profile
 from autofill.rag import ScreenerRAG
 from autofill.resolve import (
@@ -20,11 +25,6 @@ from autofill.resolve import (
     resolve_question,
 )
 from autofill.resume import resolve_resume_path
-from autofill.telegram import (
-    TelegramNotConfiguredError,
-    TelegramQuestionBridge,
-    TelegramSendError,
-)
 from autofill.worker import _per_job_resume, is_overnight, run_worker
 
 load_dotenv()
@@ -33,7 +33,7 @@ load_dotenv()
 async def _stream_runner(
     payload: dict[str, Any],
     rag: ScreenerRAG,
-    bridge: TelegramQuestionBridge,
+    bridge: DiscordQuestionBridge,
     question_timeout: float,
     overnight: bool,
     job_id: str,
@@ -225,7 +225,7 @@ async def _stream_runner(
                                 job_context=job_context,
                                 required=bool(args.get("required", True)),
                             )
-                        except TelegramNotConfiguredError as tg_err:
+                        except DiscordNotConfiguredError as tg_err:
                             print(f"\n[Python CLI] ERROR: {tg_err}")
                             if process.stdin:
                                 rpc_resp = json.dumps(
@@ -238,7 +238,7 @@ async def _stream_runner(
                                 process.stdin.write(f"{rpc_resp}\n".encode())
                                 await process.stdin.drain()
                             continue
-                        except TelegramSendError as send_err:
+                        except DiscordSendError as send_err:
                             print(f"\n[Python CLI] ERROR: {send_err}")
                             if process.stdin:
                                 rpc_resp = json.dumps(
@@ -362,7 +362,7 @@ async def run_apply(url: str, mode: str = "review"):
             "The form will be filled without a resume attachment."
         )
     rag = ScreenerRAG(profile=profile, store=store)
-    bridge = TelegramQuestionBridge()
+    bridge = DiscordQuestionBridge()
     question_timeout = float(os.getenv("AUTOFILL_QUESTION_TIMEOUT", "300"))
     overnight = is_overnight()
 
@@ -412,7 +412,7 @@ async def run_resume(job_id: str, review: bool = False):
             job_id=job_id,
         )
         rag = ScreenerRAG(profile=profile, store=store)
-        bridge = TelegramQuestionBridge()
+        bridge = DiscordQuestionBridge()
         question_timeout = float(os.getenv("AUTOFILL_QUESTION_TIMEOUT", "300"))
 
         try:
@@ -434,7 +434,7 @@ async def run_resume(job_id: str, review: bool = False):
                         ans = await bridge.ask_options(q, options, timeout=question_timeout)
                     else:
                         ans = await bridge.ask(q, timeout=question_timeout)
-                except TelegramNotConfiguredError as tg_err:
+                except DiscordNotConfiguredError as tg_err:
                     print(f"[Python CLI] ERROR: {tg_err}")
                     return
                 if ans and ans.strip():

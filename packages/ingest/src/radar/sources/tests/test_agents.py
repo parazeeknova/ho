@@ -3,30 +3,32 @@
 from __future__ import annotations
 
 import pytest
-from src.agent.telegram_agent import TelegramAgent
+from src.agent.discord_agent import DiscordAgent
 from src.graph.entity import FrontierEntry, NodeType
 from src.radar.core.models import EligibilityState, JobCandidate
 
 
-class TestTelegramCategorizedAlerts:
+class TestDiscordCategorizedAlerts:
     def test_category_icons_defined(self) -> None:
-        agent = TelegramAgent(bot_token="test", chat_id="123")
-        assert "urgent" in agent._CATEGORY_ICONS
-        assert agent._CATEGORY_ICONS["urgent"] == "[URGENT]"
-        assert agent._CATEGORY_ICONS["startup_signal"] == "[SIGNAL]"
-        assert agent._CATEGORY_ICONS["outreach"] == "[OUTREACH]"
-        assert agent._CATEGORY_ICONS["eligible"] == "[ELIGIBLE]"
-        assert agent._CATEGORY_ICONS["review"] == "[REVIEW]"
+        from src.agent import discord_agent
+
+        assert "urgent" in discord_agent._CATEGORY_ICONS
+        assert "startup_signal" in discord_agent._CATEGORY_ICONS
+        assert "outreach" in discord_agent._CATEGORY_ICONS
+        assert "eligible" in discord_agent._CATEGORY_ICONS
+        assert "review" in discord_agent._CATEGORY_ICONS
 
     def test_category_labels_defined(self) -> None:
-        agent = TelegramAgent(bot_token="test", chat_id="123")
-        labels = agent._CATEGORY_LABELS
+        from src.agent import discord_agent
+
+        labels = discord_agent._CATEGORY_LABELS
         assert "urgent" in labels
         assert "startup_signal" in labels
         assert "eligible" in labels
 
-    def test_format_job_card_structure(self) -> None:
-        agent = TelegramAgent(bot_token="test", chat_id="123")
+    def test_build_job_embed_structure(self) -> None:
+        from src.agent import discord_agent
+
         job = {
             "role": "Backend Engineer",
             "company": "TestCo",
@@ -36,22 +38,20 @@ class TestTelegramCategorizedAlerts:
             "location": "Remote",
             "company_description": "A test company.",
         }
-        card = agent.format_job_card(job)
-        assert "Backend Engineer" in card
-        assert "TestCo" in card
-        assert "85%" in card
-        assert "Remote" in card
-        assert "est." not in card
+        embed = discord_agent._build_job_embed("eligible", job)
+        assert embed.title is not None and "Backend Engineer" in embed.title
+        assert "TestCo" in str(embed.fields)
+        assert "Remote" in str(embed.fields)
 
     def test_unconfigured_agent_noop(self) -> None:
-        agent = TelegramAgent(bot_token="", chat_id="")
+        agent = DiscordAgent(bot_token="", chat_id="")
         assert not agent.is_configured
 
 
 class TestDedupNotification:
     @pytest.mark.asyncio
     async def test_send_categorized_alert_dedup(self) -> None:
-        agent = TelegramAgent(bot_token="test", chat_id="")
+        agent = DiscordAgent(bot_token="test", chat_id="")
         agent._notified_keys.add("test:role:remote")
 
         job = {"role": "TestRole", "company": "TestCo", "match_percent": 80}

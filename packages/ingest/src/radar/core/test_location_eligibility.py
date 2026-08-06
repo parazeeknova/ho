@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import pytest
 
-from src.agent.telegram_agent import TelegramAgent
 from src.radar.core.models import EligibilityState, JobCandidate, RejectionReason
 from src.radar.core.queue import _apply_llm_result
 from src.radar.core.signals import is_us_location
@@ -115,9 +114,17 @@ async def test_filter_can_be_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestCardWarnings:
+    def _warnings(self, job: dict) -> list[str]:
+        from src.agent.discord_agent import _build_job_embed
+
+        embed = _build_job_embed("eligible", job)
+        for field in embed.fields:
+            if field.name.startswith("⚠"):
+                return field.value.split("\n")
+        return []
+
     def test_onsite_us_card_warns(self) -> None:
-        agent = TelegramAgent(bot_token="", chat_id="")
-        text = agent.format_job_card(
+        warnings = self._warnings(
             {
                 "role": "Engineer",
                 "company": "Acme",
@@ -127,12 +134,11 @@ class TestCardWarnings:
                 "sponsors_visa": False,
             }
         )
-        assert "Onsite role" in text
-        assert "US role - visa sponsorship not confirmed" in text
+        assert any("Onsite role" in w for w in warnings)
+        assert any("US role - visa sponsorship not confirmed" in w for w in warnings)
 
     def test_remote_us_card_no_onsite_warning(self) -> None:
-        agent = TelegramAgent(bot_token="", chat_id="")
-        text = agent.format_job_card(
+        warnings = self._warnings(
             {
                 "role": "Engineer",
                 "company": "Acme",
@@ -142,12 +148,11 @@ class TestCardWarnings:
                 "sponsors_visa": True,
             }
         )
-        assert "Onsite role" not in text
-        assert "visa sponsorship not confirmed" not in text
+        assert not any("Onsite role" in w for w in warnings)
+        assert not any("visa sponsorship not confirmed" in w for w in warnings)
 
     def test_onsite_non_us_still_warns(self) -> None:
-        agent = TelegramAgent(bot_token="", chat_id="")
-        text = agent.format_job_card(
+        warnings = self._warnings(
             {
                 "role": "Engineer",
                 "company": "Acme",
@@ -157,5 +162,5 @@ class TestCardWarnings:
                 "sponsors_visa": False,
             }
         )
-        assert "Onsite role" in text
-        assert "US role" not in text
+        assert any("Onsite role" in w for w in warnings)
+        assert not any("US role" in w for w in warnings)

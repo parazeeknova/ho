@@ -190,7 +190,7 @@ CREATE TABLE IF NOT EXISTS discovered_domains (
     discovered_at   TIMESTAMP DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS telegram_notified_jobs (
+CREATE TABLE IF NOT EXISTS discord_notified_jobs (
     dedup_key       TEXT PRIMARY KEY,
     role            TEXT,
     company         TEXT,
@@ -1226,23 +1226,23 @@ class MemoryStore:
                 domains,
             )
 
-    # Telegram_notified_jobs
+    # Discord notified jobs
 
-    async def is_telegram_notified(self, dedup_key: str) -> bool:
-        """Return True if job key was already notified via Telegram."""
+    async def is_notified(self, dedup_key: str) -> bool:
+        """Return True if job key was already notified via Discord."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT 1 FROM telegram_notified_jobs WHERE dedup_key = $1",
+                "SELECT 1 FROM discord_notified_jobs WHERE dedup_key = $1",
                 dedup_key,
             )
             return row is not None
 
-    async def mark_telegram_notified(self, dedup_key: str, role: str, company: str) -> None:
+    async def mark_notified(self, dedup_key: str, role: str, company: str) -> None:
         """Mark job key as notified in PostgreSQL."""
         async with self._pool.acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO telegram_notified_jobs (dedup_key, role, company)
+                INSERT INTO discord_notified_jobs (dedup_key, role, company)
                 VALUES ($1, $2, $3)
                 ON CONFLICT (dedup_key) DO NOTHING
                 """,

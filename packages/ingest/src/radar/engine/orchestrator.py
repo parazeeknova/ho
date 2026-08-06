@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import gc
 import json
 import os
@@ -15,8 +16,8 @@ from dotenv import load_dotenv
 from firecrawl import FirecrawlApp
 from rich.console import Console
 
+from src.agent.discord_agent import DiscordAgent, set_pipeline_state
 from src.agent.startup_agent import StartupAgent, _is_plausible_company_name
-from src.agent.telegram_agent import TelegramAgent, set_pipeline_state
 from src.configuration import get_config
 from src.graph.engine import WorkScheduler
 from src.graph.entity import (
@@ -1194,7 +1195,7 @@ async def _persist_full(store: MemoryStore, c: JobCandidate) -> None:
         pass
 
 
-# Telegram
+# Discord
 
 
 async def _bridge_accepted_to_autofill(matched: list[JobCandidate]) -> int:
@@ -1234,16 +1235,14 @@ async def _bridge_accepted_to_autofill(matched: list[JobCandidate]) -> int:
         return 0
 
 
-async def _notify_telegram(
-    ta: TelegramAgent, matched: list[JobCandidate], store: MemoryStore
-) -> int:
-    """Send Telegram alerts for accepted candidates. Returns actual send count."""
+async def _notify_discord(ta: DiscordAgent, matched: list[JobCandidate], store: MemoryStore) -> int:
+    """Send Discord alerts for accepted candidates. Returns actual send count."""
     if not ta.is_configured:
         return 0
     notified: set[str] = set()
     try:
         async with store._pool.acquire() as conn:
-            rows = await conn.fetch("SELECT dedup_key FROM telegram_notified_jobs")
+            rows = await conn.fetch("SELECT dedup_key FROM discord_notified_jobs")
             notified.update(r["dedup_key"] for r in rows)
     except Exception:
         pass
@@ -1311,7 +1310,7 @@ async def _notify_telegram(
             link = c.direct_apply_url or c.extra.get("source_url") or c.extra.get("ats_url") or ""
             if not link or not str(link).startswith("http"):
                 logger.warning(
-                    f"Telegram skip (no valid link): {c.normalized_company} / {c.normalized_role}"
+                    f"Discord skip (no valid link): {c.normalized_company} / {c.normalized_role}"
                 )
                 continue
             key = _pid(c)
@@ -1334,7 +1333,7 @@ async def _notify_telegram(
                     notified.add(key)
                     async with store._pool.acquire() as conn:
                         await conn.execute(
-                            "INSERT INTO telegram_notified_jobs (dedup_key, role, company) "
+                            "INSERT INTO discord_notified_jobs (dedup_key, role, company) "
                             "VALUES ($1,$2,$3) ON CONFLICT (dedup_key) DO NOTHING",
                             key,
                             c.normalized_role,
@@ -1350,7 +1349,7 @@ async def _notify_telegram(
     sent_count += await _notify("startup_signal", startup[:10])
     sent_count += await _notify("general_accepted", general[:20])
     logger.info(
-        f"Telegram delivery: {sent_count} sent "
+        f"Discord delivery: {sent_count} sent "
         f"(urgent={len(urgent)}, underdog={len(underdog)}, "
         f"sponsor={len(sponsor)}, startup={len(startup)}, general={len(general)})"
     )
@@ -1358,7 +1357,7 @@ async def _notify_telegram(
 
 
 async def _check_and_notify_stealth_signals(
-    ta: TelegramAgent, graph: GraphStore, store: MemoryStore
+    ta: DiscordAgent, graph: GraphStore, store: MemoryStore
 ) -> int:
     """Detect and notify high-centrality stealth startups before public job postings exist."""
     if not ta.is_configured:
@@ -1396,7 +1395,7 @@ async def _check_and_notify_stealth_signals(
         except Exception:
             pass
     if sent > 0:
-        logger.info(f"Dispatched {sent} stealth startup hiring signals to Telegram")
+        logger.info(f"Dispatched {sent} stealth startup hiring signals to Discord")
     return sent
 
 
@@ -1552,7 +1551,7 @@ async def _outreach_handler(entry: FrontierEntry) -> list[FrontierEntry]:
     )
     card = generate_outreach_card(c)
     if card and card.confidence >= 0.4:
-        ta = TelegramAgent()
+        ta = DiscordAgent()
         if ta.is_configured:
             link = linkedin_url or (c.founders[0].get("email") if c.founders else "")
             await ta.send_categorized_alert(
@@ -1678,7 +1677,7 @@ async def _job_processor(entry: FrontierEntry) -> list[FrontierEntry]:
 async def _run_radar_pipeline() -> None:
     cfg = get_config()
     ctx = ContextManager()
-    ta = TelegramAgent(ctx=ctx)
+    ta = DiscordAgent(ctx=ctx)
     shutdown_requested = asyncio.Event()
 
     def _cleanup(sig, _frame):
@@ -1768,7 +1767,7 @@ async def _run_radar_pipeline() -> None:
         linkedin = d.get("linkedin_url")
         if email or linkedin:
             try:
-                ta = TelegramAgent(ctx=ctx)
+                ta = DiscordAgent(ctx=ctx)
                 if ta.is_configured:
                     link = linkedin or (f"mailto:{email}" if email else "")
                     await ta.send_categorized_alert(
@@ -1880,7 +1879,7 @@ async def _run_radar_pipeline() -> None:
             await ta.send_startup(existing_count)
 
         # Re-deliver any previously accepted candidates that were never
-        # notified to Telegram (e.g., if DNS was down during the first sweep)
+        # notified to Discord (e.g., if DNS was down during the first sweep)
         try:
             async with store._pool.acquire() as conn:
                 rows = await conn.fetch(
@@ -1892,7 +1891,7 @@ async def _run_radar_pipeline() -> None:
                     "founder_socials, company_news, osint_signals, extra "
                     "FROM radar_candidates "
                     "WHERE eligibility = 'accepted' "
-                    "AND canonical_id NOT IN (SELECT dedup_key FROM telegram_notified_jobs) "
+                    "AND canonical_id NOT IN (SELECT dedup_key FROM discord_notified_jobs) "
                     "LIMIT 50",
                 )
             if rows:
@@ -1957,8 +1956,8 @@ async def _run_radar_pipeline() -> None:
                     c.eligibility = EligibilityState.ACCEPTED
                     pending.append(c)
                 if pending:
-                    logger.info(f"Re-delivering {len(pending)} unnotified candidates to Telegram")
-                    await _notify_telegram(ta, pending, store)
+                    logger.info(f"Re-delivering {len(pending)} unnotified candidates to Discord")
+                    await _notify_discord(ta, pending, store)
         except Exception as e:
             logger.warning(f"Startup re-delivery failed: {e}")
 
@@ -1998,7 +1997,7 @@ async def _run_radar_pipeline() -> None:
             try:
                 await _enrich_high_fit(matched, sa, store, graph)
                 await _dispatch_company_events(matched, graph, bus)
-                await _notify_telegram(ta, matched, store)
+                await _notify_discord(ta, matched, store)
             except Exception as exc:
                 logger.warning(f"Worker post-processing failed: {exc}")
         return
@@ -2008,6 +2007,8 @@ async def _run_radar_pipeline() -> None:
             break
         sweep += 1
         sweep_start = time.monotonic()
+        with contextlib.suppress(Exception):
+            await ta.begin_sweep(sweep)
         if not is_worker:
             logger.info(f"=== Sweep {sweep} starting ===")
         set_pipeline_state(
@@ -2178,7 +2179,7 @@ async def _run_radar_pipeline() -> None:
             enriched_count = len([c for c in matched if c.is_accepted])
             logger.info(f"Sweep {sweep}: enriched {enriched_count} accepted candidates")
             await _dispatch_company_events(matched, graph, bus)
-            actual_sent = await _notify_telegram(ta, matched, store)
+            actual_sent = await _notify_discord(ta, matched, store)
             await _bridge_accepted_to_autofill(matched)
             stealth_sent = await _check_and_notify_stealth_signals(ta, graph, store)
             accepted_count = len([c for c in matched if c.is_accepted])

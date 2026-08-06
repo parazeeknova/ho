@@ -198,7 +198,7 @@ async def test_send_end_of_run_summary_lists_all_deferred(monkeypatch: pytest.Mo
     bridge.send = AsyncMock(return_value=True)
 
     worker = AutofillWorker(db, max_concurrent=4)
-    with patch("autofill.worker.TelegramQuestionBridge", return_value=bridge):
+    with patch("autofill.worker.DiscordQuestionBridge", return_value=bridge):
         await worker.send_end_of_run_summary()
 
     bridge.send.assert_called_once()
@@ -226,7 +226,7 @@ async def test_send_end_of_run_summary_no_jobs_no_send(monkeypatch: pytest.Monke
     db.get_deferred_jobs = AsyncMock(return_value=[])
     bridge = MagicMock()
     worker = AutofillWorker(db, max_concurrent=4)
-    with patch("autofill.worker.TelegramQuestionBridge", return_value=bridge):
+    with patch("autofill.worker.DiscordQuestionBridge", return_value=bridge):
         await worker.send_end_of_run_summary()
     bridge.send.assert_not_called()
 

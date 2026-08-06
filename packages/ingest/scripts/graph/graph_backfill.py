@@ -16,8 +16,8 @@ import re
 import time
 from typing import Any
 
+from src.agent.discord_agent import DiscordAgent
 from src.agent.startup_agent import StartupAgent
-from src.agent.telegram_agent import TelegramAgent
 from src.graph.entity import FrontierEntry, NodeType, make_work_id
 from src.graph.entity import company_node as _cn
 from src.graph.event_bus import EventBus
@@ -51,7 +51,7 @@ async def _sub_founder(event: Any) -> list[Any]:
         return []
     _cards_sent += 1
     try:
-        ta = TelegramAgent()
+        ta = DiscordAgent()
         if ta.is_configured:
             await ta.send_categorized_alert(
                 "outreach",

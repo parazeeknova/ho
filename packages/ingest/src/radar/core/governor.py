@@ -2,7 +2,7 @@
 
 Every ContextManager.chat/json_chat call goes through one shared
 token-bucket + RPM/TPM governor. The radar queue, startup enrichment,
-analytics, and Telegram commands all share it.
+analytics, and Discord commands all share it.
 
 The provider's per-minute quota is shared with the Firecrawl stack, so
 radar reserves a configurable fraction of it (LLM_BUDGET_RADAR_RPM/TPM)

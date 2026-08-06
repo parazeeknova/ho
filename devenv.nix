@@ -23,6 +23,8 @@
   dotenv.enable = true;
 
   env.LD_LIBRARY_PATH = "${pkgs.stdenv.cc.cc.lib}/lib";
+  env.SSL_CERT_FILE = "/etc/ssl/certs/ca-bundle.crt";
+  env.REQUESTS_CA_BUNDLE = "/etc/ssl/certs/ca-bundle.crt";
 
   enterShell = ''
     echo "ho dev env — python $(python --version) | node $(node --version) | uv ready"
