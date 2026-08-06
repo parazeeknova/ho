@@ -140,7 +140,7 @@ async def test_resolve_website_uses_env_when_no_explicit(monkeypatch) -> None:
     monkeypatch.setenv("PORTFOLIO_URL", "https://env.example.com")
     w = MemoryWizard(ask=lambda q, m: _noop_ask(), log=_noop_log)
 
-    data = {"identity": {}}
+    data: dict = {"identity": {}}
     resolved = await w._resolve_website(data, {"website": ""}, "update this")
     assert resolved == "https://env.example.com"
     assert data["identity"]["website"] == "https://env.example.com"
@@ -153,7 +153,7 @@ async def test_resolve_website_explicit_wins_over_env(monkeypatch) -> None:
     monkeypatch.setenv("PORTFOLIO_URL", "https://env.example.com")
     w = MemoryWizard(ask=lambda q, m: _noop_ask(), log=_noop_log)
 
-    data = {"identity": {}}
+    data: dict = {"identity": {}}
     resolved = await w._resolve_website(data, {"website": "https://explicit.example.com"}, "update")
     assert resolved == "https://explicit.example.com"
     assert data["identity"]["website"] == "https://explicit.example.com"
@@ -166,7 +166,7 @@ async def test_resolve_website_keeps_existing_without_explicit(monkeypatch) -> N
     monkeypatch.setenv("PORTFOLIO_URL", "https://env.example.com")
     w = MemoryWizard(ask=lambda q, m: _noop_ask(), log=_noop_log)
 
-    data = {"identity": {"website": "https://saved.example.com"}}
+    data: dict = {"identity": {"website": "https://saved.example.com"}}
     await w._resolve_website(data, {"website": ""}, "update this")
     # env is set but a saved value exists and no explicit URL -> keep saved
     assert data["identity"]["website"] == "https://saved.example.com"
@@ -179,7 +179,7 @@ async def test_resolve_website_explicit_overwrites_existing(monkeypatch) -> None
     monkeypatch.setenv("PORTFOLIO_URL", "https://env.example.com")
     w = MemoryWizard(ask=lambda q, m: _noop_ask(), log=_noop_log)
 
-    data = {"identity": {"website": "https://saved.example.com"}}
+    data: dict = {"identity": {"website": "https://saved.example.com"}}
     resolved = await w._resolve_website(data, {"website": "https://new.example.com"}, "update")
     assert resolved == "https://new.example.com"
     assert data["identity"]["website"] == "https://new.example.com"

@@ -1,3 +1,4 @@
+# mypy: ignore-errors
 """Comprehensive unit tests for the Discord slash commands and memory wizard.
 
 Uses fake Message/Interaction/Thread objects (no live Discord or network),
