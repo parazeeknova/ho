@@ -26,6 +26,29 @@ GREENHOUSE_API = "https://boards-api.greenhouse.io/v1/boards/{slug}/jobs"
 LEVER_API = "https://api.lever.co/v0/postings/{slug}"
 ASHBY_API = "https://api.ashbyhq.com/posting-api/job-board/{slug}"
 
+# Per-request ceiling for a single slug poll. A handful of boards (notably
+# Lever) can take 15-35s to respond; without a hard cap one slow slug stalls
+# the entire platform's asyncio.gather and the sweep hangs.
+MASS_POLL_REQUEST_TIMEOUT = 20.0
+
+
+async def _timed_request(client: Any, method: str, url: str, **kwargs: Any) -> Any:
+    """Issue one ATS request under a hard wall-clock cap.
+
+    The httpx client timeout covers socket ops but the whole request (DNS +
+    connect + read + json) can still exceed it if the server dribbles bytes.
+    Wrapping in asyncio.timeout bounds the total so a slow board can never
+    block the sweep.
+    """
+    try:
+        async with asyncio.timeout(MASS_POLL_REQUEST_TIMEOUT):
+            return await getattr(client, method)(url, **kwargs)
+    except TimeoutError:
+        return None
+    except Exception:
+        return None
+
+
 _COMMUNITY_README_URLS = [
     "https://raw.githubusercontent.com/SimplifyJobs/Summer2026-Internships/dev/README.md",
     "https://raw.githubusercontent.com/SimplifyJobs/New-Grad-Positions/dev/README.md",
@@ -125,16 +148,18 @@ async def _poll_greenhouse_slugs(slugs: set[str]) -> list[dict[str, Any]]:
     async def _fetch(slug: str) -> None:
         async with sem:
             try:
-                client = await get_client("ats_mass_poller", timeout=8.0)
+                client = await get_client("ats_mass_poller", timeout=25.0)
                 url = GREENHOUSE_API.format(slug=slug)
-                resp = await client.get(
+                resp = await _timed_request(
+                    client,
+                    "get",
                     url,
                     headers={
                         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
                         "Accept": "application/json",
                     },
                 )
-                if resp.status_code != 200:
+                if resp is None or resp.status_code != 200:
                     return
                 data = resp.json()
                 for item in data.get("jobs", []):
@@ -170,16 +195,18 @@ async def _poll_lever_slugs(slugs: set[str]) -> list[dict[str, Any]]:
     async def _fetch(slug: str) -> None:
         async with sem:
             try:
-                client = await get_client("ats_mass_poller", timeout=8.0)
+                client = await get_client("ats_mass_poller", timeout=25.0)
                 url = LEVER_API.format(slug=slug)
-                resp = await client.get(
+                resp = await _timed_request(
+                    client,
+                    "get",
                     url,
                     headers={
                         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
                         "Accept": "application/json",
                     },
                 )
-                if resp.status_code != 200:
+                if resp is None or resp.status_code != 200:
                     return
                 data = resp.json()
                 if not isinstance(data, list):
@@ -217,9 +244,11 @@ async def _poll_ashby_slugs(slugs: set[str]) -> list[dict[str, Any]]:
     async def _fetch(slug: str) -> None:
         async with sem:
             try:
-                client = await get_client("ats_mass_poller", timeout=8.0)
+                client = await get_client("ats_mass_poller", timeout=25.0)
                 url = ASHBY_API.format(slug=slug)
-                resp = await client.post(
+                resp = await _timed_request(
+                    client,
+                    "post",
                     url,
                     json={"includeCompensation": True},
                     headers={
@@ -227,7 +256,7 @@ async def _poll_ashby_slugs(slugs: set[str]) -> list[dict[str, Any]]:
                         "Accept": "application/json",
                     },
                 )
-                if resp.status_code != 200:
+                if resp is None or resp.status_code != 200:
                     return
                 data = resp.json()
                 for item in data.get("jobs", []):

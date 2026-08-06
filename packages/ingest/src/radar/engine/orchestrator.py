@@ -1880,7 +1880,10 @@ async def _run_radar_pipeline() -> None:
             await ta.send_startup(existing_count)
 
         # Re-deliver any previously accepted candidates that were never
-        # notified to Discord (e.g., if DNS was down during the first sweep)
+        # notified to Discord (e.g., if DNS was down during the first sweep).
+        # These land in their own thread so the main channel stays clean.
+        if ta.is_configured:
+            await ta.begin_recovery_thread()
         try:
             async with store._pool.acquire() as conn:
                 rows = await conn.fetch(

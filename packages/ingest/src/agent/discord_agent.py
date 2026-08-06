@@ -68,6 +68,20 @@ _MEMORY_BUTTON_VALUES: dict[str, str] = {
 }
 
 
+class _SlashAdapter:
+    """Minimal stand-in for a ``discord.Message`` so native slash commands can
+    reuse the existing ``_handle_*`` text-command handlers.
+
+    The handlers only touch ``content`` and ``channel`` — this adapter provides
+    exactly those, plus the ``reply_to`` the mailbox capture expects (None).
+    """
+
+    def __init__(self, content: str, channel: Any) -> None:
+        self.content = content
+        self.channel = channel
+        self.reference = None
+
+
 class _MemoryWizardSession:
     """Runs one /memory Q&A session inside a thread.
 
@@ -319,7 +333,7 @@ async def _relation_line(company: str | None) -> str | None:
     if not company:
         return None
     try:
-        from src.graph.entity import make_company_id
+        from src.graph.entity import _unwrap_prov, make_company_id
         from src.graph.graph_store import GraphStore
 
         graph = await GraphStore.create()
@@ -328,7 +342,7 @@ async def _relation_line(company: str | None) -> str | None:
             parts: list[str] = []
             for node in local.get("nodes", []):
                 nd = node.data or {}
-                name = nd.get("name") or node.id or ""
+                name = str(_unwrap_prov(nd.get("name")) or node.id or "").strip()
                 if not name or name == company:
                     continue
                 kind = str(node.node_type)
@@ -453,19 +467,20 @@ class _PersonaButton(discord.ui.View):
     @discord.ui.button(
         label="📄 View Full Persona",
         style=discord.ButtonStyle.secondary,
+        custom_id="persona",
     )
     async def persona(
         self, interaction: discord.Interaction, _button: discord.ui.Button[Any]
     ) -> None:
         await self.agent._send_full_persona(interaction)
 
-    @discord.ui.button(label="Analytics", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Analytics", style=discord.ButtonStyle.primary, custom_id="analytics")
     async def analytics(
         self, interaction: discord.Interaction, _button: discord.ui.Button[Any]
     ) -> None:
         await self.agent._send_analytics_report(interaction)
 
-    @discord.ui.button(label="Stop", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="Stop", style=discord.ButtonStyle.danger, custom_id="stop_pipeline")
     async def stop_pipeline(
         self, interaction: discord.Interaction, _button: discord.ui.Button[Any]
     ) -> None:
@@ -502,6 +517,7 @@ class DiscordAgent:
         self._ready = asyncio.Event()
         self._shutdown_callback: Any | None = None
         self._memory_sessions: dict[int, _MemoryWizardSession] = {}
+        self._tree: discord.app_commands.CommandTree | None = None
 
     def set_shutdown_callback(self, cb: Any) -> None:
         """Register a callable invoked when the /stop button is pressed."""
@@ -527,6 +543,7 @@ class DiscordAgent:
             connector=connector,
         )
         self._client = client
+        self._tree = discord.app_commands.CommandTree(client)
 
         async def on_ready() -> None:
             logger.info("DiscordAgent connected", bot=client.user)
@@ -536,6 +553,7 @@ class DiscordAgent:
             with contextlib.suppress(Exception):
                 if self.channel_id:
                     self._channel = await client.fetch_channel(int(self.channel_id))  # type: ignore[assignment]
+            await self._sync_app_commands()
 
         async def on_message(message: discord.Message) -> None:
             if message.author.bot:
@@ -580,6 +598,14 @@ class DiscordAgent:
             if custom_id == "persona" and message_id is not None:
                 with contextlib.suppress(Exception):
                     await self._send_full_persona(interaction)
+                return
+            if custom_id == "analytics" and message_id is not None:
+                with contextlib.suppress(Exception):
+                    await self._send_analytics_report(interaction)
+                return
+            if custom_id == "stop_pipeline" and message_id is not None:
+                with contextlib.suppress(Exception):
+                    await self._stop_pipeline(interaction)
                 return
             if custom_id.startswith("mem_") and message_id is not None:
                 with contextlib.suppress(Exception):
@@ -641,7 +667,9 @@ class DiscordAgent:
             return False
 
     async def _send_to_thread(self, content: str = "", embed: discord.Embed | None = None) -> bool:
-        thread = self._run_thread or self._sweep_thread
+        # Prefer the sweep thread once a sweep is live; fall back to the
+        # recovery/run thread so pre-sweep re-deliveries still land in a thread.
+        thread = self._sweep_thread or self._run_thread
         if thread is None:
             return await self._send(content=content, embed=embed)
         try:
@@ -776,24 +804,43 @@ class DiscordAgent:
 
     async def _send_full_persona(self, interaction: discord.Interaction) -> None:
         try:
-            from src.configuration import get_config
+            from src.agent.memory_wizard import format_persona
 
-            persona = get_config().candidate.persona.strip()
+            persona = format_persona().strip()
         except Exception:
             persona = ""
-        if not persona:
+        if (
+            not persona
+            or persona.startswith("No persona.json yet")
+            or persona.startswith("_persona.json is empty")
+        ):
             with contextlib.suppress(Exception):
                 await interaction.response.send_message(
-                    "No persona configured yet — run `npm run init-memory`.", ephemeral=True
+                    "No persona built yet — run `/memory` to set one up.", ephemeral=True
                 )
             return
-        # Ack the interaction, then post the full persona in the main channel
-        # (outside any sweep thread).
+        # Ack the interaction, then post a fresh starter message and spin a
+        # thread from it — creating a thread from the button's own message
+        # fails with "A thread has already been created for this message".
         with contextlib.suppress(Exception):
             await interaction.response.defer()
         channel = await self._wait_channel()
-        if channel is not None:
-            await channel.send(f"```{persona[:3900]}```")
+        if channel is None:
+            return
+        try:
+            starter = await channel.send("📄 **Full Persona** — identity, Q&A and resume summary.")
+            thread = await starter.create_thread(
+                name="Full Persona",
+                auto_archive_duration=1440,
+            )
+        except Exception as e:
+            logger.warning("Persona thread creation failed", error=str(e))
+            with contextlib.suppress(Exception):
+                await channel.send(f"```{persona[:3900]}```")
+            return
+        for chunk in re.findall(r".{1,1900}", persona, re.DOTALL) or [persona]:
+            with contextlib.suppress(Exception):
+                await thread.send(f"```{chunk}```")
 
     async def begin_sweep(self, sweep: int) -> None:
         """Create the per-sweep thread before alerts fire, so every message of
@@ -816,9 +863,52 @@ class DiscordAgent:
                     name=f"Sweep #{sweep}",
                     auto_archive_duration=1440,
                 )
+                # Second message: an opening summary of the current queue
+                # state, so the thread opens with context before alerts land.
+                try:
+                    summary = await self._queue_summary_map()
+                    applied = summary.get("applied", 0)
+                    remaining = summary.get("pending", 0) + summary.get("filling", 0)
+                    review = summary.get("deferred", 0) + summary.get("awaiting_review", 0)
+                    failed = summary.get("failed", 0)
+                    intro = discord.Embed(
+                        title=f"📊 Sweep #{sweep} Starting Point",
+                        color=0x42A5F5,
+                        description=(
+                            f"**Queue** — Applied `{applied}` · Remaining `{remaining}` · "
+                            f"Review `{review}` · Failed `{failed}`\n"
+                            "Watching for new matches — alerts land below as they're found."
+                        ),
+                    )
+                    await self._sweep_thread.send(embed=intro)
+                except Exception as e:
+                    logger.debug("Sweep intro summary skipped", error=str(e))
                 self._last_sweep = sweep
         except Exception as e:
             logger.warning("Sweep thread creation failed", error=str(e))
+
+    async def begin_recovery_thread(self, title: str = "Startup Re-delivery") -> None:
+        """Create a thread for the startup re-delivery of previously-accepted
+        roles, so those alerts live in a thread instead of the main channel."""
+        channel = await self._wait_channel()
+        if channel is None:
+            return
+        try:
+            embed = discord.Embed(
+                title=f"🔁 {title}",
+                color=0x42A5F5,
+                description=(
+                    "Catching up on accepted roles you haven't been alerted "
+                    "about yet — everything here lives in this thread."
+                ),
+            )
+            starter = await channel.send(embed=embed)
+            self._run_thread = await starter.create_thread(
+                name=title,
+                auto_archive_duration=1440,
+            )
+        except Exception as e:
+            logger.warning("Recovery thread creation failed", error=str(e))
 
     async def send_sweep_summary(
         self, sweep: int, matched: int, scraped: int, duration: float
@@ -1132,6 +1222,106 @@ class DiscordAgent:
             return
         for chunk in re.findall(r".{1,1900}", text, re.DOTALL) or [text]:
             await self._reply(message, chunk)
+
+    # ── native slash commands ─────────────────────────────────────────
+
+    async def _sync_app_commands(self) -> None:
+        """Register/refresh the bot's native slash commands in Discord.
+
+        Runs once on gateway-ready. With DISCORD_GUILD_ID set the commands
+        sync instantly to that guild; otherwise they register globally (can
+        take up to an hour to propagate). Fails silently — the text-command
+        handlers still work as a fallback.
+        """
+        tree = self._tree
+        if tree is None:
+            return
+        try:
+
+            @tree.command(
+                name="memory", description="Update resume + persona memory (Q&A in a thread)"
+            )
+            async def _memory(interaction: discord.Interaction, note: str | None = None) -> None:
+                await self._slash_memory(interaction, note or "")
+
+            @tree.command(name="persona", description="View the full stored persona")
+            async def _persona(interaction: discord.Interaction) -> None:
+                await self._slash_persona(interaction)
+
+            @tree.command(name="status", description="Current pipeline status")
+            async def _status(interaction: discord.Interaction) -> None:
+                await self._slash_bridge(interaction, "/status", self._handle_status)
+
+            @tree.command(name="health", description="Live health checks for all services")
+            async def _health(interaction: discord.Interaction) -> None:
+                await self._slash_bridge(interaction, "/health", self._handle_health)
+
+            @tree.command(
+                name="analytics", description="Market intelligence & skill arbitrage report"
+            )
+            async def _analytics(interaction: discord.Interaction) -> None:
+                await self._slash_bridge(interaction, "/analytics", self._handle_analytics)
+
+            @tree.command(name="resend", description="Re-send accepted job matches")
+            async def _resend(
+                interaction: discord.Interaction, dry: bool = False, limit: int = 10
+            ) -> None:
+                content = f"/resend{' --dry' if dry else ''} {limit}"
+                await self._slash_bridge(interaction, content, self._handle_resend)
+
+            @tree.command(name="help", description="List all available commands")
+            async def _help(interaction: discord.Interaction) -> None:
+                await self._slash_bridge(interaction, "/help", self._handle_help)
+
+        except Exception as e:
+            logger.warning("Slash command registration failed", error=str(e))
+            return
+
+        try:
+            target: discord.abc.Snowflake | None = None
+            if self._guild_id:
+                target = discord.Object(id=int(self._guild_id))
+            synced = await tree.sync(guild=target)
+            logger.info(
+                "Slash commands synced",
+                count=len(synced),
+                guild=self._guild_id or "global",
+            )
+        except Exception as e:
+            logger.warning("Slash command sync failed", error=str(e))
+
+    async def _slash_bridge(
+        self,
+        interaction: discord.Interaction,
+        content: str,
+        handler: Any,
+    ) -> None:
+        """Route a native slash command into the existing message handler.
+
+        Acks the interaction, then hands it a ``_SlashAdapter`` so the shared
+        ``_handle_*`` logic runs unchanged (it posts via channel.send).
+        """
+        with contextlib.suppress(Exception):
+            await interaction.response.defer()
+        adapter = _SlashAdapter(content, interaction.channel)
+        try:
+            await handler(adapter)
+        except Exception as e:
+            logger.debug("Slash bridge handler failed", error=str(e))
+            with contextlib.suppress(Exception):
+                await interaction.followup.send(f"Command failed: {e}")
+
+    async def _slash_memory(self, interaction: discord.Interaction, note: str) -> None:
+        with contextlib.suppress(Exception):
+            await interaction.response.defer()
+        adapter = _SlashAdapter(f"/memory {note}".strip(), interaction.channel)
+        await self._handle_memory(adapter)  # type: ignore[arg-type]
+
+    async def _slash_persona(self, interaction: discord.Interaction) -> None:
+        with contextlib.suppress(Exception):
+            await interaction.response.defer()
+        adapter = _SlashAdapter("/persona", interaction.channel)
+        await self._handle_persona(adapter)  # type: ignore[arg-type]
 
     # ── autofill question mailbox ──────────────────────────────────────
 

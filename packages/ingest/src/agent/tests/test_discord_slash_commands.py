@@ -663,3 +663,454 @@ async def test_memory_button_value_map() -> None:
     assert _MEMORY_BUTTON_VALUES["mem_pnta"] == "Prefer not to answer"
     assert _MEMORY_BUTTON_VALUES["mem_skip"] == "skip"
     assert _MEMORY_BUTTON_VALUES["mem_done"] == "done"
+
+
+# ── relation graph prettify ────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_relation_line_unwraps_provenance(monkeypatch) -> None:
+    """Relation graph must render provenance-wrapped node names as plain text."""
+    from src.agent import discord_agent
+
+    class FakeNode:
+        def __init__(self, nid: str, ntype: str, name_value):
+            self.id = nid
+            self.node_type = type("T", (), {"__str__": lambda s: ntype})()
+            self.data = {"name": name_value}
+
+    class FakeGraph:
+        @classmethod
+        async def create(cls):
+            return cls()
+
+        async def close(self):
+            pass
+
+        async def get_local_graph(self, node_id, radius=1):
+            return {
+                "nodes": [
+                    FakeNode("company:glean", "company", "glean"),
+                    FakeNode(
+                        "founder:x",
+                        "founder",
+                        {"value": "Arvind Jain", "source": "radar", "confidence": 0.5},
+                    ),
+                    FakeNode("uses:neo4j", "technology", {"value": "neo4j", "source": "radar"}),
+                ],
+                "edges": [],
+            }
+
+    monkeypatch.setattr("src.graph.graph_store.GraphStore", FakeGraph)
+    line = await discord_agent._relation_line("glean")
+    assert line is not None
+    assert "{'value'" not in line
+    assert "Arvind Jain" in line
+    assert "neo4j" in line
+
+
+@pytest.mark.asyncio
+async def test_relation_line_skips_self_and_returns_none(monkeypatch) -> None:
+    from src.agent import discord_agent
+
+    class FakeNode:
+        def __init__(self, nid: str, ntype: str, name_value):
+            self.id = nid
+            self.node_type = type("T", (), {"__str__": lambda s: ntype})()
+            self.data = {"name": name_value}
+
+    class FakeGraph:
+        @classmethod
+        async def create(cls):
+            return cls()
+
+        async def close(self):
+            pass
+
+        async def get_local_graph(self, node_id, radius=1):
+            return {"nodes": [FakeNode("company:glean", "company", "glean")], "edges": []}
+
+    monkeypatch.setattr("src.graph.graph_store.GraphStore", FakeGraph)
+    assert await discord_agent._relation_line("glean") is None
+
+
+# ── persona button + thread ────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_persona_button_has_stable_custom_id(monkeypatch, tmp_path) -> None:
+    from src.agent.discord_agent import _PersonaButton
+
+    # The button must carry custom_id="persona" so on_interaction routes it
+    # even after the view is gone from memory (bot restart).
+    view = _PersonaButton(make_agent())
+    persona_btn = view.children[0]
+    assert persona_btn.custom_id == "persona"
+
+
+@pytest.mark.asyncio
+async def test_send_full_persona_creates_thread(monkeypatch, tmp_path) -> None:
+    p = tmp_path / "persona.json"
+    p.write_text(
+        json.dumps(
+            {
+                "name": "Harsh Sahu",
+                "identity": {"website": "https://przknv.cc"},
+                "answers": [{"category": "identity", "question": "Location", "answer": "India"}],
+                "resume_summary": "TypeScript/Rust engineer",
+            }
+        )
+    )
+    monkeypatch.setattr("src.agent.memory_wizard.PERSONA_JSON", p)
+
+    agent = make_agent()
+    thread_sent: list[str] = []
+
+    class FakeThreadObj:
+        async def send(self, content=None, **kw):
+            thread_sent.append(content or "")
+
+    fake_thread = FakeThreadObj()
+
+    # The main channel's send() returns a starter message that can create a
+    # thread (the thread must be created from a FRESH message, not the
+    # button's message — that's the regression this guards against).
+    class FakeStarterMessage:
+        async def create_thread(self, name, auto_archive_duration):
+            return fake_thread
+
+    class FakePersonaChannel:
+        def __init__(self):
+            self.sent = []
+
+        async def send(self, content=None, **kw):
+            self.sent.append((content, kw))
+            return FakeStarterMessage()
+
+    agent._channel = FakePersonaChannel()  # type: ignore[assignment]
+
+    class FakeInter:
+        def __init__(self):
+            self.message = None
+            self.response = FakeResponse()
+            self.type = 2
+            self.data = {"custom_id": "persona"}
+
+    await agent._send_full_persona(FakeInter())
+    assert thread_sent, "persona should be posted to the created thread"
+    combined = "".join(thread_sent)
+    assert "Harsh Sahu" in combined
+    assert "przknv.cc" in combined
+    assert "TypeScript/Rust engineer" in combined
+
+
+@pytest.mark.asyncio
+async def test_send_full_persona_no_persona_tells_user(monkeypatch, tmp_path) -> None:
+    p = tmp_path / "persona.json"
+    p.write_text(json.dumps({"name": "", "identity": {}, "answers": []}))
+    monkeypatch.setattr("src.agent.memory_wizard.PERSONA_JSON", p)
+
+    agent = make_agent()
+
+    class FakeMsgForThread:
+        async def create_thread(self, name, auto_archive_duration):
+            raise AssertionError("thread should not be created without persona")
+
+    class FakeInter:
+        def __init__(self):
+            self.message = FakeMsgForThread()
+            self.response = FakeResponse()
+            self.data = {"custom_id": "persona"}
+
+    sent = {}
+
+    class R:
+        async def send_message(self, content=None, ephemeral=None, **kw):
+            sent["content"] = content or ""
+
+    inter = FakeInter()
+    inter.response = R()
+    await agent._send_full_persona(inter)
+    assert "No persona" in sent.get("content", "")
+
+
+# ── thread precedence ──────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_send_to_thread_prefers_sweep_thread(monkeypatch) -> None:
+    agent = make_agent()
+    recovery = FakeChannel(id=11, thread=True)
+    sweep = FakeChannel(id=22, thread=True)
+    agent._run_thread = recovery  # type: ignore[assignment]
+    agent._sweep_thread = sweep  # type: ignore[assignment]
+
+    ok = await agent._send_to_thread(content="sweep msg")
+    assert ok is True
+    assert any((c or "") == "sweep msg" for c, _ in sweep.sent)
+    assert not any((c or "") == "sweep msg" for c, _ in recovery.sent)
+
+
+@pytest.mark.asyncio
+async def test_send_to_thread_falls_back_to_recovery_thread() -> None:
+    agent = make_agent()
+    recovery = FakeChannel(id=11, thread=True)
+    agent._run_thread = recovery  # type: ignore[assignment]
+
+    ok = await agent._send_to_thread(content="recovery msg")
+    assert ok is True
+    assert any((c or "") == "recovery msg" for c, _ in recovery.sent)
+
+
+@pytest.mark.asyncio
+async def test_send_to_thread_no_thread_uses_channel() -> None:
+    agent = make_agent()
+    agent._run_thread = None
+    agent._sweep_thread = None
+    ok = await agent._send_to_thread(content="main msg")
+    assert ok is True
+    assert any((c or "") == "main msg" for c, _ in agent._channel.sent)
+
+
+@pytest.mark.asyncio
+async def test_begin_recovery_thread_sets_run_thread() -> None:
+    agent = make_agent()
+    thread = FakeThread(id=888)
+    agent._channel = FakeServerChannel(thread=thread)
+    await agent.begin_recovery_thread()
+    assert agent._run_thread is thread
+    # The embed title lives in kwargs, not content.
+    assert any(kw.get("embed") is not None for _, kw in agent._channel.sent)
+
+
+# ── native slash commands ──────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_slash_adapter_bridges_to_handler(monkeypatch) -> None:
+    """_slash_bridge must ack the interaction then run the handler."""
+
+    agent = make_agent()
+    handled = []
+
+    async def fake_status(message):
+        handled.append(message.content)
+        assert message.channel == agent._channel
+        await agent._reply(message, "ok")
+
+    class FakeSlashInteraction:
+        channel = agent._channel
+
+        class Response:
+            @staticmethod
+            async def defer():
+                pass
+
+        async def followup_send(self, text):
+            pass
+
+    await agent._slash_bridge(FakeSlashInteraction(), "/status", fake_status)
+    assert handled == ["/status"]
+    assert any((c or "") == "ok" for c, _ in agent._channel.sent)
+
+
+@pytest.mark.asyncio
+async def test_slash_bridge_failure_notifies() -> None:
+    agent = make_agent()
+    msgs = []
+
+    async def boom(message):
+        raise RuntimeError("nope")
+
+    class FakeFollowup:
+        async def send(self, text):
+            msgs.append(text)
+
+    class FakeSlashInteraction:
+        channel = agent._channel
+        followup = FakeFollowup()
+
+        class Response:
+            @staticmethod
+            async def defer():
+                pass
+
+    await agent._slash_bridge(FakeSlashInteraction(), "/x", boom)
+    assert msgs and "Command failed" in msgs[0]
+
+
+@pytest.mark.asyncio
+async def test_sync_app_commands_builds_tree(monkeypatch) -> None:
+    """_sync_app_commands registers all native commands and syncs to guild."""
+
+    agent = make_agent()
+    agent._guild_id = "12345"
+
+    # Build a fake tree that records commands + sync call.
+    class FakeTree:
+        def __init__(self):
+            self.commands = []
+            self.synced_to = None
+
+        def command(self, name=None, description=None):
+            def deco(fn):
+                self.commands.append(name)
+                return fn
+
+            return deco
+
+        async def sync(self, guild=None):
+            self.synced_to = guild
+            return [object() for _ in self.commands]
+
+    fake = FakeTree()
+    agent._tree = fake  # type: ignore[assignment]
+    await agent._sync_app_commands()
+
+    for name in ("memory", "persona", "status", "health", "analytics", "resend", "help"):
+        assert name in fake.commands, f"missing {name}"
+    assert fake.synced_to is not None
+    assert fake.synced_to.id == 12345
+
+
+@pytest.mark.asyncio
+async def test_sync_app_commands_global_without_guild(monkeypatch) -> None:
+    agent = make_agent()
+    agent._guild_id = None
+
+    class FakeTree:
+        def __init__(self):
+            self.commands = []
+            self.synced_to = "UNSET"
+
+        def command(self, name=None, description=None):
+            def deco(fn):
+                self.commands.append(name)
+                return fn
+
+            return deco
+
+        async def sync(self, guild=None):
+            self.synced_to = guild
+            return []
+
+    fake = FakeTree()
+    agent._tree = fake  # type: ignore[assignment]
+    await agent._sync_app_commands()
+    assert fake.synced_to is None  # global sync
+
+
+@pytest.mark.asyncio
+async def test_slash_memory_builds_content() -> None:
+
+    agent = make_agent()
+    captured = []
+
+    async def fake_handle_memory(message):
+        captured.append(message.content)
+
+    agent._handle_memory = fake_handle_memory  # type: ignore[method-assign]
+
+    class FakeSlashInteraction:
+        channel = agent._channel
+
+        class Response:
+            @staticmethod
+            async def defer():
+                pass
+
+    await agent._slash_memory(FakeSlashInteraction(), "update this")
+    assert captured == ["/memory update this"]
+
+
+@pytest.mark.asyncio
+async def test_slash_persona_builds_content() -> None:
+    agent = make_agent()
+    captured = []
+
+    async def fake_handle_persona(message):
+        captured.append(message.content)
+
+    agent._handle_persona = fake_handle_persona  # type: ignore[method-assign]
+
+    class FakeSlashInteraction:
+        channel = agent._channel
+
+        class Response:
+            @staticmethod
+            async def defer():
+                pass
+
+    await agent._slash_persona(FakeSlashInteraction())
+    assert captured == ["/persona"]
+
+
+# ── sweep intro summary ────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_begin_sweep_posts_intro_summary(monkeypatch) -> None:
+    """begin_sweep must post a queue-state summary as the thread's second message."""
+    agent = make_agent()
+    thread = FakeThread(id=700)
+    agent._channel = FakeServerChannel(thread=thread)
+
+    async def fake_queue_summary():
+        return {
+            "applied": 3,
+            "pending": 5,
+            "filling": 2,
+            "deferred": 1,
+            "awaiting_review": 0,
+            "failed": 1,
+        }
+
+    monkeypatch.setattr(agent, "_queue_summary_map", fake_queue_summary)
+    await agent.begin_sweep(1)
+    assert agent._sweep_thread is thread
+    # starter message (embed) + intro summary embed
+    assert len(thread.sent) >= 1
+    # The intro summary was sent to the thread
+    thread_embeds = [kw.get("embed") for _, kw in thread.sent]
+    assert any(e is not None and "Starting Point" in str(e.title) for e in thread_embeds)
+    assert any(e is not None and "Applied" in str(e.description) for e in thread_embeds)
+
+
+@pytest.mark.asyncio
+async def test_begin_sweep_skips_duplicate_thread(monkeypatch) -> None:
+    """Same sweep number must not re-create the thread."""
+    agent = make_agent()
+    thread = FakeThread(id=701)
+    agent._channel = FakeServerChannel(thread=thread)
+    await agent.begin_sweep(1)
+    first_count = len(agent._channel.sent)
+    await agent.begin_sweep(1)
+    assert len(agent._channel.sent) == first_count
+
+
+@pytest.mark.asyncio
+async def test_send_sweep_summary_posts_complete_embed(monkeypatch) -> None:
+    agent = make_agent()
+    thread = FakeThread(id=702)
+    agent._channel = FakeServerChannel(thread=thread)
+    await agent.begin_sweep(2)
+    assert agent._sweep_thread is thread
+
+    async def fake_queue_summary():
+        return {
+            "applied": 4,
+            "pending": 3,
+            "filling": 1,
+            "deferred": 2,
+            "awaiting_review": 1,
+            "failed": 0,
+        }
+
+    monkeypatch.setattr(agent, "_queue_summary_map", fake_queue_summary)
+    await agent.send_sweep_summary(2, matched=7, scraped=90, duration=12.5)
+    embeds = [kw.get("embed") for _, kw in thread.sent]
+    complete = [e for e in embeds if e is not None and "Complete" in str(e.title)]
+    assert complete, "expected a Sweep Complete embed"
+    desc = str(complete[0].description)
+    assert "Scraped" in desc and "7" in desc and "12.5" in desc
+    assert "Applied" in desc
