@@ -2093,6 +2093,7 @@ class ScreenerRAG:
         if re.search(r"\b(how many|number of|years of experience|level of|years of)\b", q_lower):
             return None
         m = _SKILL_QUESTION_RE.search(q_lower)
+        assert m is not None
         tail = q_lower[m.end() :].strip()
         # Reject phrasing that names the *candidate* ("experience building
         # X", "experience as Y", "experience working in Z") rather than a

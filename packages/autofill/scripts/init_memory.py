@@ -112,6 +112,48 @@ async def index_resume(resume_url: str | None, resume_path: str | None) -> None:
         )
 
 
+def _compose_file() -> Path:
+    return REPO / "packages" / "ingest" / "docker-compose.yaml"
+
+
+async def _start_postgres() -> bool:
+    """Auto-start the agent-memory Postgres container and wait for it.
+
+    The app database is the ``agent-memory-db`` service (host port 5433,
+    pgvector image, persistent volume) — not ``nuq-postgres``, which only
+    serves the firecrawl network internally.
+    """
+    import shutil
+
+    if not shutil.which("docker"):
+        return False
+    try:
+        result = await asyncio.to_thread(
+            subprocess.run,
+            ["docker", "compose", "-f", str(_compose_file()), "up", "-d", "agent-memory-db"],
+            cwd=REPO,
+            capture_output=True,
+            timeout=180,
+        )
+        if result.returncode != 0:
+            logger.warning(
+                "docker compose up failed",
+                stderr=(result.stderr or b"").decode()[-400:],
+            )
+            return False
+    except Exception as e:
+        logger.warning("docker compose up failed", error=str(e))
+        return False
+    for _ in range(45):
+        try:
+            store = await MemoryStore.create()
+            await store.close()
+            return True
+        except Exception:
+            await asyncio.sleep(1)
+    return False
+
+
 async def run_script(name: str, *extra: str) -> int:
     script = REPO / "packages" / "autofill" / "scripts" / name
     if not script.exists():
@@ -173,17 +215,24 @@ async def main() -> None:
         store = await MemoryStore.create()
     except Exception as e:
         ux.chip("err", f"Could not connect to Postgres: {e}")
-        ux.bullet("Start the database first:")
-        ux.bullet(
-            "  docker compose -f packages/ingest/docker-compose.yaml up -d nuq-postgres",
-            style="cyan",
-        )
-        ux.bullet(
-            "  PGPASSWORD=postgres psql -h localhost -p 5433 -U postgres "
-            "-d agent_memory -f packages/ingest/scripts/sql/init-pgvector.sql",
-            style="cyan",
-        )
-        sys.exit(1)
+        ux.bullet("Starting agent-memory-db (docker compose) automatically...")
+        if await _start_postgres():
+            ux.chip("ok", "Postgres started automatically")
+            store = await MemoryStore.create()
+        else:
+            ux.chip("err", "Could not start Postgres automatically")
+            ux.bullet("Start it manually:")
+            ux.bullet(
+                f"  docker compose -f {_compose_file().relative_to(REPO)} up -d agent-memory-db",
+                style="cyan",
+            )
+            ux.bullet(
+                "  (First-time setup only, after the volume is initialized:)\n"
+                "  PGPASSWORD=postgres psql -h localhost -p 5433 -U postgres "
+                "-d agent_memory -f packages/ingest/scripts/sql/init-pgvector.sql",
+                style="cyan",
+            )
+            sys.exit(1)
     await store.close()
     ux.chip("ok", "Postgres connected (localhost:5433/agent_memory)")
 
