@@ -793,7 +793,7 @@ export class GreenhouseAdapter extends ATSAdapter {
         return page
           .evaluate((baseName: string) => {
             const input = document.querySelector(
-              'input#cover_letter[type="file"], ' + 'input[name*="cover_letter"][type="file"]',
+              'input#cover_letter[type="file"], input[name*="cover_letter"][type="file"]',
             ) as HTMLInputElement | null;
             if (input && input.files && input.files.length > 0) return true;
             if (!baseName) return false;

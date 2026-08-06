@@ -173,14 +173,14 @@ def _missing_persona_items(persona_json: Path) -> set[str]:
     from the old file.
     """
     try:
-        from grill_persona import CONTACT_FIELDS, WIZARD_QUESTIONS
+        from grill_persona import CONTACT_FIELDS, CORE_QUESTIONS
 
         data = json.loads(persona_json.read_text())
     except Exception:
         return set()
     missing: set[str] = set()
     answered = {(a.get("category") or "").strip() for a in data.get("answers", [])}
-    expected = {category for category, _ in WIZARD_QUESTIONS}
+    expected = {category for category, _ in CORE_QUESTIONS}
     missing |= expected - answered
     identity = data.get("identity") or {}
     for field in CONTACT_FIELDS:

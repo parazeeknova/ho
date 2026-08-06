@@ -1,5 +1,6 @@
 """Unit tests for DiscordAgent (ingest-side gateway client)."""
 
+import pytest
 from src.agent.discord_agent import DiscordAgent
 
 
@@ -49,3 +50,144 @@ def test_autofill_queue_lines_guards() -> None:
     lines = asyncio.run(autofill_queue_lines())
     assert isinstance(lines, list)
     assert any("Applied" in line for line in lines)
+
+
+def test_parse_instruction_urls() -> None:
+    from src.agent.memory_wizard import parse_instruction
+
+    parsed = parse_instruction("resume https://x.com/resume.pdf portfolio https://y.com")
+    assert parsed["resume_url"] == "https://x.com/resume.pdf"
+    assert parsed["website"] == "https://y.com"
+    assert parsed["force_all"] is False
+
+
+def test_parse_instruction_bare_url_is_resume() -> None:
+    from src.agent.memory_wizard import parse_instruction
+
+    parsed = parse_instruction("add my resume https://x.com/resume.pdf")
+    assert parsed["resume_url"] == "https://x.com/resume.pdf"
+
+
+def test_parse_instruction_force_all_and_no_resume() -> None:
+    from src.agent.memory_wizard import parse_instruction
+
+    assert parse_instruction("everything")["force_all"] is True
+    assert parse_instruction("re-grill all")["force_all"] is True
+    assert parse_instruction("no resume")["no_resume"] is True
+
+
+def test_parse_instruction_no_keywords() -> None:
+    from src.agent.memory_wizard import parse_instruction
+
+    parsed = parse_instruction("update this and add my resume and portfolio")
+    assert parsed["resume_url"] is None
+    assert parsed["website"] is None
+
+
+def test_parse_instruction_portfolio_only_url() -> None:
+    """A single bare portfolio URL after 'portfolio' must NOT become the resume.
+
+    Regression: `/memory update this and add my resume and portfolio
+    https://przknv.cc` used to treat przknv.cc as BOTH resume and website,
+    indexing the portfolio homepage HTML into resume_embeddings.
+    """
+    from src.agent.memory_wizard import parse_instruction
+
+    parsed = parse_instruction("update this and add my resume and portfolio https://przknv.cc")
+    assert parsed["website"] == "https://przknv.cc"
+    assert parsed["resume_url"] is None
+    assert parsed["resume_path"] is None
+
+
+def test_parse_instruction_resume_url_and_portfolio() -> None:
+    from src.agent.memory_wizard import parse_instruction
+
+    parsed = parse_instruction(
+        "my resume https://f.przknv.cc/raw/XghaIR.pdf and portfolio https://przknv.cc"
+    )
+    assert parsed["resume_url"] == "https://f.przknv.cc/raw/XghaIR.pdf"
+    assert parsed["website"] == "https://przknv.cc"
+
+
+def test_parse_instruction_bare_url_no_keyword_is_resume() -> None:
+    from src.agent.memory_wizard import parse_instruction
+
+    parsed = parse_instruction("https://f.przknv.cc/raw/XghaIR.pdf")
+    assert parsed["resume_url"] == "https://f.przknv.cc/raw/XghaIR.pdf"
+    assert parsed["website"] is None
+
+
+def test_parse_instruction_portfolio_second_of_two_urls() -> None:
+    from src.agent.memory_wizard import parse_instruction
+
+    parsed = parse_instruction("resume https://x.com/a.pdf portfolio https://y.com")
+    assert parsed["resume_url"] == "https://x.com/a.pdf"
+    assert parsed["website"] == "https://y.com"
+
+
+def test_parse_instruction_explicit_portfolio_wins(monkeypatch) -> None:
+    from src.agent.memory_wizard import parse_instruction
+
+    monkeypatch.setenv("PORTFOLIO_URL", "https://env.example.com")
+    parsed = parse_instruction("portfolio https://explicit.example.com")
+    assert parsed["website"] == "https://explicit.example.com"
+
+
+@pytest.mark.asyncio
+async def test_resolve_website_uses_env_when_no_explicit(monkeypatch) -> None:
+    from src.agent.memory_wizard import MemoryWizard
+
+    monkeypatch.setenv("PORTFOLIO_URL", "https://env.example.com")
+    w = MemoryWizard(ask=lambda q, m: _noop_ask(), log=_noop_log)
+
+    data = {"identity": {}}
+    resolved = await w._resolve_website(data, {"website": ""}, "update this")
+    assert resolved == "https://env.example.com"
+    assert data["identity"]["website"] == "https://env.example.com"
+
+
+@pytest.mark.asyncio
+async def test_resolve_website_explicit_wins_over_env(monkeypatch) -> None:
+    from src.agent.memory_wizard import MemoryWizard
+
+    monkeypatch.setenv("PORTFOLIO_URL", "https://env.example.com")
+    w = MemoryWizard(ask=lambda q, m: _noop_ask(), log=_noop_log)
+
+    data = {"identity": {}}
+    resolved = await w._resolve_website(data, {"website": "https://explicit.example.com"}, "update")
+    assert resolved == "https://explicit.example.com"
+    assert data["identity"]["website"] == "https://explicit.example.com"
+
+
+@pytest.mark.asyncio
+async def test_resolve_website_keeps_existing_without_explicit(monkeypatch) -> None:
+    from src.agent.memory_wizard import MemoryWizard
+
+    monkeypatch.setenv("PORTFOLIO_URL", "https://env.example.com")
+    w = MemoryWizard(ask=lambda q, m: _noop_ask(), log=_noop_log)
+
+    data = {"identity": {"website": "https://saved.example.com"}}
+    await w._resolve_website(data, {"website": ""}, "update this")
+    # env is set but a saved value exists and no explicit URL -> keep saved
+    assert data["identity"]["website"] == "https://saved.example.com"
+
+
+@pytest.mark.asyncio
+async def test_resolve_website_explicit_overwrites_existing(monkeypatch) -> None:
+    from src.agent.memory_wizard import MemoryWizard
+
+    monkeypatch.setenv("PORTFOLIO_URL", "https://env.example.com")
+    w = MemoryWizard(ask=lambda q, m: _noop_ask(), log=_noop_log)
+
+    data = {"identity": {"website": "https://saved.example.com"}}
+    resolved = await w._resolve_website(data, {"website": "https://new.example.com"}, "update")
+    assert resolved == "https://new.example.com"
+    assert data["identity"]["website"] == "https://new.example.com"
+
+
+async def _noop_ask() -> None:
+    return None
+
+
+async def _noop_log(_t: str) -> None:
+    return None

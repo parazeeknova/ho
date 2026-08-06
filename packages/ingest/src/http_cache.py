@@ -26,6 +26,7 @@ import time
 from typing import Any
 
 import httpx
+
 from src.configuration import get_config
 from src.logging import get_logger
 

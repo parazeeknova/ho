@@ -25,6 +25,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent  # packages/autofill
 REPO = ROOT.parent.parent  # repo root
@@ -45,7 +46,10 @@ PERSONA_JSON = REPO / "data" / "persona.json"  # repo root
 CONTACT_FIELDS = ("email", "phone", "linkedin", "github", "website", "twitter")
 LINK_FIELDS = {"linkedin", "github", "website", "twitter"}
 
-WIZARD_QUESTIONS: list[tuple[str, str]] = [
+# Core application-form questions every candidate must answer. The dynamic
+# generator (generate_dynamic_questions) appends candidate-specific ones on
+# top of these.
+CORE_QUESTIONS: list[tuple[str, str]] = [
     ("current_location", "Where are you currently based?"),
     (
         "work_model",
@@ -235,6 +239,120 @@ def identity_mismatches(saved: dict, resume: dict) -> list[tuple[str, str, str]]
     return out
 
 
+_DYN_QUESTION_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "questions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "category": {"type": "string"},
+                    "question": {"type": "string"},
+                    "why": {"type": "string"},
+                },
+                "required": ["category", "question"],
+            },
+        }
+    },
+    "required": ["questions"],
+}
+
+
+async def generate_dynamic_questions(
+    ctx: Any,
+    resume_summary: str,
+    existing: list[dict],
+    identity: dict,
+    target: int = 8,
+) -> list[tuple[str, str]]:
+    """Generate candidate-tailored follow-up questions from the LLM.
+
+    Feeds the resume summary + already-answered persona Q&A to the model and
+    asks it to propose short, high-value questions that a recruiter or
+    application form would still want answered — skills depth, project
+    specifics, work style, constraints. Returns (category, question) tuples
+    that merge on top of CORE_QUESTIONS. Returns [] on any failure so callers
+    always have a usable (static) question set.
+    """
+    if ctx is None:
+        return []
+    known = []
+    for a in existing[:30]:
+        q = (a.get("question") or "").strip()
+        ans = (a.get("answer") or "").strip()
+        if q and ans:
+            known.append(f"- {q}: {ans}")
+    known_text = "\n".join(known) if known else "(nothing answered yet)"
+    ident_text = ", ".join(f"{k}: {v}" for k, v in (identity or {}).items() if v)
+    prompt = (
+        "You are building a job-application profile for a candidate. "
+        "Generate a list of SHORT, high-value screening questions that an "
+        "application form or recruiter would still want answered, given the "
+        "resume and what is already known.\n\n"
+        f"KNOWN IDENTITY: {ident_text}\n\n"
+        f"ALREADY ANSWERED:\n{known_text}\n\n"
+        f"RESUME SUMMARY:\n{(resume_summary or '(none yet)')[:3000]}\n\n"
+        "Rules:\n"
+        "- Each question must be answerable in one short line.\n"
+        "- Do NOT repeat anything already answered above.\n"
+        "- Do NOT ask for contact info (email/phone/linkedin) — that's handled separately.\n"
+        "- Prefer questions about: skill depth, notable projects or work, "
+        "preferred tech, work/office constraints, salary expectations, "
+        "notice period, visa/relocation nuance.\n"
+        f"- Return exactly {target} questions as JSON with keys category and question; "
+        "category should be a short lowercase slug like 'skills' or 'projects'.\n"
+    )
+    try:
+        raw = await ctx.chat(prompt, schema=_DYN_QUESTION_SCHEMA, max_tokens=1200)
+        import json as _json
+
+        parsed = _json.loads(raw)
+        questions = parsed.get("questions") or []
+        out: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for item in questions[:target]:
+            category = str(item.get("category") or "general").strip().lower()
+            question = str(item.get("question") or "").strip()
+            key = question.lower().strip()
+            if not question or key in seen:
+                continue
+            seen.add(key)
+            out.append((category, question))
+        return out
+    except Exception as e:
+        logger.warning(
+            "Dynamic question generation failed; using static question set", error=str(e)
+        )
+        return []
+
+
+async def build_question_set(
+    ctx: Any,
+    resume_summary: str,
+    existing: list[dict],
+    identity: dict,
+) -> list[tuple[str, str]]:
+    """Merge the core application-form questions with LLM-generated ones.
+
+    Dynamic questions whose category duplicates a core one are skipped, and
+    anything the candidate already answered stays the wizard's job to skip —
+    so this never shrinks the existing answer list.
+    """
+    dynamic = await generate_dynamic_questions(ctx, resume_summary, existing, identity)
+    core_cats = {c for c, _ in CORE_QUESTIONS}
+    merged = list(CORE_QUESTIONS)
+    seen_questions = {q for _, q in merged}
+    for category, question in dynamic:
+        if category in core_cats:
+            continue
+        if question in seen_questions:
+            continue
+        seen_questions.add(question)
+        merged.append((category, question))
+    return merged
+
+
 def grill_identity(data: dict, resume: dict, ask_all: bool = False) -> dict:
     identity = dict(data.get("identity", {}))
     ux.section(1, 3, "Identity & Contact", "Enter keeps the current value, if any")
@@ -309,7 +427,9 @@ def _previous_answer(
     return {}
 
 
-def grill_answers(data: dict, ask_all: bool = False) -> dict:
+def grill_answers(data: dict, ask_all: bool = False, questions: list | None = None) -> dict:
+    if questions is None:
+        questions = CORE_QUESTIONS
     stored = data.get("answers", [])
     by_question = {a["question"]: a for a in stored}
     by_category: dict[str, list[dict]] = {}
@@ -321,12 +441,12 @@ def grill_answers(data: dict, ask_all: bool = False) -> dict:
     kept: list[dict] = []
     seen: set[str] = set()
     skipped = 0
-    for category, question in WIZARD_QUESTIONS:
+    for category, question in questions:
         # Re-grills only ask what is still missing: a question is skipped when
         # it already has an answer (or its single-question category does),
         # unless --all forces a full re-ask. Skipped questions keep their
         # stored entries — the saved list must NEVER shrink from a skip.
-        multi = sum(1 for c, _ in WIZARD_QUESTIONS if c == category) > 1
+        multi = sum(1 for c, _ in questions if c == category) > 1
         already = question in by_question or (not multi and bool(by_category.get(category)))
         if already and not ask_all:
             skipped += 1
@@ -361,7 +481,7 @@ def grill_answers(data: dict, ask_all: bool = False) -> dict:
         if answer:
             answers.append({"category": "general", "question": question, "answer": answer})
 
-    wizard_cats = {c for c, _ in WIZARD_QUESTIONS}
+    wizard_cats = {c for c, _ in questions}
     extra_kept = [a for a in stored if a.get("category") not in wizard_cats and a not in kept]
     data["answers"] = kept + extra_kept + answers
     if skipped and not ask_all:
@@ -396,8 +516,33 @@ def main() -> None:
     resume = asyncio.run(_resume_defaults())
     if resume:
         ux.chip("info", f"Prefilling identity defaults from resume ({len(resume)} fields)")
+
+    # Dynamic question set: core application-form questions + LLM-generated
+    # candidate-specific follow-ups. Falls back to core-only on any LLM issue.
+    ctx = None
+    try:
+        from src.llm.context import ContextManager
+
+        ctx = ContextManager()
+    except Exception:
+        ctx = None
+    questions = asyncio.run(
+        build_question_set(
+            ctx,
+            str(data.get("resume_summary") or ""),
+            data.get("answers", []),
+            data.get("identity", {}),
+        )
+    )
+    if len(questions) > len(CORE_QUESTIONS):
+        ux.chip(
+            "info",
+            f"Grilling {len(questions)} questions "
+            f"({len(questions) - len(CORE_QUESTIONS)} generated from your resume).",
+        )
+
     data = grill_identity(data, resume, ask_all=args.all)
-    data = grill_answers(data, ask_all=args.all)
+    data = grill_answers(data, ask_all=args.all, questions=questions)
     save_persona(data)
 
     for field, saved_value, resume_value in identity_mismatches(data.get("identity", {}), resume):

@@ -8,6 +8,8 @@ sends questions over the REST API and reads answers from the shared
 so two gateway clients never race on the same bot token.
 
 Commands (send in the configured channel):
+    /memory    - update resume + persona memory (Q&A runs in a thread)
+    /persona   - view the stored persona
     /status    - current pipeline state (sweep, matched jobs, LLM status)
     /health    - runs live health checks on all services
     /analytics - market intelligence & skill arbitrage report
@@ -20,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import re
 import shutil
 from typing import TYPE_CHECKING, Any
 
@@ -47,6 +50,90 @@ _pipeline_state: dict[str, Any] = {
 
 def set_pipeline_state(**kwargs: Any) -> None:
     _pipeline_state.update(kwargs)
+
+
+_MEMORY_BUTTON_LABELS: dict[str, str] = {
+    "yes": "Yes",
+    "no": "No",
+    "pnta": "Prefer not to answer",
+    "skip": "Skip",
+    "done": "Done",
+}
+_MEMORY_BUTTON_VALUES: dict[str, str] = {
+    "mem_yes": "Yes",
+    "mem_no": "No",
+    "mem_pnta": "Prefer not to answer",
+    "mem_skip": "skip",
+    "mem_done": "done",
+}
+
+
+class _MemoryWizardSession:
+    """Runs one /memory Q&A session inside a thread.
+
+    The wizard asks a question, this posts it (with quick-answer buttons) and
+    blocks on a future that the gateway resolves when a message or button
+    arrives in the thread. Timeout returns None so the wizard skips the
+    question instead of hanging forever.
+    """
+
+    _TIMEOUT = 600.0
+
+    def __init__(self, thread: discord.Thread, parent: DiscordAgent) -> None:
+        self.thread = thread
+        self.parent = parent
+        self.pending: asyncio.Future[str | None] | None = None
+
+    async def log(self, text: str) -> None:
+        with contextlib.suppress(Exception):
+            await self.thread.send(text)
+
+    @staticmethod
+    def _build_view(buttons: list[str]) -> discord.ui.View | None:
+        if not buttons:
+            return None
+        view = discord.ui.View(timeout=None)
+        for key in buttons:
+            label = _MEMORY_BUTTON_LABELS.get(key, key)
+            if key == "yes":
+                style = discord.ButtonStyle.success
+            elif key == "done":
+                style = discord.ButtonStyle.primary
+            else:
+                style = discord.ButtonStyle.secondary
+            view.add_item(
+                discord.ui.Button(
+                    label=label,
+                    custom_id=f"mem_{key}",
+                    style=style,
+                )
+            )
+        return view
+
+    async def ask(self, question: str, meta: dict[str, Any]) -> str | None:
+        buttons = meta.get("buttons") or []
+        hint = meta.get("hint")
+        text = question
+        if hint:
+            text += f"\n*(current: {hint})*"
+        view = self._build_view(buttons)
+        kwargs: dict[str, Any] = {}
+        if view is not None:
+            kwargs["view"] = view
+        # Arm the future BEFORE posting so a reply racing the send is never
+        # dropped — the gateway resolves it as soon as it arrives.
+        loop = asyncio.get_event_loop()
+        fut: asyncio.Future[str | None] = loop.create_future()
+        self.pending = fut
+        try:
+            with contextlib.suppress(Exception):
+                await self.thread.send(text, **kwargs)
+            return await asyncio.wait_for(fut, timeout=self._TIMEOUT)
+        except TimeoutError:
+            await self.log("⏰ No answer in 10 minutes — skipping this question.")
+            return None
+        finally:
+            self.pending = None
 
 
 async def autofill_queue_lines() -> list[str]:
@@ -414,6 +501,7 @@ class DiscordAgent:
         self._poll_task: asyncio.Task[None] | None = None
         self._ready = asyncio.Event()
         self._shutdown_callback: Any | None = None
+        self._memory_sessions: dict[int, _MemoryWizardSession] = {}
 
     def set_shutdown_callback(self, cb: Any) -> None:
         """Register a callable invoked when the /stop button is pressed."""
@@ -452,14 +540,25 @@ class DiscordAgent:
         async def on_message(message: discord.Message) -> None:
             if message.author.bot:
                 return
-            if self._channel is not None and message.channel != self._channel:
+            # Only the main channel AND active memory threads are watched.
+            if (
+                self._channel is not None
+                and message.channel != self._channel
+                and not self._is_memory_thread(message.channel)
+            ):
                 return
             await self._heartbeat_poller()
+            if self._is_memory_answer(message):
+                return
             await self._capture_mailbox_answer(message)
             if not message.content.startswith("/"):
                 return
             cmd = message.content.split()[0].lower()
-            if cmd == "/status":
+            if cmd == "/memory":
+                await self._handle_memory(message)
+            elif cmd == "/persona":
+                await self._handle_persona(message)
+            elif cmd == "/status":
                 await self._handle_status(message)
             elif cmd == "/health":
                 await self._handle_health(message)
@@ -481,6 +580,10 @@ class DiscordAgent:
             if custom_id == "persona" and message_id is not None:
                 with contextlib.suppress(Exception):
                     await self._send_full_persona(interaction)
+                return
+            if custom_id.startswith("mem_") and message_id is not None:
+                with contextlib.suppress(Exception):
+                    await self._memory_button(custom_id, interaction)
                 return
             if message_id is not None:
                 await self._capture_mailbox_button(message_id, custom_id, interaction)
@@ -855,17 +958,180 @@ class DiscordAgent:
             await message.channel.send(f"Analytics failed: {e}")
 
     async def _handle_resend(self, message: discord.Message) -> None:
-        await self._reply(
-            message,
-            "Resend not yet wired for Discord — use /status for pipeline state.",
-        )
+        dry = "--dry" in message.content
+        rest = message.content.replace("--dry", "")
+        limit = 10
+        m = re.search(r"(\d+)\s*$", rest)
+        if m:
+            limit = int(m.group(1))
+        try:
+            from src.memory.pgvector_store import MemoryStore
+
+            store = await MemoryStore.create()
+            try:
+                async with store._pool.acquire() as conn:
+                    rows = await conn.fetch(
+                        "SELECT canonical_id, normalized_role, normalized_company, "
+                        "direct_apply_url, normalized_location, match_percent, "
+                        "shortlist_probability, verdict, funding_stage, salary_amount, "
+                        "salary_currency, salary_period, salary_raw, jd_summary, "
+                        "company_description, role_summary, is_remote, founders, "
+                        "funding_info, founder_socials, company_news, osint_signals, "
+                        "extra FROM radar_candidates "
+                        "WHERE eligibility = 'accepted' "
+                        "ORDER BY match_percent DESC LIMIT $1",
+                        limit,
+                    )
+            finally:
+                await store.close()
+            if not rows:
+                await self._reply(message, "No accepted candidates in memory right now.")
+                return
+            if dry:
+                await self._reply(
+                    message,
+                    f"**Resend dry run** — would re-send {len(rows)} accepted candidate alert(s).",
+                )
+                return
+            sent = 0
+            for r in rows:
+                job = {
+                    "role": r["normalized_role"] or "Software Engineer",
+                    "company": r["normalized_company"] or "Company",
+                    "location": r.get("normalized_location") or "Remote",
+                    "match_percent": r["match_percent"],
+                    "shortlist_probability": r.get("shortlist_probability") or 0,
+                    "verdict": r["verdict"],
+                    "salary": r.get("salary_raw") or "",
+                    "apply_link": r.get("direct_apply_url") or "",
+                    "jd_summary": r.get("jd_summary") or "",
+                    "company_description": r.get("company_description") or "",
+                    "role_summary": r.get("role_summary") or "",
+                    "is_remote": bool(r.get("is_remote")),
+                    "founders": r.get("founders") or [],
+                    "funding_stage": r.get("funding_stage") or "",
+                    "funding_info": r.get("funding_info") or {},
+                    "founder_socials": r.get("founder_socials") or [],
+                    "company_news": r.get("company_news") or "",
+                    "osint_signals": r.get("osint_signals") or [],
+                }
+                if await self.send_categorized_alert("eligible", job):
+                    sent += 1
+                    await asyncio.sleep(0.3)
+            await self._reply(message, f"Re-sent {sent} accepted candidate alert(s).")
+        except Exception as e:
+            await self._reply(message, f"Resend failed: {e}")
 
     async def _handle_help(self, message: discord.Message) -> None:
         await self._reply(
             message,
-            "**Commands**\n/status – pipeline state\n/health – service health\n"
-            "/analytics – market report\n/resend – resend matches\n/help – this message",
+            "**Commands**\n/memory – update resume + persona (Q&A runs in a thread)\n"
+            "/persona – view stored persona\n/status – pipeline state\n"
+            "/health – service health\n/analytics – market report\n"
+            "/resend – resend matches\n/help – this message",
         )
+
+    # ── memory wizard ─────────────────────────────────────────────────
+
+    async def _memory_starter(self, message: discord.Message, command: str, rest: str) -> None:
+        thread = getattr(message.channel, "create_thread", None)
+        if thread is None:
+            await self._reply(
+                message,
+                "Run /memory from a server text channel — I'll spin up a thread there.",
+            )
+            return
+        starter = await message.channel.send(
+            "**Memory update** — I'll walk through your resume and persona "
+            "Q&A here. Reply with answers in this thread, or use the buttons."
+        )
+        try:
+            t = await starter.create_thread(name=command, auto_archive_duration=1440)
+            await t.send(
+                "Use this thread for this update. Paste any text or links "
+                "as replies, and use the quick buttons where they appear.\n"
+                "Type `/memory done` or just wait to finish each step."
+            )
+        except Exception as e:
+            logger.warning("Memory thread creation failed", error=str(e))
+            await self._reply(message, "Couldn't create the thread for this update.")
+            return
+
+        if rest:
+            await t.send(f"`/memory {rest}`")
+
+        session = _MemoryWizardSession(t, self)
+        self._memory_sessions[t.id] = session
+        try:
+            result = await self._run_memory_wizard(session, rest)
+            await t.send(f"✅ **Memory updated** — {result}")
+        except Exception as e:
+            await t.send(f"❌ **Memory update failed** — {e}")
+        finally:
+            self._memory_sessions.pop(t.id, None)
+
+    def _is_memory_thread(self, channel: discord.abc.Messageable | None) -> bool:
+        if not isinstance(channel, discord.Thread):
+            return False
+        return channel.id in self._memory_sessions
+
+    def _is_memory_answer(self, message: discord.Message) -> bool:
+        if not self._is_memory_thread(message.channel):
+            return False
+        session = self._memory_sessions.get(message.channel.id)
+        if session is None or session.pending is None:
+            return False
+        # A command inside the thread (e.g. `/memory done`) just moves the
+        # current question along — never start a nested wizard.
+        if message.content.startswith("/"):
+            session.pending.set_result("skip")
+        else:
+            session.pending.set_result(message.content.strip())
+        return True
+
+    async def _memory_button(self, custom_id: str, interaction: discord.Interaction) -> None:
+        key = custom_id[len("mem_") :]
+        value = _MEMORY_BUTTON_VALUES.get(custom_id, key)
+        try:
+            with contextlib.suppress(Exception):
+                await interaction.response.defer()
+            if interaction.message is not None:
+                channel = interaction.message.channel
+            else:
+                return
+            session = self._memory_sessions.get(channel.id)
+            if session is None:
+                with contextlib.suppress(Exception):
+                    await interaction.followup.send("That memory update already finished.")
+                return
+            if session.pending is None:
+                with contextlib.suppress(Exception):
+                    await interaction.followup.send("No question pending right now.")
+                return
+            session.pending.set_result(value)
+        except Exception as e:
+            logger.debug("Memory button routing failed", source="discord", error=str(e))
+
+    async def _run_memory_wizard(self, session: _MemoryWizardSession, instruction: str) -> str:
+        from src.agent.memory_wizard import MemoryWizard
+
+        wizard = MemoryWizard(ask=session.ask, log=session.log, ctx=self.ctx)
+        return await wizard.run(instruction)
+
+    async def _handle_memory(self, message: discord.Message) -> None:
+        rest = message.content[len("/memory") :].strip()
+        await self._memory_starter(message, "Memory update", rest)
+
+    async def _handle_persona(self, message: discord.Message) -> None:
+        try:
+            from src.agent.memory_wizard import format_persona
+
+            text = format_persona()
+        except Exception as e:
+            await self._reply(message, f"Couldn't read persona: {e}")
+            return
+        for chunk in re.findall(r".{1,1900}", text, re.DOTALL) or [text]:
+            await self._reply(message, chunk)
 
     # ── autofill question mailbox ──────────────────────────────────────
 
