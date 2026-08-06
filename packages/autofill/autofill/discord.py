@@ -16,9 +16,11 @@ and the job is deferred (same as Telegram's ask-user fallback).
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import uuid
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -30,6 +32,27 @@ DISCORD_API = "https://discord.com/api/v10"
 DEFAULT_QUESTION_TIMEOUT = 300.0
 
 _SKIP_SENTINEL = object()
+
+_PERSONA_JSON = Path(__file__).resolve().parents[3] / "data" / "persona.json"
+
+
+def _normalise_question(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
+
+
+def _persona_exact_answers() -> dict[str, str]:
+    """Normalized question -> answer from persona.json (never re-ask a known fact)."""
+    try:
+        data = json.loads(_PERSONA_JSON.read_text())
+    except Exception:
+        return {}
+    out: dict[str, str] = {}
+    for entry in data.get("answers", []):
+        q = (entry.get("question") or "").strip()
+        a = (entry.get("answer") or "").strip()
+        if q and a:
+            out[_normalise_question(q)] = a
+    return out
 
 
 class DiscordNotConfiguredError(RuntimeError):
@@ -184,6 +207,9 @@ class DiscordQuestionBridge:
                 "Discord prompting unavailable: set DISCORD_BOT_TOKEN and "
                 "DISCORD_CHANNEL_ID to answer personal screener questions."
             )
+        known = _persona_exact_answers().get(_normalise_question(question))
+        if known:
+            return known
         msg_id = await self.send_question(question)
         if msg_id is None:
             raise DiscordSendError(f"Discord question not sent: {question}")
@@ -198,6 +224,9 @@ class DiscordQuestionBridge:
         opts = [o.strip() for o in (options or []) if o and o.strip()]
         if not opts:
             return await self.ask_dropdown(question, timeout=timeout)
+        known = _persona_exact_answers().get(_normalise_question(question))
+        if known:
+            return known
         msg_id = await self.send_question(question, opts)
         if msg_id is None:
             raise DiscordSendError(f"Discord options not sent: {question}")

@@ -19,7 +19,7 @@ def test_chat_id_alias() -> None:
     assert agent.channel_id == "999"
 
 
-def test_build_job_embed() -> None:
+async def test_build_job_embed() -> None:
     from src.agent.discord_agent import _build_job_embed
 
     job = {
@@ -34,7 +34,7 @@ def test_build_job_embed() -> None:
         "founders": ["Patrick Collison", "John Collison"],
         "funding_stage": "Series I",
     }
-    embed = _build_job_embed("eligible", job)
+    embed = await _build_job_embed("eligible", job)
     assert embed.title is not None and "Backend Engineer" in embed.title
     assert "Stripe" in str(embed.fields)
     assert "90% match" in str(embed.fields)

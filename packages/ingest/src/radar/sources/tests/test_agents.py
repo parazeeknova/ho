@@ -26,7 +26,7 @@ class TestDiscordCategorizedAlerts:
         assert "startup_signal" in labels
         assert "eligible" in labels
 
-    def test_build_job_embed_structure(self) -> None:
+    async def test_build_job_embed_structure(self) -> None:
         from src.agent import discord_agent
 
         job = {
@@ -38,7 +38,7 @@ class TestDiscordCategorizedAlerts:
             "location": "Remote",
             "company_description": "A test company.",
         }
-        embed = discord_agent._build_job_embed("eligible", job)
+        embed = await discord_agent._build_job_embed("eligible", job)
         assert embed.title is not None and "Backend Engineer" in embed.title
         assert "TestCo" in str(embed.fields)
         assert "Remote" in str(embed.fields)

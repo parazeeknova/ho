@@ -184,7 +184,87 @@ def _color_for(category: str) -> int:
     return colors.get(category, 0x607D8B)
 
 
-def _build_job_embed(category: str, job: dict[str, Any]) -> discord.Embed:
+def _job_salary_line(job: dict[str, Any]) -> str:
+    """Salary string with a confirmed/estimated tag + source."""
+    raw = str(job.get("salary") or "").strip()
+    if raw and raw not in ("-", "Not specified", "N/A", "Flexible", "Competitive"):
+        sal = raw
+    elif job.get("salary_annual_usd"):
+        sal = f"${job['salary_annual_usd']:,.0f}/yr"
+    else:
+        sal = "-"
+    if job.get("salary_estimated"):
+        src = str(job.get("salary_source") or "").strip()
+        tag = f"· est. ({src})" if src else "· est."
+    else:
+        tag = "· confirmed"
+    return f"{sal} {tag}"
+
+
+def _funding_line(job: dict[str, Any]) -> str | None:
+    """'Recently raised $X (Round, Date) - led by ...' from funding_info."""
+    fi = job.get("funding_info") or {}
+    if not isinstance(fi, dict):
+        fi = {}
+    round_ = str(fi.get("round") or job.get("funding_stage") or "").strip()
+    amount = str(fi.get("amount_raised") or "").strip()
+    date = str(fi.get("date_announced") or "").strip()
+    leads = fi.get("lead_investors") or []
+    if isinstance(leads, list):
+        leads = [str(x) for x in leads if x]
+    parts = []
+    if amount:
+        parts.append(f"raised {amount}")
+    if round_:
+        parts.append(round_)
+    if date:
+        parts.append(date)
+    if not parts:
+        return None
+    line = "Recently " + " ".join(parts)
+    if leads:
+        line += f" — led by {', '.join(leads[:3])}"
+    return line
+
+
+async def _relation_line(company: str | None) -> str | None:
+    """One-line relation graph for the job's company from Neo4j."""
+    if not company:
+        return None
+    try:
+        from src.graph.entity import make_company_id
+        from src.graph.graph_store import GraphStore
+
+        graph = await GraphStore.create()
+        try:
+            local = await graph.get_local_graph(make_company_id(company), radius=1)
+            parts: list[str] = []
+            for node in local.get("nodes", []):
+                nd = node.data or {}
+                name = nd.get("name") or node.id or ""
+                if not name or name == company:
+                    continue
+                kind = str(node.node_type)
+                if kind == "founder":
+                    parts.append(f"founder: {name}")
+                elif kind == "career_site":
+                    parts.append(f"site: {name}")
+                elif kind == "technology":
+                    parts.append(f"uses: {name}")
+                elif kind == "hiring_post" or kind == "job":
+                    parts.append(f"hiring: {name}")
+                elif kind == "investor":
+                    parts.append(f"investor: {name}")
+                else:
+                    parts.append(f"{kind}: {name}")
+            return " | ".join(parts[:6]) if parts else None
+        finally:
+            await graph.close()
+    except Exception:
+        return None
+
+
+async def _build_job_embed(category: str, job: dict[str, Any]) -> discord.Embed:
     role = str(job.get("role") or "Software Engineer").strip()
     company = str(job.get("company") or "Company").strip()
     icon = _CATEGORY_ICONS.get(category, "📌")
@@ -196,6 +276,25 @@ def _build_job_embed(category: str, job: dict[str, Any]) -> discord.Embed:
         description=str(job.get("company_description") or job.get("jd_summary") or "")[:400]
         or None,
     )
+
+    match = job.get("match_percent")
+    shortlist = job.get("shortlist_probability")
+    underdog = job.get("underdog_score")
+    embed.add_field(name="Company", value=company, inline=True)
+    embed.add_field(name="Location", value=str(job.get("location") or "Remote"), inline=True)
+    fit = f"{match}% match · {shortlist}% shortlist" if match is not None else "-"
+    if underdog:
+        fit += f" · underdog {underdog}"
+    embed.add_field(name="Fit", value=fit, inline=True)
+    if category == "outreach":
+        funding_line = _funding_line(job)
+        if funding_line:
+            embed.add_field(name="Funding", value=funding_line, inline=False)
+        elif _job_salary_line(job) != "- confirmed":
+            embed.add_field(name="Salary", value=_job_salary_line(job), inline=False)
+    else:
+        embed.add_field(name="Salary", value=_job_salary_line(job), inline=False)
+
     warnings: list[str] = []
     from src.radar.core.signals import is_us_location
 
@@ -203,39 +302,39 @@ def _build_job_embed(category: str, job: dict[str, Any]) -> discord.Embed:
     is_remote_role = bool(job.get("is_remote")) or "remote" in loc_raw.lower()
     is_us = is_us_location(loc_raw)
     if not is_remote_role:
-        warnings.append("Onsite role - requires visa/relocation, may be rejected")
+        warnings.append("⚠️ Onsite role - requires visa/relocation, may be rejected")
     if is_us and not job.get("sponsors_visa"):
-        warnings.append("US role - visa sponsorship not confirmed")
+        warnings.append("⚠️ US role - visa sponsorship not confirmed")
+    if job.get("osint_signals"):
+        sigs = job["osint_signals"]
+        if isinstance(sigs, list):
+            for sig in sigs[:2]:
+                txt = sig.get("text") if isinstance(sig, dict) else str(sig)
+                if txt:
+                    warnings.append(f"📡 {txt[:120]}")
     if warnings:
-        embed.add_field(name="⚠ Warnings", value="\n".join(warnings), inline=False)
-    embed.add_field(name="Company", value=company, inline=True)
-    embed.add_field(name="Location", value=str(job.get("location") or "Remote"), inline=True)
-    match = job.get("match_percent")
-    shortlist = job.get("shortlist_probability")
-    embed.add_field(
-        name="Fit",
-        value=f"{match}% match · {shortlist}% shortlist" if match is not None else "-",
-        inline=True,
-    )
-
-    raw_sal = str(job.get("salary") or "").strip()
-    if raw_sal and raw_sal not in ("-", "Not specified", "N/A", "Flexible", "Competitive"):
-        salary_str = raw_sal
-    elif job.get("salary_annual_usd"):
-        salary_str = f"${job['salary_annual_usd']:,.0f}/yr"
-    else:
-        salary_str = "-"
-    embed.add_field(name="Salary", value=salary_str, inline=True)
+        embed.add_field(name="Warnings", value="\n".join(warnings), inline=False)
 
     badges: list[str] = []
     if job.get("sponsors_visa"):
         badges.append("visa sponsor")
-    if job.get("is_remote") or "remote" in str(job.get("location") or "").lower():
+    if job.get("is_remote") or "remote" in loc_raw.lower():
         badges.append("remote")
     if job.get("funding_stage"):
         badges.append(str(job["funding_stage"]))
     if badges:
         embed.add_field(name="Tags", value=", ".join(badges), inline=False)
+
+    founders = job.get("founders") or []
+    if isinstance(founders, list) and founders:
+        names = []
+        for f in founders[:3]:
+            if isinstance(f, dict):
+                nm = f.get("name") or ""
+                url = f.get("linkedin_url") or ""
+                names.append(f"[{nm}]({url})" if url and nm else nm)
+        if names:
+            embed.add_field(name="Founders", value=", ".join(names), inline=False)
 
     skills = job.get("matching_skills") or []
     if isinstance(skills, list) and skills:
@@ -246,7 +345,44 @@ def _build_job_embed(category: str, job: dict[str, Any]) -> discord.Embed:
     link = job.get("apply_link") or job.get("direct_apply_url") or job.get("url") or ""
     if str(link).startswith("http"):
         embed.add_field(name="Apply", value=str(link), inline=False)
+
+    relation = await _relation_line(company)
+    if relation:
+        embed.add_field(name="Relation graph", value=relation, inline=False)
     return embed
+
+
+class _PersonaButton(discord.ui.View):
+    """Button on the startup message that posts the full candidate persona.
+
+    The button press posts the complete persona (identity + answers + resume
+    summary) as a message in the main channel — outside any sweep thread.
+    """
+
+    def __init__(self, agent: DiscordAgent) -> None:
+        super().__init__(timeout=None)
+        self.agent = agent
+
+    @discord.ui.button(
+        label="📄 View Full Persona",
+        style=discord.ButtonStyle.secondary,
+    )
+    async def persona(
+        self, interaction: discord.Interaction, _button: discord.ui.Button[Any]
+    ) -> None:
+        await self.agent._send_full_persona(interaction)
+
+    @discord.ui.button(label="Analytics", style=discord.ButtonStyle.primary)
+    async def analytics(
+        self, interaction: discord.Interaction, _button: discord.ui.Button[Any]
+    ) -> None:
+        await self.agent._send_analytics_report(interaction)
+
+    @discord.ui.button(label="Stop", style=discord.ButtonStyle.danger)
+    async def stop_pipeline(
+        self, interaction: discord.Interaction, _button: discord.ui.Button[Any]
+    ) -> None:
+        await self.agent._stop_pipeline(interaction)
 
 
 class DiscordAgent:
@@ -277,6 +413,11 @@ class DiscordAgent:
         self._guild_id: str | None = os.getenv("DISCORD_GUILD_ID") or None
         self._poll_task: asyncio.Task[None] | None = None
         self._ready = asyncio.Event()
+        self._shutdown_callback: Any | None = None
+
+    def set_shutdown_callback(self, cb: Any) -> None:
+        """Register a callable invoked when the /stop button is pressed."""
+        self._shutdown_callback = cb
 
     @property
     def is_configured(self) -> bool:
@@ -421,45 +562,114 @@ class DiscordAgent:
     async def send_startup(self, sweep_count: int = 0) -> None:
         if not self.is_configured:
             return
+
+        # Pipeline-wide stats: memory (pgvector), sources, candidates, queue.
+        resume_chunks = sweep_count
+        persona_chunks = 0
+        sources = 0
+        candidates = 0
+        queue_stats: dict[str, int] = {}
         try:
-            from src.configuration import get_config
+            from src.memory.pgvector_store import MemoryStore
 
-            cfg_persona = get_config().candidate.persona.strip()
-            if cfg_persona:
-                skip_prefixes = (
-                    "firstName",
-                    "lastName",
-                    "email",
-                    "phone",
-                    "linkedin",
-                    "github",
-                    "website",
-                    "twitter",
-                )
-                persona_lines = [
-                    ln.strip()
-                    for ln in cfg_persona.split("\n")
-                    if ln.strip()
-                    and not ln.strip().lower().startswith("candidate profile")
-                    and not ln.strip().lstrip("- ").lower().startswith(skip_prefixes)
-                ]
-                short_persona = "\n".join(persona_lines[:4]) if persona_lines else cfg_persona[:200]
+            store = await MemoryStore.create()
+            try:
+                persona_chunks = await store.persona_chunk_count()
+                async with store._pool.acquire() as conn:
+                    sources = await conn.fetchval("SELECT COUNT(*) FROM source_checkpoints") or 0
+                    candidates = await conn.fetchval("SELECT COUNT(*) FROM radar_candidates") or 0
+            finally:
+                await store.close()
         except Exception:
-            short_persona = ""
+            pass
+        try:
+            from autofill.db import AutofillDB
 
-        embed = discord.Embed(
-            title="🚀 Pipeline Started",
-            color=0x66BB6A,
-            description=(f"**Resume chunks:** {sweep_count}\n**Scheduler:** 8 async workers\n"),
+            db = await AutofillDB.create()
+            try:
+                queue_stats = await db.unapplied_stats()
+            finally:
+                await db.close()
+        except Exception:
+            pass
+
+        summary = await self._queue_summary_map()
+        applied = summary.get("applied", 0)
+        remaining = summary.get("pending", 0) + summary.get("filling", 0)
+        review = summary.get("deferred", 0) + summary.get("awaiting_review", 0)
+        failed = summary.get("failed", 0)
+        unapplied = queue_stats.get("unapplied", 0)
+        stale = queue_stats.get("stale", 0)
+
+        total_mem = resume_chunks + persona_chunks
+        description = (
+            f"**Memory** — Resume `{resume_chunks}` · Persona `{persona_chunks}` · "
+            f"Total `{total_mem}`\n"
+            f"**Corpus** — `{candidates:,}` candidates · `{sources:,}` sources\n"
+            f"**Queue** — Applied `{applied}` · Remaining `{remaining}` · "
+            f"Review `{review}` · Failed `{failed}`\n"
+            f"**Unapplied** — `{unapplied}` (`{stale}` stale > 48h)\n"
+            f"**Scheduler** — 8 async workers"
         )
+        embed = discord.Embed(title="🚀 Pipeline Started", color=0x66BB6A, description=description)
+        await self._send(embed=embed, view=_PersonaButton(self))
+
+    async def _queue_summary_map(self) -> dict[str, int]:
+        """Autofill queue summary counts (empty on error)."""
+        try:
+            from autofill.db import AutofillDB
+
+            db = await AutofillDB.create()
+            try:
+                return await db.queue_summary()
+            finally:
+                await db.close()
+        except Exception:
+            return {}
+
+    async def _send_analytics_report(self, interaction: discord.Interaction) -> None:
+        with contextlib.suppress(Exception):
+            await interaction.response.defer()
+        channel = await self._wait_channel()
+        if channel is None:
+            return
+        await channel.send("Crunching market data and calculating skill arbitrage...")
         queue_lines = await autofill_queue_lines()
         if queue_lines:
-            embed.add_field(name="Autofill Queue", value="\n".join(queue_lines), inline=False)
-        if short_persona:
-            embed.add_field(
-                name="Search Persona Focus", value=f"```{short_persona[:1024]}```", inline=False
-            )
-        await self._send(embed=embed)
+            await channel.send("**[QUEUE] Autofill Status**\n" + "\n".join(queue_lines))
+        if self.ctx is None:
+            await channel.send("Analytics unavailable (no LLM context).")
+            return
+        try:
+            from src.agent.analytics_agent import AnalyticsAgent
+            from src.graph.graph_store import GraphStore
+            from src.memory.pgvector_store import MemoryStore
+
+            store = await MemoryStore.create()
+            graph = await GraphStore.create()
+            try:
+                agent = AnalyticsAgent(store=store, graph=graph, ctx=self.ctx)
+                sections = await agent.generate_resilient_report()
+            finally:
+                await graph.close()
+                await store.close()
+            for section in sections:
+                if section.strip():
+                    await channel.send(section[:1900])
+                    await asyncio.sleep(0.5)
+        except Exception as e:
+            await channel.send(f"Analytics failed: {e}")
+
+    async def _stop_pipeline(self, interaction: discord.Interaction) -> None:
+        with contextlib.suppress(Exception):
+            await interaction.response.defer()
+        set_pipeline_state(running=False, phase="stopping")
+        channel = await self._wait_channel()
+        if channel is not None:
+            await channel.send("Stopping pipeline...")
+        if self._shutdown_callback is not None:
+            with contextlib.suppress(Exception):
+                self._shutdown_callback()
 
     async def _send_full_persona(self, interaction: discord.Interaction) -> None:
         try:
@@ -469,11 +679,18 @@ class DiscordAgent:
         except Exception:
             persona = ""
         if not persona:
-            await interaction.response.send_message(
-                "No persona configured yet — run `npm run init-memory`.", ephemeral=True
-            )
+            with contextlib.suppress(Exception):
+                await interaction.response.send_message(
+                    "No persona configured yet — run `npm run init-memory`.", ephemeral=True
+                )
             return
-        await interaction.response.send_message(f"```{persona[:3900]}```")
+        # Ack the interaction, then post the full persona in the main channel
+        # (outside any sweep thread).
+        with contextlib.suppress(Exception):
+            await interaction.response.defer()
+        channel = await self._wait_channel()
+        if channel is not None:
+            await channel.send(f"```{persona[:3900]}```")
 
     async def begin_sweep(self, sweep: int) -> None:
         """Create the per-sweep thread before alerts fire, so every message of
@@ -483,7 +700,15 @@ class DiscordAgent:
             return
         try:
             if sweep != self._last_sweep:
-                starter = await channel.send(f"**Sweep #{sweep}**")
+                embed = discord.Embed(
+                    title=f"🔄 Sweep #{sweep} Started",
+                    color=0x42A5F5,
+                    description=(
+                        "Scanning sources, matching jobs, and filing applications — "
+                        "this thread collects everything from this sweep."
+                    ),
+                )
+                starter = await channel.send(embed=embed)
                 self._sweep_thread = await starter.create_thread(
                     name=f"Sweep #{sweep}",
                     auto_archive_duration=1440,
@@ -500,16 +725,35 @@ class DiscordAgent:
         if thread is None:
             return
         try:
-            queue_lines = await autofill_queue_lines()
-            embed = discord.Embed(
-                title=f"✅ Sweep #{sweep} Complete",
-                color=0x66BB6A,
-                description=(
-                    f"**Scraped:** {scraped}\n**Matched:** {matched}\n**Duration:** {duration:.1f}s"
-                ),
+            summary = await self._queue_summary_map()
+            unapplied_stats = {}
+            try:
+                from autofill.db import AutofillDB
+
+                db = await AutofillDB.create()
+                try:
+                    unapplied_stats = await db.unapplied_stats()
+                finally:
+                    await db.close()
+            except Exception:
+                pass
+            applied = summary.get("applied", 0)
+            remaining = summary.get("pending", 0) + summary.get("filling", 0)
+            review = summary.get("deferred", 0) + summary.get("awaiting_review", 0)
+            failed = summary.get("failed", 0)
+            unapplied = unapplied_stats.get("unapplied", 0)
+            stale = unapplied_stats.get("stale", 0)
+
+            description = (
+                f"**Scraped** `{scraped}` · **Matched** `{matched}` · "
+                f"**Took** `{duration:.1f}s`\n"
+                f"**Queue** — Applied `{applied}` · Remaining `{remaining}` · "
+                f"Review `{review}` · Failed `{failed}`\n"
+                f"**Unapplied** — `{unapplied}` (`{stale}` stale > 48h)"
             )
-            if queue_lines:
-                embed.add_field(name="Autofill Queue", value="\n".join(queue_lines), inline=False)
+            embed = discord.Embed(
+                title=f"✅ Sweep #{sweep} Complete", color=0x66BB6A, description=description
+            )
             await thread.send(embed=embed)
         except Exception as e:
             logger.warning("Sweep summary send failed", error=str(e))
@@ -529,7 +773,7 @@ class DiscordAgent:
             return False
         if dedup_key and dedup_key in self._notified_keys:
             return False
-        embed = _build_job_embed(category, job)
+        embed = await _build_job_embed(category, job)
         ok = await self._send_to_thread(embed=embed)
         if ok and dedup_key:
             self._notified_keys.add(dedup_key)
@@ -665,14 +909,53 @@ class DiscordAgent:
     async def _capture_mailbox_button(
         self, message_id: int, custom_id: str, interaction: discord.Interaction
     ) -> None:
-        """Route a component button press to a pending autofill question."""
+        """Route a component button press to a pending autofill question, then
+        confirm to the user (answer recorded + updated memory count)."""
+        label = custom_id
+        try:
+            if interaction.message and interaction.message.components:
+                for row in interaction.message.components:
+                    for comp in getattr(row, "children", []) or []:
+                        if getattr(comp, "custom_id", None) == custom_id:
+                            label = getattr(comp, "label", "") or label
+        except Exception:
+            pass
         try:
             db = await self._question_mailbox_db()
             if await db.answer_mailbox_message(message_id, custom_id):
                 logger.info(
                     "Routed Discord button to pending autofill question", message_id=message_id
                 )
+                persona_count = await self._persona_chunk_count()
+                msg = (
+                    f"✅ **{label}** recorded — memory updated "
+                    f"(persona_embeddings: {persona_count})"
+                )
+            else:
+                # Stale click on an old question: report its actual state.
+                row = await db.mailbox_lookup_by_message(message_id)
+                if row:
+                    q = str(row.get("question") or "this question")
+                    state = str(row.get("state") or "unknown")
+                    if row.get("answer"):
+                        msg = f"ℹ️ `{q}` was already answered **{row['answer']}** ({state})."
+                    else:
+                        msg = f"ℹ️ `{q}` is no longer active ({state}); it wasn't re-asked."
+                else:
+                    msg = "Hmm, I couldn't match that question."
             with contextlib.suppress(Exception):
-                await interaction.response.defer()
+                await interaction.response.send_message(msg)
         except Exception as e:
             logger.debug("Mailbox button routing failed", source="discord", error=str(e))
+
+    async def _persona_chunk_count(self) -> int:
+        try:
+            from src.memory.pgvector_store import MemoryStore
+
+            store = await MemoryStore.create()
+            try:
+                return await store.persona_chunk_count()
+            finally:
+                await store.close()
+        except Exception:
+            return 0

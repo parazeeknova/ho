@@ -1679,6 +1679,7 @@ async def _run_radar_pipeline() -> None:
     ctx = ContextManager()
     ta = DiscordAgent(ctx=ctx)
     shutdown_requested = asyncio.Event()
+    ta.set_shutdown_callback(shutdown_requested.set)
 
     def _cleanup(sig, _frame):
         ctx._flush_sync()

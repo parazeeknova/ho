@@ -114,17 +114,17 @@ async def test_filter_can_be_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestCardWarnings:
-    def _warnings(self, job: dict) -> list[str]:
+    async def _warnings(self, job: dict) -> list[str]:
         from src.agent.discord_agent import _build_job_embed
 
-        embed = _build_job_embed("eligible", job)
+        embed = await _build_job_embed("eligible", job)
         for field in embed.fields:
-            if field.name.startswith("⚠"):
+            if field.name == "Warnings":
                 return field.value.split("\n")
         return []
 
-    def test_onsite_us_card_warns(self) -> None:
-        warnings = self._warnings(
+    async def test_onsite_us_card_warns(self) -> None:
+        warnings = await self._warnings(
             {
                 "role": "Engineer",
                 "company": "Acme",
@@ -137,8 +137,8 @@ class TestCardWarnings:
         assert any("Onsite role" in w for w in warnings)
         assert any("US role - visa sponsorship not confirmed" in w for w in warnings)
 
-    def test_remote_us_card_no_onsite_warning(self) -> None:
-        warnings = self._warnings(
+    async def test_remote_us_card_no_onsite_warning(self) -> None:
+        warnings = await self._warnings(
             {
                 "role": "Engineer",
                 "company": "Acme",
@@ -151,8 +151,8 @@ class TestCardWarnings:
         assert not any("Onsite role" in w for w in warnings)
         assert not any("visa sponsorship not confirmed" in w for w in warnings)
 
-    def test_onsite_non_us_still_warns(self) -> None:
-        warnings = self._warnings(
+    async def test_onsite_non_us_still_warns(self) -> None:
+        warnings = await self._warnings(
             {
                 "role": "Engineer",
                 "company": "Acme",

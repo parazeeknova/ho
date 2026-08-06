@@ -369,6 +369,21 @@ class AutofillDB:
                 state,
             )
 
+    async def mailbox_lookup_by_message(self, message_id: int) -> dict[str, Any] | None:
+        """Return a mailbox row for a sent message (any state), or None."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT question_id, question, state, answer
+                FROM discord_question_mailbox
+                WHERE $1::bigint = ANY(message_ids)
+                ORDER BY asked_at DESC
+                LIMIT 1
+                """,
+                message_id,
+            )
+            return dict(row) if row else None
+
     async def answer_mailbox_message(self, message_id: int, answer: str) -> bool:
         """Record the user's reply/callback against a pending question.
 
@@ -419,6 +434,33 @@ class AutofillDB:
             if not row or row["last_seen"] is None:
                 return False
             return (now_utc() - row["last_seen"]).total_seconds() <= max_age_seconds
+
+    async def unapplied_stats(self, stale_hours: int = 48) -> dict[str, int]:
+        """Autofill-side job stats for the startup message.
+
+        ``unapplied`` = queue jobs not yet applied (excludes deferred/skipped/
+        failed terminal rows). ``stale`` = unapplied jobs created more than
+        ``stale_hours`` ago (sitting too long). ``total`` = every queue row.
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT
+                    COUNT(*) FILTER (
+                        WHERE applied_at IS NULL
+                          AND status NOT IN ('deferred', 'skipped', 'failed')
+                    ) AS unapplied,
+                    COUNT(*) FILTER (
+                        WHERE applied_at IS NULL
+                          AND status NOT IN ('deferred', 'skipped', 'failed')
+                          AND created_at < NOW() - ($1::int * INTERVAL '1 hour')
+                    ) AS stale,
+                    COUNT(*) AS total
+                FROM autofill_queue
+                """,
+                stale_hours,
+            )
+            return dict(row)
 
     async def last_applied(self) -> dict[str, Any] | None:
         """Most recently applied job (role/company/applied_at), if any."""
