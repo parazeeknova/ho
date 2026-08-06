@@ -315,6 +315,9 @@ async def test_sensitive_questions_never_answered_by_llm():
 
 @pytest.mark.asyncio
 async def test_persona_low_distance_used_high_distance_rejected():
+    """Distance threshold: confident persona matches answer directly; distant
+    ones are rejected and fall to a user prompt. The LLM is mocked to fail so
+    the test never depends on live model output."""
     store = MagicMock()
     store.close = AsyncMock()
     store.search_similar_persona = AsyncMock(
@@ -327,10 +330,13 @@ async def test_persona_low_distance_used_high_distance_rejected():
             }
         ]
     )
-    rag = ScreenerRAG(store=store, exact_answers={})
+    cm = MagicMock()
+    cm.chat = AsyncMock(side_effect=RuntimeError("llm unavailable"))
+    rag = ScreenerRAG(context_manager=cm, store=store, exact_answers={})
     with patch("autofill.rag._embed_text", new=AsyncMock(return_value=[0.1, 0.2])):
         answers = await rag.answer_questions(["What is your current location?"])
     assert answers["What is your current location?"] == "Bhopal, India"
+    cm.chat.assert_not_awaited()
 
     store.search_similar_persona = AsyncMock(
         return_value=[
@@ -346,6 +352,7 @@ async def test_persona_low_distance_used_high_distance_rejected():
         answers = await rag.answer_questions(["What is your current location?"])
     assert answers["What is your current location?"] == "__ASK_USER__"
     assert rag.store.search_similar_persona.called
+    cm.chat.assert_awaited()
 
 
 @pytest.mark.asyncio
