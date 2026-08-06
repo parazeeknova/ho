@@ -1,7 +1,8 @@
+import type { Profile } from "../../types.js";
 import { randomSleep } from "../../utils/evasion.js";
 import type { RpcHelper } from "../base.js";
-import type { Profile } from "../../types.js";
 import { FormControls } from "./controls.js";
+import { escapePromptValue, valuesConsistent } from "./matching.js";
 import {
   checkboxAction,
   fieldKey,
@@ -11,7 +12,6 @@ import {
   isLocationAutocomplete,
   PROFILE_FILLS,
 } from "./model.js";
-import { escapePromptValue, valuesConsistent } from "./matching.js";
 
 /** A question left blank during resolution, with the reason it was skipped. */
 export interface BlankEntry {
@@ -74,7 +74,7 @@ export class Screener {
     tagName: string,
     profile: Profile,
     rpc: RpcHelper,
-    skipCoverLetterFields = false
+    skipCoverLetterFields = false,
   ) {
     this.controls = controls;
     this.tagName = tagName;
@@ -87,7 +87,7 @@ export class Screener {
     field: FormField,
     filled: string[],
     blanked: BlankEntry[],
-    userSkippedKeys: Set<string>
+    userSkippedKeys: Set<string>,
   ): Promise<void> {
     // Cover-letter prompts are handled by the adapter's dedicated path (PDF
     // upload with text fallback) — never resolved here. Silently skipped: no
@@ -95,7 +95,7 @@ export class Screener {
     if (this.skipCoverLetterFields && isCoverLetterField(field)) {
       console.log(
         `[${this.controls.tagName}] Cover-letter field "${escapePromptValue(field.label)}" ` +
-          "left for the dedicated cover-letter path."
+          "left for the dedicated cover-letter path.",
       );
       return;
     }
@@ -112,7 +112,7 @@ export class Screener {
         if (!ok) {
           const reason = `profile value "${escapePromptValue(String(pv))}" could not be committed`;
           console.warn(
-            `[${this.controls.tagName}] Leaving "${escapePromptValue(field.label)}" blank (${reason})`
+            `[${this.controls.tagName}] Leaving "${escapePromptValue(field.label)}" blank (${reason})`,
           );
           blanked.push({ label: field.label, reason });
           return;
@@ -133,7 +133,7 @@ export class Screener {
       const action = checkboxAction(field);
       if (action === "leave") {
         console.log(
-          `[${this.controls.tagName}] Optional opt-in checkbox "${escapePromptValue(field.label)}" left unchecked.`
+          `[${this.controls.tagName}] Optional opt-in checkbox "${escapePromptValue(field.label)}" left unchecked.`,
         );
         return;
       }
@@ -143,7 +143,7 @@ export class Screener {
         const committed = await this.controls.readFieldValue(field);
         if (ok && committed) {
           console.log(
-            `[${this.controls.tagName}] Accepted required checkbox "${escapePromptValue(field.label)}".`
+            `[${this.controls.tagName}] Accepted required checkbox "${escapePromptValue(field.label)}".`,
           );
           filled.push(field.label);
           await randomSleep(150, 300);
@@ -151,7 +151,7 @@ export class Screener {
         }
         const reason = "required acceptance checkbox could not be checked";
         console.warn(
-          `[${this.controls.tagName}] Leaving "${escapePromptValue(field.label)}" blank (${reason})`
+          `[${this.controls.tagName}] Leaving "${escapePromptValue(field.label)}" blank (${reason})`,
         );
         blanked.push({ label: field.label, reason });
         return;
@@ -172,13 +172,13 @@ export class Screener {
       if (!ok) {
         const reason = `location "${escapePromptValue(ans)}" had no selectable suggestion`;
         console.warn(
-          `[${this.controls.tagName}] Leaving "${escapePromptValue(field.label)}" blank (${reason})`
+          `[${this.controls.tagName}] Leaving "${escapePromptValue(field.label)}" blank (${reason})`,
         );
         blanked.push({ label: field.label, reason });
         return;
       }
       console.log(
-        `[${this.controls.tagName}] Location filled for "${escapePromptValue(field.label)}": "${escapePromptValue(ans)}"`
+        `[${this.controls.tagName}] Location filled for "${escapePromptValue(field.label)}": "${escapePromptValue(ans)}"`,
       );
       filled.push(field.label);
       await randomSleep(150, 300);
@@ -191,17 +191,13 @@ export class Screener {
       if (optionTexts.length === 0) {
         console.warn(
           `[${this.controls.tagName}] Could not read options for #${field.id} ` +
-            `("${escapePromptValue(field.label)}"); resolving without them.`
+            `("${escapePromptValue(field.label)}"); resolving without them.`,
         );
       }
     }
 
     const rpcKind =
-      field.kind === "radio"
-        ? "select"
-        : field.kind === "checkbox"
-          ? "multi"
-          : field.kind;
+      field.kind === "radio" ? "select" : field.kind === "checkbox" ? "multi" : field.kind;
 
     let result: any;
     try {
@@ -223,7 +219,7 @@ export class Screener {
         deferredFieldCount += 1;
         console.warn(
           `[${this.controls.tagName}] Question "${escapePromptValue(field.label)}" deferred for user input; ` +
-            "leaving blank and continuing."
+            "leaving blank and continuing.",
         );
         userSkippedKeys.add(fieldKey(field));
         blanked.push({
@@ -236,7 +232,7 @@ export class Screener {
       // filling a form around an unanswered personal question is worse than no fill.
       console.error(
         `[${this.controls.tagName}] RPC answer_question failed for "${escapePromptValue(field.label)}":`,
-        rpcErr?.message || rpcErr
+        rpcErr?.message || rpcErr,
       );
       throw rpcErr;
     }
@@ -273,18 +269,17 @@ export class Screener {
       // a Yes/No group when the "No" target was missed). Only count the field
       // as filled when the committed value is consistent with the answer.
       const isOptionKind =
-        field.kind === "radio" || field.kind === "checkbox" ||
-        field.kind === "select" || field.kind === "multi";
-      ok =
-        ok &&
-        !!committed &&
-        (!isOptionKind || valuesConsistent(answer, committed));
+        field.kind === "radio" ||
+        field.kind === "checkbox" ||
+        field.kind === "select" ||
+        field.kind === "multi";
+      ok = ok && !!committed && (!isOptionKind || valuesConsistent(answer, committed));
     }
 
     if (!ok) {
       const reason = `answer "${escapePromptValue(answer)}" could not be committed`;
       console.warn(
-        `[${this.controls.tagName}] Leaving "${escapePromptValue(field.label)}" blank (${reason})`
+        `[${this.controls.tagName}] Leaving "${escapePromptValue(field.label)}" blank (${reason})`,
       );
       blanked.push({ label: field.label, reason });
       await this.controls.closeMenu();

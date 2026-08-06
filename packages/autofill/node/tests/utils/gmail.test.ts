@@ -1,5 +1,6 @@
-import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+
 import {
   extractCodeFromEmail,
   extractVerificationCode,
@@ -39,10 +40,7 @@ describe("extractVerificationCode", () => {
   });
 
   it("normalizes whitespace across the body", () => {
-    assert.equal(
-      extractVerificationCode("Your\nverification\ncode\nis\n482913"),
-      "482913"
-    );
+    assert.equal(extractVerificationCode("Your\nverification\ncode\nis\n482913"), "482913");
   });
 
   it("extracts the modern alphanumeric code shape (greenhouse-mail.io)", () => {
@@ -68,8 +66,7 @@ describe("extractVerificationCode", () => {
   });
 
   it("does not mistake words or bare numbers for alphanumeric codes", () => {
-    const text =
-      "Security code field on your application:  application  After you enter the code";
+    const text = "Security code field on your application:  application  After you enter the code";
     assert.equal(extractVerificationCode(text), null);
   });
 

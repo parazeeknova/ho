@@ -1,8 +1,10 @@
-import { Stagehand } from "@browserbasehq/stagehand";
 import * as fs from "fs";
-import { ATSAdapter, type RpcHelper } from "./base.js";
+
+import { Stagehand } from "@browserbasehq/stagehand";
+
 import { type JobPayload, type Profile } from "../types.js";
 import { randomSleep } from "../utils/evasion.js";
+import { ATSAdapter, type RpcHelper } from "./base.js";
 import { auditBlanks, finalReverify, type SubmitOutcome } from "./shared/audit.js";
 import { FormControls } from "./shared/controls.js";
 import {
@@ -14,7 +16,12 @@ import {
   pickLocationOption,
   selectCandidates,
 } from "./shared/matching.js";
-import { fieldKey, type FormField, isLocationAutocomplete, PRE_FILLED_LABELS } from "./shared/model.js";
+import {
+  fieldKey,
+  type FormField,
+  isLocationAutocomplete,
+  PRE_FILLED_LABELS,
+} from "./shared/model.js";
 import { Screener, setBlankedRequiredCount } from "./shared/screener.js";
 
 /** Workday system automation-ids the walker must never treat as a question. */
@@ -86,10 +93,8 @@ export function workdayCompanyFromHostname(host: string): string {
 /** Strip a `/apply`/`/apply/applyManually` suffix (and any query/hash) off a
  *  posting URL. */
 export function workdayPostingUrl(url: string): string {
-  const clean = (url || "").replace(/[\?#].*$/, "");
-  return clean
-    .replace(/\/apply\/applyManually(\/)?$/, "")
-    .replace(/\/apply(\/)?$/, "");
+  const clean = (url || "").replace(/[?#].*$/, "");
+  return clean.replace(/\/apply\/applyManually(\/)?$/, "").replace(/\/apply(\/)?$/, "");
 }
 
 /** Derive the deterministic manual-apply URL from a posting URL. */
@@ -100,9 +105,7 @@ export function workdayApplyManuallyUrl(url: string): string {
 /** True when a screen's visible text marks it as a voluntary disclosure step
  *  (EEOC-style survey). Such steps are legally optional — never guessed. */
 export function isVoluntaryStepText(text: string): boolean {
-  return /voluntary|self[- ]identif|demographic|eeoc|diversity|equal opportunity/i.test(
-    text || ""
-  );
+  return /voluntary|self[- ]identif|demographic|eeoc|diversity|equal opportunity/i.test(text || "");
 }
 
 /** The class of a Workday control from its DOM attributes. Pure so it is
@@ -175,13 +178,10 @@ export class WorkdayAdapter extends ATSAdapter {
           location: txt('[data-automation-id="locations"]'),
           description: txt('[data-automation-id="jobPostingDescription"]'),
           ogTitle:
-            document
-              .querySelector('meta[property="og:title"]')
-              ?.getAttribute("content") || "",
+            document.querySelector('meta[property="og:title"]')?.getAttribute("content") || "",
           ogDesc:
-            document
-              .querySelector('meta[property="og:description"]')
-              ?.getAttribute("content") || "",
+            document.querySelector('meta[property="og:description"]')?.getAttribute("content") ||
+            "",
         };
       });
       let title = (info?.title || info?.ogTitle || "").replace(/\s+/g, " ").trim();
@@ -201,13 +201,16 @@ export class WorkdayAdapter extends ATSAdapter {
           });
           const html = await fetched.text();
           const og = (p: string) =>
-            (html.match(
-              new RegExp(`<meta[^>]*property="${p}"[^>]*content="([^"]*)"`, "i")
-            ) || [])[1] || "";
+            (html.match(new RegExp(`<meta[^>]*property="${p}"[^>]*content="([^"]*)"`, "i")) ||
+              [])[1] || "";
           title = title || og("og:title").replace(/\s+/g, " ").trim();
           description =
             description ||
-            og("og:description").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 6000);
+            og("og:description")
+              .replace(/<[^>]+>/g, " ")
+              .replace(/\s+/g, " ")
+              .trim()
+              .slice(0, 6000);
         } catch {
           // Best-effort; title/description may stay empty.
         }
@@ -241,7 +244,9 @@ export class WorkdayAdapter extends ATSAdapter {
       // JD page: capture the context FIRST (the apply view drops the JD), then
       // navigate to the deterministic apply route.
       this.jobCtx = await this.readJobContext();
-      await page.goto(this.applyManuallyUrl(cur), { waitUntil: "domcontentloaded" }).catch(() => {});
+      await page
+        .goto(this.applyManuallyUrl(cur), { waitUntil: "domcontentloaded" })
+        .catch(() => {});
     }
     // Optional landing screen (Salesforce): pick "Apply Manually" over
     // "Autofill with Resume"/"Use My Last Application" — we upload our own
@@ -276,7 +281,7 @@ export class WorkdayAdapter extends ATSAdapter {
           '[data-automation-id="createAccountLink"], ' +
           '[data-automation-id="forgotPasswordLink"], ' +
           'input[data-automation-id="verifyPassword"], ' +
-          'input[data-automation-id="createAccountCheckbox"]'
+          'input[data-automation-id="createAccountCheckbox"]',
       )
       .first();
     const gateVis = await gate.isVisible().catch(() => false);
@@ -290,7 +295,7 @@ export class WorkdayAdapter extends ATSAdapter {
           '[data-automation-id="pageFooterNextButton"], ' +
           '[data-automation-id="pageFooterSubmitButton"], ' +
           '[data-automation-id="pageFooterBackButton"], ' +
-          '[data-automation-id="submitButton"]'
+          '[data-automation-id="submitButton"]',
       )
       .first();
     const navVis = await nav.isVisible().catch(() => false);
@@ -310,7 +315,7 @@ export class WorkdayAdapter extends ATSAdapter {
         'button:has-text("Save and Continue"), ' +
           'button:has-text("Submit Application"), ' +
           'button:has-text("Continue"), ' +
-          'button:has-text("Next")'
+          'button:has-text("Next")',
       )
       .first();
     const textNavVis = await textNav.isVisible().catch(() => false);
@@ -321,7 +326,7 @@ export class WorkdayAdapter extends ATSAdapter {
     const field = page
       .locator(
         'input[data-automation-id]:not([data-automation-id="email"]):not([data-automation-id="password"]):not([data-automation-id="verifyPassword"]):not([data-automation-id="createAccountCheckbox"]):not([data-automation-id="beecatcher"]), ' +
-          'textarea[data-automation-id]:not([data-automation-id="email"]):not([data-automation-id="password"])'
+          'textarea[data-automation-id]:not([data-automation-id="email"]):not([data-automation-id="password"])',
       )
       .first();
     const fieldVis = await field.isVisible().catch(() => false);
@@ -340,7 +345,6 @@ export class WorkdayAdapter extends ATSAdapter {
    *   4. abort cleanly.
    */
   private async handleGate(): Promise<void> {
-    const page = this.getPage();
     const hasCreds = !!(process.env.WORKDAY_EMAIL && process.env.WORKDAY_PASSWORD);
     let attemptedCreate = false;
     let attemptedSignIn = false;
@@ -379,7 +383,9 @@ export class WorkdayAdapter extends ATSAdapter {
           attemptedSignIn = true;
         }
       } else {
-        console.warn("[Workday] Gate requires an account, but WORKDAY_EMAIL/WORKDAY_PASSWORD are not set.");
+        console.warn(
+          "[Workday] Gate requires an account, but WORKDAY_EMAIL/WORKDAY_PASSWORD are not set.",
+        );
       }
       await randomSleep(2000, 3000);
     }
@@ -387,7 +393,7 @@ export class WorkdayAdapter extends ATSAdapter {
     throw new Error(
       "Workday: could not reach the application form after account creation/sign-in. " +
         "Set WORKDAY_EMAIL/WORKDAY_PASSWORD (and make sure WORKDAY_PASSWORD meets the " +
-        "portal's password requirements: ≥8 chars with upper/lower/special/numeric)."
+        "portal's password requirements: ≥8 chars with upper/lower/special/numeric).",
     );
   }
 
@@ -400,7 +406,7 @@ export class WorkdayAdapter extends ATSAdapter {
           '[data-automation-id="createAccountSubmitButton"], ' +
           '[data-automation-id="signInLink"], ' +
           '[data-automation-id="createAccountLink"], ' +
-          'input[data-automation-id="verifyPassword"]'
+          'input[data-automation-id="verifyPassword"]',
       )
       .first()
       .isVisible()
@@ -428,16 +434,17 @@ export class WorkdayAdapter extends ATSAdapter {
           (el: Element | null) =>
             (el ? (el.textContent || "").replace(/\s+/g, " ").trim() : "").slice(0, 80),
         ];
-        const aids = Array.from(
-          document.querySelectorAll("[data-automation-id]")
-        ).filter((e) => (e as HTMLElement).offsetParent !== null)
+        const aids = Array.from(document.querySelectorAll("[data-automation-id]"))
+          .filter((e) => (e as HTMLElement).offsetParent !== null)
           .map((e) => e.getAttribute("data-automation-id"))
           .slice(0, 50);
-        const overlays = Array.from(document.querySelectorAll("[data-automation-id='click_filter'], [role='button']"))
+        const overlays = Array.from(
+          document.querySelectorAll("[data-automation-id='click_filter'], [role='button']"),
+        )
           .filter((e) => (e as HTMLElement).offsetParent !== null)
           .map((e) => ({ text: txt(e), aid: e.getAttribute("data-automation-id") }));
         const alerts = Array.from(
-          document.querySelectorAll("[role='alert'], .error, .error-message, [class*='error']")
+          document.querySelectorAll("[role='alert'], .error, .error-message, [class*='error']"),
         )
           .filter((e) => (e as HTMLElement).offsetParent !== null)
           .map((e) => txt(e))
@@ -463,7 +470,7 @@ export class WorkdayAdapter extends ATSAdapter {
         'button:has-text("Continue without signing in"), ' +
           'button:has-text("Continue as guest"), ' +
           'button:has-text("Apply without signing in"), ' +
-          'button:has-text("Skip for now")'
+          'button:has-text("Skip for now")',
       )
       .first();
     if (await guest.isVisible().catch(() => false)) {
@@ -615,7 +622,7 @@ export class WorkdayAdapter extends ATSAdapter {
                 clientX: cx,
                 clientY: cy,
                 button: 0,
-              })
+              }),
             );
           }
           return true;
@@ -633,269 +640,291 @@ export class WorkdayAdapter extends ATSAdapter {
   private async collectQuestions(): Promise<FormField[]> {
     const page = this.getPage();
     try {
-      const rows = await page.evaluate((skipIds: string[]) => {
-        const out: Array<{
-          label: string;
-          id: string;
-          name: string;
-          kind: string;
-          required: boolean;
-          options: string[];
-          targets: Array<{ text: string; name: string; value: string; id?: string }>;
-        }> = [];
-        // WARNING: only anonymous arrows may be defined inside this evaluate
-        // (tsx keepNames wraps inferred-name arrows in __name()). Destructure
-        // helpers into an array so none gains a name.
-        const [norm, visible, inNav, labelOf, hasAsterisk, qesc, push] = [
-          (t: string) =>
-            (t || "").replace(/\s+/g, " ").trim().replace(/^\*+|\*+$/g, ""),
-          (el: Element): boolean => {
-            const e = el as HTMLElement;
-            const r = e.getBoundingClientRect();
-            if (r.width === 0 && r.height === 0) return false;
-            const cs = getComputedStyle(e);
-            if (cs.display === "none" || cs.visibility === "hidden" || cs.opacity === "0") return false;
-            return true;
-          },
-          (el: Element): boolean => {
-            let n: Element | null = el;
-            while (n && n !== document.body) {
-              const tag = n.tagName.toLowerCase();
-              const role = n.getAttribute && n.getAttribute("role");
-              if (tag === "header" || tag === "nav" || tag === "footer" || role === "banner" || role === "navigation") {
-                return true;
+      const rows = await page.evaluate(
+        (skipIds: string[]) => {
+          const out: Array<{
+            label: string;
+            id: string;
+            name: string;
+            kind: string;
+            required: boolean;
+            options: string[];
+            targets: Array<{ text: string; name: string; value: string; id?: string }>;
+          }> = [];
+          // WARNING: only anonymous arrows may be defined inside this evaluate
+          // (tsx keepNames wraps inferred-name arrows in __name()). Destructure
+          // helpers into an array so none gains a name.
+          const [norm, visible, inNav, labelOf, hasAsterisk, qesc, push] = [
+            (t: string) =>
+              (t || "")
+                .replace(/\s+/g, " ")
+                .trim()
+                .replace(/^\*+|\*+$/g, ""),
+            (el: Element): boolean => {
+              const e = el as HTMLElement;
+              const r = e.getBoundingClientRect();
+              if (r.width === 0 && r.height === 0) return false;
+              const cs = getComputedStyle(e);
+              if (cs.display === "none" || cs.visibility === "hidden" || cs.opacity === "0")
+                return false;
+              return true;
+            },
+            (el: Element): boolean => {
+              let n: Element | null = el;
+              while (n && n !== document.body) {
+                const tag = n.tagName.toLowerCase();
+                const role = n.getAttribute && n.getAttribute("role");
+                if (
+                  tag === "header" ||
+                  tag === "nav" ||
+                  tag === "footer" ||
+                  role === "banner" ||
+                  role === "navigation"
+                ) {
+                  return true;
+                }
+                n = n.parentElement;
               }
-              n = n.parentElement;
-            }
-            return false;
-          },
-          (el: Element): string => {
-            const labelledby = el.getAttribute && el.getAttribute("aria-labelledby");
-            if (labelledby) {
-              const l = document.getElementById(labelledby);
-              if (l) {
-                const t = norm(l.textContent || "");
+              return false;
+            },
+            (el: Element): string => {
+              const labelledby = el.getAttribute && el.getAttribute("aria-labelledby");
+              if (labelledby) {
+                const l = document.getElementById(labelledby);
+                if (l) {
+                  const t = norm(l.textContent || "");
+                  if (t) return t;
+                }
+              }
+              const aria = el.getAttribute && el.getAttribute("aria-label");
+              if (aria) {
+                const t = norm(aria);
+                if (t && !/robots only/i.test(t)) return t;
+              }
+              const wrap = el.closest("label");
+              if (wrap) {
+                const t = norm(wrap.textContent || "");
                 if (t) return t;
               }
-            }
-            const aria = el.getAttribute && el.getAttribute("aria-label");
-            if (aria) {
-              const t = norm(aria);
-              if (t && !/robots only/i.test(t)) return t;
-            }
-            const wrap = el.closest("label");
-            if (wrap) {
-              const t = norm(wrap.textContent || "");
-              if (t) return t;
-            }
-            const id = el.getAttribute && el.getAttribute("id");
-            if (id) {
-              const fl = document.querySelector(`label[for="${qesc(id)}"]`);
-              if (fl) {
-                const t = norm(fl.textContent || "");
-                if (t) return t;
+              const id = el.getAttribute && el.getAttribute("id");
+              if (id) {
+                const fl = document.querySelector(`label[for="${qesc(id)}"]`);
+                if (fl) {
+                  const t = norm(fl.textContent || "");
+                  if (t) return t;
+                }
               }
-            }
-            let n = el.parentElement;
-            for (let i = 0; n && i < 4; i++, n = n.parentElement) {
-              const cand = n.querySelector(
-                ':scope > label, :scope > legend, :scope > [data-automation-label], :scope > h1, :scope > h2, :scope > h3, :scope > span[class*="label"]'
-              );
-              if (cand) {
-                const t = norm(cand.textContent || "");
-                if (t && t.length < 120) return t;
+              let n = el.parentElement;
+              for (let i = 0; n && i < 4; i++, n = n.parentElement) {
+                const cand = n.querySelector(
+                  ':scope > label, :scope > legend, :scope > [data-automation-label], :scope > h1, :scope > h2, :scope > h3, :scope > span[class*="label"]',
+                );
+                if (cand) {
+                  const t = norm(cand.textContent || "");
+                  if (t && t.length < 120) return t;
+                }
               }
-            }
-            return "";
-          },
-          (el: Element): boolean => {
-            // A visible required asterisk is the ONLY required marker on some
-            // Workday fields (no aria-required/required attribute). The label
-            // text is normalized (asterisk stripped) elsewhere, so check the
-            // raw label sources here.
-            const test = (t: string | null): boolean => !!t && /\*/.test(t);
-            const wrap = el.closest("label");
-            if (test(wrap ? wrap.textContent : "")) return true;
-            const id = el.getAttribute && el.getAttribute("id");
-            if (id) {
-              const fl = document.querySelector(`label[for="${qesc(id)}"]`);
-              if (test(fl ? fl.textContent : "")) return true;
-            }
-            if (test(el.getAttribute && el.getAttribute("aria-label"))) return true;
-            const p = el.parentElement;
-            if (p) {
-              const l = p.querySelector(":scope > label, :scope > legend, :scope > [data-automation-label]");
-              if (test(l ? l.textContent : "")) return true;
-            }
-            return false;
-          },
-          (s: string): string =>
-            (s || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"'),
-          (
-            label: string,
-            id: string,
-            name: string,
-            kind: string,
-            required: boolean,
-            options: string[] = [],
-            targets: Array<{ text: string; name: string; value: string; id?: string }> = []
-          ): void => {
-            if (!label) return;
-            out.push({ label, id, name, kind, required, options, targets });
-          },
-        ];
+              return "";
+            },
+            (el: Element): boolean => {
+              // A visible required asterisk is the ONLY required marker on some
+              // Workday fields (no aria-required/required attribute). The label
+              // text is normalized (asterisk stripped) elsewhere, so check the
+              // raw label sources here.
+              const test = (t: string | null): boolean => !!t && /\*/.test(t);
+              const wrap = el.closest("label");
+              if (test(wrap ? wrap.textContent : "")) return true;
+              const id = el.getAttribute && el.getAttribute("id");
+              if (id) {
+                const fl = document.querySelector(`label[for="${qesc(id)}"]`);
+                if (test(fl ? fl.textContent : "")) return true;
+              }
+              if (test(el.getAttribute && el.getAttribute("aria-label"))) return true;
+              const p = el.parentElement;
+              if (p) {
+                const l = p.querySelector(
+                  ":scope > label, :scope > legend, :scope > [data-automation-label]",
+                );
+                if (test(l ? l.textContent : "")) return true;
+              }
+              return false;
+            },
+            (s: string): string => (s || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"'),
+            (
+              label: string,
+              id: string,
+              name: string,
+              kind: string,
+              required: boolean,
+              options: string[] = [],
+              targets: Array<{ text: string; name: string; value: string; id?: string }> = [],
+            ): void => {
+              if (!label) return;
+              out.push({ label, id, name, kind, required, options, targets });
+            },
+          ];
 
-        const seenText = new Set<string>();
-        const textSel =
-          'input[type="text"], input[type="email"], input[type="tel"], input[type="url"], input[type="number"], input[type="date"], input:not([type]), textarea';
-        for (const el of Array.from(document.querySelectorAll(textSel))) {
-          const e = el as HTMLInputElement;
-          const aid = e.getAttribute("data-automation-id") || "";
-          if (aid === "beecatcher") continue;
-          if (e.type === "password") continue;
-          if (!visible(e)) continue;
-          if (inNav(e)) continue;
-          if (aid && skipIds.includes(aid)) continue;
-          const label = labelOf(e);
-          if (!label) continue;
-          const combo = e.getAttribute("role") === "combobox" || !!e.getAttribute("aria-autocomplete");
-          const kind = combo ? "combobox" : "text";
-          const key = norm(label).toLowerCase() + "|" + kind;
-          if (seenText.has(key)) continue;
-          seenText.add(key);
-          const required =
-            !!e.getAttribute("aria-required") ||
-            e.hasAttribute("required") ||
-            hasAsterisk(e);
-          push(
-            label,
-            e.getAttribute("id") || aid || norm(label),
-            aid,
-            kind,
-            required
-          );
-        }
-
-        // Radio/checkbox groups grouped by input name.
-        const seenGroups = new Set<string>();
-        for (const el of Array.from(
-          document.querySelectorAll('input[type="radio"], input[type="checkbox"]')
-        )) {
-          const e = el as HTMLInputElement;
-          if (inNav(e)) continue;
-          const aid = e.getAttribute("data-automation-id") || "";
-          if (aid && skipIds.includes(aid)) continue;
-          const name = e.name || "";
-          if (!name || seenGroups.has(name)) continue;
-          seenGroups.add(name);
-          const type = e.type;
-          const group = Array.from(
-            document.querySelectorAll(`input[type="${type}"][name="${CSS.escape(name)}"]`)
-          ) as HTMLInputElement[];
-          const targets: Array<{ text: string; name: string; value: string; id?: string }> = [];
-          const options: string[] = [];
-          for (const g of group) {
-            if (!visible(g) && !(g.closest("label") && visible(g.closest("label") as Element)) && !(g.closest("[role='radio'], [role='checkbox'], [class*='option']") && visible(g.closest("[role='radio'], [role='checkbox'], [class*='option']") as Element))) continue;
-            const gid = g.getAttribute("id");
-            const labFor = gid
-              ? (document.querySelector(`label[for="${qesc(gid)}"]`)?.textContent || "")
-              : "";
-            const wrapLabel = g.closest("label");
-            const row = g.closest("[role='radio'], [role='checkbox'], [class*='option']");
-            const text = norm(
-              wrapLabel
-                ? wrapLabel.textContent || ""
-                : labFor || g.getAttribute("aria-label") || (row ? row.textContent || "" : "")
-            );
-            if (!text) continue;
-            if (!targets.some((t) => t.text === text)) {
-              targets.push({ text, name, value: g.value || "", id: gid || "" });
-            }
-            if (!options.includes(text)) options.push(text);
+          const seenText = new Set<string>();
+          const textSel =
+            'input[type="text"], input[type="email"], input[type="tel"], input[type="url"], input[type="number"], input[type="date"], input:not([type]), textarea';
+          for (const el of Array.from(document.querySelectorAll(textSel))) {
+            const e = el as HTMLInputElement;
+            const aid = e.getAttribute("data-automation-id") || "";
+            if (aid === "beecatcher") continue;
+            if (e.type === "password") continue;
+            if (!visible(e)) continue;
+            if (inNav(e)) continue;
+            if (aid && skipIds.includes(aid)) continue;
+            const label = labelOf(e);
+            if (!label) continue;
+            const combo =
+              e.getAttribute("role") === "combobox" || !!e.getAttribute("aria-autocomplete");
+            const kind = combo ? "combobox" : "text";
+            const key = norm(label).toLowerCase() + "|" + kind;
+            if (seenText.has(key)) continue;
+            seenText.add(key);
+            const required =
+              !!e.getAttribute("aria-required") || e.hasAttribute("required") || hasAsterisk(e);
+            push(label, e.getAttribute("id") || aid || norm(label), aid, kind, required);
           }
-          if (!targets.length) continue;
-          // Group label: the container's label/legend/heading, never an option.
-          const container = e.closest(
-            '[data-automation-id], fieldset, [role="radiogroup"], [role="group"], [class*="form-control"], [class*="field"]'
-          );
-          let groupLabel = "";
-          if (container) {
-            const cb = container.getAttribute && container.getAttribute("aria-labelledby");
-            if (cb) {
-              const l = document.getElementById(cb);
-              if (l) groupLabel = norm(l.textContent || "");
-            }
-            if (!groupLabel) {
-              for (const cand of Array.from(
-                container.querySelectorAll(
-                  ':scope > legend, :scope > [data-automation-label], :scope > label, :scope > h1, :scope > h2, :scope > h3, :scope > span'
+
+          // Radio/checkbox groups grouped by input name.
+          const seenGroups = new Set<string>();
+          for (const el of Array.from(
+            document.querySelectorAll('input[type="radio"], input[type="checkbox"]'),
+          )) {
+            const e = el as HTMLInputElement;
+            if (inNav(e)) continue;
+            const aid = e.getAttribute("data-automation-id") || "";
+            if (aid && skipIds.includes(aid)) continue;
+            const name = e.name || "";
+            if (!name || seenGroups.has(name)) continue;
+            seenGroups.add(name);
+            const type = e.type;
+            const group = Array.from(
+              document.querySelectorAll(`input[type="${type}"][name="${CSS.escape(name)}"]`),
+            ) as HTMLInputElement[];
+            const targets: Array<{ text: string; name: string; value: string; id?: string }> = [];
+            const options: string[] = [];
+            for (const g of group) {
+              if (
+                !visible(g) &&
+                !(g.closest("label") && visible(g.closest("label") as Element)) &&
+                !(
+                  g.closest("[role='radio'], [role='checkbox'], [class*='option']") &&
+                  visible(
+                    g.closest("[role='radio'], [role='checkbox'], [class*='option']") as Element,
+                  )
                 )
-              )) {
-                const t = norm(cand.textContent || "");
-                if (!t || t.length > 150) continue;
-                if (targets.some((tg) => tg.text === t)) continue;
-                if (cand.querySelector('input[type="radio"], input[type="checkbox"]')) continue;
-                groupLabel = t;
-                break;
+              )
+                continue;
+              const gid = g.getAttribute("id");
+              const labFor = gid
+                ? document.querySelector(`label[for="${qesc(gid)}"]`)?.textContent || ""
+                : "";
+              const wrapLabel = g.closest("label");
+              const row = g.closest("[role='radio'], [role='checkbox'], [class*='option']");
+              const text = norm(
+                wrapLabel
+                  ? wrapLabel.textContent || ""
+                  : labFor || g.getAttribute("aria-label") || (row ? row.textContent || "" : ""),
+              );
+              if (!text) continue;
+              if (!targets.some((t) => t.text === text)) {
+                targets.push({ text, name, value: g.value || "", id: gid || "" });
+              }
+              if (!options.includes(text)) options.push(text);
+            }
+            if (!targets.length) continue;
+            // Group label: the container's label/legend/heading, never an option.
+            const container = e.closest(
+              '[data-automation-id], fieldset, [role="radiogroup"], [role="group"], [class*="form-control"], [class*="field"]',
+            );
+            let groupLabel = "";
+            if (container) {
+              const cb = container.getAttribute && container.getAttribute("aria-labelledby");
+              if (cb) {
+                const l = document.getElementById(cb);
+                if (l) groupLabel = norm(l.textContent || "");
+              }
+              if (!groupLabel) {
+                for (const cand of Array.from(
+                  container.querySelectorAll(
+                    ":scope > legend, :scope > [data-automation-label], :scope > label, :scope > h1, :scope > h2, :scope > h3, :scope > span",
+                  ),
+                )) {
+                  const t = norm(cand.textContent || "");
+                  if (!t || t.length > 150) continue;
+                  if (targets.some((tg) => tg.text === t)) continue;
+                  if (cand.querySelector('input[type="radio"], input[type="checkbox"]')) continue;
+                  groupLabel = t;
+                  break;
+                }
               }
             }
+            if (!groupLabel) groupLabel = labelOf(e);
+            if (!groupLabel) continue;
+            const kind = type === "radio" ? "radio" : "checkbox";
+            const required =
+              group.some(
+                (g) => g.hasAttribute("required") || g.getAttribute("aria-required") === "true",
+              ) ||
+              /\*/.test(groupLabel) ||
+              hasAsterisk(e);
+            push(groupLabel, name, name, kind, required, options, targets);
           }
-          if (!groupLabel) groupLabel = labelOf(e);
-          if (!groupLabel) continue;
-          const kind = type === "radio" ? "radio" : "checkbox";
-          const required =
-            group.some(
-              (g) => g.hasAttribute("required") || g.getAttribute("aria-required") === "true"
-            ) ||
-            /\*/.test(groupLabel) ||
-            hasAsterisk(e);
-          push(groupLabel, name, name, kind, required, options, targets);
-        }
 
-        // Native selects (rare on Workday, but handled).
-        for (const el of Array.from(document.querySelectorAll("select"))) {
-          const e = el as HTMLSelectElement;
-          if (!visible(e)) continue;
-          if (inNav(e)) continue;
-          const aid = e.getAttribute("data-automation-id") || "";
-          if (aid && skipIds.includes(aid)) continue;
-          const label = labelOf(e);
-          if (!label) continue;
-          const options = Array.from(e.options)
-            .map((o) => norm(o.textContent || ""))
-            .filter(Boolean);
-          const required =
-            !!e.getAttribute("aria-required") || e.hasAttribute("required") || /\*/.test(label);
-          push(label, e.getAttribute("id") || aid || norm(label), aid, "select", required, options);
-        }
+          // Native selects (rare on Workday, but handled).
+          for (const el of Array.from(document.querySelectorAll("select"))) {
+            const e = el as HTMLSelectElement;
+            if (!visible(e)) continue;
+            if (inNav(e)) continue;
+            const aid = e.getAttribute("data-automation-id") || "";
+            if (aid && skipIds.includes(aid)) continue;
+            const label = labelOf(e);
+            if (!label) continue;
+            const options = Array.from(e.options)
+              .map((o) => norm(o.textContent || ""))
+              .filter(Boolean);
+            const required =
+              !!e.getAttribute("aria-required") || e.hasAttribute("required") || /\*/.test(label);
+            push(
+              label,
+              e.getAttribute("id") || aid || norm(label),
+              aid,
+              "select",
+              required,
+              options,
+            );
+          }
 
-        const uniq: typeof out = [];
-        const seen = new Set<string>();
-        for (const r of out) {
-          const key = norm(r.label).toLowerCase() + "|" + r.kind;
-          if (seen.has(key)) continue;
-          seen.add(key);
-          uniq.push(r);
-        }
-        return uniq;
-      }, [...SYSTEM_SKIP]);
-
-      return (rows ?? []).map(
-        (r: any): FormField => ({
-          label: r.label,
-          id: r.id,
-          kind: r.kind as FormField["kind"],
-          required: !!r.required,
-          options: r.options ?? [],
-          optionTargets: (r.targets ?? []).map((t: any) => ({
-            text: t.text,
-            name: t.name,
-            value: t.value,
-            id: t.id ?? "",
-          })),
-          name: r.name,
-        })
+          const uniq: typeof out = [];
+          const seen = new Set<string>();
+          for (const r of out) {
+            const key = norm(r.label).toLowerCase() + "|" + r.kind;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            uniq.push(r);
+          }
+          return uniq;
+        },
+        [...SYSTEM_SKIP],
       );
+
+      return (rows ?? []).map((r: any): FormField => ({
+        label: r.label,
+        id: r.id,
+        kind: r.kind as FormField["kind"],
+        required: !!r.required,
+        options: r.options ?? [],
+        optionTargets: (r.targets ?? []).map((t: any) => ({
+          text: t.text,
+          name: t.name,
+          value: t.value,
+          id: t.id ?? "",
+        })),
+        name: r.name,
+      }));
     } catch (err: any) {
       console.warn(`[Workday] collectQuestions failed: ${err?.message || err}`);
       return [];
@@ -930,7 +959,7 @@ export class WorkdayAdapter extends ATSAdapter {
     // transcript/other attachment on the same step.
     const input = page
       .locator(
-        'input[type="file"][data-automation-id="resume"], input[type="file"][name="resume"], [data-automation-id="resume"] input[type="file"]'
+        'input[type="file"][data-automation-id="resume"], input[type="file"][name="resume"], [data-automation-id="resume"] input[type="file"]',
       )
       .first();
     if ((await input.count()) === 0) return false;
@@ -939,7 +968,9 @@ export class WorkdayAdapter extends ATSAdapter {
       try {
         await input.setInputFiles(resumePath);
       } catch (err: any) {
-        console.warn(`[Workday] Resume setInputFiles threw (attempt ${attempt + 1}): ${err?.message || err}`);
+        console.warn(
+          `[Workday] Resume setInputFiles threw (attempt ${attempt + 1}): ${err?.message || err}`,
+        );
       }
       await randomSleep(2500, 3500);
       if (await this.controls.isResumeAttached()) {
@@ -964,34 +995,33 @@ export class WorkdayAdapter extends ATSAdapter {
   private async fillCoverLetter(
     rpc: RpcHelper,
     filled: string[],
-    blanked: Array<{ label: string; reason: string }>
+    blanked: Array<{ label: string; reason: string }>,
   ): Promise<void> {
     const page = this.getPage();
-    const candidates: Array<{ index: number; label: string; filled: boolean }> =
-      await page
-        .evaluate(() => {
-          const out: Array<{ index: number; label: string; filled: boolean }> = [];
-          const areas = Array.from(document.querySelectorAll("textarea"));
-          areas.forEach((el, i) => {
-            const e = el as HTMLTextAreaElement;
-            if (e.offsetParent === null) return;
-            const aria = e.getAttribute("aria-label") || "";
-            const id = e.getAttribute("id") || "";
-            const forLabel = id
-              ? (document.querySelector(`label[for="${id}"]`)?.textContent || "")
-              : "";
-            const wrap = e.closest("label")?.textContent || "";
-            const label = (aria || forLabel || wrap).replace(/\s+/g, " ").trim();
-            out.push({ index: i, label, filled: !!e.value.trim() });
-          });
-          return out;
-        })
-        .catch(() => []);
+    const candidates: Array<{ index: number; label: string; filled: boolean }> = await page
+      .evaluate(() => {
+        const out: Array<{ index: number; label: string; filled: boolean }> = [];
+        const areas = Array.from(document.querySelectorAll("textarea"));
+        areas.forEach((el, i) => {
+          const e = el as HTMLTextAreaElement;
+          if (e.offsetParent === null) return;
+          const aria = e.getAttribute("aria-label") || "";
+          const id = e.getAttribute("id") || "";
+          const forLabel = id
+            ? document.querySelector(`label[for="${id}"]`)?.textContent || ""
+            : "";
+          const wrap = e.closest("label")?.textContent || "";
+          const label = (aria || forLabel || wrap).replace(/\s+/g, " ").trim();
+          out.push({ index: i, label, filled: !!e.value.trim() });
+        });
+        return out;
+      })
+      .catch(() => []);
     const target = candidates.find(
       (c) =>
         /cover letter|additional information|anything else you|more about you|tell us about yourself|anything you would like/i.test(
-          c.label
-        ) && !c.filled
+          c.label,
+        ) && !c.filled,
     );
     if (!target) {
       console.log("[Workday] No cover-letter textarea on this step; skipping generation.");
@@ -1000,7 +1030,7 @@ export class WorkdayAdapter extends ATSAdapter {
     const result = await rpc("cover_letter", {});
     const pdfPath = result?.pdf_path;
     let attached = false;
-    
+
     if (pdfPath) {
       // Look for a file input specifically for cover letter or just any file input in a generic document upload section.
       const clFileInputs = [
@@ -1010,13 +1040,13 @@ export class WorkdayAdapter extends ATSAdapter {
       ];
       for (const sel of clFileInputs) {
         const fileInput = page.locator(sel).first();
-        if (await fileInput.isVisible().catch(() => false) || await fileInput.count() > 0) {
+        if ((await fileInput.isVisible().catch(() => false)) || (await fileInput.count()) > 0) {
           try {
             await fileInput.setInputFiles(pdfPath);
             console.log("[Workday] Cover letter PDF uploaded successfully.");
             attached = true;
             break;
-          } catch (e) {
+          } catch {
             // Ignore and try next
           }
         }
@@ -1034,7 +1064,10 @@ export class WorkdayAdapter extends ATSAdapter {
         filled.push(target.label || "Cover Letter");
         console.log("[Workday] Cover letter filled (LLM-generated, JD-personalized).");
       } else {
-        blanked.push({ label: target.label || "Cover Letter", reason: "cover letter did not commit" });
+        blanked.push({
+          label: target.label || "Cover Letter",
+          reason: "cover letter did not commit",
+        });
       }
     }
   }
@@ -1047,7 +1080,9 @@ export class WorkdayAdapter extends ATSAdapter {
     const page = this.getPage();
     return (await page
       .evaluate(() => {
-        for (const el of Array.from(document.querySelectorAll("[class*='step'], [class*='Step'], [data-automation-id]"))) {
+        for (const el of Array.from(
+          document.querySelectorAll("[class*='step'], [class*='Step'], [data-automation-id]"),
+        )) {
           const t = (el.textContent || "").replace(/\s+/g, " ").trim();
           const m = t.match(/step\s+(\d+)\s+of\s+\d+/i);
           if (m) return parseInt(m[1], 10);
@@ -1065,7 +1100,7 @@ export class WorkdayAdapter extends ATSAdapter {
           '[data-automation-id="submitButton"], ' +
           '[data-automation-id="pageFooterSubmitButton"], ' +
           'button:has-text("Submit Application"), ' +
-          'button:has-text("Submit")'
+          'button:has-text("Submit")',
       )
       .first();
     return await b.isVisible().catch(() => false);
@@ -1079,7 +1114,7 @@ export class WorkdayAdapter extends ATSAdapter {
           '[data-automation-id="pageFooterNextButton"], ' +
           'button:has-text("Save and Continue"), ' +
           'button:has-text("Continue"), ' +
-          'button:has-text("Next")'
+          'button:has-text("Next")',
       )
       .first();
     if (await btn.isVisible().catch(() => false)) {
@@ -1116,8 +1151,8 @@ export class WorkdayAdapter extends ATSAdapter {
     if (fields.some((f) => f.required)) return false;
     const surveyLabels = fields.some((f) =>
       /race|ethnic|gender|sex|veteran|disability|orientation|military|self[- ]identif|voluntary|diversity/i.test(
-        f.label
-      )
+        f.label,
+      ),
     );
     const page = this.getPage();
     const text: string = await page
@@ -1161,7 +1196,7 @@ export class WorkdayAdapter extends ATSAdapter {
       await rpc("job_context", jobCtx);
       console.log(
         `[Workday] Job context: ${jobCtx.title || "?"} @ ${jobCtx.company || "?"}` +
-          (jobCtx.location ? ` (${jobCtx.location})` : "")
+          (jobCtx.location ? ` (${jobCtx.location})` : ""),
       );
 
       const screener = new Screener(this.controls, "WorkdayAdapter", profile, rpc, true);
@@ -1205,7 +1240,7 @@ export class WorkdayAdapter extends ATSAdapter {
               } catch (err: any) {
                 // A single unruly field must never abort the whole fill.
                 console.warn(
-                  `[Workday] Skipping "${escapePromptValue(f.label)}" (${err?.message || err})`
+                  `[Workday] Skipping "${escapePromptValue(f.label)}" (${err?.message || err})`,
                 );
                 blanked.push({ label: f.label, reason: `fill threw: ${err?.message || err}` });
               }
@@ -1229,10 +1264,12 @@ export class WorkdayAdapter extends ATSAdapter {
           });
           if (requiredBlanks.length > 0) {
             console.warn(
-              `[Workday] ${requiredBlanks.length} REQUIRED field(s) blank after step ${step + 1}:`
+              `[Workday] ${requiredBlanks.length} REQUIRED field(s) blank after step ${step + 1}:`,
             );
             for (const rb of requiredBlanks) {
-              console.warn(`[Workday]   REQUIRED blank: ${escapePromptValue(rb.label)} (${rb.reason})`);
+              console.warn(
+                `[Workday]   REQUIRED blank: ${escapePromptValue(rb.label)} (${rb.reason})`,
+              );
             }
           }
         }
@@ -1245,7 +1282,7 @@ export class WorkdayAdapter extends ATSAdapter {
         if (!advanced) {
           console.warn(
             "[Workday] No Continue/Submit button found, or the step did not advance after clicking. " +
-              "If required fields above were left blank, Workday blocks progression until they are answered."
+              "If required fields above were left blank, Workday blocks progression until they are answered.",
           );
           break;
         }
@@ -1266,7 +1303,7 @@ export class WorkdayAdapter extends ATSAdapter {
             await screener.process(f, sweepFilled, sweepBlanks, userSkippedKeys);
           } catch (err: any) {
             console.warn(
-              `[Workday] Sweep skip "${escapePromptValue(f.label)}" (${err?.message || err})`
+              `[Workday] Sweep skip "${escapePromptValue(f.label)}" (${err?.message || err})`,
             );
             sweepBlanks.push({ label: f.label, reason: `fill threw: ${err?.message || err}` });
           }
@@ -1311,7 +1348,7 @@ export class WorkdayAdapter extends ATSAdapter {
         '[data-automation-id="bottom-navigation-submit-button"], ' +
           '[data-automation-id="submitButton"], ' +
           '[data-automation-id="pageFooterSubmitButton"], ' +
-          'button:has-text("Submit Application")'
+          'button:has-text("Submit Application")',
       )
       .first();
     if (await submitBtn.isVisible().catch(() => false)) {
@@ -1335,8 +1372,16 @@ export class WorkdayAdapter extends ATSAdapter {
       // to parse it and matches nothing). Check alert roles and error blocks
       // with separate locators.
       const err =
-        (await page.locator('[role="alert"]').first().innerText().catch(() => "")) ||
-        (await page.locator('.error, .error-message, [class*="error"]').first().innerText().catch(() => ""));
+        (await page
+          .locator('[role="alert"]')
+          .first()
+          .innerText()
+          .catch(() => "")) ||
+        (await page
+          .locator('.error, .error-message, [class*="error"]')
+          .first()
+          .innerText()
+          .catch(() => ""));
       if (err && !/exceeds? the maximum upload size|too large|100MB/i.test(err)) {
         console.error(`[Workday] Submit error banner: ${escapePromptValue(err)}`);
         return {
@@ -1373,7 +1418,7 @@ export class WorkdayAdapter extends ATSAdapter {
         "WorkdayAdapter",
         this.profile,
         rpc ?? (async () => ({ answer: "" })),
-        true
+        true,
       );
       const filled: string[] = [];
       const blanked: { label: string; reason: string }[] = [];
@@ -1429,11 +1474,11 @@ export class WorkdayControlStack extends FormControls {
               const scope = document.querySelector(`[data-automation-id="${fname}"]`);
               if (scope) {
                 const c = scope.matches(
-                  'input[type="text"], input[type="email"], input[type="tel"], input[type="url"], input[type="date"], input:not([type]), textarea'
+                  'input[type="text"], input[type="email"], input[type="tel"], input[type="url"], input[type="date"], input:not([type]), textarea',
                 )
                   ? scope
                   : scope.querySelector(
-                      'input[type="text"], input[type="email"], input[type="tel"], input[type="url"], input[type="date"], input:not([type]), textarea'
+                      'input[type="text"], input[type="email"], input[type="tel"], input[type="url"], input[type="date"], input:not([type]), textarea',
                     );
                 if (c) return ((c as HTMLInputElement).value || "").trim();
               }
@@ -1441,7 +1486,7 @@ export class WorkdayControlStack extends FormControls {
             return "";
           },
           field.id,
-          field.name || ""
+          field.name || "",
         )) as string;
       } catch {
         return "";
@@ -1472,18 +1517,29 @@ export class WorkdayControlStack extends FormControls {
     if (field.kind === "radio" || field.kind === "checkbox") {
       const page = this.getPage();
       try {
-        return (await page.evaluate((gname: string) => {
-          const checked = document.querySelector(
-            `input[type="radio"][name="${gname}"]:checked, input[type="checkbox"][name="${gname}"]:checked`
-          ) as HTMLInputElement | null;
-          if (!checked) return "";
-          const row = checked.closest("label") || checked.closest("[role='radio'], [role='checkbox'], [class*='option']");
-          const rowText = row ? (row.textContent || "").replace(/\s+/g, " ").trim() : "";
-          const lab = checked.id
-            ? (document.querySelector(`label[for="${CSS.escape(checked.id)}"]`)?.textContent || "")
-            : "";
-          return (rowText || lab.trim() || checked.getAttribute("aria-label") || checked.value || "").trim();
-        }, cssEscape(field.optionTargets[0]?.name || field.name || field.id))) as string;
+        return (await page.evaluate(
+          (gname: string) => {
+            const checked = document.querySelector(
+              `input[type="radio"][name="${gname}"]:checked, input[type="checkbox"][name="${gname}"]:checked`,
+            ) as HTMLInputElement | null;
+            if (!checked) return "";
+            const row =
+              checked.closest("label") ||
+              checked.closest("[role='radio'], [role='checkbox'], [class*='option']");
+            const rowText = row ? (row.textContent || "").replace(/\s+/g, " ").trim() : "";
+            const lab = checked.id
+              ? document.querySelector(`label[for="${CSS.escape(checked.id)}"]`)?.textContent || ""
+              : "";
+            return (
+              rowText ||
+              lab.trim() ||
+              checked.getAttribute("aria-label") ||
+              checked.value ||
+              ""
+            ).trim();
+          },
+          cssEscape(field.optionTargets[0]?.name || field.name || field.id),
+        )) as string;
       } catch {
         return "";
       }
@@ -1512,7 +1568,7 @@ export class WorkdayControlStack extends FormControls {
   override async fillByKind(
     field: FormField,
     answer: string,
-    optionTexts?: string[]
+    optionTexts?: string[],
   ): Promise<boolean> {
     if (field.kind === "combobox") {
       return this.fillWorkdayCombobox(field, answer, optionTexts ?? []);
@@ -1539,14 +1595,13 @@ export class WorkdayControlStack extends FormControls {
           // it IS a control. If it is a combobox/select we must not type into it.
           const scope = document.querySelector(sel);
           if (!scope) return false;
-          const cand = scope.matches('input, textarea, select')
+          const cand = scope.matches("input, textarea, select")
             ? scope
-            : scope.querySelector('input, textarea, select');
+            : scope.querySelector("input, textarea, select");
           if (!cand) return false;
           if (cand.tagName === "SELECT") return true;
           return (
-            cand.getAttribute("role") === "combobox" ||
-            !!cand.getAttribute("aria-autocomplete")
+            cand.getAttribute("role") === "combobox" || !!cand.getAttribute("aria-autocomplete")
           );
         }, scopeSel)
         .catch(() => false);
@@ -1585,7 +1640,7 @@ export class WorkdayControlStack extends FormControls {
   async fillWorkdayCombobox(
     field: FormField,
     answer: string,
-    optionTexts: string[] = []
+    optionTexts: string[] = [],
   ): Promise<boolean> {
     const page = this.getPage();
     try {
@@ -1595,7 +1650,7 @@ export class WorkdayControlStack extends FormControls {
         input = page
           .locator(
             `${base}:is(input[role="combobox"], input[aria-autocomplete]), ` +
-              `${base} input[role="combobox"], ${base} input[aria-autocomplete]`
+              `${base} input[role="combobox"], ${base} input[aria-autocomplete]`,
           )
           .first();
         if (!(await input.isVisible().catch(() => false))) {
@@ -1619,7 +1674,7 @@ export class WorkdayControlStack extends FormControls {
         }
       }
       if (opts.length === 0) {
-        const short = answer.split(/[\s,]+/).filter((t) => t && t.length > 1)[0];
+        const short = answer.split(/[\s,]+/).find((t) => t && t.length > 1);
         if (short && short !== answer.trim()) {
           await input.fill(short);
           for (let i = 0; i < 6 && opts.length === 0; i++) {
@@ -1646,7 +1701,7 @@ export class WorkdayControlStack extends FormControls {
       }
       await this.closeMenu();
       console.warn(
-        `[${this.tagName}] No selectable suggestion for "${answer}" (${escapePromptValue(field.label)}).`
+        `[${this.tagName}] No selectable suggestion for "${answer}" (${escapePromptValue(field.label)}).`,
       );
       return false;
     } catch (err: any) {
@@ -1659,7 +1714,9 @@ export class WorkdayControlStack extends FormControls {
   async fillByAutomationId(aid: string, value: string): Promise<void> {
     if (!value) return;
     const page = this.getPage();
-    const input = page.locator(`input[data-automation-id="${aid}"], textarea[data-automation-id="${aid}"]`).first();
+    const input = page
+      .locator(`input[data-automation-id="${aid}"], textarea[data-automation-id="${aid}"]`)
+      .first();
     if (await input.isVisible().catch(() => false)) {
       await input.fill(value).catch(() => {});
       await randomSleep(150, 300);
@@ -1686,12 +1743,12 @@ export class WorkdayControlStack extends FormControls {
     return page
       .evaluate(() => {
         const input = document.querySelector(
-          'input[type="file"][data-automation-id="resume"], input[type="file"][name="resume"]'
+          'input[type="file"][data-automation-id="resume"], input[type="file"][name="resume"]',
         ) as HTMLInputElement | null;
         if (!input) return true; // consumed by the board = attached
         if (input.files && input.files.length > 0) return true;
         const zone = document.querySelector('[data-automation-id="resume"], [class*="resume"]');
-        const text = zone ? (zone.textContent || "") : "";
+        const text = zone ? zone.textContent || "" : "";
         return /attached|uploaded|✓|added|done/i.test(text);
       })
       .catch(() => false);

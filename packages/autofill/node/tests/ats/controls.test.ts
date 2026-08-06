@@ -1,5 +1,6 @@
-import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+
 import {
   FormControls,
   sanitizeNumberAnswer,
@@ -45,7 +46,7 @@ describe("fillField / fillLikeHuman (no-append typing)", () => {
     // The wrong/partial value must be cleared first, then typed fresh.
     assert.deepEqual(
       calls.map((c) => `${c.op}:${c.value}`),
-      ["fill:", "type:Aman"]
+      ["fill:", "type:Aman"],
     );
     assert.equal(readValue(), "Aman");
   });
@@ -55,7 +56,7 @@ describe("fillField / fillLikeHuman (no-append typing)", () => {
     await controls.fillField("#email", "aman@example.com", "", "email");
     assert.deepEqual(
       calls.map((c) => `${c.op}:${c.value}`),
-      ["type:aman@example.com"]
+      ["type:aman@example.com"],
     );
     assert.equal(readValue(), "aman@example.com");
   });
@@ -66,7 +67,7 @@ describe("fillField / fillLikeHuman (no-append typing)", () => {
     await controls.fillField("#desc", long, "", "desc");
     assert.deepEqual(
       calls.map((c) => `${c.op}:${c.value.length}`),
-      ["fill:700"]
+      ["fill:700"],
     );
     assert.equal(readValue(), long);
   });
@@ -130,7 +131,7 @@ describe("firstUrl", () => {
   it("extracts the first URL from a comma-separated list", () => {
     assert.equal(
       firstUrl("https://linkedin.com/in/me, https://github.com/me, https://me.dev"),
-      "https://linkedin.com/in/me"
+      "https://linkedin.com/in/me",
     );
   });
 

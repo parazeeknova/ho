@@ -11,10 +11,7 @@ import { simpleParser } from "mailparser";
  * JS-side filter uses substring `.includes()`, which handles both host
  * styles regardless of which router host Gmail fronted the message with.
  */
-export const GREENHOUSE_VERIFICATION_SENDERS = [
-  "greenhouse-mail.io",
-  "greenhouse.io",
-];
+export const GREENHOUSE_VERIFICATION_SENDERS = ["greenhouse-mail.io", "greenhouse.io"];
 
 /** Whether Gmail IMAP credentials are present in the environment. */
 export function gmailConfigured(): boolean {
@@ -56,7 +53,6 @@ export function extractVerificationCode(text: string): string | null {
     // below, which correctly reject 7+-digit reference numbers.
     if (!/[A-Za-z]/.test(token)) continue;
     const hasDigit = /\d/.test(token);
-    const hasLower = /[a-z]/.test(token);
     const hasUpper = /[A-Z]/.test(token);
     const interiorUpper = hasUpper && !/^[A-Z][a-z]+$/.test(token);
     if (!(hasDigit || interiorUpper)) continue;
@@ -79,7 +75,7 @@ export function extractVerificationCode(text: string): string | null {
   // (bounded window so a phone or reference number elsewhere never wins).
   const anchored =
     src.match(
-      /(?:\bcode\b|verification|security code|confirmation code|one[- ]?time|pin)[^\d]{0,40}?(\b\d{6}\b)/i
+      /(?:\bcode\b|verification|security code|confirmation code|one[- ]?time|pin)[^\d]{0,40}?(\b\d{6}\b)/i,
     ) ||
     // "482913 is your code" / "482913 is your verification code" phrasing.
     src.match(/(\b\d{6}\b)[^\d]{0,40}?\bcode\b/i);
@@ -105,16 +101,10 @@ function stripHtml(html: string): string {
  * that is included here too. Returns null when the message cannot be parsed or
  * contains no code.
  */
-export async function extractCodeFromEmail(
-  source: Buffer | string
-): Promise<string | null> {
+export async function extractCodeFromEmail(source: Buffer | string): Promise<string | null> {
   try {
     const parsed = await simpleParser(source);
-    const parts: string[] = [
-      parsed.subject || "",
-      parsed.text || "",
-      stripHtml(parsed.html || ""),
-    ];
+    const parts: string[] = [parsed.subject || "", parsed.text || "", stripHtml(parsed.html || "")];
     if (parsed.textAsHtml) parts.push(stripHtml(parsed.textAsHtml));
     return extractVerificationCode(parts.join("\n"));
   } catch {
@@ -144,23 +134,19 @@ export interface GmailWaitOptions {
  * never re-parse it. Throws a clean error on timeout or IMAP failure — the
  * caller decides whether to skip the job, never hangs the worker.
  */
-export async function waitForGreenhouseCode(
-  options: GmailWaitOptions = {}
-): Promise<string> {
+export async function waitForGreenhouseCode(options: GmailWaitOptions = {}): Promise<string> {
   const timeoutMs =
-    options.timeoutMs ??
-    parseInt(process.env.AUTOFILL_GMAIL_TIMEOUT_MS || "60000", 10);
+    options.timeoutMs ?? parseInt(process.env.AUTOFILL_GMAIL_TIMEOUT_MS || "60000", 10);
   const pollMs = options.pollMs ?? 4000;
   const maxAgeMs = options.maxAgeMs ?? 5 * 60 * 1000;
   const senders = options.senders ?? GREENHOUSE_VERIFICATION_SENDERS;
-  const log =
-    options.log ?? ((message: string) => console.log(`[Gmail] ${message}`));
+  const log = options.log ?? ((message: string) => console.log(`[Gmail] ${message}`));
 
   const email = process.env.GMAIL_EMAIL;
   const appPassword = process.env.GMAIL_APP_PASSWORD;
   if (!email || !appPassword) {
     throw new Error(
-      "GMAIL_EMAIL and GMAIL_APP_PASSWORD are not configured; cannot fetch the verification code"
+      "GMAIL_EMAIL and GMAIL_APP_PASSWORD are not configured; cannot fetch the verification code",
     );
   }
 
@@ -186,10 +172,9 @@ export async function waitForGreenhouseCode(
     try {
       while (Date.now() < deadline) {
         const uids =
-          (await client.search({ seen: false }, { uid: true }).catch(() => [] as number[])) ||
-          [];
+          (await client.search({ seen: false }, { uid: true }).catch(() => [] as number[])) || [];
         // Gmail returns UIDs ascending, so the tail is the newest.
-        for (const uid of uids.slice(-POLL_TOP).reverse()) {
+        for (const uid of uids.slice(-POLL_TOP).toReversed()) {
           const meta = await client
             .fetchOne(uid, { envelope: true, internalDate: true }, { uid: true })
             .catch(() => null);
@@ -198,9 +183,7 @@ export async function waitForGreenhouseCode(
           if (!senders.some((s) => from.includes(s.toLowerCase()))) continue;
           const received = meta.internalDate ? new Date(meta.internalDate) : null;
           if (received && Date.now() - received.getTime() > maxAgeMs) continue;
-          const msg = await client
-            .fetchOne(uid, { source: true }, { uid: true })
-            .catch(() => null);
+          const msg = await client.fetchOne(uid, { source: true }, { uid: true }).catch(() => null);
           if (!msg || !msg.source) continue;
           const code = await extractCodeFromEmail(msg.source);
           if (code) {
@@ -215,7 +198,7 @@ export async function waitForGreenhouseCode(
         await new Promise((resolve) => setTimeout(resolve, pollMs));
       }
       throw new Error(
-        `Timed out after ${timeoutMs}ms waiting for a Greenhouse verification email from ${senders.join(", ")}`
+        `Timed out after ${timeoutMs}ms waiting for a Greenhouse verification email from ${senders.join(", ")}`,
       );
     } finally {
       lock.release();
@@ -229,7 +212,8 @@ export async function waitForGreenhouseCode(
       .join(" / ");
     throw new Error(
       `Failed to fetch Greenhouse verification code from Gmail: ${err?.message || err}` +
-        (detail ? ` (${detail.slice(0, 200)})` : "")
+        (detail ? ` (${detail.slice(0, 200)})` : ""),
+      { cause: err },
     );
   } finally {
     await client.logout().catch(() => {});

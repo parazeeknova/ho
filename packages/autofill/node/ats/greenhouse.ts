@@ -1,9 +1,11 @@
-import { Stagehand } from "@browserbasehq/stagehand";
 import * as fs from "fs";
-import { ATSAdapter, type RpcHelper } from "./base.js";
+
+import { Stagehand } from "@browserbasehq/stagehand";
+
 import { type JobPayload, type Profile } from "../types.js";
 import { randomSleep, typingDelayMs } from "../utils/evasion.js";
 import { gmailConfigured, waitForGreenhouseCode } from "../utils/gmail.js";
+import { ATSAdapter, type RpcHelper } from "./base.js";
 import {
   auditBlanks,
   finalReverify,
@@ -58,7 +60,7 @@ export function parseRemixQuestionsModel(html: string): JsonFieldSource[] | null
     if (!m) return null;
     const ctx = JSON.parse(m[1]);
     const loader = Object.values(ctx?.state?.loaderData ?? {}).find(
-      (v: any) => v && typeof v === "object" && v.jobPost
+      (v: any) => v && typeof v === "object" && v.jobPost,
     ) as any;
     const jobPost = loader?.jobPost;
     if (!jobPost) return null;
@@ -71,9 +73,7 @@ export function parseRemixQuestionsModel(html: string): JsonFieldSource[] | null
           label,
           kind: String(f?.type || "input_text"),
           required: !!q?.required,
-          options: (f?.values ?? [])
-            .map((v: any) => (v?.label || "").trim())
-            .filter(Boolean),
+          options: (f?.values ?? []).map((v: any) => (v?.label || "").trim()).filter(Boolean),
         });
       }
     };
@@ -93,21 +93,27 @@ export function parseRemixQuestionsModel(html: string): JsonFieldSource[] | null
  * is board-agnostic — no CSS-class dependence and no hydration race.
  */
 export function parseRemixJobContext(
-  html: string
+  html: string,
 ): { title: string; company: string; location: string } | null {
   try {
     const m = html.match(/window\.__remixContext = (\{.*?\});/);
     if (!m) return null;
     const ctx = JSON.parse(m[1]);
     const loader = Object.values(ctx?.state?.loaderData ?? {}).find(
-      (v: any) => v && typeof v === "object" && v.jobPost
+      (v: any) => v && typeof v === "object" && v.jobPost,
     ) as any;
     const jp = loader?.jobPost;
     if (!jp) return null;
     return {
-      title: String(jp?.title || "").replace(/\s+/g, " ").trim(),
-      company: String(jp?.company_name || "").replace(/\s+/g, " ").trim(),
-      location: String(jp?.job_post_location || "").replace(/\s+/g, " ").trim(),
+      title: String(jp?.title || "")
+        .replace(/\s+/g, " ")
+        .trim(),
+      company: String(jp?.company_name || "")
+        .replace(/\s+/g, " ")
+        .trim(),
+      location: String(jp?.job_post_location || "")
+        .replace(/\s+/g, " ")
+        .trim(),
     };
   } catch {
     return null;
@@ -146,14 +152,19 @@ export class GreenhouseAdapter extends ATSAdapter {
   }
 
   private async ensureApplicationForm(): Promise<void> {
-    const page = this.getPage();
     const formVisible = async (): Promise<boolean> => {
       // The form may render in THIS page or in a NEW TAB opened by the Apply
       // click (job-boards.eu.greenhouse.io does this); adopt whichever page
       // shows the form so the rest of the fill drives the right document.
       for (const p of this.stagehand.context.pages()) {
         try {
-          if (await p.locator('#first_name, #application-form').first().isVisible().catch(() => false)) {
+          if (
+            await p
+              .locator("#first_name, #application-form")
+              .first()
+              .isVisible()
+              .catch(() => false)
+          ) {
             if (p !== this.controls.getPage()) {
               this.controls.adoptPage(p);
             }
@@ -185,7 +196,7 @@ export class GreenhouseAdapter extends ATSAdapter {
     }
     throw new Error(
       "Greenhouse application form never appeared after clicking Apply " +
-        "(no #first_name / #application-form visible in any tab)"
+        "(no #first_name / #application-form visible in any tab)",
     );
   }
 
@@ -211,9 +222,7 @@ export class GreenhouseAdapter extends ATSAdapter {
 
       const read = async (selector: string): Promise<string> => {
         try {
-          return (await page.locator(selector).first().innerText())
-            .replace(/\s+/g, " ")
-            .trim();
+          return (await page.locator(selector).first().innerText()).replace(/\s+/g, " ").trim();
         } catch {
           return "";
         }
@@ -227,13 +236,12 @@ export class GreenhouseAdapter extends ATSAdapter {
             .locator(".board_title, .app-title, .job-post h1, .job-post-title h1, h1")
             .first()
             .innerText()
-            .catch(() => "")) ||
-          (await page.title()).replace(/\s*[|–-].*$/, "").trim();
+            .catch(() => "")) || (await page.title()).replace(/\s*[|–-].*$/, "").trim();
         title =
           titleBlock
             .split("\n")
             .map((line: string) => line.trim())
-            .filter(Boolean)[0]
+            .find(Boolean)
             ?.replace(/\s+/g, " ") ?? "";
       }
 
@@ -249,7 +257,7 @@ export class GreenhouseAdapter extends ATSAdapter {
 
       const description = (
         await read(
-          "#job-description, .job__description, .job-description, #content .job-post, #content"
+          "#job-description, .job__description, .job-description, #content .job-post, #content",
         )
       ).slice(0, 6000);
       return { title, company, location, description };
@@ -262,16 +270,14 @@ export class GreenhouseAdapter extends ATSAdapter {
   /** Best-effort company name from the board URL token. */
   private mergeInventory(
     jsonFields: JsonFieldSource[] | null,
-    domFields: FormField[]
+    domFields: FormField[],
   ): FormField[] {
     return mergeFormInventory(jsonFields, domFields);
   }
 
   private companyFromUrl(): string {
     try {
-      const token = new URL(this.controls.getPage().url()).pathname
-        .split("/")
-        .filter(Boolean)[0];
+      const token = new URL(this.controls.getPage().url()).pathname.split("/").find(Boolean);
       return token ? token.replace(/[-_]+/g, " ") : "";
     } catch {
       return "";
@@ -312,7 +318,13 @@ export class GreenhouseAdapter extends ATSAdapter {
           id: string;
           kind: string;
           options: string[];
-          targets: Array<{ text: string; name: string; value: string; id?: string; button?: boolean }>;
+          targets: Array<{
+            text: string;
+            name: string;
+            value: string;
+            id?: string;
+            button?: boolean;
+          }>;
         }> = [];
         // WARNING: only anonymous arrows may be used here. tsx's keepNames
         // wraps ANY arrow/function with an inferred name in __name(), and
@@ -339,38 +351,43 @@ export class GreenhouseAdapter extends ATSAdapter {
             id: string,
             kind: string,
             options: string[] = [],
-            targets: Array<{ text: string; name: string; value: string }> = []
+            targets: Array<{ text: string; name: string; value: string }> = [],
           ): void => {
             if (!label || !id) return;
             out.push({ label, id, kind, options, targets });
           },
-          (
-            inputs: HTMLInputElement[],
-            labelText: string,
-            anchor: string
-          ): void => {
+          (inputs: HTMLInputElement[], labelText: string, anchor: string): void => {
             if (!inputs.length || !labelText) return;
             if (inputs.some((i) => hidden(i))) return;
             const single = inputs.every((i) => i.type === "radio");
             const name = inputs[0].name || "";
             if (!name) return;
             const options: string[] = [];
-            const targets: Array<{ text: string; name: string; value: string; id?: string; button?: boolean }> = [];
+            const targets: Array<{
+              text: string;
+              name: string;
+              value: string;
+              id?: string;
+              button?: boolean;
+            }> = [];
             for (const input of inputs) {
               const wrapLabel = input.closest("label");
-              const forLabel = input.id
-                ? document.querySelector(`label[for="${input.id}"]`)
-                : null;
+              const forLabel = input.id ? document.querySelector(`label[for="${input.id}"]`) : null;
               const text = norm(
                 wrapLabel
                   ? wrapLabel.textContent || ""
                   : forLabel
                     ? forLabel.textContent || ""
-                    : input.getAttribute("aria-label") || ""
+                    : input.getAttribute("aria-label") || "",
               );
               if (!text) continue;
               options.push(text);
-              targets.push({ text, name: input.name || name, value: input.value || "", id: input.id || "" });
+              targets.push({
+                text,
+                name: input.name || name,
+                value: input.value || "",
+                id: input.id || "",
+              });
             }
             if (!options.length) return;
             push(labelText, anchor, single ? "radio" : "checkbox", options, targets);
@@ -380,7 +397,7 @@ export class GreenhouseAdapter extends ATSAdapter {
         // 1) label[for] -> text/select/multi inputs.
         document
           .querySelectorAll(
-            "#application-form label, .application--questions label, label.select__label"
+            "#application-form label, .application--questions label, label.select__label",
           )
           .forEach((lbl) => {
             const text = norm(lbl.textContent || "");
@@ -415,7 +432,7 @@ export class GreenhouseAdapter extends ATSAdapter {
           .querySelectorAll(
             "#application-form fieldset, #application-form [role='group'], " +
               "#application-form .eeoc__question__wrapper, " +
-              ".application--questions fieldset, .application--questions [role='group']"
+              ".application--questions fieldset, .application--questions [role='group']",
           )
           .forEach((container) => {
             let labelText = "";
@@ -428,23 +445,17 @@ export class GreenhouseAdapter extends ATSAdapter {
             }
             if (!labelText) {
               const wrap = container.closest(".field-wrapper, .eeoc__question__wrapper");
-              const wl = wrap
-                ? wrap.querySelector("label.select__label, label")
-                : null;
+              const wl = wrap ? wrap.querySelector("label.select__label, label") : null;
               if (wl) labelText = norm(wl.textContent || "");
             }
             const inputs = Array.from(
-              container.querySelectorAll("input[type='radio'], input[type='checkbox']")
+              container.querySelectorAll("input[type='radio'], input[type='checkbox']"),
             ) as HTMLInputElement[];
             if (!inputs.length) return;
             const name = inputs[0].name || "";
             if (seenContainers.has(name || labelText)) return;
             seenContainers.add(name || labelText);
-            addGroup(
-              inputs,
-              labelText,
-              (container as HTMLElement).id || name || labelText
-            );
+            addGroup(inputs, labelText, (container as HTMLElement).id || name || labelText);
           });
 
         // 3) Bare radio/checkbox groups grouped by input name (no container found).
@@ -452,7 +463,7 @@ export class GreenhouseAdapter extends ATSAdapter {
         document
           .querySelectorAll(
             "#application-form input[type='radio'], #application-form input[type='checkbox'], " +
-              ".application--questions input[type='radio'], .application--questions input[type='checkbox']"
+              ".application--questions input[type='radio'], .application--questions input[type='checkbox']",
           )
           .forEach((input) => {
             const i = input as HTMLInputElement;
@@ -461,11 +472,13 @@ export class GreenhouseAdapter extends ATSAdapter {
             bareSeen.add(name);
             const q = i.type === "radio" ? "radio" : "checkbox";
             const groupInputs = Array.from(
-              document.querySelectorAll(`input[type="${q}"][name="${name}"]`)
+              document.querySelectorAll(`input[type="${q}"][name="${name}"]`),
             ) as HTMLInputElement[];
             if (!groupInputs.length) return;
             let labelText = "";
-            const wrap = input.closest(".field-wrapper, .eeoc__question__wrapper, [role='group'], fieldset");
+            const wrap = input.closest(
+              ".field-wrapper, .eeoc__question__wrapper, [role='group'], fieldset",
+            );
             if (wrap) {
               const legend = wrap.querySelector("legend");
               const labelledBy = (wrap as HTMLElement).getAttribute("aria-labelledby");
@@ -537,7 +550,7 @@ export class GreenhouseAdapter extends ATSAdapter {
           return true;
         }
         console.warn(
-          `[GreenhouseAdapter] Resume input not present (attempt ${attempt + 1}); retrying...`
+          `[GreenhouseAdapter] Resume input not present (attempt ${attempt + 1}); retrying...`,
         );
         continue;
       }
@@ -545,7 +558,7 @@ export class GreenhouseAdapter extends ATSAdapter {
         await resumeInput.setInputFiles(resumePath);
       } catch (err: any) {
         console.warn(
-          `[GreenhouseAdapter] Resume setInputFiles threw (attempt ${attempt + 1}): ${err?.message || err}`
+          `[GreenhouseAdapter] Resume setInputFiles threw (attempt ${attempt + 1}): ${err?.message || err}`,
         );
       }
       await randomSleep(1500, 2200);
@@ -555,7 +568,7 @@ export class GreenhouseAdapter extends ATSAdapter {
         return true;
       }
       console.warn(
-        `[GreenhouseAdapter] Resume upload not confirmed (attempt ${attempt + 1}); retrying...`
+        `[GreenhouseAdapter] Resume upload not confirmed (attempt ${attempt + 1}); retrying...`,
       );
     }
     return false;
@@ -568,14 +581,14 @@ export class GreenhouseAdapter extends ATSAdapter {
     return page
       .evaluate((name: string) => {
         const input = document.querySelector(
-          'input#resume[type="file"]'
+          'input#resume[type="file"]',
         ) as HTMLInputElement | null;
         if (input && input.files && input.files.length > 0) return true;
         if (!name) return false;
         const area = document.querySelector(
-          ".file-upload, [class*='file-upload'], [id^='upload-label-']"
+          ".file-upload, [class*='file-upload'], [id^='upload-label-']",
         );
-        const text = area ? (area.textContent || "") : "";
+        const text = area ? area.textContent || "" : "";
         return !!name && (text.includes(name) || text.replace(/\s+/g, "").includes(name));
       }, fileName)
       .catch(() => false);
@@ -618,28 +631,28 @@ export class GreenhouseAdapter extends ATSAdapter {
     const controls = this.controls;
     console.log("[GreenhouseAdapter] Filling deterministic profile fields...");
     await controls.fillField(
-      '#first_name',
+      "#first_name",
       profile.firstName,
       "Type %firstName% into the First Name input field",
-      "firstName"
+      "firstName",
     );
     await controls.fillField(
-      '#last_name',
+      "#last_name",
       profile.lastName,
       "Type %lastName% into the Last Name input field",
-      "lastName"
+      "lastName",
     );
     await controls.fillField(
-      '#email',
+      "#email",
       profile.email,
       "Type %email% into the Email input field",
-      "email"
+      "email",
     );
     await controls.fillField(
-      '#phone',
+      "#phone",
       profile.phone,
       "Type %phone% into the Phone input field",
-      "phone"
+      "phone",
     );
 
     let resumeAttached = false;
@@ -653,7 +666,7 @@ export class GreenhouseAdapter extends ATSAdapter {
       await rpc("job_context", jobCtx);
       console.log(
         `[GreenhouseAdapter] Job context: ${jobCtx.title || "?"} @ ${jobCtx.company || "?"}` +
-          (jobCtx.location ? ` (${jobCtx.location})` : "")
+          (jobCtx.location ? ` (${jobCtx.location})` : ""),
       );
 
       const jsonModel = await this.fetchQuestionsModel();
@@ -694,7 +707,7 @@ export class GreenhouseAdapter extends ATSAdapter {
         if (pass === 0) {
           console.log(
             `[GreenhouseAdapter] Question inventory: ${inventory.length} ` +
-              `(json: ${jsonModel?.length ?? 0}, dom: ${domFields.length})`
+              `(json: ${jsonModel?.length ?? 0}, dom: ${domFields.length})`,
           );
         }
         if (newFields.length === 0) {
@@ -704,7 +717,7 @@ export class GreenhouseAdapter extends ATSAdapter {
           break;
         }
         console.log(
-          `[GreenhouseAdapter] Walk pass ${pass + 1}: ${newFields.length} new question(s).`
+          `[GreenhouseAdapter] Walk pass ${pass + 1}: ${newFields.length} new question(s).`,
         );
 
         for (const field of newFields) {
@@ -727,7 +740,7 @@ export class GreenhouseAdapter extends ATSAdapter {
       });
 
       console.log(
-        `[GreenhouseAdapter] Screener walk complete. Filled: ${filled.length}, blank (declined/unknown): ${blanked.length}.`
+        `[GreenhouseAdapter] Screener walk complete. Filled: ${filled.length}, blank (declined/unknown): ${blanked.length}.`,
       );
       for (const b of blanked) {
         console.warn(`[GreenhouseAdapter]   blank: ${escapePromptValue(b.label)} (${b.reason})`);
@@ -778,25 +791,18 @@ export class GreenhouseAdapter extends ATSAdapter {
       const coverBaseName = pdfPath?.split(/[\\/]/).pop() || "";
       const fileAttached = async (): Promise<boolean> => {
         return page
-          .evaluate(
-            (baseName: string) => {
-              const input = document.querySelector(
-                'input#cover_letter[type="file"], ' +
-                  'input[name*="cover_letter"][type="file"]'
-              ) as HTMLInputElement | null;
-              if (input && input.files && input.files.length > 0) return true;
-              if (!baseName) return false;
-              const drop = document.querySelector(
-                '[data-testid="cover_letter-dropbox"], .file-upload, [class*="file-upload"]'
-              );
-              const text = drop ? (drop.textContent || "") : "";
-              return (
-                text.includes(baseName) ||
-                text.replace(/\s+/g, "").includes(baseName)
-              );
-            },
-            coverBaseName
-          )
+          .evaluate((baseName: string) => {
+            const input = document.querySelector(
+              'input#cover_letter[type="file"], ' + 'input[name*="cover_letter"][type="file"]',
+            ) as HTMLInputElement | null;
+            if (input && input.files && input.files.length > 0) return true;
+            if (!baseName) return false;
+            const drop = document.querySelector(
+              '[data-testid="cover_letter-dropbox"], .file-upload, [class*="file-upload"]',
+            );
+            const text = drop ? drop.textContent || "" : "";
+            return text.includes(baseName) || text.replace(/\s+/g, "").includes(baseName);
+          }, coverBaseName)
           .catch(() => false);
       };
       let pdfAttached = false;
@@ -820,9 +826,7 @@ export class GreenhouseAdapter extends ATSAdapter {
 
         if (!attached && hasFileInput) {
           // Fallback: the attach button must be clicked to reveal the input.
-          const attachBtn = page
-            .locator('button[data-testid="cover_letter-attach"]')
-            .first();
+          const attachBtn = page.locator('button[data-testid="cover_letter-attach"]').first();
           if (await attachBtn.isVisible().catch(() => false)) {
             await attachBtn.click();
             await randomSleep(300, 500);
@@ -831,12 +835,12 @@ export class GreenhouseAdapter extends ATSAdapter {
               attached = await fileAttached();
               if (attached) {
                 console.log(
-                  "[GreenhouseAdapter] Cover letter PDF uploaded successfully via button click."
+                  "[GreenhouseAdapter] Cover letter PDF uploaded successfully via button click.",
                 );
               }
             } catch (e: any) {
               console.warn(
-                `[GreenhouseAdapter] Failed to attach cover letter PDF after button click: ${e.message}`
+                `[GreenhouseAdapter] Failed to attach cover letter PDF after button click: ${e.message}`,
               );
             }
           }
@@ -850,7 +854,7 @@ export class GreenhouseAdapter extends ATSAdapter {
       } else {
         console.log(
           "[GreenhouseAdapter] Cover letter PDF unavailable " +
-            "(generation failed or LLM had nothing); using the text answer instead."
+            "(generation failed or LLM had nothing); using the text answer instead.",
         );
       }
 
@@ -876,14 +880,14 @@ export class GreenhouseAdapter extends ATSAdapter {
         } else {
           console.log(
             "[GreenhouseAdapter] Cover letter text unavailable in the DOM " +
-              "(no visible textarea/file input); nothing committed."
+              "(no visible textarea/file input); nothing committed.",
           );
         }
       } else if (!coverLetterText) {
         console.log("[GreenhouseAdapter] Cover letter skipped: LLM had nothing to ground it on.");
       } else {
         console.log(
-          `[GreenhouseAdapter] Cover letter ${pdfPath ? "attached as PDF" : "left as-is"}.`
+          `[GreenhouseAdapter] Cover letter ${pdfPath ? "attached as PDF" : "left as-is"}.`,
         );
       }
 
@@ -908,7 +912,7 @@ export class GreenhouseAdapter extends ATSAdapter {
       }
       if (sweepPasses.length > 0) {
         console.log(
-          `[GreenhouseAdapter] Final sweep filled ${sweepPasses.length} previously-empty field(s):`
+          `[GreenhouseAdapter] Final sweep filled ${sweepPasses.length} previously-empty field(s):`,
         );
         for (const label of sweepPasses) {
           console.log(`[GreenhouseAdapter]   filled: ${escapePromptValue(label)}`);
@@ -925,11 +929,11 @@ export class GreenhouseAdapter extends ATSAdapter {
       });
       if (finalRequired.length > 0) {
         console.warn(
-          `[GreenhouseAdapter] ${finalRequired.length} REQUIRED field(s) still blank after the final sweep:`
+          `[GreenhouseAdapter] ${finalRequired.length} REQUIRED field(s) still blank after the final sweep:`,
         );
         for (const rb of finalRequired) {
           console.warn(
-            `[GreenhouseAdapter]   REQUIRED blank: ${escapePromptValue(rb.label)} (${rb.reason})`
+            `[GreenhouseAdapter]   REQUIRED blank: ${escapePromptValue(rb.label)} (${rb.reason})`,
           );
         }
       } else {
@@ -953,7 +957,11 @@ export class GreenhouseAdapter extends ATSAdapter {
 
       // Resume reverify: surface a failed attach instead of submitting without a CV.
       const resumeBase = (profile.resumePath ?? "").split(/[\\/]/).pop() || "";
-      if (profile.resumePath && !resumeAttached && !(await this.isResumeAttached(page, resumeBase))) {
+      if (
+        profile.resumePath &&
+        !resumeAttached &&
+        !(await this.isResumeAttached(page, resumeBase))
+      ) {
         console.warn("[GreenhouseAdapter] REVERIFY: resume is NOT attached after the final pass.");
       } else if (profile.resumePath) {
         console.log("[GreenhouseAdapter] REVERIFY: resume is attached.");
@@ -1014,7 +1022,7 @@ export class GreenhouseAdapter extends ATSAdapter {
               /one[- ]?time (code|pin)/.test(t) ||
               /enter (the|your)? ?code/.test(t) ||
               /code we sent/.test(t) ||
-              /^code/.test(t)
+              t.startsWith("code")
             );
           },
           (el: Element): boolean => {
@@ -1033,8 +1041,8 @@ export class GreenhouseAdapter extends ATSAdapter {
         }> = [];
         const inputs = Array.from(
           document.querySelectorAll(
-            "input[type='text'], input[type='tel'], input[type='number'], input:not([type])"
-          )
+            "input[type='text'], input[type='tel'], input[type='number'], input:not([type])",
+          ),
         );
         for (const el of inputs) {
           const inp = el as HTMLInputElement;
@@ -1106,9 +1114,9 @@ export class GreenhouseAdapter extends ATSAdapter {
       })
       .catch(() => null);
     if (!raw || raw.length === 0) return null;
-    const entries = raw.sort(
+    const entries = raw.toSorted(
       (a: { segmented: boolean }, b: { segmented: boolean }) =>
-        (a.segmented ? 0 : 1) - (b.segmented ? 0 : 1)
+        (a.segmented ? 0 : 1) - (b.segmented ? 0 : 1),
     );
     const primary = entries[0];
     const segmented = primary.segmented;
@@ -1128,7 +1136,7 @@ export class GreenhouseAdapter extends ATSAdapter {
     if (!gmailConfigured()) {
       console.log(
         "[GreenhouseAdapter] GMAIL_EMAIL/GMAIL_APP_PASSWORD not set; " +
-          "email-verification codes cannot be fetched."
+          "email-verification codes cannot be fetched.",
       );
       return false;
     }
@@ -1143,31 +1151,24 @@ export class GreenhouseAdapter extends ATSAdapter {
     console.log("[GreenhouseAdapter] Verification code prompt detected. Waiting for email...");
     console.log(
       `[GreenhouseAdapter] Prompt shape: segmented=${prompt.segmented} ` +
-        `selector=${prompt.selector} container=${prompt.containerSel ?? "(none)"}`
+        `selector=${prompt.selector} container=${prompt.containerSel ?? "(none)"}`,
     );
     // Dump the prompt wrapper's markup so the submit control can be matched
     // exactly (inputs are empty at this point, so no code is ever logged).
     const promptDom = await page
-      .evaluate(
-        (sel: string) => {
-          const el = document.querySelector(sel);
-          return el ? el.outerHTML.slice(0, 2500) : "(no element)";
-        },
-        prompt.containerSel || prompt.selector
-      )
+      .evaluate((sel: string) => {
+        const el = document.querySelector(sel);
+        return el ? el.outerHTML.slice(0, 2500) : "(no element)";
+      }, prompt.containerSel || prompt.selector)
       .catch(() => "(evaluate failed)");
     console.log(
-      `[GreenhouseAdapter] Prompt DOM (${
-        prompt.containerSel || prompt.selector
-      }):\n${promptDom}`
+      `[GreenhouseAdapter] Prompt DOM (${prompt.containerSel || prompt.selector}):\n${promptDom}`,
     );
     let code: string;
     try {
       code = await waitForGreenhouseCode();
     } catch (err: any) {
-      console.warn(
-        `[GreenhouseAdapter] Verification code fetch failed: ${err?.message || err}`
-      );
+      console.warn(`[GreenhouseAdapter] Verification code fetch failed: ${err?.message || err}`);
       return false;
     }
     if (!code) {
@@ -1191,8 +1192,7 @@ export class GreenhouseAdapter extends ATSAdapter {
     // detector never sees it). Surface it when the prompt never cleared.
     const feedback = await page
       .evaluate(
-        () =>
-          document.getElementById("email-verification-error")?.textContent?.trim() ?? ""
+        () => document.getElementById("email-verification-error")?.textContent?.trim() ?? "",
       )
       .catch(() => "");
     if (feedback) {
@@ -1207,7 +1207,7 @@ export class GreenhouseAdapter extends ATSAdapter {
       console.log(
         resubmitted
           ? "[GreenhouseAdapter] Verification accepted; resubmitted the application."
-          : "[GreenhouseAdapter] Verification accepted, but no submit button found to resubmit."
+          : "[GreenhouseAdapter] Verification accepted, but no submit button found to resubmit.",
       );
     }
     return entered;
@@ -1243,7 +1243,7 @@ export class GreenhouseAdapter extends ATSAdapter {
   private async fillVerificationCode(
     page: any,
     prompt: VerificationPrompt,
-    code: string
+    code: string,
   ): Promise<boolean> {
     const loc = page.locator(prompt.selector);
     const count = await loc.count().catch(() => 0);
@@ -1252,12 +1252,21 @@ export class GreenhouseAdapter extends ATSAdapter {
       // Greenhouse's segmented OTP spreads a full paste across all 8 boxes, so
       // fill the whole code into the first box first (deterministic); fall
       // back to per-box entry if the board doesn't spread it.
-      await loc.first().click().catch(() => {});
-      await loc.first().fill(code).catch(() => {});
+      await loc
+        .first()
+        .click()
+        .catch(() => {});
+      await loc
+        .first()
+        .fill(code)
+        .catch(() => {});
       await randomSleep(400, 700);
       let committed = await this.readVerificationCode(page, prompt);
       if (committed !== code) {
-        await loc.first().fill("").catch(() => {});
+        await loc
+          .first()
+          .fill("")
+          .catch(() => {});
         const n = Math.min(count, code.length);
         for (let i = 0; i < n; i++) {
           const box = loc.nth(i);
@@ -1273,7 +1282,7 @@ export class GreenhouseAdapter extends ATSAdapter {
       }
       if (committed !== code) {
         console.warn(
-          `[GreenhouseAdapter] Verification code not fully committed (got "${committed}"); submitting anyway.`
+          `[GreenhouseAdapter] Verification code not fully committed (got "${committed}"); submitting anyway.`,
         );
       }
     } else {
@@ -1316,7 +1325,7 @@ export class GreenhouseAdapter extends ATSAdapter {
       }
     }
     console.warn(
-      "[GreenhouseAdapter] No verification submit button found; code entered but not confirmed."
+      "[GreenhouseAdapter] No verification submit button found; code entered but not confirmed.",
     );
     return false;
   }
@@ -1327,7 +1336,11 @@ export class GreenhouseAdapter extends ATSAdapter {
     const count = await loc.count().catch(() => 0);
     let out = "";
     for (let i = 0; i < count; i++) {
-      out += (await loc.nth(i).inputValue().catch(() => "")) || "";
+      out +=
+        (await loc
+          .nth(i)
+          .inputValue()
+          .catch(() => "")) || "";
     }
     return out;
   }
@@ -1352,7 +1365,7 @@ export class GreenhouseAdapter extends ATSAdapter {
         "GreenhouseAdapter",
         this.profile,
         rpc ?? (async () => ({ answer: "" })),
-        true
+        true,
       );
       const filled: string[] = [];
       const blanked: { label: string; reason: string }[] = [];
@@ -1363,7 +1376,7 @@ export class GreenhouseAdapter extends ATSAdapter {
     const remaining = stillBlank.length;
     setBlankedRequiredCount(remaining);
     console.log(
-      `[GreenhouseAdapter] Recheck complete: ${remaining} required field(s) still blank.`
+      `[GreenhouseAdapter] Recheck complete: ${remaining} required field(s) still blank.`,
     );
     for (const l of stillBlank) {
       console.warn(`[GreenhouseAdapter]   still blank: ${escapePromptValue(l)}`);

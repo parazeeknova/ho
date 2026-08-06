@@ -1,9 +1,16 @@
-import { Stagehand, type Action } from "@browserbasehq/stagehand";
 import * as fs from "fs";
-import { ATSAdapter, type RpcHelper } from "./base.js";
+
+import { Stagehand, type Action } from "@browserbasehq/stagehand";
+
 import { type JobPayload, type Profile } from "../types.js";
 import { randomSleep } from "../utils/evasion.js";
-import { auditBlanks, finalReverify, type SubmitOutcome, verifySubmitOutcome } from "./shared/audit.js";
+import { ATSAdapter, type RpcHelper } from "./base.js";
+import {
+  auditBlanks,
+  finalReverify,
+  type SubmitOutcome,
+  verifySubmitOutcome,
+} from "./shared/audit.js";
 import { FormControls, sanitizeNumberAnswer } from "./shared/controls.js";
 import {
   chooseOption,
@@ -85,7 +92,7 @@ export function cleanObserveLabel(description: string): string {
   let d = (description || "").replace(/\s+/g, " ").trim();
   d = d.replace(
     /^(?:please\s+)?(?:fill\s+(?:(?:in|out|the)\s+)+|fill\s+|type\s+|enter\s+|input\s+|set\s+|provide\s+)/i,
-    ""
+    "",
   );
   d = d.replace(/\s+(?:field|input|box|dropdown|textbox)\s*$/i, "");
   d = d.replace(/^(?:the|your|my|a|an)\s+/i, "").trim();
@@ -94,9 +101,7 @@ export function cleanObserveLabel(description: string): string {
 
 /** Pure test of voluntary-disclosure (EEOC-style) screen text. */
 export function isVoluntaryText(text: string): boolean {
-  return /voluntary|self[- ]identif|demographic|eeoc|diversity|equal opportunity/i.test(
-    text || ""
-  );
+  return /voluntary|self[- ]identif|demographic|eeoc|diversity|equal opportunity/i.test(text || "");
 }
 
 /**
@@ -148,14 +153,15 @@ export function extractQuestionsFromJsonObject(root: any): JsonFieldSource[] {
     const qs = Array.isArray(obj.questions) ? obj.questions : null;
     if (qs && qs.length) {
       const looksLikeQuestions = qs.every(
-        (q: any) => q && typeof q === "object" && (q.label !== undefined || q.name !== undefined)
+        (q: any) => q && typeof q === "object" && (q.label !== undefined || q.name !== undefined),
       );
       if (looksLikeQuestions) {
         for (const q of qs) {
-          const label = String(q?.label || "").replace(/\s+/g, " ").trim();
+          const label = String(q?.label || "")
+            .replace(/\s+/g, " ")
+            .trim();
           if (!label) continue;
-          const fields =
-            Array.isArray(q?.fields) && q.fields.length ? q.fields : [q];
+          const fields = Array.isArray(q?.fields) && q.fields.length ? q.fields : [q];
           for (const f of fields) {
             const name = String(f?.name || q?.name || "");
             const kind = String(f?.type || q?.type || "input_text");
@@ -170,9 +176,7 @@ export function extractQuestionsFromJsonObject(root: any): JsonFieldSource[] {
               kind,
               required: !!q?.required,
               options: (f?.values ?? [])
-                .map((v: any) =>
-                  (v?.label ?? v?.name ?? v?.value ?? "").toString().trim()
-                )
+                .map((v: any) => (v?.label ?? v?.name ?? v?.value ?? "").toString().trim())
                 .filter(Boolean),
             });
           }
@@ -207,9 +211,7 @@ function collectJsonBlobs(html: string): string[] {
     const raw = extractBalancedObject(html, marker);
     if (raw) blobs.push(raw);
   }
-  const script = html.match(
-    /<script[^>]*__NEXT_DATA__[^>]*>([\s\S]*?)<\/script>/i
-  );
+  const script = html.match(/<script[^>]*__NEXT_DATA__[^>]*>([\s\S]*?)<\/script>/i);
   if (script && script[1] && script[1].trim()) blobs.push(script[1].trim());
   return blobs;
 }
@@ -242,40 +244,46 @@ export function parseJsonQuestions(html: string): JsonFieldSource[] {
 /** Best-effort job context (title/company/location/description) from embedded
  *  JSON blobs. Pure and unit-testable. */
 export function extractJsonJobContext(
-  html: string
+  html: string,
 ): { title: string; company: string; location: string; description: string } | null {
   for (const raw of collectJsonBlobs(html)) {
     try {
-      const found: { title: string; company: string; location: string; description: string } | null =
-        (() => {
-          const walk = (obj: any): any => {
-            if (!obj || typeof obj !== "object") return null;
-            if (obj.jobPost && (obj.jobPost.title || obj.jobPost.company_name)) return obj.jobPost;
-            if (obj.posting && obj.posting.title) return obj.posting;
-            if (obj.job && obj.job.title) return obj.job;
-            for (const k of Object.keys(obj)) {
-              const r = walk(obj[k]);
-              if (r) return r;
-            }
-            return null;
-          };
-          const jp = walk(JSON.parse(raw));
-          if (!jp) return null;
-          const htmlDesc = String(jp?.descriptionHtml || jp?.description || "").replace(
-            /<[^>]+>/g,
-            " "
-          );
-          return {
-            title: String(jp?.title || "").replace(/\s+/g, " ").trim(),
-            company: String(jp?.company_name || jp?.company || jp?.companyName || "")
-              .replace(/\s+/g, " ")
-              .trim(),
-            location: String(jp?.job_post_location || jp?.location || jp?.locationName || "")
-              .replace(/\s+/g, " ")
-              .trim(),
-            description: htmlDesc.replace(/\s+/g, " ").trim().slice(0, 6000),
-          };
-        })();
+      const found: {
+        title: string;
+        company: string;
+        location: string;
+        description: string;
+      } | null = (() => {
+        const walk = (obj: any): any => {
+          if (!obj || typeof obj !== "object") return null;
+          if (obj.jobPost && (obj.jobPost.title || obj.jobPost.company_name)) return obj.jobPost;
+          if (obj.posting && obj.posting.title) return obj.posting;
+          if (obj.job && obj.job.title) return obj.job;
+          for (const k of Object.keys(obj)) {
+            const r = walk(obj[k]);
+            if (r) return r;
+          }
+          return null;
+        };
+        const jp = walk(JSON.parse(raw));
+        if (!jp) return null;
+        const htmlDesc = String(jp?.descriptionHtml || jp?.description || "").replace(
+          /<[^>]+>/g,
+          " ",
+        );
+        return {
+          title: String(jp?.title || "")
+            .replace(/\s+/g, " ")
+            .trim(),
+          company: String(jp?.company_name || jp?.company || jp?.companyName || "")
+            .replace(/\s+/g, " ")
+            .trim(),
+          location: String(jp?.job_post_location || jp?.location || jp?.locationName || "")
+            .replace(/\s+/g, " ")
+            .trim(),
+          description: htmlDesc.replace(/\s+/g, " ").trim().slice(0, 6000),
+        };
+      })();
       if (found && (found.title || found.description)) return found;
     } catch {
       // keep probing
@@ -341,8 +349,8 @@ export class GenericAdapter extends ATSAdapter {
         ];
         const buttons = Array.from(
           document.querySelectorAll(
-            "a, button, [role='button'], input[type='button'], input[type='submit']"
-          )
+            "a, button, [role='button'], input[type='button'], input[type='submit']",
+          ),
         )
           .filter((el) => visible(el))
           .map((el) => {
@@ -361,8 +369,8 @@ export class GenericAdapter extends ATSAdapter {
           document.querySelectorAll(
             "form input, form select, form textarea, " +
               "main input, main select, main textarea, " +
-              "[role='main'] input, [role='main'] select, [role='main'] textarea"
-          )
+              "[role='main'] input, [role='main'] select, [role='main'] textarea",
+          ),
         ).filter((el) => {
           const e = el as HTMLInputElement;
           if (e.type === "hidden" || e.type === "file") return false;
@@ -370,19 +378,19 @@ export class GenericAdapter extends ATSAdapter {
           return true;
         });
         const passwordFields = Array.from(
-          document.querySelectorAll('input[type="password"]')
+          document.querySelectorAll('input[type="password"]'),
         ).filter((el) => visible(el)).length;
         const formDetected = controls.length > 0;
         const stepIndicator = /step\s*\d+\s+of\s+\d+/i.test(
-          (document.body?.innerText || "").slice(0, 3000)
+          (document.body?.innerText || "").slice(0, 3000),
         );
         const gateDetected =
           passwordFields > 0 &&
-          (hasText(/sign\s*in|log\s*in|create\s*account|account/) ||
-            controls.length === 1);
-        const applyText = hasText(
-          /^(apply|apply now|apply for this job|apply for this position|start application|apply here|apply online)$/i
-        ) || hasText(/apply\s*(now|for this job|for this position|online|here|to this job)$/i);
+          (hasText(/sign\s*in|log\s*in|create\s*account|account/) || controls.length === 1);
+        const applyText =
+          hasText(
+            /^(apply|apply now|apply for this job|apply for this position|start application|apply here|apply online)$/i,
+          ) || hasText(/apply\s*(now|for this job|for this position|online|here|to this job)$/i);
         const applyHref =
           !formDetected &&
           !!document.querySelector("a[href*='apply' i], [role='button'][href*='apply' i]");
@@ -408,7 +416,6 @@ export class GenericAdapter extends ATSAdapter {
   }
 
   private async waitForFormOrWizard(): Promise<void> {
-    const page = this.getPage();
     for (let i = 0; i < 40; i++) {
       const probe = await this.probeFlow();
       const kind = classifyFlow(probe);
@@ -422,7 +429,7 @@ export class GenericAdapter extends ATSAdapter {
     const apply = page
       .locator(
         "a[href*='apply' i], button:has-text('Apply'), a:has-text('Apply'), " +
-          "[role='button']:has-text('Apply'), input[value*='Apply' i]"
+          "[role='button']:has-text('Apply'), input[value*='Apply' i]",
       )
       .first();
     if (await apply.isVisible().catch(() => false)) {
@@ -431,7 +438,7 @@ export class GenericAdapter extends ATSAdapter {
       return;
     }
     await this.controls.safeAct(
-      "click the 'Apply', 'Apply now', or 'Apply for this job' button or link to open the application form"
+      "click the 'Apply', 'Apply now', or 'Apply for this job' button or link to open the application form",
     );
   }
 
@@ -486,7 +493,7 @@ export class GenericAdapter extends ATSAdapter {
       .locator(
         "button:has-text('Continue without signing in'), button:has-text('Continue as guest'), " +
           "button:has-text('Apply without signing in'), button:has-text('Skip for now'), " +
-          "a:has-text('Continue without signing in')"
+          "a:has-text('Continue without signing in')",
       )
       .first();
     if (await guest.isVisible().catch(() => false)) {
@@ -497,9 +504,7 @@ export class GenericAdapter extends ATSAdapter {
     const user = process.env.WORKDAY_EMAIL;
     const pw = process.env.WORKDAY_PASSWORD;
     if (user && pw) {
-      const email = page
-        .locator('input[type="email"], input[name*="email" i]')
-        .first();
+      const email = page.locator('input[type="email"], input[name*="email" i]').first();
       if (await email.isVisible().catch(() => false)) {
         await email.fill(user);
         const password = page.locator('input[type="password"]').first();
@@ -518,7 +523,7 @@ export class GenericAdapter extends ATSAdapter {
     this.warn(
       "Sign-in/account gate cannot be passed automatically (no guest path and " +
         "WORKDAY_EMAIL/WORKDAY_PASSWORD not usable). Form fields will be reported " +
-        "as deferred for manual completion."
+        "as deferred for manual completion.",
     );
   }
 
@@ -528,7 +533,7 @@ export class GenericAdapter extends ATSAdapter {
       .locator(
         "button:has-text('Submit Application'), button:has-text('Submit'), " +
           "input[type='submit'], button[type='submit'], a:has-text('Submit Application'), " +
-          "[data-automation-id*='submit' i]"
+          "[data-automation-id*='submit' i]",
       )
       .first();
     return await b.isVisible().catch(() => false);
@@ -540,7 +545,7 @@ export class GenericAdapter extends ATSAdapter {
       .locator(
         "button:has-text('Save and Continue'), button:has-text('Continue'), " +
           "button:has-text('Next Step'), button:has-text('Next'), button:has-text('Proceed'), " +
-          "[role='button']:has-text('Continue'), [data-automation-id*='continue' i]"
+          "[role='button']:has-text('Continue'), [data-automation-id*='continue' i]",
       )
       .first();
     if (!(await btn.isVisible().catch(() => false))) return false;
@@ -558,8 +563,8 @@ export class GenericAdapter extends ATSAdapter {
     if (fields.some((f) => f.required)) return false;
     const surveyLabels = fields.some((f) =>
       /race|ethnic|gender|sex|veteran|disability|orientation|military|self[- ]identif|voluntary|diversity/i.test(
-        f.label
-      )
+        f.label,
+      ),
     );
     if (surveyLabels) return true;
     // Heading/legend-level marker only — never body footer text.
@@ -569,7 +574,7 @@ export class GenericAdapter extends ATSAdapter {
         const main = document.querySelector("main, [role='main']");
         const scope = main || document.body;
         const cand = scope.querySelector(
-          "h1, h2, h3, legend, [data-automation-label], [class*='title']"
+          "h1, h2, h3, legend, [data-automation-label], [class*='title']",
         );
         return (cand ? cand.textContent || "" : "").replace(/\s+/g, " ").trim();
       })
@@ -609,14 +614,14 @@ export class GenericAdapter extends ATSAdapter {
         return {
           h1: txt("h1"),
           title: txt(
-            "[class*='job-title'], [class*='jobTitle'], [data-automation-id='jobPostingHeader']"
+            "[class*='job-title'], [class*='jobTitle'], [data-automation-id='jobPostingHeader']",
           ),
           location: txt(
-            "[data-automation-id='locations'], [class*='location'], [class*='job-location'], [class*='posting-location']"
+            "[data-automation-id='locations'], [class*='location'], [class*='job-location'], [class*='posting-location']",
           ),
           desc: txt(
             "#job-description, [class*='job-description'], [class*='job__description'], " +
-              "[data-automation-id='jobPostingDescription']"
+              "[data-automation-id='jobPostingDescription']",
           ),
           ogTitle: meta("og:title"),
           ogDesc: meta("og:description"),
@@ -650,9 +655,8 @@ export class GenericAdapter extends ATSAdapter {
       let company = "";
       try {
         const u = new URL(page.url());
-        company =
-          u.hostname.replace(/^(www|careers|jobs)\./, "").split(".")[0] || "";
-        const pathToken = u.pathname.split("/").filter(Boolean)[0] || "";
+        company = u.hostname.replace(/^(www|careers|jobs)\./, "").split(".")[0] || "";
+        const pathToken = u.pathname.split("/").find(Boolean) || "";
         if (!company) company = pathToken;
       } catch {
         // fall through
@@ -662,7 +666,11 @@ export class GenericAdapter extends ATSAdapter {
         title: title.replace(/\s+/g, " ").trim(),
         company: company.replace(/[-_]+/g, " ").trim(),
         location,
-        description: description.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 6000),
+        description: description
+          .replace(/<[^>]+>/g, " ")
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 6000),
       };
     } catch (err: any) {
       this.warn(`readJobContext failed: ${err?.message || err}`);
@@ -719,142 +727,146 @@ export class GenericAdapter extends ATSAdapter {
         // data-field-path ids stay UNIQUE and STABLE across the re-scan walks
         // (a conditional field revealed in pass 2 must not collide with a
         // field tagged in pass 1 — that would mis-fill/mis-read).
-        const [norm, visible, inNav, labelOf, hasAsterisk, qesc, nextGenericId, singlePath, push] = [
-          (t: string) =>
-            (t || "").replace(/\s+/g, " ").trim().replace(/^\*+|\*+$/g, ""),
-          (el: Element): boolean => {
-            const e = el as HTMLElement;
-            const r = e.getBoundingClientRect();
-            if (r.width === 0 && r.height === 0) return false;
-            // Honeypot guard: off-viewport-to-the-top/left (position:absolute;
-            // left:-9999px) fields are traps, never real questions.
-            if (r.right < 0 || r.bottom < 0) return false;
-            if (e.getAttribute && e.getAttribute("tabindex") === "-1") return false;
-            const cs = getComputedStyle(e);
-            if (cs.display === "none" || cs.visibility === "hidden" || cs.opacity === "0")
+        const [norm, visible, inNav, labelOf, hasAsterisk, qesc, nextGenericId, singlePath, push] =
+          [
+            (t: string) =>
+              (t || "")
+                .replace(/\s+/g, " ")
+                .trim()
+                .replace(/^\*+|\*+$/g, ""),
+            (el: Element): boolean => {
+              const e = el as HTMLElement;
+              const r = e.getBoundingClientRect();
+              if (r.width === 0 && r.height === 0) return false;
+              // Honeypot guard: off-viewport-to-the-top/left (position:absolute;
+              // left:-9999px) fields are traps, never real questions.
+              if (r.right < 0 || r.bottom < 0) return false;
+              if (e.getAttribute && e.getAttribute("tabindex") === "-1") return false;
+              const cs = getComputedStyle(e);
+              if (cs.display === "none" || cs.visibility === "hidden" || cs.opacity === "0")
+                return false;
+              let n: Element | null = e;
+              while (n && n !== document.body) {
+                if (n.getAttribute && n.getAttribute("hidden") != null) return false;
+                n = n.parentElement;
+              }
+              return true;
+            },
+            (el: Element): boolean => {
+              let n: Element | null = el;
+              while (n && n !== document.body) {
+                const tag = n.tagName.toLowerCase();
+                const role = n.getAttribute && n.getAttribute("role");
+                if (
+                  tag === "header" ||
+                  tag === "nav" ||
+                  tag === "footer" ||
+                  role === "banner" ||
+                  role === "navigation"
+                ) {
+                  return true;
+                }
+                n = n.parentElement;
+              }
               return false;
-            let n: Element | null = e;
-            while (n && n !== document.body) {
-              if (n.getAttribute && n.getAttribute("hidden") != null) return false;
-              n = n.parentElement;
-            }
-            return true;
-          },
-          (el: Element): boolean => {
-            let n: Element | null = el;
-            while (n && n !== document.body) {
-              const tag = n.tagName.toLowerCase();
-              const role = n.getAttribute && n.getAttribute("role");
-              if (
-                tag === "header" ||
-                tag === "nav" ||
-                tag === "footer" ||
-                role === "banner" ||
-                role === "navigation"
-              ) {
-                return true;
+            },
+            (el: Element): string => {
+              const labelledby = el.getAttribute && el.getAttribute("aria-labelledby");
+              if (labelledby) {
+                const l = document.getElementById(labelledby);
+                if (l) {
+                  const t = norm(l.textContent || "");
+                  if (t) return t;
+                }
               }
-              n = n.parentElement;
-            }
-            return false;
-          },
-          (el: Element): string => {
-            const labelledby = el.getAttribute && el.getAttribute("aria-labelledby");
-            if (labelledby) {
-              const l = document.getElementById(labelledby);
-              if (l) {
-                const t = norm(l.textContent || "");
+              const aria = el.getAttribute && el.getAttribute("aria-label");
+              if (aria) {
+                const t = norm(aria);
+                if (t && !/robots only/i.test(t)) return t;
+              }
+              const wrap = el.closest("label");
+              if (wrap) {
+                const t = norm(wrap.textContent || "");
                 if (t) return t;
               }
-            }
-            const aria = el.getAttribute && el.getAttribute("aria-label");
-            if (aria) {
-              const t = norm(aria);
-              if (t && !/robots only/i.test(t)) return t;
-            }
-            const wrap = el.closest("label");
-            if (wrap) {
-              const t = norm(wrap.textContent || "");
-              if (t) return t;
-            }
-            const id = el.getAttribute && el.getAttribute("id");
-            if (id) {
-              const fl = document.querySelector(`label[for="${qesc(id)}"]`);
-              if (fl) {
-                const t = norm(fl.textContent || "");
-                if (t) return t;
+              const id = el.getAttribute && el.getAttribute("id");
+              if (id) {
+                const fl = document.querySelector(`label[for="${qesc(id)}"]`);
+                if (fl) {
+                  const t = norm(fl.textContent || "");
+                  if (t) return t;
+                }
               }
-            }
-            let n = el.parentElement;
-            for (let i = 0; n && i < 4; i++, n = n.parentElement) {
-              const cand = n.querySelector(
-                ':scope > label, :scope > legend, :scope > [class*="label"], ' +
-                  ':scope > [data-automation-label], :scope > h1, :scope > h2, :scope > h3'
-              );
-              if (cand) {
-                const t = norm(cand.textContent || "");
-                if (t && t.length < 160) return t;
+              let n = el.parentElement;
+              for (let i = 0; n && i < 4; i++, n = n.parentElement) {
+                const cand = n.querySelector(
+                  ':scope > label, :scope > legend, :scope > [class*="label"], ' +
+                    ":scope > [data-automation-label], :scope > h1, :scope > h2, :scope > h3",
+                );
+                if (cand) {
+                  const t = norm(cand.textContent || "");
+                  if (t && t.length < 160) return t;
+                }
               }
-            }
-            return "";
-          },
-          (el: Element): boolean => {
-            const test = (t: string | null): boolean => !!t && /\*/.test(t);
-            const wrap = el.closest("label");
-            if (test(wrap ? wrap.textContent : "")) return true;
-            const id = el.getAttribute && el.getAttribute("id");
-            if (id) {
-              const fl = document.querySelector(`label[for="${qesc(id)}"]`);
-              if (test(fl ? fl.textContent : "")) return true;
-            }
-            if (test(el.getAttribute && el.getAttribute("aria-label"))) return true;
-            const p = el.parentElement;
-            if (p) {
-              const l = p.querySelector(":scope > label, :scope > legend, :scope > [data-automation-label]");
-              if (test(l ? l.textContent : "")) return true;
-            }
-            return false;
-          },
-          (s: string): string =>
-            (s || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"'),
-          (): string => {
-            // Monotonic AND persisted on <html> so synthetic ids never collide
-            // between re-scan walks (a conditional field revealed in pass 2
-            // must not reuse an id already assigned in pass 1).
-            const root = document.documentElement;
-            const n =
-              (parseInt(root.getAttribute("data-generic-id") || "0", 10) || 0) + 1;
-            root.setAttribute("data-generic-id", String(n));
-            return "generic-field-" + n;
-          },
-          (el: Element): string => {
-            // A stable per-control scope id. Reuses the nearest existing
-            // [data-field-path] (self-inclusive), else tags THIS element —
-            // never a shared ancestor container (two id-less inputs in one
-            // row must not collapse onto a single scope, which would
-            // mis-fill/mis-read the second field).
-            if (el.matches && el.matches("[data-field-path]")) {
-              return el.getAttribute("data-field-path") || "";
-            }
-            const existing = el.closest("[data-field-path]");
-            if (existing) return existing.getAttribute("data-field-path") || "";
-            const fresh = nextGenericId();
-            el.setAttribute("data-field-path", fresh);
-            return fresh;
-          },
-          (
-            label: string,
-            id: string,
-            name: string,
-            kind: string,
-            required: boolean,
-            options: string[] = [],
-            targets: Array<{ text: string; name: string; value: string; id?: string }> = []
-          ): void => {
-            if (!label) return;
-            out.push({ label, id, name, kind, required, options, targets });
-          },
-        ];
+              return "";
+            },
+            (el: Element): boolean => {
+              const test = (t: string | null): boolean => !!t && /\*/.test(t);
+              const wrap = el.closest("label");
+              if (test(wrap ? wrap.textContent : "")) return true;
+              const id = el.getAttribute && el.getAttribute("id");
+              if (id) {
+                const fl = document.querySelector(`label[for="${qesc(id)}"]`);
+                if (test(fl ? fl.textContent : "")) return true;
+              }
+              if (test(el.getAttribute && el.getAttribute("aria-label"))) return true;
+              const p = el.parentElement;
+              if (p) {
+                const l = p.querySelector(
+                  ":scope > label, :scope > legend, :scope > [data-automation-label]",
+                );
+                if (test(l ? l.textContent : "")) return true;
+              }
+              return false;
+            },
+            (s: string): string => (s || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"'),
+            (): string => {
+              // Monotonic AND persisted on <html> so synthetic ids never collide
+              // between re-scan walks (a conditional field revealed in pass 2
+              // must not reuse an id already assigned in pass 1).
+              const root = document.documentElement;
+              const n = (parseInt(root.getAttribute("data-generic-id") || "0", 10) || 0) + 1;
+              root.setAttribute("data-generic-id", String(n));
+              return "generic-field-" + n;
+            },
+            (el: Element): string => {
+              // A stable per-control scope id. Reuses the nearest existing
+              // [data-field-path] (self-inclusive), else tags THIS element —
+              // never a shared ancestor container (two id-less inputs in one
+              // row must not collapse onto a single scope, which would
+              // mis-fill/mis-read the second field).
+              if (el.matches && el.matches("[data-field-path]")) {
+                return el.getAttribute("data-field-path") || "";
+              }
+              const existing = el.closest("[data-field-path]");
+              if (existing) return existing.getAttribute("data-field-path") || "";
+              const fresh = nextGenericId();
+              el.setAttribute("data-field-path", fresh);
+              return fresh;
+            },
+            (
+              label: string,
+              id: string,
+              name: string,
+              kind: string,
+              required: boolean,
+              options: string[] = [],
+              targets: Array<{ text: string; name: string; value: string; id?: string }> = [],
+            ): void => {
+              if (!label) return;
+              out.push({ label, id, name, kind, required, options, targets });
+            },
+          ];
 
         // Text-like controls (input[type=text/email/tel/number/url/date],
         // bare inputs, textareas). Comboboxes (role=combobox / aria-autocomplete
@@ -874,7 +886,7 @@ export class GenericAdapter extends ATSAdapter {
             !!e.getAttribute("aria-autocomplete") ||
             !!e.closest('[class*="select-shell"], [class*="react-select"]');
           const dateish = !!e.closest(
-            ".react-datepicker-wrapper, .react-datepicker, [class*='datepicker']"
+            ".react-datepicker-wrapper, .react-datepicker, [class*='datepicker']",
           );
           let kind: string;
           if (combo) kind = "combobox";
@@ -884,9 +896,7 @@ export class GenericAdapter extends ATSAdapter {
           if (seenText.has(key)) continue;
           seenText.add(key);
           const required =
-            !!e.getAttribute("aria-required") ||
-            e.hasAttribute("required") ||
-            hasAsterisk(e);
+            !!e.getAttribute("aria-required") || e.hasAttribute("required") || hasAsterisk(e);
           push(label, e.id || singlePath(e), e.name || "", kind, required);
         }
 
@@ -915,7 +925,7 @@ export class GenericAdapter extends ATSAdapter {
         // still sees it instead of silently losing a required gate.
         const seenGroups = new Set<string>();
         for (const el of Array.from(
-          document.querySelectorAll('input[type="radio"], input[type="checkbox"]')
+          document.querySelectorAll('input[type="radio"], input[type="checkbox"]'),
         )) {
           const e = el as HTMLInputElement;
           if (inNav(e)) continue;
@@ -925,7 +935,7 @@ export class GenericAdapter extends ATSAdapter {
           if (name) seenGroups.add(name);
           const group: HTMLInputElement[] = name
             ? (Array.from(
-                document.querySelectorAll(`input[type="${type}"][name="${qesc(name)}"]`)
+                document.querySelectorAll(`input[type="${type}"][name="${qesc(name)}"]`),
               ) as HTMLInputElement[])
             : [e];
           const targets: Array<{ text: string; name: string; value: string; id?: string }> = [];
@@ -942,12 +952,12 @@ export class GenericAdapter extends ATSAdapter {
             anyVisible = true;
             const gid = g.getAttribute("id") || "";
             const labFor = gid
-              ? (document.querySelector(`label[for="${qesc(gid)}"]`)?.textContent || "")
+              ? document.querySelector(`label[for="${qesc(gid)}"]`)?.textContent || ""
               : "";
             const text = norm(
               wrapLabel
                 ? wrapLabel.textContent || ""
-                : labFor || g.getAttribute("aria-label") || (row ? row.textContent || "" : "")
+                : labFor || g.getAttribute("aria-label") || (row ? row.textContent || "" : ""),
             );
             if (!text) continue;
             if (!targets.some((t) => t.text === text)) {
@@ -961,7 +971,7 @@ export class GenericAdapter extends ATSAdapter {
           // option's own text.
           const container = e.closest(
             "[data-automation-id], fieldset, [role='radiogroup'], [role='group'], " +
-              "[role='checkbox'], [class*='form-control'], [class*='field']"
+              "[role='checkbox'], [class*='form-control'], [class*='field']",
           );
           let groupLabel = "";
           if (container) {
@@ -974,8 +984,8 @@ export class GenericAdapter extends ATSAdapter {
               for (const cand of Array.from(
                 container.querySelectorAll(
                   ':scope > legend, :scope > [class*="label"], :scope > label, ' +
-                    ':scope > h1, :scope > h2, :scope > h3, :scope > span'
-                )
+                    ":scope > h1, :scope > h2, :scope > h3, :scope > span",
+                ),
               )) {
                 const t = norm(cand.textContent || "");
                 if (!t || t.length > 160) continue;
@@ -991,7 +1001,7 @@ export class GenericAdapter extends ATSAdapter {
           const kind = type === "radio" ? "radio" : "checkbox";
           const required =
             group.some(
-              (g) => g.hasAttribute("required") || g.getAttribute("aria-required") === "true"
+              (g) => g.hasAttribute("required") || g.getAttribute("aria-required") === "true",
             ) ||
             /\*/.test(groupLabel) ||
             hasAsterisk(e);
@@ -1051,7 +1061,7 @@ export class GenericAdapter extends ATSAdapter {
     const target = await page
       .evaluate(() => {
         const inputs = Array.from(
-          document.querySelectorAll('input[type="file"]')
+          document.querySelectorAll('input[type="file"]'),
         ) as HTMLInputElement[];
         if (!inputs.length) return { index: -1, label: "" };
         let resume: { index: number; label: string } | null = null;
@@ -1060,12 +1070,15 @@ export class GenericAdapter extends ATSAdapter {
           const aria = e.getAttribute("aria-label") || "";
           const id = e.id || "";
           const forLabel = id
-            ? (document.querySelector(`label[for="${id}"]`)?.textContent || "")
+            ? document.querySelector(`label[for="${id}"]`)?.textContent || ""
             : "";
           const wrap = e.closest("label")?.textContent || "";
           const txt = `${aria} ${forLabel} ${wrap}`.toLowerCase();
           if (/cover letter|cover_letter|transcript|portfolio/.test(txt)) continue;
-          if (/resume|cv|curriculum|attach your|upload your/.test(txt) || /resume|cv/i.test(e.name)) {
+          if (
+            /resume|cv|curriculum|attach your|upload your/.test(txt) ||
+            /resume|cv/i.test(e.name)
+          ) {
             resume = { index: i, label: txt.replace(/\s+/g, " ").trim().slice(0, 80) };
             break;
           }
@@ -1077,7 +1090,7 @@ export class GenericAdapter extends ATSAdapter {
           const e = inputs[0];
           const id = e.id || "";
           const txt = `${e.getAttribute("aria-label") || ""} ${
-            id ? (document.querySelector(`label[for="${id}"]`)?.textContent || "") : ""
+            id ? document.querySelector(`label[for="${id}"]`)?.textContent || "" : ""
           } ${e.closest("label")?.textContent || ""}`.toLowerCase();
           if (!/transcript|portfolio|cover letter|id card|identity/i.test(txt)) {
             resume = { index: 0, label: "" };
@@ -1108,11 +1121,15 @@ export class GenericAdapter extends ATSAdapter {
         await uploadBtn.click();
         await randomSleep(1500, 2200);
         if (await this.controls.isResumeAttached()) {
-          console.log(`[Generic] Resume uploaded and registered after Upload (attempt ${attempt + 1}).`);
+          console.log(
+            `[Generic] Resume uploaded and registered after Upload (attempt ${attempt + 1}).`,
+          );
           return true;
         }
       }
-      this.warn(`Resume upload not confirmed for ${baseName} (attempt ${attempt + 1}); retrying...`);
+      this.warn(
+        `Resume upload not confirmed for ${baseName} (attempt ${attempt + 1}); retrying...`,
+      );
     }
     return false;
   }
@@ -1122,7 +1139,7 @@ export class GenericAdapter extends ATSAdapter {
   private async fillCoverLetter(
     rpc: RpcHelper,
     filled: string[],
-    blanked: BlankEntry[]
+    blanked: BlankEntry[],
   ): Promise<void> {
     const page = this.getPage();
     const target: { index: number; label: string } | null = await page
@@ -1135,7 +1152,7 @@ export class GenericAdapter extends ATSAdapter {
           const aria = e.getAttribute("aria-label") || "";
           const id = e.getAttribute("id") || "";
           const forLabel = id
-            ? (document.querySelector(`label[for="${id}"]`)?.textContent || "")
+            ? document.querySelector(`label[for="${id}"]`)?.textContent || ""
             : "";
           const wrap = e.closest("label")?.textContent || "";
           const label = (aria || forLabel || wrap).replace(/\s+/g, " ").trim();
@@ -1144,8 +1161,8 @@ export class GenericAdapter extends ATSAdapter {
         const match = out.find(
           (c) =>
             /cover letter|additional information|anything else you|more about you|tell us about yourself|anything you would like/i.test(
-              c.label
-            ) && !(areas[c.index] as HTMLTextAreaElement).value.trim()
+              c.label,
+            ) && !(areas[c.index] as HTMLTextAreaElement).value.trim(),
         );
         return match ?? null;
       })
@@ -1163,13 +1180,13 @@ export class GenericAdapter extends ATSAdapter {
       ];
       for (const sel of clFileInputs) {
         const fileInput = page.locator(sel).first();
-        if (await fileInput.isVisible().catch(() => false) || await fileInput.count() > 0) {
+        if ((await fileInput.isVisible().catch(() => false)) || (await fileInput.count()) > 0) {
           try {
             await fileInput.setInputFiles(pdfPath);
             console.log("[Generic] Cover letter PDF uploaded successfully.");
             attached = true;
             break;
-          } catch (e) {
+          } catch {
             // Ignore
           }
         }
@@ -1187,7 +1204,10 @@ export class GenericAdapter extends ATSAdapter {
         filled.push(target.label || "Cover Letter");
         console.log("[Generic] Cover letter filled (LLM-generated, JD-personalized).");
       } else {
-        blanked.push({ label: target.label || "Cover Letter", reason: "cover letter did not commit" });
+        blanked.push({
+          label: target.label || "Cover Letter",
+          reason: "cover letter did not commit",
+        });
       }
     }
   }
@@ -1209,7 +1229,7 @@ export class GenericAdapter extends ATSAdapter {
     filled: string[],
     blanked: BlankEntry[],
     userSkippedKeys: Set<string>,
-    processedKeys: Set<string>
+    processedKeys: Set<string>,
   ): Promise<number> {
     let filledCount = 0;
     try {
@@ -1219,7 +1239,7 @@ export class GenericAdapter extends ATSAdapter {
           "Return one Action per field with a selector that identifies exactly that field " +
           "and a description naming the field's label (e.g. 'fill the First Name field'). " +
           "Do NOT include buttons, links, dropdowns, checkboxes, radio buttons, or file uploads.",
-        { page: this.getPage() }
+        { page: this.getPage() },
       )) as Action[];
       let counter = 0;
       for (const action of actions ?? []) {
@@ -1273,7 +1293,7 @@ export class GenericAdapter extends ATSAdapter {
     await rpc("job_context", jobCtx);
     console.log(
       `[Generic] Job context: ${jobCtx.title || "?"} @ ${jobCtx.company || "?"}` +
-        (jobCtx.location ? ` (${jobCtx.location})` : "")
+        (jobCtx.location ? ` (${jobCtx.location})` : ""),
     );
 
     const jsonModel = await this.fetchJsonQuestions();
@@ -1319,7 +1339,7 @@ export class GenericAdapter extends ATSAdapter {
           if (pass === 0) {
             console.log(
               `[Generic] Step ${step + 1} inventory: ${fields.length} question(s) ` +
-                `(json: ${jsonModel?.length ?? 0}, dom: ${domFields.length}).`
+                `(json: ${jsonModel?.length ?? 0}, dom: ${domFields.length}).`,
             );
           }
           if (fresh.length === 0) {
@@ -1349,10 +1369,12 @@ export class GenericAdapter extends ATSAdapter {
         });
         if (requiredBlanks.length > 0) {
           console.warn(
-            `[Generic] ${requiredBlanks.length} REQUIRED field(s) blank after step ${step + 1}:`
+            `[Generic] ${requiredBlanks.length} REQUIRED field(s) blank after step ${step + 1}:`,
           );
           for (const rb of requiredBlanks) {
-            console.warn(`[Generic]   REQUIRED blank: ${escapePromptValue(rb.label)} (${rb.reason})`);
+            console.warn(
+              `[Generic]   REQUIRED blank: ${escapePromptValue(rb.label)} (${rb.reason})`,
+            );
           }
         }
       }
@@ -1365,7 +1387,7 @@ export class GenericAdapter extends ATSAdapter {
       if (!advanced) {
         console.warn(
           "[Generic] No Continue/Submit button found, or the step did not advance after " +
-            "clicking. If required fields were left blank, the form may block progression."
+            "clicking. If required fields were left blank, the form may block progression.",
         );
         break;
       }
@@ -1374,13 +1396,15 @@ export class GenericAdapter extends ATSAdapter {
     // Tier-2: observe fallback ONLY when the DOM walker never found a single
     // recognizable field (a truly non-standard form renderer).
     if (processedKeys.size === 0) {
-      console.warn("[Generic] DOM walker found no recognizable fields — falling back to observe().");
+      console.warn(
+        "[Generic] DOM walker found no recognizable fields — falling back to observe().",
+      );
       const observed = await this.observeFallback(
         screener,
         filled,
         blanked,
         userSkippedKeys,
-        processedKeys
+        processedKeys,
       );
       console.log(`[Generic] Observe fallback filled ${observed} free-text field(s).`);
     }
@@ -1409,7 +1433,8 @@ export class GenericAdapter extends ATSAdapter {
     if (this.gateDeferred) {
       blanked.push({
         label: "Sign-in / account gate",
-        reason: "blocked by an account gate (no guest path, no credentials); needs manual completion",
+        reason:
+          "blocked by an account gate (no guest path, no credentials); needs manual completion",
       });
     }
 
@@ -1446,7 +1471,7 @@ export class GenericAdapter extends ATSAdapter {
     const submitBtn = page
       .locator(
         "button[type='submit'], input[type='submit'], button:has-text('Submit Application'), " +
-          "button:has-text('Submit'), a:has-text('Submit Application'), [data-automation-id*='submit' i]"
+          "button:has-text('Submit'), a:has-text('Submit Application'), [data-automation-id*='submit' i]",
       )
       .first();
     if (await submitBtn.isVisible().catch(() => false)) {
@@ -1483,7 +1508,7 @@ export class GenericAdapter extends ATSAdapter {
         "GenericAdapter",
         this.profile,
         rpc ?? (async () => ({ answer: "" })),
-        true
+        true,
       );
       const filled: string[] = [];
       const blanked: { label: string; reason: string }[] = [];
@@ -1537,7 +1562,7 @@ export class GenericControls extends FormControls {
   override async fillByKind(
     field: FormField,
     answer: string,
-    optionTexts?: string[]
+    optionTexts?: string[],
   ): Promise<boolean> {
     if (field.id.startsWith("observe:")) {
       const action = this.observedActions.get(field.id);
@@ -1559,16 +1584,15 @@ export class GenericControls extends FormControls {
         const page = this.getPage();
         const input = page
           .locator(
-            `input[name="${cssEscape(field.name)}"], textarea[name="${cssEscape(field.name)}"]`
+            `input[name="${cssEscape(field.name)}"], textarea[name="${cssEscape(field.name)}"]`,
           )
           .first();
         if (await input.isVisible().catch(() => false)) {
           const tagType = await page
             .evaluate(
               (n: string) =>
-                document.querySelector(`input[name="${n}"]`)?.getAttribute("type") ??
-                null,
-              field.name
+                document.querySelector(`input[name="${n}"]`)?.getAttribute("type") ?? null,
+              field.name,
             )
             .catch(() => null);
           let value = String(answer ?? "");
@@ -1633,7 +1657,7 @@ export class GenericControls extends FormControls {
             // surrounding select shell.
             if (scope.matches && scope.matches("input, textarea")) {
               const shell = scope.closest(
-                '[class*="select-shell"], [class*="react-select"], [class*="select__"]'
+                '[class*="select-shell"], [class*="react-select"], [class*="select__"]',
               );
               if (shell) return find(shell);
             }
@@ -1642,7 +1666,7 @@ export class GenericControls extends FormControls {
           const byId = document.getElementById(fid) as HTMLInputElement | null;
           if (byId) {
             const shell = byId.closest(
-              '[class*="select-shell"], [class*="react-select"], [class*="select__"]'
+              '[class*="select-shell"], [class*="react-select"], [class*="select__"]',
             );
             if (shell) return find(shell);
             return "";
@@ -1664,23 +1688,21 @@ export class GenericControls extends FormControls {
           (args: { id: string; name: string }) => {
             const byId = document.getElementById(args.id) as HTMLSelectElement | null;
             const byName = document.querySelector(
-              `select[name="${args.name}"]`
+              `select[name="${args.name}"]`,
             ) as HTMLSelectElement | null;
             const byPath = document.querySelector(
-              `[data-field-path="${args.id}"]`
+              `[data-field-path="${args.id}"]`,
             ) as HTMLSelectElement | null;
             const sel = byId || byName || byPath;
             if (sel) {
               const idx = sel.selectedIndex;
               if (idx >= 0) {
-                return (sel.options[idx]?.textContent || "")
-                  .replace(/\s+/g, " ")
-                  .trim();
+                return (sel.options[idx]?.textContent || "").replace(/\s+/g, " ").trim();
               }
             }
             return "";
           },
-          { id: field.id, name: field.name || "" }
+          { id: field.id, name: field.name || "" },
         );
         if (v) return (v as string) || "";
       } catch {
@@ -1701,7 +1723,7 @@ export class GenericControls extends FormControls {
   async fillGenericCombobox(
     field: FormField,
     answer: string,
-    optionTexts: string[] = []
+    optionTexts: string[] = [],
   ): Promise<boolean> {
     const page = this.getPage();
     // Only a genuine async location autocomplete may fall back to a ranked
@@ -1719,7 +1741,7 @@ export class GenericControls extends FormControls {
             `[data-field-path="${cssEscape(field.id)}"] input[role="combobox"], ` +
             `[data-field-path="${cssEscape(field.id)}"] input[aria-autocomplete], ` +
             `[data-field-path="${cssEscape(field.id)}"] input, ` +
-            cssIdLocator(field.id)
+            cssIdLocator(field.id),
         )
         .first();
       if (!(await input.isVisible().catch(() => false))) return false;
@@ -1748,7 +1770,7 @@ export class GenericControls extends FormControls {
           opts = await this.readVisibleOptionTexts();
         }
         if (opts.length === 0) {
-          const short = query.split(/[\s,]+/).filter((t) => t && t.length > 1)[0];
+          const short = query.split(/[\s,]+/).find((t) => t && t.length > 1);
           if (short && short !== query.trim()) {
             await input.fill(short);
             for (let i = 0; i < 6 && opts.length === 0; i++) {
@@ -1777,7 +1799,7 @@ export class GenericControls extends FormControls {
           console.warn(`[${this.tagName}] Option "${picked}" not visible for #${field.id}`);
         } else {
           console.warn(
-            `[${this.tagName}] No confident option for pick "${pick}" (${escapePromptValue(field.label)}); leaving it blank.`
+            `[${this.tagName}] No confident option for pick "${pick}" (${escapePromptValue(field.label)}); leaving it blank.`,
           );
         }
       }
@@ -1785,7 +1807,7 @@ export class GenericControls extends FormControls {
       await randomSleep(300, 500);
       if (clicked > 0 && (await this.readFieldValue(field))) return true;
       console.warn(
-        `[${this.tagName}] Could not commit a suggestion for "${answer}" (${escapePromptValue(field.label)}).`
+        `[${this.tagName}] Could not commit a suggestion for "${answer}" (${escapePromptValue(field.label)}).`,
       );
       return false;
     } catch (err: any) {
@@ -1807,14 +1829,14 @@ export class GenericControls extends FormControls {
   async fillGenericSelect(
     field: FormField,
     answer: string,
-    optionTexts: string[] = []
+    optionTexts: string[] = [],
   ): Promise<boolean> {
     const page = this.getPage();
     try {
       const sel = page
         .locator(
           `select${cssIdLocator(field.id)}, select[name="${cssEscape(field.name || field.id)}"], ` +
-            `[data-field-path="${cssEscape(field.id)}"]`
+            `[data-field-path="${cssEscape(field.id)}"]`,
         )
         .first();
       if (!(await sel.isVisible().catch(() => false))) {
@@ -1831,11 +1853,14 @@ export class GenericControls extends FormControls {
       const opts =
         optionTexts.length > 0
           ? optionTexts
-          : ((await sel.locator("option").allTextContents().catch(() => [])) as string[]);
+          : ((await sel
+              .locator("option")
+              .allTextContents()
+              .catch(() => [])) as string[]);
       const picked = chooseOption(selectCandidates(answer), opts);
       if (!picked) {
         console.warn(
-          `[${this.tagName}] No matching option for #${field.id} (answer "${escapePromptValue(answer)}"); leaving blank.`
+          `[${this.tagName}] No matching option for #${field.id} (answer "${escapePromptValue(answer)}"); leaving blank.`,
         );
         return false;
       }
@@ -1848,13 +1873,13 @@ export class GenericControls extends FormControls {
         }, field.id)
         .catch(() => ""));
       if (!committed) {
-        console.warn(
-          `[${this.tagName}] Native select #${field.id} did not commit "${picked}"`
-        );
+        console.warn(`[${this.tagName}] Native select #${field.id} did not commit "${picked}"`);
       }
       return committed;
     } catch (err: any) {
-      console.warn(`[${this.tagName}] fillGenericSelect failed for #${field.id}: ${err?.message || err}`);
+      console.warn(
+        `[${this.tagName}] fillGenericSelect failed for #${field.id}: ${err?.message || err}`,
+      );
       return false;
     }
   }
@@ -1866,14 +1891,14 @@ export class GenericControls extends FormControls {
     return page
       .evaluate(() => {
         const inputs = Array.from(
-          document.querySelectorAll('input[type="file"]')
+          document.querySelectorAll('input[type="file"]'),
         ) as HTMLInputElement[];
         if (inputs.length === 0) return true; // consumed by the form = attached
         if (inputs.some((i) => i.files && i.files.length > 0)) return true;
         const zone = document.querySelector(
-          "[class*='resume'], [class*='upload'], [id*='resume' i]"
+          "[class*='resume'], [class*='upload'], [id*='resume' i]",
         );
-        const text = zone ? (zone.textContent || "") : "";
+        const text = zone ? zone.textContent || "" : "";
         return /attached|uploaded|added|done|✓/i.test(text);
       })
       .catch(() => false);

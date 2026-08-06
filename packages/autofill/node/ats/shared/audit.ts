@@ -1,7 +1,7 @@
+import { randomSleep } from "../../utils/evasion.js";
+import { normalizeOptionText, escapePromptValue } from "./matching.js";
 import { type FormField, PRE_FILLED_LABELS, fieldKey, isCoverLetterField } from "./model.js";
 import { type BlankEntry } from "./screener.js";
-import { normalizeOptionText, escapePromptValue } from "./matching.js";
-import { randomSleep } from "../../utils/evasion.js";
 
 /**
  * Adaptive-form audit machinery shared by all adapters. The key insight that
@@ -17,7 +17,7 @@ import { randomSleep } from "../../utils/evasion.js";
  */
 export function blankReason(
   label: string,
-  reasons: ReadonlyArray<BlankEntry> | undefined
+  reasons: ReadonlyArray<BlankEntry> | undefined,
 ): string | undefined {
   const key = normalizeOptionText(label);
   return reasons?.find((b) => normalizeOptionText(b.label) === key)?.reason;
@@ -44,7 +44,10 @@ export async function auditBlanks<T extends { label: string; required: boolean }
     if (await params.readValue(field)) continue;
     const reason = blankReason(field.label, transcript);
     if (field.required) {
-      required.push({ label: field.label, reason: reason ?? "blank after walk (no answer committed)" });
+      required.push({
+        label: field.label,
+        reason: reason ?? "blank after walk (no answer committed)",
+      });
       continue;
     }
     if (!reason) {
@@ -84,7 +87,9 @@ export async function finalReverify(params: {
     });
   }
   if (stillBlank.length > 0) {
-    console.warn(`[${tag}] REVERIFY: ${stillBlank.length} field(s) still unfilled after completion:`);
+    console.warn(
+      `[${tag}] REVERIFY: ${stillBlank.length} field(s) still unfilled after completion:`,
+    );
     for (const sb of stillBlank) {
       console.warn(`[${tag}]   unfilled: ${escapeLog(sb.label)} (${sb.reason})`);
     }
@@ -153,12 +158,14 @@ export async function verifySubmitOutcome(
     submitButtonSelector?: string;
     errorSelectors?: string[];
     polls?: number;
-  }
+  },
 ): Promise<SubmitOutcome> {
   const { tag } = opts;
   const urlRe = opts.successUrlRe ?? SUCCESS_URL_RE;
-  const errorSelectors =
-    opts.errorSelectors ?? ['[role="alert"]', '.error, .error-message, [class*="error"]'];
+  const errorSelectors = opts.errorSelectors ?? [
+    '[role="alert"]',
+    '.error, .error-message, [class*="error"]',
+  ];
   const polls = opts.polls ?? 10;
 
   for (let i = 0; i < polls; i++) {
@@ -222,9 +229,9 @@ export async function verifySubmitOutcome(
   const lastUrl = page.url();
   // Keep the error diagnostic short (and avoid dumping the applicant's own
   // form answers — name/email/work history — into the persisted job error).
-  const bodySnip = (await page
-    .evaluate(() => document.body?.innerText?.slice(0, 120) ?? "")
-    .catch(() => ""))
+  const bodySnip = (
+    await page.evaluate(() => document.body?.innerText?.slice(0, 120) ?? "").catch(() => "")
+  )
     .replace(/\s+/g, " ")
     .trim();
   return {

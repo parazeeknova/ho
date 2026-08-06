@@ -1,5 +1,5 @@
-import { normalizeOptionText } from "./matching.js";
 import type { Profile } from "../../types.js";
+import { normalizeOptionText } from "./matching.js";
 
 /** A single rendered radio/checkbox option and its click target. */
 export interface GroupOption {
@@ -106,7 +106,7 @@ export function fieldKey(f: FormField): string {
  */
 export function unprocessedFields(
   fields: FormField[],
-  processedKeys: ReadonlySet<string>
+  processedKeys: ReadonlySet<string>,
 ): FormField[] {
   return fields.filter((f) => !processedKeys.has(fieldKey(f)));
 }
@@ -123,7 +123,7 @@ export function unprocessedFields(
  */
 export function mergeFormInventory(
   jsonFields: JsonFieldSource[] | null,
-  domFields: FormField[]
+  domFields: FormField[],
 ): FormField[] {
   const out: FormField[] = [];
   const seen = new Set<string>();
@@ -145,8 +145,7 @@ export function mergeFormInventory(
 
   for (const df of domFields) {
     const jf =
-      (df.name ? jsonByName.get(df.name) : undefined) ||
-      jsonByLabel.get(normalizeLabel(df.label));
+      (df.name ? jsonByName.get(df.name) : undefined) || jsonByLabel.get(normalizeLabel(df.label));
     if (jf) {
       add({
         ...df,
@@ -184,14 +183,14 @@ export const PROFILE_FILLS: Record<string, keyof Profile> = {
 export const IDENTITY_FILLS: Record<string, keyof Profile> = {
   "first name": "firstName",
   "legal first name": "firstName",
-  "firstname": "firstName",
+  firstname: "firstName",
   "given name": "firstName",
   "given name(s)": "firstName",
   "given names": "firstName",
   "last name": "lastName",
   "legal last name": "lastName",
-  "lastname": "lastName",
-  "surname": "lastName",
+  lastname: "lastName",
+  surname: "lastName",
   "family name": "lastName",
   "family name(s)": "lastName",
   "family names": "lastName",
