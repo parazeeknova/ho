@@ -667,7 +667,6 @@ class AutofillWorker:
             # both defeated. A per-job writing-tone seed varies answer phrasing.
             session_id = _new_session_id()
             voice_seed = _pick_voice()
-            proxy_relay: Any = None
             profile_dir = await self._acquire_profile()
             if profile_dir:
                 process_env["AUTOFILL_USER_DATA_DIR"] = profile_dir

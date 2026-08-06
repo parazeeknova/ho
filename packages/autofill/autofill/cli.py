@@ -483,7 +483,9 @@ async def run_resume(job_id: str, review: bool = False):
         await db.close()
 
 
-async def enqueue_command(url: str, mode: str = "review", role: str = None, company: str = None):
+async def enqueue_command(
+    url: str, mode: str = "review", role: str | None = None, company: str | None = None
+):
     db = await AutofillDB.create()
     try:
         job_id = await db.enqueue_job(apply_link=url, role=role, company=company, apply_mode=mode)
