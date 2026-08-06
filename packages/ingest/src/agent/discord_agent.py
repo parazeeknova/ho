@@ -299,19 +299,15 @@ class DiscordAgent:
         )
         self._client = client
 
-        @client.event
         async def on_ready() -> None:
-            try:
-                if self.channel_id:
-                    self._channel = await client.fetch_channel(int(self.channel_id))  # type: ignore[assignment]
-            except Exception as e:
-                logger.warning(
-                    "Discord channel fetch failed", channel_id=self.channel_id, error=str(e)
-                )
             logger.info("DiscordAgent connected", bot=client.user)
             self._ready.set()
+            # Fetch the channel lazily in the background — never block on_ready
+            # on a REST call that could hang and delay every first message.
+            with contextlib.suppress(Exception):
+                if self.channel_id:
+                    self._channel = await client.fetch_channel(int(self.channel_id))  # type: ignore[assignment]
 
-        @client.event
         async def on_message(message: discord.Message) -> None:
             if message.author.bot:
                 return
@@ -333,7 +329,6 @@ class DiscordAgent:
             elif cmd == "/help":
                 await self._handle_help(message)
 
-        @client.event
         async def on_interaction(interaction: discord.Interaction) -> None:
             await self._heartbeat_poller()
             if interaction.type != discord.InteractionType.component:
@@ -349,8 +344,19 @@ class DiscordAgent:
             if message_id is not None:
                 await self._capture_mailbox_button(message_id, custom_id, interaction)
 
+        client.event(on_ready)
+        client.event(on_message)
+        client.event(on_interaction)
         self._poll_task = asyncio.create_task(self._client.start(self.bot_token))
-        await asyncio.wait_for(self._ready.wait(), timeout=30)
+
+        # Wait for readiness WITHOUT the Event (which proved unreliable here):
+        # poll client.is_ready() until the gateway reports connected.
+        for _ in range(60):
+            if self._client.is_ready():
+                break
+            await asyncio.sleep(1)
+        if not self._client.is_ready():
+            logger.warning("Discord gateway not ready after 60s")
 
     async def stop_polling(self) -> None:
         if self._client is not None:
