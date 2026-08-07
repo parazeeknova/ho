@@ -127,6 +127,16 @@ CREATE TABLE IF NOT EXISTS discord_poller_state (
     last_seen TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Active Discord sweep thread. The ingest DiscordAgent records the id of the
+-- thread it creates for the current sweep; the autofill bridge reads it so
+-- deferred/captcha/queue notifications land INSIDE that thread instead of
+-- the main channel.
+CREATE TABLE IF NOT EXISTS discord_thread_state (
+    state_id   TEXT PRIMARY KEY DEFAULT 'active_sweep',
+    thread_id  TEXT NOT NULL DEFAULT '',
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- Procedural memory: resolved selectors / flow classification / per-field
 -- strategies learned from successful fills, keyed by host + form signature.
 -- Consulted before the LLM; written on success, decayed on failure. This is
@@ -536,6 +546,36 @@ class AutofillDB:
             if not row or row["last_seen"] is None:
                 return False
             return (now_utc() - row["last_seen"]).total_seconds() <= max_age_seconds
+
+    async def set_active_thread(self, thread_id: str, max_age_seconds: float = 3600.0) -> None:
+        """Record the active Discord sweep thread id (called by the gateway)."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO discord_thread_state (state_id, thread_id, updated_at)
+                VALUES ('active_sweep', $1, NOW())
+                ON CONFLICT (state_id) DO UPDATE SET
+                    thread_id = EXCLUDED.thread_id,
+                    updated_at = NOW()
+                """,
+                str(thread_id),
+            )
+
+    async def active_thread(self, max_age_seconds: float = 3600.0) -> str | None:
+        """The current active Discord thread id, if fresh (the autofill bridge
+        reads this so notifications land inside the sweep thread)."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT thread_id, updated_at FROM discord_thread_state
+                WHERE state_id = 'active_sweep'
+                """
+            )
+            if not row or not row["thread_id"]:
+                return None
+            if (now_utc() - row["updated_at"]).total_seconds() > max_age_seconds:
+                return None
+            return str(row["thread_id"])
 
     async def unapplied_stats(self, stale_hours: int = 48) -> dict[str, int]:
         """Autofill-side job stats for the startup message.

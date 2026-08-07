@@ -1383,7 +1383,7 @@ class AutofillWorker:
         role: Any = None,
         company: Any = None,
     ) -> None:
-        """Mark a job deferred (needs user input) and alert via Telegram."""
+        """Mark a job deferred (needs user input) and alert via Discord."""
         await self.db.mark_deferred(job_id, questions=questions, reason="needs user input")
         if bridge.is_configured:
             role_str = str(role or "Position")
@@ -1436,10 +1436,44 @@ class AutofillWorker:
 
     @staticmethod
     def _format_pending(entry: dict[str, Any]) -> str:
-        q = entry.get("question") or "?"
+        q = AutofillWorker._clean_question(str(entry.get("question") or "?"))
         options = entry.get("options") or []
         hint = f"  [{', '.join(str(o) for o in options[:6])}]" if options else ""
         return f"• {q}{hint}"
+
+    @staticmethod
+    def _clean_question(question: str) -> str:
+        """Shorten a screener question for display.
+
+        Some boards embed the whole job description into a field's label (a
+        Greenhouse quirk), so the deferred/ask prompt would dump pages of JD
+        text. Keep the first meaningful line and cap the length.
+        """
+        text = (question or "").strip()
+        if not text:
+            return text
+        # Stop at the first double-newline or a JD-like marker (blank line,
+        # 'company overview', 'job description', 'responsibilities').
+        import re as _re
+
+        lines = [ln.strip() for ln in text.splitlines()]
+        kept: list[str] = []
+        for ln in lines:
+            low = ln.lower()
+            if _re.search(
+                r"\b(company overview|job description|about (us|the|this)|"
+                r"responsibilit|qualifications|what you'?ll do|the role|"
+                r"who you are)\b",
+                low,
+            ):
+                break
+            kept.append(ln)
+        out = " ".join(kept).strip()
+        if not out:
+            out = text
+        if len(out) > 140:
+            out = out[:137].rstrip() + "..."
+        return out
 
     async def _record_fill(
         self,

@@ -508,3 +508,53 @@ async def test_expired_claim_never_picked(db: AutofillDB):
     # claim_next_job must not return it (only pending / expired-lease filling).
     claimed = await db.claim_next_job(lease_seconds=60)
     assert claimed is None or claimed["job_id"] != job_id
+
+
+# ── active discord thread state ────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_set_and_read_active_thread(db: AutofillDB):
+    assert await db.active_thread() is None
+    await db.set_active_thread("12345")
+    assert await db.active_thread() == "12345"
+    # overwrite
+    await db.set_active_thread("67890")
+    assert await db.active_thread() == "67890"
+
+
+@pytest.mark.asyncio
+async def test_active_thread_stale(db: AutofillDB):
+    await db.set_active_thread("999")
+    async with db._pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE discord_thread_state SET updated_at = NOW() - INTERVAL '2 hours'"
+        )
+    assert await db.active_thread(max_age_seconds=3600) is None
+
+
+@pytest.mark.asyncio
+async def test_clean_question_strips_jd_dump():
+    from autofill.worker import AutofillWorker
+
+    q = (
+        "Expected Graduation Year\n"
+        "Software Engineering- Internship (Fall 2026/Summer 2027)\n"
+        "COMPANY OVERVIEW\n"
+        "Deepgram is the leading platform..."
+    )
+    cleaned = AutofillWorker._clean_question(q)
+    assert "Deepgram" not in cleaned
+    assert "COMPANY OVERVIEW" not in cleaned
+    assert "Expected Graduation Year" in cleaned
+    assert len(cleaned) <= 140
+
+
+@pytest.mark.asyncio
+async def test_clean_question_caps_long_single_line():
+    from autofill.worker import AutofillWorker
+
+    long = "What is your expected graduation year?" + " extra words " * 30
+    cleaned = AutofillWorker._clean_question(long)
+    assert len(cleaned) <= 140
+    assert cleaned.endswith("...")

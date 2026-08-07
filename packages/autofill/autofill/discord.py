@@ -131,19 +131,32 @@ class DiscordQuestionBridge:
     # ── REST send ─────────────────────────────────────────────────────
 
     async def _send_payload(self, payload: dict[str, Any]) -> int | None:
-        """POST a message to the channel; returns the message id or None.
+        """POST a message to the channel (or active thread); returns the id or None.
 
         Rate-limited (1 req/s shared limiter) and retried with exponential
         backoff on transient network/5xx/429 failures via the shared retry
         module, so a flaky connection or Discord throttle doesn't silently
         drop a question the user never sees.
+
+        When the ingest gateway has recorded an active sweep thread, messages
+        are sent into that thread so deferred/captcha/queue notifications stay
+        with the sweep instead of landing in the main channel.
         """
         await _DISCORD_RATE_LIMITER.acquire()
+
+        target_id = self.channel_id
+        try:
+            db = await self._db()
+            thread = await db.active_thread()
+            if thread:
+                target_id = thread
+        except Exception:
+            pass
 
         async def _post() -> httpx.Response:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 return await client.post(
-                    f"{DISCORD_API}/channels/{self.channel_id}/messages",
+                    f"{DISCORD_API}/channels/{target_id}/messages",
                     headers={"Authorization": f"Bot {self.bot_token}"},
                     json=payload,
                 )

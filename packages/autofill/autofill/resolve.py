@@ -279,15 +279,17 @@ async def resolve_question(
     # (and the learned entry) is qualified, never global. If the country
     # cannot be detected from the question or the JD, the user is told so and
     # asked to name it — a scoped answer is never stored without a country.
-    display_q = q
+    from autofill.worker import AutofillWorker
+
+    display_q = AutofillWorker._clean_question(q)
     scope_country = None
     if is_scoped_question(q):
         scope_country = rag.target_country(q, job_context) if rag is not None else None
         if scope_country:
-            display_q = qualify_question(q, scope_country)
+            display_q = qualify_question(display_q, scope_country)
         else:
             display_q = (
-                f"{q}\n\n(Job country could not be detected from the posting. "
+                f"{display_q}\n\n(Job country could not be detected from the posting. "
                 'Please include the country in your reply, e.g. "No (India)".)'
             )
 

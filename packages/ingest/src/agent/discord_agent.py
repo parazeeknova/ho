@@ -863,6 +863,17 @@ class DiscordAgent:
                     name=f"Sweep #{sweep}",
                     auto_archive_duration=1440,
                 )
+                # Record the thread id so the autofill bridge (a separate
+                # process) can send deferred/captcha/queue notifications into
+                # this thread instead of the main channel.
+                with contextlib.suppress(Exception):
+                    from autofill.db import AutofillDB
+
+                    db = await AutofillDB.create()
+                    try:
+                        await db.set_active_thread(str(self._sweep_thread.id))
+                    finally:
+                        await db.close()
                 # Second message: an opening summary of the current queue
                 # state, so the thread opens with context before alerts land.
                 try:
