@@ -239,6 +239,14 @@ async def main() -> None:
 
             for child in children:
                 if not child.is_alive():
+                    # Exit code 42 = the radar finished its bounded batch
+                    # (stop_after_gated reached) — NOT a crash. Stop the whole
+                    # loop cleanly instead of restarting.
+                    if child.proc is not None and child.proc.returncode == 42:
+                        print(f"[loop] {child.name} reached its target batch; done.", flush=True)
+                        for c in children:
+                            c.stop()
+                        return
                     if child.restarts >= 5:
                         print(f"[loop] {child.name} crashed and exceeded restarts", flush=True)
                         continue

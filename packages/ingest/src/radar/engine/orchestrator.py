@@ -2185,6 +2185,7 @@ async def _run_radar_pipeline() -> None:
                 logger.warning(f"Worker post-processing failed: {exc}")
         return
 
+    reached_target = False
     while True:
         if shutdown_requested.is_set():
             break
@@ -2467,6 +2468,11 @@ async def _run_radar_pipeline() -> None:
     await _close_http_clients()
     await graph.close()
     await store.close()
+    # Distinct exit code so the supervisor knows the loop finished its bounded
+    # batch (stop_after_gated reached) instead of crashing. loop.py treats this
+    # as "done — do not restart".
+    if reached_target:
+        raise SystemExit(42)
 
 
 def run() -> None:
