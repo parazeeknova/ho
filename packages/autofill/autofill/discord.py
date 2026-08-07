@@ -25,11 +25,18 @@ from typing import Any
 
 import httpx
 from src.logging import get_logger
+from src.retry import RateLimiter, retry_http
 
 logger = get_logger("autofill.discord")
 
 DISCORD_API = "https://discord.com/api/v10"
 DEFAULT_QUESTION_TIMEOUT = 300.0
+
+# Discord's API rate limit for message sends is 5 requests / 5s per channel.
+# A shared limiter serializes the autofill bridge's REST sends so a burst of
+# questions (batch fills) never trips 429s — the same discipline the ingest
+# side applies to its own outbound calls.
+_DISCORD_RATE_LIMITER = RateLimiter(1.0)
 
 _SKIP_SENTINEL = object()
 
@@ -124,23 +131,34 @@ class DiscordQuestionBridge:
     # ── REST send ─────────────────────────────────────────────────────
 
     async def _send_payload(self, payload: dict[str, Any]) -> int | None:
-        """POST a message to the channel; returns the message id or None."""
-        try:
+        """POST a message to the channel; returns the message id or None.
+
+        Rate-limited (1 req/s shared limiter) and retried with exponential
+        backoff on transient network/5xx/429 failures via the shared retry
+        module, so a flaky connection or Discord throttle doesn't silently
+        drop a question the user never sees.
+        """
+        await _DISCORD_RATE_LIMITER.acquire()
+
+        async def _post() -> httpx.Response:
             async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.post(
+                return await client.post(
                     f"{DISCORD_API}/channels/{self.channel_id}/messages",
                     headers={"Authorization": f"Bot {self.bot_token}"},
                     json=payload,
                 )
-                if resp.status_code >= 300:
-                    logger.warning(
-                        "Discord send failed",
-                        status=resp.status_code,
-                        body=resp.text[:200],
-                    )
-                    return None
-                data = resp.json()
-                return data.get("id")
+
+        try:
+            resp = await retry_http(_post, max_retries=2, base_delay=0.5, max_delay=4.0)
+            if resp.status_code >= 300:
+                logger.warning(
+                    "Discord send failed",
+                    status=resp.status_code,
+                    body=resp.text[:200],
+                )
+                return None
+            data = resp.json()
+            return data.get("id")
         except Exception as e:
             logger.warning("Discord send error", error=str(e))
             return None
