@@ -84,6 +84,11 @@ ALTER TABLE autofill_queue ADD COLUMN IF NOT EXISTS last_error TEXT DEFAULT '';
 ALTER TABLE autofill_queue ADD COLUMN IF NOT EXISTS last_error_at TIMESTAMP WITH TIME ZONE;
 ALTER TABLE autofill_queue ADD COLUMN IF NOT EXISTS source TEXT DEFAULT '';
 
+-- Post-submit email feedback: {kind, from, subject, snippet} read back from
+-- the ATS's reply email (confirmation/rejection/screening/otp). Soft evidence
+-- surfaced in reports/Discord, never a hard gate.
+ALTER TABLE autofill_queue ADD COLUMN IF NOT EXISTS email_status JSONB DEFAULT '{}'::jsonb;
+
 -- Per-job Q&A audit trail: every screener question the autofill answered for
 -- a posting, so we can always reconstruct what was filled and from where.
 -- job_id is deliberately NOT a foreign key (a single CLI run may fill without
@@ -310,6 +315,7 @@ class AutofillDB:
         error: str | None = None,
         override_terminal: bool = False,
         infra_failure: bool = False,
+        email_status: dict[str, Any] | None = None,
     ) -> bool:
         """Update status and payload of a job.
 
@@ -346,6 +352,10 @@ class AutofillDB:
         if screenshot_path is not None:
             args.append(screenshot_path)
             updates.append(f"screenshot_path = ${len(args)}")
+
+        if email_status is not None:
+            args.append(json.dumps(email_status))
+            updates.append(f"email_status = ${len(args)}::jsonb")
 
         if error is not None:
             args.append(error)

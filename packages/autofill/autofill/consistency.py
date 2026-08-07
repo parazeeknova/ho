@@ -17,12 +17,20 @@ to block a submit (retryable) when a critical field contradicts the persona.
 from __future__ import annotations
 
 import difflib
+import json
 import re
+from pathlib import Path
 from typing import Any
 
 from src.logging import get_logger
 
 logger = get_logger("autofill.consistency")
+
+# persona.json lives at the repo root (same location rag.py uses). A question
+# learned MID-RUN (via a Discord answer this session) is appended here, so the
+# consistency gate reads it live instead of trusting a profile snapshot that
+# was built once at worker start.
+_PERSONA_JSON = Path(__file__).resolve().parents[3] / "data" / "persona.json"
 
 # Field-label -> the profile field it maps to. The committed value is compared
 # to that profile value.
@@ -157,6 +165,28 @@ def _kw_boost(question_norm: str, tokens: set[str]) -> float:
     if not shared:
         return 0.0
     return 0.25 * len(shared)
+
+
+def _live_persona_answers() -> dict[str, str]:
+    """Read the freshest grilled/learned Q&A straight from persona.json.
+
+    The worker builds ``profile.customAnswers`` once at start; a question the
+    user answered mid-run via Discord/learn() is appended to persona.json and
+    indexed live, but not in that snapshot. Loading the file here closes the
+    gap so the pre-submit gate enforces the newest answers too. The on-disk
+    entry always wins over the stale profile copy.
+    """
+    try:
+        data = json.loads(_PERSONA_JSON.read_text())
+    except OSError, json.JSONDecodeError:
+        return {}
+    answers: dict[str, str] = {}
+    for a in data.get("answers", []) or []:
+        q = (a.get("question") or "").strip()
+        ans = (a.get("answer") or "").strip()
+        if q and ans:
+            answers[q] = ans
+    return answers
 
 
 def _match_persona_question(label: str, custom_answers: dict[str, str]) -> tuple[str, float] | None:
@@ -323,6 +353,12 @@ async def check_payload(
         ca = getattr(profile, "customAnswers", None) or {}
         if isinstance(ca, dict):
             custom_answers = {str(k): str(v) for k, v in ca.items() if v}
+    # Freshest source wins: questions learned/grilled mid-run (after the worker
+    # built the profile snapshot) are appended to persona.json and indexed, so
+    # read them live and let them override the stale copy.
+    live = _live_persona_answers()
+    if live:
+        custom_answers.update(live)
 
     for label, committed in (filled_fields or {}).items():
         if not committed or not str(committed).strip():

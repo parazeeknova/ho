@@ -1275,15 +1275,33 @@ class AutofillWorker:
 
                         elif status == "submitted":
                             terminal_seen = True
+                            email_status = event.get("emailStatus")
                             await self.db.update_status(
                                 job_id,
                                 status="submitted",
                                 filled_payload=filled_fields,
                                 screenshot_path=screenshot_path,
+                                email_status=email_status,
                             )
                             if domain:
                                 with contextlib.suppress(Exception):
                                     await self.db.record_site_success(domain)
+                            if email_status:
+                                kind = email_status.get("kind", "other")
+                                subj = (email_status.get("subject") or "")[:140]
+                                logger.info(
+                                    "Post-submit email feedback",
+                                    job_id=job_id,
+                                    kind=kind,
+                                    subject=subj,
+                                )
+                                if kind == "rejection":
+                                    await self._surface_email_feedback(
+                                        job_id,
+                                        job.get("role"),
+                                        job.get("company"),
+                                        email_status,
+                                    )
                             await self._debug_finalize(debug_rec, "submitted")
                         elif status == "skipped":
                             terminal_seen = True
@@ -1494,6 +1512,46 @@ class AutofillWorker:
             logger.info("Captcha-blocked notification sent", job_id=job_id)
         else:
             logger.warning("Captcha-blocked notification send failed", job_id=job_id)
+
+    async def _surface_email_feedback(
+        self,
+        job_id: str,
+        role: Any,
+        company: Any,
+        email_status: dict[str, Any],
+    ) -> None:
+        """Notify the user about post-submit email evidence (e.g. a rejection
+        or a screening request read back from the ATS's reply email). Soft —
+        the job is already marked submitted; this just surfaces the signal.
+        """
+        try:
+            from autofill.discord import DiscordQuestionBridge
+
+            bridge = DiscordQuestionBridge()
+        except Exception:
+            bridge = None
+        if bridge is None or not getattr(bridge, "is_configured", False):
+            return
+        kind = email_status.get("kind", "other")
+        subject = (email_status.get("subject") or "").strip()[:160]
+        snippet = (email_status.get("snippet") or "").strip()[:220]
+        role_str = str(role or "Position")
+        company_str = str(company or "Company")
+        if kind == "rejection":
+            title = "❌ **Application feedback — rejection email received**"
+        elif kind == "screening":
+            title = "📋 **Application feedback — screening / interview request**"
+        else:
+            title = "📧 **Application feedback**"
+        text = (
+            f"{title}\n{company_str} — {role_str}\n"
+            f"**Subject:** {subject}\n"
+            f"{snippet}\n"
+            f"_(Read back from email after submission.)_"
+        )
+        with contextlib.suppress(Exception):
+            await bridge.send(text)
+            logger.info("Email-feedback notification sent", job_id=job_id, kind=kind)
 
     @staticmethod
     def _format_pending(entry: dict[str, Any]) -> str:

@@ -18,6 +18,7 @@ import {
 import { WorkdayAdapter } from "./ats/workday";
 import { JobPayloadSchema, ActionCallbackSchema, type StatusEvent } from "./types";
 import { ActivityWatchdog } from "./utils/activity";
+import { waitForAtsEmail, type AtsEmailResult } from "./utils/atsEmail";
 import { applyFingerprint, loadFingerprint } from "./utils/fingerprint";
 
 // Rejects when a promise has not settled within `ms`. Used so a best-effort
@@ -72,6 +73,41 @@ function getAdapterForUrl(url: string, stagehand: Stagehand): ATSAdapter {
 
 function emitStatus(statusEvent: StatusEvent) {
   console.log(`STATUS_EVENT:${JSON.stringify(statusEvent)}`);
+}
+
+/**
+ * Soft post-submit email feedback: after the ATS confirmation page is reached,
+ * briefly poll Gmail for the ATS's reply email and classify it. Never blocks —
+ * a missing config, timeout, or IMAP failure just returns null so the page
+ * confirmation alone stands. The result (confirmation/rejection/screening/otp)
+ * rides along on the "submitted" status event for the worker to surface.
+ */
+async function softAtsEmailFeedback(payload: any): Promise<StatusEvent["emailStatus"]> {
+  if (!process.env.AUTOFILL_EMAIL_FEEDBACK || process.env.AUTOFILL_EMAIL_FEEDBACK === "0") {
+    return undefined;
+  }
+  try {
+    // Bounded window (default 45s) so it never meaningfully delays the run.
+    const ms = parseInt(process.env.AUTOFILL_EMAIL_FEEDBACK_TIMEOUT_MS || "45000", 10);
+    const result: AtsEmailResult | null = await withTimeout(
+      waitForAtsEmail({
+        timeoutMs: ms,
+        context: (payload.company || "").toLowerCase() || undefined,
+        log: (m) => console.log(`[Runner] ${m}`),
+      }),
+      ms + 5000,
+    );
+    if (!result) return undefined;
+    return {
+      kind: result.kind,
+      from: result.from,
+      subject: result.subject,
+      snippet: result.snippet,
+    };
+  } catch (err: any) {
+    console.warn(`[Runner] Email feedback skipped: ${err?.message || err}`);
+    return undefined;
+  }
 }
 
 async function main() {
@@ -695,6 +731,7 @@ async function main() {
             screenshotPath: confirmShot,
             filledFields: adapter.filledValues,
             message: "Application filled and submitted automatically (confirmation verified).",
+            emailStatus: await softAtsEmailFeedback(payload),
           });
           watchdog?.stop();
           rl.close();
@@ -838,6 +875,7 @@ async function main() {
           status: "submitted",
           screenshotPath: screenshotPath,
           message: "Application submitted after user review (confirmation verified).",
+          emailStatus: await softAtsEmailFeedback(payload),
         });
       } else {
         clearInterval(captchaTimer);

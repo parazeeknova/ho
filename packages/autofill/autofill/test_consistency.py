@@ -141,9 +141,12 @@ async def test_check_payload_new_field_wrong_value_flags():
 
 
 @pytest.mark.asyncio
-async def test_check_payload_unverifiable_field_counts_unchecked():
+async def test_check_payload_unverifiable_field_counts_unchecked(monkeypatch):
     profile = FakeProfile()
     profile.customAnswers = {}
+    import autofill.consistency as consistency
+
+    monkeypatch.setattr(consistency, "_live_persona_answers", lambda: {})
     filled = {"Why are you interested in this role?": "I like AI"}
     report = await check_payload(filled, profile, store=None, rag=None)
     assert report["ok"] is True
@@ -164,3 +167,38 @@ async def test_critical_mismatch_expected_is_correctable():
     # The worker turns this into a correction map: {label: expected}.
     corrections = {m["label"]: m["expected"] for m in report["critical_mismatches"]}
     assert corrections["Location"] == "Bhopal, Madhya Pradesh, India"
+
+
+@pytest.mark.asyncio
+async def test_check_payload_enforces_live_persona_answers(monkeypatch):
+    """A question learned mid-run (after the profile snapshot) must be enforced
+    by the pre-submit gate even though the profile.customAnswers is stale."""
+    profile = FakeProfile()
+    profile.customAnswers = {}  # stale: built before the mid-run learn
+
+    # Simulate a question the user answered mid-run and persisted to persona.json.
+    live = {
+        "Are you legally authorized to work in Germany?": "No",
+        "Expected salary": "₹18,00,000",
+    }
+    import autofill.consistency as consistency
+
+    monkeypatch.setattr(consistency, "_live_persona_answers", lambda: live)
+
+    # The form filled "Yes" for work authorization in Germany — must be a
+    # critical mismatch (label touches authorization).
+    filled = {
+        "Are you legally authorized to work in Germany?": "Yes",
+        "Expected salary": "₹18,00,000",
+    }
+    report = await check_payload(filled, profile, store=None, rag=None)
+    assert report["ok"] is False
+    auth = next((m for m in report["critical_mismatches"] if "authorized" in m["label"]), None)
+    assert auth is not None
+    assert auth["expected"] == "No"
+
+    # A matching answer passes.
+    report2 = await check_payload(
+        {"Are you legally authorized to work in Germany?": "No"}, profile, store=None, rag=None
+    )
+    assert report2["ok"] is True

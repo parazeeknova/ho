@@ -51,6 +51,16 @@ export const StatusEventSchema = z.object({
   filledFields: z.record(z.string(), z.string()).optional(),
   error: z.string().optional(),
   message: z.string().optional(),
+  // Post-submit email feedback: {kind, from, subject, snippet} from the soft
+  // ATS-email poll, surfaced by the worker (confirmation/rejection/screening).
+  emailStatus: z
+    .object({
+      kind: z.enum(["confirmation", "rejection", "screening", "otp", "other"]),
+      from: z.string(),
+      subject: z.string(),
+      snippet: z.string(),
+    })
+    .optional(),
 });
 
 export const ActionCallbackSchema = z.object({
