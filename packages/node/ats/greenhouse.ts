@@ -979,6 +979,35 @@ export class GreenhouseAdapter extends ATSAdapter {
   async submit(): Promise<SubmitOutcome> {
     console.log("[GreenhouseAdapter] Submitting application form...");
     const page = this.getPage();
+
+    // Track the submit POST response so confirmation is gated on an actual 2xx
+    // from Greenhouse — many boards submit via XHR and never change the URL, so
+    // verifySubmitOutcome would otherwise report "not confirmed" on a successful
+    // submission.
+    let lastSubmitResp: { ok: boolean; status?: number } | undefined;
+    let respListener: ((r: any) => void) | null = (r: any) => {
+      const u = String(r?.url?.() || r?.url || "");
+      if (!/applications?|submission|apply|submission_id|candidate/i.test(u)) return;
+      try {
+        const ok = typeof r.ok === "function" ? r.ok() : false;
+        const status = typeof r.status === "function" ? r.status() : undefined;
+        lastSubmitResp = { ok, status };
+        console.log(
+          `[Greenhouse] Submit response: ${status ?? "?"} ${u.slice(0, 100)}` +
+            ` (${ok ? "ok" : "FAILED"})`,
+        );
+      } catch {
+        // Ignore responses we can't read.
+      }
+    };
+    if (typeof page.on === "function") {
+      try {
+        page.on("response", respListener);
+      } catch {
+        respListener = null;
+      }
+    }
+
     await this.controls.clickSubmitButton({
       preferredSelector:
         "input[type='submit'], button[type='submit'], button:has-text('Submit Application')",
@@ -994,12 +1023,35 @@ export class GreenhouseAdapter extends ATSAdapter {
       console.log("[GreenhouseAdapter] No email-verification prompt detected; proceeding.");
     }
 
-    return verifySubmitOutcome(page, {
-      tag: "Greenhouse",
-      successUrlRe: /thanks|submitted|confirmation|success|applied|complete/i,
-      submitButtonSelector:
-        "input[type='submit'], button[type='submit'], button:has-text('Submit Application')",
-    });
+    const submitResponse = async (): Promise<{ ok: boolean; status?: number } | undefined> =>
+      lastSubmitResp;
+
+    try {
+      const outcome = await verifySubmitOutcome(page, {
+        tag: "Greenhouse",
+        successUrlRe: /thanks|submitted|confirmation|success|applied|complete/i,
+        submitButtonSelector:
+          "input[type='submit'], button[type='submit'], button:has-text('Submit Application')",
+        submitResponse,
+      });
+      if (respListener && typeof page.off === "function") {
+        try {
+          page.off("response", respListener);
+        } catch {
+          // ignore
+        }
+      }
+      return outcome;
+    } catch (e) {
+      if (respListener && typeof page.off === "function") {
+        try {
+          page.off("response", respListener);
+        } catch {
+          // ignore
+        }
+      }
+      throw e;
+    }
   }
 
   /**
