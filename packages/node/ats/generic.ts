@@ -303,6 +303,8 @@ export class GenericAdapter extends ATSAdapter {
   private gateDeferred = false;
   private _jsonModel: JsonFieldSource[] | null = null;
   protected profile!: Profile;
+  /** Learned per-site selectors/flow from procedural memory (site_knowledge). */
+  private siteKnowledge: Record<string, any> = {};
 
   constructor(stagehand: Stagehand) {
     super(stagehand);
@@ -1271,6 +1273,13 @@ export class GenericAdapter extends ATSAdapter {
 
   async fill(payload: JobPayload, rpc?: RpcHelper): Promise<void> {
     const { url, profile } = payload;
+    this.siteKnowledge = (payload as any)?.siteKnowledge ?? {};
+    if (this.siteKnowledge && Object.keys(this.siteKnowledge).length > 0) {
+      console.log(
+        `[Generic] Consulting learned site knowledge: ` +
+          `${JSON.stringify(this.siteKnowledge).slice(0, 200)}`,
+      );
+    }
     console.log(`[Generic] Navigating to ${url}...`);
     const page = this.getPage();
     await page.goto(url);

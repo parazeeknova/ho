@@ -19,6 +19,7 @@ from dotenv import load_dotenv
 from src.logging import get_logger
 from src.memory.pgvector_store import MemoryStore
 
+from autofill.ats import classify_ats
 from autofill.db import AutofillDB
 from autofill.discord import (
     DiscordNotConfiguredError,
@@ -744,11 +745,24 @@ class AutofillWorker:
                 mode=run_mode,
                 overnight=is_overnight(),
             )
+            # Learned per-site selectors/flow (procedural memory) for this host,
+            # passed to the runner so the generic adapter can consult known-good
+            # selectors instead of re-probing the DOM from scratch.
+            site_knowledge: dict[str, Any] = {}
+            if domain:
+                try:
+                    sig = f"{classify_ats(apply_link)}:{domain}"
+                    rec = await self.db.get_site_knowledge(domain, sig)
+                    if rec:
+                        site_knowledge = rec
+                except Exception:
+                    site_knowledge = {}
             job_payload = {
                 "jobId": job_id,
                 "url": apply_link,
                 "mode": run_mode,
                 "profile": profile.model_dump(by_alias=False),
+                "siteKnowledge": site_knowledge,
                 # Always submit on success — the user reviews via Discord
                 # answers, not by watching a browser. Set false via
                 # AUTOFILL_NO_SUBMIT=1 to run a fill-only pass.

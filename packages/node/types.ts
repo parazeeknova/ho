@@ -24,6 +24,7 @@ export const JobPayloadSchema = z.preprocess(
         mode: data.mode || data.applyMode || "review",
         profile: data.profile,
         submitAllowed: data.submitAllowed,
+        siteKnowledge: data.siteKnowledge,
       };
     }
     return data;
@@ -36,6 +37,10 @@ export const JobPayloadSchema = z.preprocess(
     // No-apply phase: when false the fill completes with a screenshot but the
     // application is never submitted, regardless of mode or review choice.
     submitAllowed: z.boolean().default(true),
+    // Learned per-site selectors/flow (procedural memory) passed from the
+    // worker so the generic adapter can consult known-good selectors before
+    // re-probing the DOM.
+    siteKnowledge: z.record(z.string(), z.any()).default({}),
   }),
 );
 
