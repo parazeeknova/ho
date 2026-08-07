@@ -1239,6 +1239,25 @@ class AutofillWorker:
                                     screenshot_path=screenshot_path,
                                 )
                                 await self._debug_finalize(debug_rec, "skipped")
+                        elif status == "expired":
+                            # The posting was removed/expired (404 / "no longer
+                            # available"). Terminal and non-retryable: record it
+                            # so the queue never re-claims a dead listing.
+                            terminal_seen = True
+                            expired_reason = event.get("error") or event.get(
+                                "message", "posting expired/removed"
+                            )
+                            await self.db.update_status(
+                                job_id,
+                                status="expired",
+                                error=expired_reason,
+                            )
+                            logger.info(
+                                "Job posting expired/removed; marked terminal",
+                                job_id=job_id,
+                                reason=expired_reason,
+                            )
+                            await self._debug_finalize(debug_rec, "expired", error=expired_reason)
                         elif status == "failed":
                             error_msg = event.get("error", "Runner failed")
                             if DEFER_MARKER in error_msg or deferred_pending:

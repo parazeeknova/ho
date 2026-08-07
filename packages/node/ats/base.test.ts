@@ -64,6 +64,7 @@ class FakePage {
   private pageFrames: FakeFrame[];
   private viewport: { w: number; h: number };
   private puzzleEls: RectEl[];
+  private pageUrl: string;
 
   constructor(
     iframes: RectEl[],
@@ -72,6 +73,7 @@ class FakePage {
     pageFrames: FakeFrame[] = [],
     viewport = { w: 1280, h: 800 },
     puzzleEls: RectEl[] = [],
+    pageUrl: string = "",
   ) {
     this.iframes = iframes;
     this.widgets = widgets;
@@ -79,6 +81,7 @@ class FakePage {
     this.pageFrames = pageFrames;
     this.viewport = viewport;
     this.puzzleEls = puzzleEls;
+    this.pageUrl = pageUrl;
   }
 
   async evaluate(fn: () => any): Promise<any> {
@@ -95,6 +98,7 @@ class FakePage {
     (globalThis as any).document = {
       body: {
         textContent: this.bodyText,
+        innerText: this.bodyText,
         parentElement: null,
       },
       querySelectorAll: (sel: string): RectEl[] => {
@@ -118,6 +122,10 @@ class FakePage {
 
   frames() {
     return this.pageFrames;
+  }
+
+  async url(): Promise<string> {
+    return this.pageUrl;
   }
 
   async waitForTimeout(_ms: number) {}
@@ -286,5 +294,38 @@ describe("attemptCaptcha", () => {
     const frame = new FakeFrame("https://example.com/some-app", [".recaptcha-checkbox"]);
     const adapter = new TestAdapter(new FakePage([], [], "", [frame]));
     assert.equal(await adapter.attemptCaptcha(), false);
+  });
+});
+
+describe("detectExpired", () => {
+  it("detects a removed posting by body text", async () => {
+    const adapter = new TestAdapter(
+      new FakePage([], [], "This position is no longer available. Please check our careers page."),
+    );
+    const reason = await adapter.detectExpired();
+    assert.ok(reason, "expected an expired reason");
+    assert.match(reason, /expired posting/);
+  });
+
+  it("detects a 404 URL", async () => {
+    const adapter = new TestAdapter(
+      new FakePage(
+        [],
+        [],
+        "The page you requested was not found.",
+        [],
+        { w: 1280, h: 800 },
+        [],
+        "https://jobs.ashbyhq.com/replit/404/",
+      ),
+    );
+    assert.match((await adapter.detectExpired()) ?? "", /expired posting/);
+  });
+
+  it("returns null for a live posting", async () => {
+    const adapter = new TestAdapter(
+      new FakePage([], [], "Software Engineer at Replit. Apply now to join our team."),
+    );
+    assert.equal(await adapter.detectExpired(), null);
   });
 });

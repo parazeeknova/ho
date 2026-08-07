@@ -303,21 +303,21 @@ class AutofillDB:
     ) -> bool:
         """Update status and payload of a job.
 
-        Guarded: a terminal status (``deferred``, ``submitted``) is never
-        overwritten by a later non-terminal transition, so a deferred job that
-        still reaches the review step keeps its deferred status and stays in
-        the morning digest. The resume flow (``run_resume``) passes
-        ``override_terminal=True``: after the user answers the deferred
-        questions, clearing ``deferred`` to ``skipped``/``failed`` is exactly
-        what is wanted, not a downgrade.
+        Guarded: a terminal status (``deferred``, ``submitted``, ``expired``) is
+        never overwritten by a later non-terminal transition, so a deferred job
+        that still reaches the review step keeps its deferred status and stays
+        in the morning digest, and an expired posting is never resurrected.
+        The resume flow (``run_resume``) passes ``override_terminal=True``:
+        after the user answers the deferred questions, clearing ``deferred``
+        to ``skipped``/``failed`` is exactly what is wanted, not a downgrade.
 
         ``infra_failure`` marks an environment failure (e.g. runner exit 127):
         the job's ``error_count`` is NOT incremented so a broken environment
         can never burn a real job's retry budget.
         """
-        if not override_terminal and status not in ("deferred", "submitted"):
+        if not override_terminal and status not in ("deferred", "submitted", "expired"):
             current = await self.get_job(job_id)
-            if current and current.get("status") in ("deferred", "submitted"):
+            if current and current.get("status") in ("deferred", "submitted", "expired"):
                 logger.info(
                     "Skipping status update: job is terminal",
                     job_id=job_id,
@@ -346,6 +346,12 @@ class AutofillDB:
         elif status == "failed":
             if not infra_failure:
                 updates.append("error_count = error_count + 1")
+            updates.append("last_error_at = NOW()")
+            if error is not None:
+                args.append(error)
+                updates.append(f"last_error = ${len(args)}")
+        elif status == "expired":
+            # Terminal: record why so the queue shows the posting is gone.
             updates.append("last_error_at = NOW()")
             if error is not None:
                 args.append(error)
@@ -402,10 +408,11 @@ class AutofillDB:
                 SELECT
                     COUNT(*) FILTER (WHERE applied_at IS NOT NULL) AS applied,
                     COUNT(*) FILTER (WHERE applied_at IS NULL
-                                     AND status NOT IN ('deferred', 'skipped', 'failed'))
+                                     AND status NOT IN ('deferred', 'skipped', 'failed', 'expired'))
                         AS open,
                     COUNT(*) FILTER (WHERE status = 'deferred') AS deferred,
                     COUNT(*) FILTER (WHERE status = 'skipped') AS skipped,
+                    COUNT(*) FILTER (WHERE status = 'expired') AS expired,
                     COUNT(*) FILTER (WHERE status = 'failed' OR error_count > 0) AS errored,
                     COUNT(*) FILTER (WHERE status = 'failed') AS failed,
                     COUNT(*) FILTER (WHERE status = 'pending') AS pending,

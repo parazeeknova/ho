@@ -211,4 +211,58 @@ export abstract class ATSAdapter {
   async retryAfterSpamFlag(): Promise<boolean> {
     return false;
   }
+
+  /**
+   * Detect whether the current page indicates the posting was removed/expired
+   * (a 404 job board page, "this position is no longer available", an expired
+   * redirect, etc.). Returns a human-readable reason when expired, else null.
+   * Called before the fill walk: an expired posting must be marked `expired`
+   * (a terminal, non-retryable state) instead of failing a fill that will
+   * never find a form.
+   */
+  async detectExpired(): Promise<string | null> {
+    let page: any;
+    try {
+      page = this.getActivePage();
+      if (!page) return null;
+    } catch {
+      return null;
+    }
+    try {
+      const url = typeof page.url === "function" ? await page.url() : "";
+      const hit = (await page.evaluate(() => {
+        const text = (document.body?.innerText || "")
+          .slice(0, 8000)
+          .replace(/\s+/g, " ")
+          .toLowerCase();
+        const markers = [
+          "no longer available",
+          "position has been filled",
+          "this position is no longer",
+          "this job is no longer",
+          "this posting is no longer",
+          "job has been closed",
+          "this job has been filled",
+          "position is no longer accepting",
+          "job posting has expired",
+          "we are no longer accepting",
+          "this role is no longer",
+          "this opportunity is no longer",
+          "404 not found",
+          "page not found",
+          "job not found",
+          "position not found",
+        ];
+        for (const m of markers) {
+          if (text.includes(m)) return m;
+        }
+        return null;
+      })) as string | null;
+      if (hit) return `expired posting (${hit})`;
+      if (url && /\/404\/?$/i.test(url)) return `expired posting (404 url)`;
+      return null;
+    } catch {
+      return null;
+    }
+  }
 }

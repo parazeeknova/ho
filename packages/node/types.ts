@@ -46,7 +46,7 @@ export const JobPayloadSchema = z.preprocess(
 
 export const StatusEventSchema = z.object({
   jobId: z.string(),
-  status: z.enum(["in_progress", "awaiting_review", "submitted", "failed", "skipped"]),
+  status: z.enum(["in_progress", "awaiting_review", "submitted", "failed", "skipped", "expired"]),
   screenshotPath: z.string().optional(),
   error: z.string().optional(),
   message: z.string().optional(),

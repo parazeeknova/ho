@@ -474,3 +474,37 @@ async def test_failure_label_taxonomy():
     assert _failure_label("network timeout") == "network"
     assert _failure_label("Runner infra failure (exit 127)") == "infra"
     assert _failure_label("something else") == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_expired_status_is_terminal(db: AutofillDB):
+    """An expired posting is terminal: a later status update must not overwrite it."""
+    job_id = await db.enqueue_job(apply_link="https://boards.greenhouse.io/test/expired")
+    ok = await db.update_status(job_id, status="expired", error="expired posting (404)")
+    assert ok
+    row = await db.get_job(job_id)
+    assert row["status"] == "expired"
+    assert "expired posting" in row["last_error"]
+
+    # A later non-terminal update is refused.
+    await db.update_status(job_id, status="pending")
+    assert (await db.get_job(job_id))["status"] == "expired"
+
+
+@pytest.mark.asyncio
+async def test_expired_counted_in_summary_and_not_open(db: AutofillDB):
+    job_id = await db.enqueue_job(apply_link="https://boards.greenhouse.io/test/expired2")
+    await db.update_status(job_id, status="expired", error="gone")
+    summary = await db.queue_summary()
+    assert summary["expired"] == 1
+    assert summary["open"] == 0
+
+
+@pytest.mark.asyncio
+async def test_expired_claim_never_picked(db: AutofillDB):
+    """An expired job must never be re-claimed by the worker."""
+    job_id = await db.enqueue_job(apply_link="https://boards.greenhouse.io/test/expired3")
+    await db.update_status(job_id, status="expired", error="gone")
+    # claim_next_job must not return it (only pending / expired-lease filling).
+    claimed = await db.claim_next_job(lease_seconds=60)
+    assert claimed is None or claimed["job_id"] != job_id
