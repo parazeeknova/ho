@@ -3,8 +3,8 @@
 
 Everything ho offers, from a single invocation:
 
-  1. docker compose up the ingest stack (redis, nuq-postgres, searxng, neo4j,
-     rabbitmq, playwright, firecrawl api, agent-memory-db) and wait for health;
+  1. docker compose up the ingest stack (searxng, neo4j, agent-memory-db) and
+     wait for health;
   2. start the local embedding server (:8900);
   3. if persona.json is missing, seed memory (resume + persona) non-interactively;
   4. run the end-to-end loop: radar pipeline (master + workers) discovers and
@@ -14,6 +14,11 @@ Everything ho offers, from a single invocation:
 
 Local-only by default: company discovery uses the local adapters (yc, dealroom,
 hn, remoteok, ...), not the Azure relic. Set AZURE=1 to re-enable relic discovery.
+
+Page rendering is in-process: static pages are fetched with httpx + markitdown,
+and JS-only pages are rendered on demand with a lazily-spawned Playwright
+browser (torn down after each use) — no Firecrawl api/playwright-service/queue
+services, no resident browser.
 
 Usage:
     uv run python scripts/run_all.py            # full stack, foreground
@@ -36,25 +41,17 @@ REPO = PROJECT.parent.parent  # repo root
 COMPOSE = PROJECT / "docker-compose.yaml"
 
 DOCKER_SERVICES = [
-    "redis",
-    "nuq-postgres",
     "searxng",
     "neo4j",
-    "rabbitmq",
-    "playwright-service",
-    "api",
     "agent-memory-db",
 ]
 
-# Infra readiness probes (host, port). Internal-only services (rabbitmq,
-# playwright, nuq-postgres) are reachable inside the compose network but not
-# necessarily on the host, so those are skipped here — the api container's
-# healthcheck gate covers them.
+# Infra readiness probes (host, port). searxng/neo4j/agent-memory-db are the
+# only remaining compose services — Firecrawl (api/playwright/rabbitmq/redis/
+# nuq-postgres) is gone, and the embed server is started below.
 HOST_PROBES = {
-    "redis": (6379, 10),
     "searxng": (8080, 15),
     "neo4j": (7687, 15),
-    "api": (3002, 60),
     "agent-memory-db": (5433, 20),
     "embed": (8900, 60),
 }
@@ -85,8 +82,6 @@ async def _wait_for(name: str, timeout: float) -> bool:
     print(f"[run_all] waiting for {name}...", flush=True)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if name == "api" and _http_ok("http://localhost:3002/"):
-            return True
         if name == "searxng" and _http_ok("http://localhost:8080/"):
             return True
         if name == "embed" and _http_ok("http://localhost:8900/health"):
@@ -124,12 +119,8 @@ def _compose_up() -> bool:
 async def _ensure_infra() -> bool:
     if not _compose_up():
         return False
-    # Give the api container a moment (it depends on rabbitmq health; the
-    # compose healthcheck gate handles the wait, but podman sometimes reports
-    # healthy a touch early).
-    await asyncio.sleep(5)
     ok = True
-    for name in ("agent-memory-db", "neo4j", "redis", "searxng", "api", "embed"):
+    for name in ("agent-memory-db", "neo4j", "searxng", "embed"):
         # embed is started below; if already up, great.
         if name == "embed" and not _http_ok("http://localhost:8900/health"):
             continue

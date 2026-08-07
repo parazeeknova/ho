@@ -263,20 +263,14 @@ async def discover_from_vc_portfolios(limit: int = 40) -> list[dict[str, str]]:
     scrape to get rendered content.
     """
     companies: list[dict[str, str]] = []
-    cfg = get_config().firecrawl
     sem = asyncio.Semaphore(6)
-    client = await get_client("discovery", timeout=60.0)
 
     async def _scrape_one(p_url):
         async with sem:
             try:
-                resp = await client.post(
-                    f"{cfg.url}/v1/scrape",
-                    json={"url": p_url, "formats": ["html"], "onlyMainContent": True},
-                )
-                if resp.status_code != 200:
-                    return ""
-                return (resp.json().get("data") or {}).get("html", "") or ""
+                from src.render import render_html
+
+                return await render_html(p_url, timeout=60.0)
             except Exception:
                 return ""
 
@@ -580,20 +574,10 @@ async def discover_from_weworkremotely(limit: int = 30) -> list[dict[str, str]]:
     """
     companies: list[dict[str, str]] = []
     seen: set[str] = set()
-    cfg = get_config().firecrawl
     try:
-        client = await get_client("discovery", timeout=60.0)
-        resp = await client.post(
-            f"{cfg.url}/v1/scrape",
-            json={
-                "url": "https://weworkremotely.com/",
-                "formats": ["html"],
-                "onlyMainContent": True,
-            },
-        )
-        if resp.status_code != 200:
-            return companies
-        html = (resp.json().get("data") or {}).get("html", "") or ""
+        from src.render import render_html
+
+        html = await render_html("https://weworkremotely.com/", timeout=60.0)
         if not html:
             return companies
         for m in re.finditer(

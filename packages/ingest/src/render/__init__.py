@@ -226,6 +226,52 @@ async def render_html(url: str, timeout: float = 20.0) -> str:
     return html  # return whatever we have (may be a shell) so callers can retry
 
 
+# ── link extraction (replaces Firecrawl /v1/map) ───────────────────────
+
+
+async def extract_links(
+    url: str,
+    *,
+    job_only: bool = True,
+    limit: int = 300,
+    timeout: float = 20.0,
+) -> list[str]:
+    """Extract job-posting links from a careers/board page.
+
+    Replaces Firecrawl's ``/v1/map``: fetch the page (rendering JS-only sites
+    when needed), pull every href, absolutize, and optionally keep only
+    job-like URLs. Works across the whole internet, not just known ATS boards.
+    """
+    html = await render_html(url, timeout=timeout)
+    if not html:
+        return []
+    html = _absolutize(html, url)
+    hrefs: list[str] = []
+    for m in re.finditer(r'href=["\']([^"\']+)["\']', html):
+        hrefs.append(m.group(1))
+    # Also catch hrefs in JS chunks (many boards render links client-side).
+    js_href_re = re.compile(
+        r'["\']((?:https?:)?//[^"\']+/(?:jobs?|careers|postings?|positions?)[^"\']*)["\']'
+    )
+    for m in js_href_re.finditer(html):
+        hrefs.append(m.group(1))
+    out: list[str] = []
+    seen: set[str] = set()
+    for h in hrefs:
+        if not h or h.startswith(("javascript:", "mailto:", "tel:", "#")):
+            continue
+        full = h if re.match(r"^https?://", h) else urljoin(url, h)
+        if job_only and not _is_job_url(full):
+            continue
+        if full in seen:
+            continue
+        seen.add(full)
+        out.append(full)
+        if len(out) >= limit:
+            break
+    return out
+
+
 # ── markdown extraction ─────────────────────────────────────────────────
 
 

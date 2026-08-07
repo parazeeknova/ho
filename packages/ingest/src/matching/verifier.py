@@ -15,15 +15,10 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from firecrawl import FirecrawlApp
-
-from src.http_client import get_client
 from src.llm.context import VERIFY_SCHEMA, ContextManager
 from src.logging import get_logger
 
 logger = get_logger("verifier")
-
-FIRECRAWL_URL = "http://127.0.0.1:3002"
 
 VERIFY_PROMPT = """Compare two scraped job listings. Are they the same job?
 Original: {original}
@@ -165,41 +160,41 @@ class MultiSourceVerifier:
 
 
 async def _scrape_alternate(role: str, company: str, original_url: str) -> str:
-    try:
-        client = await get_client("verifier", timeout=60.0)
-        resp = await client.post(
-            f"{FIRECRAWL_URL}/v1/search",
-            json={"query": f"{role} {company} job"},
-        )
-        if resp.status_code != 200:
-            return ""
-        data = resp.json().get("data", []) or []
-        if not isinstance(data, list) or not data:
-            return ""
+    """Fetch an alternate source describing the same role.
 
-        alt_url = None
-        for r in data:
-            u = r.get("url", "")
-            if u and u != original_url and u.startswith("http"):
-                alt_url = u
-                break
-        if not alt_url:
-            return ""
+    Replaces Firecrawl's search+scrape: derive likely alternate URLs from the
+    original posting (company site + careers paths) and markdownify the first
+    that resolves. Returns '' when none yield usable content.
+    """
+    from urllib.parse import urlparse
 
-        scrape_resp = await client.post(
-            f"{FIRECRAWL_URL}/v1/scrape",
-            json={"url": alt_url, "formats": ["markdown"]},
-        )
-        if scrape_resp.status_code == 200:
-            alt_content = (scrape_resp.json().get("data") or {}).get("markdown", "") or ""
-            return alt_content if len(alt_content) >= 100 else ""
-    except Exception:
-        pass
+    from src.render import markdownify
+
+    parsed = urlparse(original_url or "")
+    origin = f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else ""
+    candidates = [original_url]
+    if origin:
+        candidates += [
+            f"{origin}/careers",
+            f"{origin}/jobs",
+            f"{origin}/about/careers",
+            f"{origin}/careers?q={role}",
+        ]
+    seen: set[str] = set()
+    for alt_url in candidates:
+        if not alt_url or alt_url in seen:
+            continue
+        seen.add(alt_url)
+        try:
+            text = await markdownify(alt_url, timeout=20.0)
+            if text and len(text) >= 100:
+                return text
+        except Exception:
+            continue
     return ""
 
 
 async def _verify_one(
-    app: FirecrawlApp,
     role: str,
     company: str,
     original_url: str,
@@ -222,7 +217,6 @@ async def _verify_one(
 
 
 async def verify_jobs(
-    app: FirecrawlApp,
     jobs: list[dict],
     ctx: ContextManager,
     concurrency: int = 4,
@@ -236,7 +230,7 @@ async def verify_jobs(
         role = j.get("role", "?")
         company = j.get("company", "?")
         url = j.get("source_url", "")
-        tasks.append(_verify_one(app, role, company, url, ctx, sem))
+        tasks.append(_verify_one(role, company, url, ctx, sem))
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
 

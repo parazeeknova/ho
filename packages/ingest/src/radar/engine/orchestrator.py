@@ -13,7 +13,6 @@ from datetime import date, datetime
 from typing import Any
 
 from dotenv import load_dotenv
-from firecrawl import FirecrawlApp
 from rich.console import Console
 
 from src.agent.discord_agent import DiscordAgent, set_pipeline_state
@@ -35,7 +34,6 @@ from src.graph.frontier import CrawlFrontier
 from src.graph.graph_store import GraphStore
 from src.http_cache import set_http_cache_store
 from src.http_client import close_all as _close_http_clients
-from src.http_client import get_client
 from src.llm.context import ContextManager
 from src.logging import get_logger
 from src.memory.pgvector_store import MemoryStore
@@ -414,7 +412,7 @@ async def _scrape_indexes() -> list[JobObservation]:
 
 
 async def _poll_board(
-    board: dict[str, str], app: FirecrawlApp, store: MemoryStore | None = None
+    board: dict[str, str], store: MemoryStore | None = None
 ) -> list[JobObservation]:
     source_id = board["id"]
     board_url = board["url"]
@@ -456,21 +454,15 @@ async def _poll_board(
 
     direct_urls: list[str] = []
     try:
-        resp = await asyncio.wait_for(
-            asyncio.to_thread(app.map_url, board_url),
+        from src.render import extract_links
+
+        fc_cfg = get_config().firecrawl
+        direct_urls = await asyncio.wait_for(
+            extract_links(board_url, job_only=True, limit=fc_cfg.map_limit),
             timeout=120.0,
         )
-        if isinstance(resp, list):
-            for item in resp:
-                url = item if isinstance(item, str) else item.get("url", "")
-                if url and url.startswith("http"):
-                    direct_urls.append(url)
-        elif isinstance(resp, dict):
-            for link in resp.get("links", []) or []:
-                if isinstance(link, str) and link.startswith("http"):
-                    direct_urls.append(link)
     except Exception as exc:
-        logger.warning(f"Firecrawl map_url failed for {board_url}: {exc}")
+        logger.warning(f"Board map failed for {board_url}: {exc}")
         record_failure(source_id)
         return []
 
@@ -802,10 +794,11 @@ async def _record_ats_no_openings(store: MemoryStore, board_url: str) -> None:
 
 
 async def _poll_board_safe(
-    board: dict[str, str], sem: asyncio.Semaphore, app: FirecrawlApp, store: MemoryStore
+    board: dict[str, str], sem: asyncio.Semaphore, store: MemoryStore
 ) -> list[JobObservation]:
+    """Wrap _poll_board with a semaphore and fault isolation."""
     async with sem:
-        return await _poll_board(board, app, store)
+        return await _poll_board(board, store)
 
 
 async def _fetch_postings_and_gate(
@@ -876,15 +869,9 @@ async def _fetch_postings_and_gate(
                         processed_count += 1
                         return
                     scrape_used += 1
-                    client = await get_client("orchestrator", timeout=cfg.scrape_timeout)
-                    resp = await client.post(
-                        f"{cfg.url}/v1/scrape",
-                        json={"url": obs.url, "formats": ["markdown"], "onlyMainContent": True},
-                    )
-                    if resp.status_code != 200:
-                        _PIPELINE_METRICS["failed_fetches"] += 1
-                        return
-                    md = (resp.json().get("data") or {}).get("markdown", "") or ""
+                    from src.render import markdownify
+
+                    md = await markdownify(obs.url, timeout=cfg.scrape_timeout)
                     if not md or len(md) < 100:
                         _PIPELINE_METRICS["dropped_postings"] += 1
                         return
@@ -1590,17 +1577,10 @@ async def _job_processor(entry: FrontierEntry) -> list[FrontierEntry]:
         _PIPELINE_METRICS["dropped_postings"] += 1
         return []
 
-    cfg = get_config().firecrawl
     try:
-        client = await get_client("orchestrator", timeout=20.0)
-        resp = await client.post(
-            f"{cfg.url}/v1/scrape",
-            json={"url": url, "formats": ["markdown"], "onlyMainContent": True},
-        )
-        if resp.status_code != 200:
-            _PIPELINE_METRICS["job_processor_failures"] += 1
-            return []
-        md = (resp.json().get("data") or {}).get("markdown", "") or ""
+        from src.render import markdownify
+
+        md = await markdownify(url, timeout=20.0)
         if not md or len(md) < 100:
             _PIPELINE_METRICS["dropped_postings"] += 1
             return []
@@ -1689,7 +1669,6 @@ async def _run_radar_pipeline() -> None:
     signal.signal(signal.SIGTERM, _cleanup)
 
     await ctx.flush()
-    app = FirecrawlApp(api_key="sk-no-auth", api_url=cfg.firecrawl.url)
     if not os.getenv("HO_WORKER_ONLY"):
         await ta.start_polling()
 
@@ -2085,8 +2064,7 @@ async def _run_radar_pipeline() -> None:
             board_results: list[list[JobObservation]] = []
 
             tasks = [
-                asyncio.create_task(_poll_board_safe(b, poll_sem, app, store))
-                for b in active_sources
+                asyncio.create_task(_poll_board_safe(b, poll_sem, store)) for b in active_sources
             ]
             for _board_done, task in enumerate(asyncio.as_completed(tasks), start=1):
                 try:

@@ -249,14 +249,9 @@ def get_system_metrics() -> dict[str, str]:
 async def run_health_checks() -> str:
     checks = [
         ("llama-server (Embed)", _check_http("http://localhost:8900/health")),
-        ("Firecrawl API", _check_port("localhost", 3002)),
         ("SearXNG", _check_http("http://localhost:8080")),
         ("agent-memory-db (pgvector)", _check_port("localhost", 5433)),
         ("Neo4j Graph Store", _check_port("localhost", 7687)),
-        ("Redis", _check_port("localhost", 6379)),
-        ("RabbitMQ", _check_port("localhost", 5672)),
-        ("Playwright Service", _check_port("localhost", 3000)),
-        ("NuQ Postgres", _check_port("localhost", 5432)),
     ]
     results = await asyncio.gather(*[coro for _, coro in checks])
     lines = ["**System Health Check**", ""]

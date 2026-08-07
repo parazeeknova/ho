@@ -205,30 +205,38 @@ async def ats_crawler(entry: FrontierEntry) -> list[FrontierEntry]:
     observations: list[JobObservation] = []
 
     try:
-        cfg = get_config().firecrawl
         ats_cfg = get_config().ats
-        client = await get_client("agents", timeout=30.0)
-        resp = await client.post(
-            f"{cfg.url}/v1/map",
-            json={"url": ats_url, "limit": cfg.map_limit},
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            links = data.get("links", []) or []
-            limit = min(ats_cfg.max_pages_per_board * 20, 200)
-            for link in links[:limit]:
-                if not isinstance(link, str):
-                    continue
-                if _ATS_PATTERN.search(link) or "/jobs/" in link or "/postings/" in link:
-                    observations.append(
-                        JobObservation(
-                            url=link,
-                            source=f"ats:{ats_type}",
-                            title=f"Job at {company}",
-                            snippet=company,
-                            raw_markdown="",
-                        )
-                    )
+        links: list[str] = []
+        # Tier 1: native ATS JSON API (0 loss, most accurate) — the whole
+        # internet's known ATS boards resolve here.
+        try:
+            from src.radar.sources.ats_interceptor import fetch_ats_jobs, parse_ats_slug
+
+            parsed = parse_ats_slug(ats_url)
+            if parsed:
+                platform, slug = parsed
+                jobs = await fetch_ats_jobs(platform, slug)
+                links = [j.get("url", "") for j in jobs if j.get("url")]
+        except Exception as e:
+            logger.debug("ATS interceptor failed; falling back to link scan", error=str(e))
+        # Tier 2: general link scan for unknown/JS-only boards.
+        if not links:
+            from src.render import extract_links
+
+            links = await extract_links(ats_url, job_only=True, limit=200)
+        limit = min(ats_cfg.max_pages_per_board * 20, 200)
+        for link in links[:limit]:
+            if not isinstance(link, str) or not link.startswith("http"):
+                continue
+            observations.append(
+                JobObservation(
+                    url=link,
+                    source=f"ats:{ats_type}",
+                    title=f"Job at {company}",
+                    snippet=company,
+                    raw_markdown="",
+                )
+            )
     except Exception as e:
         logger.warning("ATS crawl failed", company=company, exception=str(e))
         return []

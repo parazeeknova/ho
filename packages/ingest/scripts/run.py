@@ -111,12 +111,7 @@ def stop_all() -> None:
     run("killall llama-server 2>/dev/null", silent=True)
     # Stop pipeline containers but leave the sync stack (agent-memory-db,
     # the ingest's Postgres) untouched so azure sync keeps running.
-    run(
-        f"{DOCKER_COMPOSE} stop redis playwright-service nuq-postgres "
-        "searxng neo4j api 2>/dev/null",
-        silent=True,
-    )
-    run("podman rm -f firecrawl_rabbitmq_1 2>/dev/null", silent=True)
+    run(f"{DOCKER_COMPOSE} stop searxng neo4j 2>/dev/null", silent=True)
     console.print("[green]All services stopped.[/green]")
 
 
@@ -156,16 +151,7 @@ def deep_stats() -> dict[str, Any]:
             if val.isdigit():
                 info[f"pg_{table}"] = int(val)
 
-    # RabbitMQ queue depths
-    if container_running("firecrawl_rabbitmq"):
-        raw = _docker_exec(
-            "firecrawl_rabbitmq_1",
-            "rabbitmqctl list_queues name messages 2>/dev/null",
-        )
-        for line in raw.split("\n"):
-            parts = line.split()
-            if len(parts) == 2 and parts[1].isdigit():
-                info[f"mq_{parts[0]}"] = int(parts[1])
+    # RabbitMQ is gone with Firecrawl; the ingest no longer uses a queue.
 
     # Embedding model info
     if check_http("http://localhost:8900/health"):
@@ -191,8 +177,6 @@ def deep_stats() -> dict[str, Any]:
         r = subprocess.run(
             "docker stats --no-stream "
             "--format '{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}' "
-            "firecrawl-api-1 firecrawl-playwright-service-1 "
-            "firecrawl_rabbitmq_1 firecrawl-redis-1 "
             "firecrawl-neo4j-1 2>/dev/null",
             shell=True,
             capture_output=True,
@@ -218,10 +202,6 @@ def format_stats(info: dict[str, Any]) -> str:
 
     # CPU/Mem section
     for key, label in [
-        ("cpu_api_1", "api"),
-        ("cpu_playwright-service_1", "pw"),
-        ("cpu_rabbitmq_1", "mq"),
-        ("cpu_redis_1", "redis"),
         ("cpu_neo4j_1", "neo4j"),
     ]:
         if key in info:
@@ -240,14 +220,6 @@ def format_stats(info: dict[str, Any]) -> str:
         if key in info:
             parts.append(f"{label}={info[key]}")
 
-    # Queue depths
-    for key, label in [
-        ("mq_extract.jobs", "mq:extract"),
-        ("mq_nuq.queue_scrape.prefetch", "mq:nuq-scrape"),
-    ]:
-        if key in info:
-            parts.append(f"{label}={info[key]}")
-
     # Embed
     if "embed_model" in info:
         parts.append(f"embed={info['embed_model']}")
@@ -257,106 +229,6 @@ def format_stats(info: dict[str, Any]) -> str:
 
 def _strip_ansi(text: str) -> str:
     return re.sub(r"\x1b\[[0-9;]*m", "", text)
-
-
-_FC_KEEP = [
-    "Worker taking job",
-    "Job done",
-    "Scraping URL",
-    "deemed successful",
-    "deemed failed",
-    "map_url",
-    "error",
-    "Error",
-    "failed",
-]
-_FC_DROP = [
-    "bypassing authentication",
-    "USE_DB_AUTHENTICATION",
-    "robustInsert",
-    "runWebScraper called",
-    "running scrapeURL",
-    "scrapeURL entered",
-    "Selected engines",
-    "Scraping via playwright",
-    "Scraping via fetch",
-    "Done with waitForJob",
-    "Removed job from queue",
-    "Request metrics",
-    "request completed",
-    "scrapeController",
-    "log_job",
-    "Connected to Redis",
-    "Redis connected",
-    "NUQ",
-    "AUTUMN_SECRET_KEY",
-    "Worker 10 listening",
-    "WebSocket proxy",
-    "Network info dump",
-    "Number of CPUs",
-    "Worker 10 started",
-    "Attaching WebSocket",
-    "NuQ reconciler",
-    "NuQ prefetch",
-    "Concurrency queue",
-    "All services running",
-    "All processes terminated",
-    "Starting services",
-    "Waiting for API",
-    "Skipping container",
-    "playwright-service",
-    "nuq-postgres",
-    "postgres",
-    "Started consuming",
-    "ENOTFOUND redis",
-    "ioredis",
-    "Redis error",
-    "getaddrinfo ENOTFOUND",
-]
-
-
-def _fc_should_show(line: str) -> bool:
-    if any(d in line for d in _FC_DROP):
-        return False
-    return any(k in line for k in _FC_KEEP)
-
-
-def firecrawl_logger(log_path: Path, stop_event: threading.Event) -> None:
-    """Tail Firecrawl API container logs, showing only scrape activity."""
-    time.sleep(3)
-    while not stop_event.is_set():
-        try:
-            proc = subprocess.Popen(
-                "podman logs --since 2s -f firecrawl_api_1 2>/dev/null",
-                shell=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                text=True,
-            )
-            for line in proc.stdout:  # type: ignore[union-attr]
-                if stop_event.is_set():
-                    proc.terminate()
-                    break
-                clean = _strip_ansi(line).strip()
-                if not clean or not _fc_should_show(clean):
-                    continue
-                ts = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
-                msg = f"[fc] {clean}"
-                try:
-                    with open(log_path, "a") as f:
-                        f.write(
-                            f'{{"timestamp": "{ts}", "level": "INFO", '
-                            f'"message": "{msg}", '
-                            f'"logger": "firecrawl_tail"}}\n'
-                        )
-                        f.flush()
-                    sys.stdout.write(f"{msg}\n")
-                    sys.stdout.flush()
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        stop_event.wait(5)
 
 
 def stats_logger(log_path: Path, stop_event: threading.Event, interval: float = 30.0) -> None:
@@ -445,14 +317,9 @@ def main() -> None:
     # Define services
     services: list[tuple[str, Any, str]] = [
         ("llama-server (Embed)", lambda: check_http("http://localhost:8900/health"), ":8900"),
-        ("redis", lambda: container_running("firecrawl-redis-1"), ":6379"),
-        ("nuq-postgres", lambda: container_running("firecrawl-nuq-postgres-1"), ":5432"),
         ("searxng", lambda: check_http("http://localhost:8080"), ":8080"),
         ("neo4j", check_neo4j_ready, ":7687"),
         ("agent-memory-db", lambda: check_port("localhost", 5433), ":5433"),
-        ("rabbitmq", lambda: container_running("firecrawl_rabbitmq_1"), ":5672"),
-        ("playwright", lambda: container_running("firecrawl-playwright-service-1"), ":3000"),
-        ("firecrawl api", lambda: check_port("localhost", 3002), ":3002"),
     ]
 
     # Kick off startup in background
@@ -462,20 +329,7 @@ def main() -> None:
         stderr=subprocess.DEVNULL,
     )
 
-    run(
-        f"{DOCKER_COMPOSE} up -d redis playwright-service nuq-postgres searxng neo4j api",
-        silent=True,
-    )
-
-    run(
-        "docker run -d --name firecrawl_rabbitmq_1 "
-        "--network firecrawl_default --network-alias rabbitmq "
-        "--restart unless-stopped "
-        "--entrypoint /bin/bash rabbitmq:3-management "
-        '-c "rm -f /var/lib/rabbitmq/.erlang.cookie; '
-        'exec docker-entrypoint.sh rabbitmq-server"',
-        silent=True,
-    )
+    run(f"{DOCKER_COMPOSE} up -d searxng neo4j agent-memory-db", silent=True)
 
     # Live status table while containers come up
     failed: list[str] = []
@@ -570,14 +424,6 @@ def main() -> None:
         daemon=True,
     )
     stats_thread.start()
-
-    # Background Firecrawl log tail
-    fc_thread = threading.Thread(
-        target=firecrawl_logger,
-        args=(log_path, stop_stats),
-        daemon=True,
-    )
-    fc_thread.start()
 
     _procs = []
     if args.worker_only:
