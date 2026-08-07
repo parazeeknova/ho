@@ -49,6 +49,19 @@ _JS_SHELL_TEXT_MARKERS = (
 )
 
 
+def _requires_js(html: str) -> bool:
+    """Does the raw page explicitly say JavaScript is required?
+
+    A JS-SPA served to a static fetch returns an HTML shell whose only real
+    signal is a <noscript>/<meta> telling the visitor to enable JavaScript —
+    even when a short <title> ("Design Engineer @ Replit") is present. Detect
+    that marker in the RAW html (including noscript) so we force a browser
+    render instead of extracting the stub.
+    """
+    low = (html or "").lower()
+    return any(m in low for m in _JS_SHELL_TEXT_MARKERS)
+
+
 def _is_js_shell(html: str) -> bool:
     """Detect a JS-only shell page (needs a browser to render).
 
@@ -217,7 +230,7 @@ async def render_html(url: str, timeout: float = 20.0) -> str:
     Returns the HTML with absolute hrefs, or '' if both paths fail.
     """
     html = await fetch_html(url, timeout=timeout)
-    if html and not _is_js_shell(html):
+    if html and not _is_js_shell(html) and not _requires_js(html):
         return _absolutize(html, url)
     # JS-only (or empty): render it.
     rendered = await _render_with_playwright(url)
@@ -282,7 +295,7 @@ async def markdownify(url: str, timeout: float = 20.0) -> str:
     browser render, then converts. Returns '' when nothing usable came back.
     """
     html = await fetch_html(url, timeout=timeout)
-    need_render = not html or _is_js_shell(html)
+    need_render = not html or _is_js_shell(html) or _requires_js(html)
     if need_render:
         html = await _render_with_playwright(url)
         if not html:

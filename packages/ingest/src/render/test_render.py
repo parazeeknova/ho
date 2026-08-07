@@ -6,6 +6,7 @@ from src.render import (
     _absolutize,
     _is_job_url,
     _is_js_shell,
+    _requires_js,
     markdownify,
 )
 
@@ -28,6 +29,22 @@ def test_is_js_shell_false_for_rendered_content():
 def test_is_js_shell_false_for_server_rendered():
     html = "<html><body><h1>Backend Engineer</h1><p>Stripe is hiring.</p></body></html>"
     assert _is_js_shell(html) is False
+
+
+def test_requires_js_detects_spa_shell_with_title():
+    # A JS-SPA served statically has a short title but a <noscript> telling
+    # the visitor to enable JavaScript — this must force a browser render.
+    html = (
+        "<html><head><title>Design Engineer @ Replit</title></head><body>"
+        "<noscript>You need to enable JavaScript to run this app.</noscript>"
+        '<div id="root"></div></body></html>'
+    )
+    assert _requires_js(html) is True
+
+
+def test_requires_js_false_for_server_rendered():
+    html = "<html><body><h1>Backend Engineer</h1><p>Stripe is hiring.</p></body></html>"
+    assert _requires_js(html) is False
 
 
 def test_is_job_url():
