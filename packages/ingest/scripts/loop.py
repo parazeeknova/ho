@@ -38,21 +38,29 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "autofill"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "ml"))
 
-from autofill.db import AutofillDB
-from src.radar.engine.autofill_bridge import drain_once, print_summary, queue_balance
+from dotenv import load_dotenv
 
-PROJECT = Path(__file__).resolve().parent.parent
-REPO = PROJECT.parent
+load_dotenv()
+
+from autofill.db import AutofillDB  # noqa: E402
+from src.radar.engine.autofill_bridge import drain_once, print_summary, queue_balance  # noqa: E402
+
+PROJECT = Path(__file__).resolve().parent.parent  # packages/ingest
+REPO = PROJECT.parent.parent  # repo root
 LOG_DIR = PROJECT / "logs"
 
 # Same LLM throttle overrides run.py forces so workers blast through the corpus.
 RADAR_ENV_OVERRIDES = {
-    "LLM_QUEUE_RPM": "240",
-    "LLM_QUEUE_MAX_IN_FLIGHT": "30",
-    "LLM_QUEUE_TPM": "400000",
-    "LLM_BUDGET_RADAR_RPM": "240",
-    "LLM_BUDGET_RADAR_TPM": "400000",
+    # Stay under the provider's real cap (GeneralCompute: 100 RPM / 200K TPM).
+    # 240 RPM tripped 429s and stalled autofill on a 30-40s cooldown per
+    # question. These are setdefaults so a user's .env can raise them.
+    "LLM_QUEUE_RPM": "90",
+    "LLM_QUEUE_MAX_IN_FLIGHT": "10",
+    "LLM_QUEUE_TPM": "180000",
+    "LLM_BUDGET_RADAR_RPM": "60",
+    "LLM_BUDGET_RADAR_TPM": "120000",
 }
 
 

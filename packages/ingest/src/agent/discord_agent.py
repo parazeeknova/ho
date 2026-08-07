@@ -887,12 +887,14 @@ class DiscordAgent:
                     remaining = summary.get("pending", 0) + summary.get("filling", 0)
                     review = summary.get("deferred", 0) + summary.get("awaiting_review", 0)
                     failed = summary.get("failed", 0)
+                    ml_line = await self._ml_status_line()
                     intro = discord.Embed(
                         title=f"📊 Sweep #{sweep} Starting Point",
                         color=0x42A5F5,
                         description=(
                             f"**Queue** — Applied `{applied}` · Remaining `{remaining}` · "
                             f"Review `{review}` · Failed `{failed}`\n"
+                            f"{ml_line}\n"
                             "Watching for new matches — alerts land below as they're found."
                         ),
                     )
@@ -906,6 +908,51 @@ class DiscordAgent:
     async def _wait_gateway_ready(self) -> None:
         while self._client is not None and not self._client.is_ready():
             await asyncio.sleep(0.5)
+
+    async def _ml_status_line(self) -> str:
+        """One-line summary of the learning system state (bandits, Gmail push,
+        LTR mode, event volume) pulled from Postgres. Best-effort."""
+        try:
+            from src.memory.pgvector_store import MemoryStore
+
+            store = await MemoryStore.create()
+            try:
+                async with store._pool.acquire() as conn:
+                    events = await conn.fetchval("SELECT COUNT(*) FROM decision_events")
+                    impressions = await conn.fetchval("SELECT COUNT(*) FROM impressions")
+                    outcomes = await conn.fetchval(
+                        "SELECT COUNT(*) FROM decision_events WHERE reward IS NOT NULL"
+                    )
+                    unattributed = await conn.fetchval(
+                        "SELECT COUNT(*) FROM unattributed_outcomes"
+                    )
+                    model = await conn.fetchrow(
+                        "SELECT version, model_type FROM model_registry "
+                        "WHERE status='active' ORDER BY created_at DESC LIMIT 1"
+                    )
+                    push = await conn.fetchval(
+                        "SELECT 1 FROM gmail_push_state WHERE history_id != '' LIMIT 1"
+                    )
+                parts = [
+                    f"Events `{events or 0}`",
+                    f"Impressions `{impressions or 0}`",
+                    f"Rewards `{outcomes or 0}`",
+                ]
+                if push:
+                    parts.append("Gmail push `ON`")
+                else:
+                    parts.append("Gmail push `off`")
+                if model:
+                    parts.append(f"Model `{model['version']}` ({model['model_type']})")
+                else:
+                    parts.append("Model `none` (shadow)")
+                if unattributed:
+                    parts.append(f"Unattributed `{unattributed}`")
+                return "🧠 **Learning system** — " + " · ".join(parts)
+            finally:
+                await store.close()
+        except Exception:
+            return "🧠 **Learning system** — unavailable"
 
     async def begin_recovery_thread(self, title: str = "Startup Re-delivery") -> None:
         """Create a thread for the startup re-delivery of previously-accepted
@@ -957,12 +1004,14 @@ class DiscordAgent:
             unapplied = unapplied_stats.get("unapplied", 0)
             stale = unapplied_stats.get("stale", 0)
 
+            ml_line = await self._ml_status_line()
             description = (
                 f"**Scraped** `{scraped}` · **Matched** `{matched}` · "
                 f"**Took** `{duration:.1f}s`\n"
                 f"**Queue** — Applied `{applied}` · Remaining `{remaining}` · "
                 f"Review `{review}` · Failed `{failed}`\n"
-                f"**Unapplied** — `{unapplied}` (`{stale}` stale > 48h)"
+                f"**Unapplied** — `{unapplied}` (`{stale}` stale > 48h)\n"
+                f"{ml_line}"
             )
             embed = discord.Embed(
                 title=f"✅ Sweep #{sweep} Complete", color=0x66BB6A, description=description
@@ -1030,6 +1079,8 @@ class DiscordAgent:
         ]
         if s.get("last_error"):
             lines.append(f"Last error: {s.get('last_error')}")
+        ml_line = await self._ml_status_line()
+        lines.append(ml_line)
         await self._reply(message, "\n".join(lines))
 
     async def _handle_health(self, message: discord.Message) -> None:

@@ -358,6 +358,12 @@ class RadarConfig:
     max_candidates_per_sweep: int = field(
         default_factory=lambda: _env_int("RADAR_MAX_CANDIDATES", 300)
     )
+    # Stop-after: when the gate has passed at least this many candidates in a
+    # sweep, the master loop ends (overnight runs usually want a bounded batch
+    # — e.g. 20 gated jobs — not an endless loop). 0 = no early stop.
+    stop_after_gated: int = field(
+        default_factory=lambda: _env_int("RADAR_STOP_AFTER_GATED", 20)
+    )
     urgent_window_hours: int = field(
         default_factory=lambda: _env_int("RADAR_URGENT_WINDOW_HOURS", 48)
     )

@@ -2261,7 +2261,21 @@ async def _run_radar_pipeline() -> None:
             # quiet sources still get polled (should_poll gates frequency).
             active_sources = select_sources_for_sweep(active_sources)
 
-            # Parallel source polling across all registered seed boards
+            # Per-sweep cap: with thousands of discovered sources, polling ALL
+            # of them (many need slow browser renders) makes a single sweep
+            # take tens of minutes and never reach the ranking/event phase.
+            # Poll the EV-ranked top-N each sweep so the loop completes a full
+            # pass (poll -> gate -> rank -> emit events) in bounded time;
+            # low-yield sources rotate back in on later sweeps.
+            sweep_source_cap = int(os.environ.get("SWEEP_SOURCE_CAP", "250"))
+            if len(active_sources) > sweep_source_cap:
+                logger.info(
+                    f"Sweep {sweep}: capping source poll from {len(active_sources)} "
+                    f"to {sweep_source_cap} (EV-ranked)"
+                )
+                active_sources = active_sources[:sweep_source_cap]
+
+            # Parallel source polling across the capped EV-ranked set
             poll_sem = asyncio.Semaphore(12)
             board_results: list[list[JobObservation]] = []
 
@@ -2319,6 +2333,14 @@ async def _run_radar_pipeline() -> None:
             candidates, gate_stats = await _fetch_postings_and_gate(all_obs, store)
             set_pipeline_state(scraped=len(all_obs), gated=len(candidates))
             logger.info(f"Gating: {len(candidates)} passed, {gate_stats['rejected']} rejected")
+            # Bounded-batch mode: once the gate has passed the target count,
+            # finish this sweep (rank + match + notify) and then stop instead
+            # of looping forever. Set RADAR_STOP_AFTER_GATED=0 to disable.
+            reached_target = (
+                not is_worker
+                and cfg.radar.stop_after_gated > 0
+                and len(candidates) >= cfg.radar.stop_after_gated
+            )
             gs = gate_stats.get("gate_stats", {})
             if gs:
                 logger.info(f"Gate rejection breakdown: {gs}")
@@ -2422,6 +2444,12 @@ async def _run_radar_pipeline() -> None:
 
             gc.collect()
             if os.environ.get("OVERNIGHT_LOOP", "true").lower() != "true":
+                break
+            if reached_target:
+                logger.info(
+                    f"Sweep {sweep}: reached {len(candidates)} gated candidates "
+                    f"(>= {cfg.radar.stop_after_gated} target) — stopping loop."
+                )
                 break
             interval = cfg.pipeline.sweep_interval
             logger.info(f"Sweep {sweep}: sleeping for {interval}s before next sweep")

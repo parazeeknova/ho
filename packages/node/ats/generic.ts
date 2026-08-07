@@ -292,6 +292,97 @@ export function extractJsonJobContext(
   return null;
 }
 
+/**
+ * Fetch the structured job description from the ATS's public posting API.
+ * The DOM-only read fails on JS-SPA boards (Ashby etc.) where the JD isn't in
+ * the raw HTML — this is the "grounded JD" the answerer needs before filling.
+ * Returns null when no ATS API match exists.
+ */
+export async function atsApiJobContext(
+  url: string,
+): Promise<{ title: string; company: string; location: string; description: string } | null> {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.toLowerCase();
+    // Ashby: jobs.ashbyhq.com/{slug}/{jobId} -> job-board API
+    if (host.endsWith("ashbyhq.com")) {
+      const m = u.pathname.match(/^\/(?:jobs\/)?([^/]+)\/([^/]+)/);
+      if (m) {
+        const slug = m[1];
+        const jobId = m[2];
+        const res = await fetch(
+          `https://api.ashbyhq.com/posting-api/job-board/${slug}?includeCompensation=true`,
+          { headers: { "user-agent": "Mozilla/5.0" } },
+        );
+        if (res.ok) {
+          const data: any = await res.json();
+          const job = (data?.jobs || []).find((j: any) => j?.id === jobId);
+          if (job) {
+            return {
+              title: String(job.title || "").trim(),
+              company: String(job.team || slug || "").trim(),
+              location: String(job.locationName || job.location || "").trim(),
+              description: String(job.descriptionHtml || job.descriptionPlain || "")
+                .replace(/<[^>]+>/g, " ")
+                .replace(/\s+/g, " ")
+                .trim()
+                .slice(0, 6000),
+            };
+          }
+        }
+      }
+    }
+    // Greenhouse: /jobs/{id} or boards.greenhouse.io/{board}/jobs/{id}
+    if (host.endsWith("greenhouse.io") || host.includes("greenhouse.io")) {
+      const m = u.pathname.match(/\/jobs\/(\d+)/);
+      const board = u.pathname.split("/")[1];
+      if (m && board) {
+        const res = await fetch(
+          `https://boards-api.greenhouse.io/v1/boards/${board}/jobs/${m[1]}`,
+          { headers: { "user-agent": "Mozilla/5.0" } },
+        );
+        if (res.ok) {
+          const j: any = await res.json();
+          return {
+            title: String(j?.title || "").trim(),
+            company: String(j?.company_name || board || "").trim(),
+            location: String(j?.location?.name || "").trim(),
+            description: String(j?.content || "")
+              .replace(/<[^>]+>/g, " ")
+              .replace(/\s+/g, " ")
+              .trim()
+              .slice(0, 6000),
+          };
+        }
+      }
+    }
+    // Lever: jobs.lever.co/{company}/{jobId}
+    if (host.endsWith("lever.co")) {
+      const m = u.pathname.match(/^\/([^/]+)\/([^/]+)/);
+      if (m) {
+        const res = await fetch(`https://api.lever.co/v0/postings/${m[1]}/${m[2]}`);
+        if (res.ok) {
+          const j: any = await res.json();
+          const cats = j?.categories || {};
+          return {
+            title: String(j?.text || "").trim(),
+            company: String(j?.team || m[1] || "").trim(),
+            location: String(cats?.location || cats?.allLocations?.join(", ") || "").trim(),
+            description: String(j?.descriptionPlain || j?.description || "")
+              .replace(/<[^>]+>/g, " ")
+              .replace(/\s+/g, " ")
+              .trim()
+              .slice(0, 6000),
+          };
+        }
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export class GenericAdapter extends ATSAdapter {
   protected controls!: GenericControls;
   private jobCtx: {
@@ -660,6 +751,19 @@ export class GenericAdapter extends ATSAdapter {
         if (!company) company = pathToken;
       } catch {
         // fall through
+      }
+
+      // If the DOM/HTML extraction couldn't find a JD (JS-SPA boards), fall
+      // back to the ATS's public posting API so answers are grounded in the
+      // real role, not hallucinated from an empty description.
+      if (!description) {
+        const api = await atsApiJobContext(page.url());
+        if (api) {
+          title = title || api.title;
+          location = location || api.location;
+          description = api.description;
+          company = company || api.company;
+        }
       }
 
       return {

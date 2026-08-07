@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  atsApiJobContext,
   classifyFlow,
   cleanObserveLabel,
   extractBalancedObject,
@@ -202,5 +203,43 @@ describe("extractJsonJobContext", () => {
 
   it("returns null when nothing is parseable", () => {
     assert.equal(extractJsonJobContext("<html><body>hi</body></html>"), null);
+  });
+});
+
+describe("atsApiJobContext", () => {
+  it("parses the Ashby posting API response into job context", async () => {
+    const origFetch = globalThis.fetch;
+    // Mock the fetch so the test is hermetic (no network).
+    (globalThis as any).fetch = async (_url: string) => ({
+      ok: true,
+      status: 200,
+      async json() {
+        return {
+          jobs: [
+            {
+              id: "abc-123",
+              title: "AI Platform Engineer",
+              locationName: "Remote",
+              team: "Platform",
+              descriptionHtml: "<h2>About</h2><p>Build AI infra.</p>",
+            },
+          ],
+        };
+      },
+    });
+    try {
+      const ctx = await atsApiJobContext("https://jobs.ashbyhq.com/supabase/abc-123");
+      assert.ok(ctx);
+      assert.equal(ctx?.title, "AI Platform Engineer");
+      assert.equal(ctx?.location, "Remote");
+      assert.match(ctx?.description ?? "", /Build AI infra/);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it("returns null for non-ATS URLs", async () => {
+    const ctx = await atsApiJobContext("https://example.com/careers");
+    assert.equal(ctx, null);
   });
 });

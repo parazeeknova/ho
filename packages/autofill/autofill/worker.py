@@ -733,6 +733,20 @@ class AutofillWorker:
             bridge = DiscordQuestionBridge()
             question_timeout = float(os.getenv("AUTOFILL_QUESTION_TIMEOUT", "60"))
             overnight = is_overnight()
+            # Country-eligibility gate: never fill+submit an ONSITE role in a
+            # country the candidate isn't authorized to work in (per persona).
+            # A Nordics-onsite job for an India-based candidate with no foreign
+            # work authorization is skipped BEFORE the browser opens. The
+            # work-auth policy answers the form correctly, but a visa-requiring
+            # onsite role should never be auto-applied in the first place.
+            if await self._job_country_ineligible(rag, profile, apply_link, store, job):
+                await self.db.update_status(
+                    job_id,
+                    status="skipped",
+                    error="foreign onsite role — no work authorization",
+                )
+                await self._record_outcome(store, job, "skipped", error="country_ineligible")
+                return
             # Unified mode: no day/night split. Always fill + submit on
             # success; unknown questions are asked via Discord with a 1-min
             # timeout (AUTOFILL_QUESTION_TIMEOUT) and deferred if no answer
@@ -757,11 +771,20 @@ class AutofillWorker:
                         site_knowledge = rec
                 except Exception:
                     site_knowledge = {}
+            _profile_payload = profile.model_dump(by_alias=False)
+            # URL fields must be absolute (zod .url() on the runner rejects
+            # scheme-less values). Normalize any bare "host.tld/..." before
+            # sending so a persona-linkedin without https:// never aborts the
+            # whole application payload.
+            for _u in ("linkedin", "github", "website", "twitter"):
+                _v = _profile_payload.get(_u)
+                if isinstance(_v, str) and _v.strip() and not re.match(r"^https?://", _v):
+                    _profile_payload[_u] = f"https://{_v.strip()}"
             job_payload = {
                 "jobId": job_id,
                 "url": apply_link,
                 "mode": run_mode,
-                "profile": profile.model_dump(by_alias=False),
+                "profile": _profile_payload,
                 "siteKnowledge": site_knowledge,
                 # Always submit on success — the user reviews via Discord
                 # answers, not by watching a browser. Set false via
@@ -1247,7 +1270,8 @@ class AutofillWorker:
                                         )
                                     if (
                                         corrections
-                                        and os.getenv("AUTOFILL_CONSISTENCY_GATE") == "1"
+                                        and os.getenv("AUTOFILL_CONSISTENCY_GATE", "1").strip()
+                                        != "0"  # noqa: E501
                                     ):
                                         # Gate path: send the corrections so the
                                         # runner re-fills the wrong fields.
@@ -1271,7 +1295,10 @@ class AutofillWorker:
                                             ],
                                         )
                                     else:
-                                        if os.getenv("AUTOFILL_CONSISTENCY_GATE") == "1":
+                                        if (
+                                            os.getenv("AUTOFILL_CONSISTENCY_GATE", "1").strip()
+                                            != "0"
+                                        ):
                                             # Approved (or nothing to fix): the
                                             # runner is waiting on the action
                                             # callback. Approve the submit.
@@ -1569,6 +1596,54 @@ class AutofillWorker:
         with contextlib.suppress(Exception):
             await bridge.send(text)
             logger.info("Email-feedback notification sent", job_id=job_id, kind=kind)
+
+    async def _job_country_ineligible(
+        self, rag: Any, profile: Any, apply_link: str, store: Any, job: dict[str, Any]
+    ) -> bool:
+        """True when the job is an ONSITE role in a country the candidate is not
+        authorized to work in (per the persona's home country + work auth).
+
+        Policy (per the user): the candidate may work remote anywhere, and
+        onsite in their home country (India). US onsite needs visa -> reject.
+        Any OTHER foreign onsite role also needs a work visa the candidate
+        doesn't hold -> reject, rather than auto-filling a role they can't
+        actually take.
+        """
+        try:
+            from autofill.rag import _country_from_text
+
+            home = rag.home_country() if rag else None
+            if not home:
+                return False
+            # Resolve the job's location from radar_candidates by apply_link.
+            loc = ""
+            if store is not None:
+                try:
+                    async with store._pool.acquire() as conn:
+                        row = await conn.fetchrow(
+                            "SELECT normalized_location, is_remote FROM radar_candidates "
+                            "WHERE direct_apply_url = $1 LIMIT 1",
+                            apply_link,
+                        )
+                        if row:
+                            loc = row["normalized_location"] or ""
+                            if row["is_remote"]:
+                                return False  # remote ok anywhere
+                except Exception:
+                    pass
+            if not loc or loc.lower() in ("remote", "unknown", "n/a", "not specified"):
+                return False
+            # If the location mentions remote anywhere, it's fine.
+            if "remote" in loc.lower():
+                return False
+            job_country = _country_from_text(loc)
+            if not job_country:
+                return False
+            # Foreign onsite: US is explicitly visa-required; any other foreign
+            # onsite also requires work authorization the candidate doesn't have.
+            return job_country != home
+        except Exception:
+            return False
 
     async def _record_outcome(
         self,
