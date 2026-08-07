@@ -20,15 +20,34 @@ def test_is_js_shell_detects_empty_and_empty_root():
 def test_is_js_shell_false_for_rendered_content():
     html = (
         "<html><body><div id='root'>"
-        "<h1>Software Engineer</h1><p>Apply now to join Replit.</p>"
+        "<h1>Software Engineer</h1>"
+        "<p>Apply now to join Replit. We are looking for a software engineer to "
+        "work on our developer platform, building features that help millions of "
+        "users create and deploy applications. You will own projects end to end, "
+        "from design through launch, and work with a small high-velocity team.</p>"
         "</div><noscript>You need to enable JavaScript</noscript></body></html>"
     )
     assert _is_js_shell(html) is False
 
 
 def test_is_js_shell_false_for_server_rendered():
-    html = "<html><body><h1>Backend Engineer</h1><p>Stripe is hiring.</p></body></html>"
+    # A real server-rendered job page has a long description body.
+    html = (
+        "<html><body><h1>Backend Engineer</h1><p>Stripe is hiring a backend engineer "
+        "to build reliable payment infrastructure. You will work on distributed "
+        "systems, scale APIs to millions of requests, and collaborate across teams."
+        "We value ownership, communication, and a bias for action.</p></body></html>"
+    )
     assert _is_js_shell(html) is False
+
+
+def test_is_js_shell_true_for_short_shell_with_title():
+    # A JS-SPA shell with only a title (no description body) is a shell even
+    # without an explicit "enable JavaScript" marker (e.g. mongodb.com).
+    html = (
+        "<html><head><title>Account Development Representative</title></head><body></body></html>"
+    )
+    assert _is_js_shell(html) is True
 
 
 def test_requires_js_detects_spa_shell_with_title():

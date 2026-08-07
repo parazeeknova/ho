@@ -100,10 +100,34 @@ def _proxy_url() -> str | None:
         return None
 
 
-def _should_proxy(url: str, status: int | None) -> bool:
-    """Route through SOCKS5 when the plain request was blocked, or the host is
-    a known anti-bot target."""
-    if status in _BLOCKED_STATUS:
+# Markers in a 403/429 body that indicate a real anti-bot challenge (Tor can
+# help) vs a plain rate-limit (Tor does NOT help — proxying it would just burn
+# time and get the same block). Only challenge/anti-bot responses get the
+# proxy retry.
+_CHALLENGE_MARKERS = (
+    "cf-chl",
+    "cf-challenge",
+    "cloudflare",
+    "just a moment",
+    "attention required",
+    "captcha",
+    "verify you are human",
+    "dDoS protection",
+    "enable cookies and reload",
+)
+
+
+def _is_challenge(body: str) -> bool:
+    low = (body or "").lower()
+    return any(m in low for m in _CHALLENGE_MARKERS)
+
+
+def _should_proxy(url: str, status: int | None, body: str = "") -> bool:
+    """Route through SOCKS5 when the request hit a real anti-bot challenge
+    (Cloudflare/captcha) or the host is a known anti-bot target. Plain
+    rate-limit 403s/429s are NOT proxied — Tor would hit the same wall and
+    only waste time."""
+    if status in _BLOCKED_STATUS and _is_challenge(body):
         try:
             from src.configuration import get_config
 
@@ -302,14 +326,15 @@ def _is_js_shell(html: str) -> bool:
     )
     text = re.sub(r"<[^>]+>", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
-    # Content-rich enough (headings/paragraphs) -> rendered or server-rendered.
-    if len(text) >= 20:
+    # Content-rich enough (a real job page always carries a description body
+    # of hundreds+ chars) -> rendered or server-rendered.
+    if len(text) >= 200:
         return False
     # Low visible text: flag as a shell if it's genuinely a JS-only app or
     # explicitly requires JS.
     if any(m in low for m in _JS_SHELL_TEXT_MARKERS):
         return True
-    return len(text) < 20
+    return len(text) < 200
 
 
 # Extensions that are never a job page.
@@ -392,14 +417,15 @@ async def fetch_html(url: str, timeout: float = 20.0) -> str:
 
 
 async def _get_with_proxy(client: Any, url: str, timeout: float) -> Any:
-    """GET through the shared client; retry via SOCKS5 proxy on a block."""
+    """GET through the shared client; retry via SOCKS5 proxy on an anti-bot
+    challenge. Plain rate-limit 403s/429s are NOT proxied (Tor can't help)."""
     headers = {"User-Agent": _PAGE_UA}
     try:
         resp = await client.get(url, headers=headers)
     except Exception as e:
         logger.debug("fetch_html failed", url=url, error=str(e))
         return type("R", (), {"status_code": 0, "text": ""})()
-    if _should_proxy(url, resp.status_code):
+    if _should_proxy(url, resp.status_code, body=resp.text or ""):
         proxy_url = _proxy_url()
         if proxy_url:
             try:
@@ -407,12 +433,12 @@ async def _get_with_proxy(client: Any, url: str, timeout: float) -> Any:
 
                 async def _proxied_get() -> Any:
                     async with httpx.AsyncClient(
-                        proxy=proxy_url, timeout=timeout, follow_redirects=True
+                        proxy=proxy_url, timeout=max(5.0, timeout), follow_redirects=True
                     ) as pclient:
                         return await pclient.get(url, headers=headers)
 
                 # Hard deadline: a slow/stalled Tor exit must never hang the
-                # pipeline. asyncio.wait_for cancels on expiry.
+                # pipeline. Short cap so a proxy failure is cheap.
                 presp = await asyncio.wait_for(_proxied_get(), timeout=max(5.0, timeout))
                 if presp.status_code == 200 and presp.text:
                     return presp
