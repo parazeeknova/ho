@@ -85,3 +85,67 @@ async def test_check_payload_empty_fields_is_ok():
     report = await check_payload({}, FakeProfile(), store=None, rag=None)
     assert report["ok"] is True
     assert report["checked"] == 0
+
+
+def test_match_persona_question_finds_rephrased_field():
+    from autofill.consistency import _match_persona_question
+
+    answers = {
+        "How soon can you start if selected?": "Tomorrow",
+        "What are your salary expectations? (include currency)": "60000 USD",
+        "Are you legally authorized to work in India?": "Yes",
+    }
+    matched = _match_persona_question("When could you start?", answers)
+    assert matched is not None
+    assert "start" in matched[0].lower()
+    assert matched[1] >= 0.35
+
+
+def test_match_persona_question_salary():
+    from autofill.consistency import _match_persona_question
+
+    answers = {"What are your salary expectations? (include currency)": "60000 USD"}
+    matched = _match_persona_question("Expected salary", answers)
+    assert matched is not None
+    assert "salary" in matched[0].lower()
+
+
+@pytest.mark.asyncio
+async def test_check_payload_verifies_new_field_via_persona():
+    """A field NOT in the static registry (e.g. 'When could you start?') is
+    matched to the persona's grilled question and verified."""
+    profile = FakeProfile()
+    profile.customAnswers = {
+        "How soon can you start if selected?": "Tomorrow",
+    }
+    filled = {"When could you start?": "Tomorrow"}
+    report = await check_payload(filled, profile, store=None, rag=None)
+    assert report["ok"] is True
+    assert report["checked"] == 1
+    assert report["unchecked"] == 0
+
+
+@pytest.mark.asyncio
+async def test_check_payload_new_field_wrong_value_flags():
+    """A new field whose committed value contradicts the persona answer is
+    caught (soft warning for a non-critical label, not silent)."""
+    profile = FakeProfile()
+    profile.customAnswers = {
+        "How soon can you start if selected?": "Tomorrow",
+    }
+    filled = {"When could you start?": "6 months"}
+    report = await check_payload(filled, profile, store=None, rag=None)
+    # Availability hint is in _CRITICAL_FIELD_HINT_RE -> blocks.
+    assert report["ok"] is False
+    assert any(m["label"] == "When could you start?" for m in report["critical_mismatches"])
+
+
+@pytest.mark.asyncio
+async def test_check_payload_unverifiable_field_counts_unchecked():
+    profile = FakeProfile()
+    profile.customAnswers = {}
+    filled = {"Why are you interested in this role?": "I like AI"}
+    report = await check_payload(filled, profile, store=None, rag=None)
+    assert report["ok"] is True
+    assert report["unchecked"] == 1
+    assert report["rag_flags"] == []  # no store -> no rag check
