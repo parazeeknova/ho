@@ -1021,6 +1021,208 @@ def _group_key(c: JobCandidate) -> str:
     return make_canonical_id(c.normalized_company, c.normalized_role, c.normalized_location)
 
 
+async def _enrich_graph_features(
+    candidates: list[JobCandidate], graph: GraphStore | None
+) -> dict[str, dict[str, Any]]:
+    if not graph or not candidates:
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for c in candidates:
+        try:
+            company_id = make_company_id(c.normalized_company)
+            node = await graph.get_node(company_id)
+            if not node:
+                continue
+            metrics = await graph.get_graph_metrics_for_node(company_id)
+            hiring = await graph.predict_hiring_likelihood(company_id)
+            techs: set[str] = set()
+            try:
+                local = await graph.get_local_graph(company_id, radius=1)
+                for n in local.get("nodes", []):
+                    if n.get("node_type") == "technology":
+                        techs.add(n.get("data", {}).get("name", "").lower())
+            except Exception:
+                pass
+            out[c.canonical_id] = {
+                "pagerank": float(metrics.get("pagerank", 0.0)),
+                "betweenness": float(metrics.get("betweenness", 0.0)),
+                "hiring_likelihood": float(hiring.get("score", 0.5)),
+                "hiring_signal": bool(hiring.get("score", 0) > 0.6),
+                "company_techs": list(techs)[:20],
+                "funding_recency_days": 9999,
+                "observed_at": time.time(),
+            }
+        except Exception:
+            continue
+    return out
+
+
+def _build_feature_vector(
+    candidate: JobCandidate,
+    graph_signals: dict[str, Any] | None = None,
+    decision_ts: float | None = None,
+) -> dict[str, Any]:
+    try:
+        from ml.features import extract_features
+
+        cand_dict = {
+            "skills": candidate.matching_skills,
+            "experience_years": candidate.extra.get("experience_years"),
+            "role_family": candidate.role_family.value
+            if hasattr(candidate.role_family, "value")
+            else str(candidate.role_family),
+            "location": candidate.normalized_location,
+            "salary_floor": 60000,
+            "is_remote": candidate.is_remote,
+            "version": candidate.extra.get("version"),
+        }
+        job_dict = {
+            "matching_skills": candidate.matching_skills,
+            "missing_skills": candidate.missing_skills,
+            "match_percent": candidate.match_percent,
+            "role_family": str(candidate.role_family),
+            "salary_amount": candidate.salary_annual_usd,
+            "normalized_location": candidate.normalized_location,
+            "source": candidate.source,
+            "funding_stage": candidate.funding_stage,
+            "is_remote": candidate.is_remote,
+            "sponsors_visa": candidate.sponsors_visa,
+            "underdog_score": candidate.underdog_score,
+            "source_confidence": candidate.source_confidence,
+            "freshness_lane": candidate.freshness_lane.name
+            if hasattr(candidate.freshness_lane, "name")
+            else str(candidate.freshness_lane),
+            "osint_signals": candidate.osint_signals,
+        }
+        return extract_features(
+            cand_dict, job_dict, graph_signals=graph_signals, decision_ts=decision_ts
+        )
+    except Exception:
+        return {}
+
+
+async def _emit_ranking_impression(
+    ranked: list[JobCandidate],
+    store: MemoryStore,
+    graph: GraphStore | None,
+    sweep: int,
+) -> None:
+    if not ranked or not store:
+        return
+    try:
+        from ml import FEATURE_VERSION, POLICY_VERSION, RANKER_VERSION
+        from ml.events import (
+            DecisionEvent,
+            emit_events,
+            make_impression_id,
+            snapshot_candidate,
+            snapshot_job,
+        )
+    except Exception:
+        return
+    try:
+        impression_id = make_impression_id()
+        graph_signals_map = await _enrich_graph_features(ranked, graph)
+        now = time.time()
+        events: list[DecisionEvent] = []
+        # Impression event (the ranking group itself)
+        events.append(
+            DecisionEvent(
+                job_id=f"impression_{impression_id}",
+                event_type="impression",
+                impression_id=impression_id,
+                rank=None,
+                policy=POLICY_VERSION,
+                model_version=RANKER_VERSION,
+                feature_version=FEATURE_VERSION,
+                action="rank",
+                meta={"sweep": sweep, "group_size": len(ranked)},
+                timestamp=now,
+            )
+        )
+        for idx, c in enumerate(ranked):
+            gs = graph_signals_map.get(c.canonical_id, {})
+            feats = _build_feature_vector(c, graph_signals=gs, decision_ts=now)
+            cand_snap_id, _ = snapshot_candidate(
+                {
+                    "skills": c.matching_skills,
+                    "role_family": str(c.role_family),
+                    "location": c.normalized_location,
+                }
+            )
+            job_snap_id, _ = snapshot_job(
+                {
+                    "role_family": str(c.role_family),
+                    "matching_skills": c.matching_skills,
+                    "missing_skills": c.missing_skills,
+                    "salary_amount": c.salary_annual_usd,
+                    "source": c.source,
+                    "funding_stage": c.funding_stage,
+                    "company": c.normalized_company,
+                }
+            )
+            # Persist snapshots best-effort
+            with contextlib.suppress(Exception):
+                async with store._pool.acquire() as conn:
+                    await conn.execute(
+                        "INSERT INTO candidate_snapshots (snapshot_id, payload) VALUES ($1,$2::jsonb) ON CONFLICT DO NOTHING",  # noqa: E501
+                        cand_snap_id,
+                        json.dumps(
+                            {"skills": c.matching_skills, "role_family": str(c.role_family)}
+                        ),
+                    )
+                    await conn.execute(
+                        "INSERT INTO job_snapshots (snapshot_id, payload) VALUES ($1,$2::jsonb) ON CONFLICT DO NOTHING",  # noqa: E501
+                        job_snap_id,
+                        json.dumps({"role": c.normalized_role, "company": c.normalized_company}),
+                    )
+                    await conn.execute(
+                        "INSERT INTO impressions (impression_id, policy, "  # noqa: E501
+                        "model_version, feature_version, group_size) VALUES "
+                        "($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING",  # noqa: E501
+                        impression_id,
+                        POLICY_VERSION,
+                        RANKER_VERSION,
+                        FEATURE_VERSION,
+                        len(ranked),
+                    )
+            events.append(
+                DecisionEvent(
+                    job_id=c.canonical_id,
+                    event_type="job_ranked",
+                    impression_id=impression_id,
+                    candidate_snapshot_id=cand_snap_id,
+                    job_snapshot_id=job_snap_id,
+                    features=feats,
+                    rank=idx + 1,
+                    policy=POLICY_VERSION,
+                    model_version=RANKER_VERSION,
+                    feature_version=FEATURE_VERSION,
+                    propensity=1.0 / len(ranked) if c.extra.get("exploration") else None,
+                    exploration=bool(c.extra.get("exploration")),
+                    source=c.source,
+                    meta={"sweep": sweep},
+                    timestamp=now,
+                )
+            )
+            # Also emit job_exposed for the top-N that will be shown/applied
+            if idx < 25:
+                events.append(
+                    DecisionEvent(
+                        job_id=c.canonical_id,
+                        event_type="job_exposed",
+                        impression_id=impression_id,
+                        rank=idx + 1,
+                        policy=POLICY_VERSION,
+                        timestamp=now,
+                    )
+                )
+        await emit_events(store, events)
+    except Exception as e:
+        with contextlib.suppress(Exception):
+            logger.warning("Failed to emit ranking impression", error=str(e))
+
+
 # Post-LLM enrichment
 
 
@@ -2133,6 +2335,9 @@ async def _run_radar_pipeline() -> None:
             resume_ctx = full_text[:3000] if full_text else candidate_persona
 
             ranked = _rank_for_queue(candidates)
+            # --- learning system: emit impression + per-job ranked events (Phase 0/1) ---
+            with contextlib.suppress(Exception):
+                await _emit_ranking_impression(ranked, store, graph, sweep)
             logger.info(f"Sweep {sweep}: enqueuing {len(ranked)} candidates for LLM matching...")
             for c in ranked:
                 sal = c.salary_annual_usd or 0
