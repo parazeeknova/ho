@@ -162,10 +162,11 @@ class SearXNGCongfig:
 
 @dataclass
 class RenderConfig:
-    """In-process page-rendering budget (replaces the Firecrawl service).
+    """In-process page-rendering budget + anti-blocking controls.
 
-    Kept env names (FIRECRAWL_*) for backward compatibility; the values now
-    bound the in-process renderer, not an external service.
+    The in-process renderer (static httpx + pooled Chromium) is used instead
+    of an external scraping service. Env names use the RENDER_* prefix; the
+    legacy FIRECRAWL_* names are still honored for backward compatibility.
     """
 
     url: str = field(default_factory=lambda: _env_str("FIRECRAWL_URL", "http://127.0.0.1:3002"))
@@ -175,6 +176,18 @@ class RenderConfig:
     scrape_timeout: float = field(
         default_factory=lambda: _env_float("FIRECRAWL_SCRAPE_TIMEOUT", 15.0)
     )
+    # Politeness: minimum seconds between requests to the SAME host (jittered).
+    host_delay: float = field(default_factory=lambda: _env_float("RENDER_HOST_DELAY", 0.5))
+    # SOCKS5 proxy (torproxy on 9050) for JS renders and static fetches when
+    # set — rotates egress IP so a site can't block the datacenter IP.
+    socks_proxy: str = field(
+        default_factory=lambda: _env_str("RENDER_SOCKS_PROXY", "socks5://127.0.0.1:9050")
+    )
+    # Master switch: route through the proxy by default (masking). Set to
+    # false to disable proxying entirely.
+    use_proxy: bool = field(default_factory=lambda: _env_bool("RENDER_USE_PROXY", True))
+    # Retry a blocked request (429/403/Cloudflare challenge) via the proxy.
+    proxy_on_block: bool = field(default_factory=lambda: _env_bool("RENDER_PROXY_ON_BLOCK", True))
 
 
 @dataclass

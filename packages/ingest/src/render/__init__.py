@@ -4,24 +4,27 @@ Replaces Firecrawl's ``/v1/scrape`` and ``/v1/map`` for the whole internet
 (not just a handful of ATS boards):
 
 - ``fetch_html``: plain httpx GET with caching/retries (fast path, no browser).
-- ``render_html``: lazy Playwright-backed render for JS-only pages, launched
-  only when the static fetch comes back as a JS shell (``enable JavaScript``,
-  empty body, SPA root). Browser is launched on demand and torn down after so
-  nothing stays resident.
+- ``render_html``: Playwright-backed render for JS-only pages, using a
+  persistent browser pool — Chromium instances are launched once and reused
+  across pages, then reaped after an idle window (no per-page launch cost,
+  nothing resident when idle).
 - ``markdownify``: turn any URL into clean markdown — tries the static path
   first (markitdown), falls back to the renderer for JS-only pages, then
   extracts main content.
 
-No Firecrawl service, no resident browser, no heavy infra. Deterministic and
-cheap: the browser is only ever used for pages that genuinely need it.
+No Firecrawl service, no resident browser between sweeps, no heavy infra.
+Deterministic and cheap: the browser is only ever used for pages that
+genuinely need it.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
+import random as _random
 import re
-import threading
+import time
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
@@ -30,13 +33,233 @@ from src.logging import get_logger
 
 logger = get_logger("render")
 
-# Browser launch is global (one at a time) and reused across calls within a
-# short window; torn down after RENDERER_IDLE_MS of inactivity.
-_playwright_lock = threading.Lock()
-_playwright_proc: dict[str, Any] | None = None
-_playwright_last: float = 0.0
-_RENDERER_IDLE_MS = 30_000
-_browser_lock = asyncio.Lock()
+# ── Politeness: per-host rate limiter + jitter ─────────────────────────
+#
+# Every request to a given host is spaced by _host_delay seconds (jittered),
+# so bursts never hammer a single site into 429s. The limiter is global
+# across static fetches AND JS renders so the two paths don't gang up on a
+# host. Per-host delay is read from RenderConfig at first use.
+
+_host_last: dict[str, float] = {}
+_host_delay: float | None = None
+_host_lock = asyncio.Lock()
+_BLOCKED_STATUS = {403, 429}
+# Hosts we already know block our plain datacenter IP (WWR, VC portfolios,
+# Cloudflare-fronted boards) — always route those through the proxy.
+_FORCED_PROXY_HOSTS = {"weworkremotely.com", "cloudflare.com", "vercel.app"}
+
+
+def _get_host(url: str) -> str:
+    try:
+        return urlparse(url).netloc or url
+    except Exception:
+        return url
+
+
+def _host_delay_seconds() -> float:
+    global _host_delay
+    if _host_delay is None:
+        try:
+            from src.configuration import get_config
+
+            _host_delay = max(0.0, get_config().render.host_delay)
+        except Exception:
+            _host_delay = 0.5
+    return _host_delay
+
+
+async def _throttle(url: str) -> None:
+    """Wait so requests to the same host are spaced by host_delay + jitter."""
+    delay = _host_delay_seconds()
+    if delay <= 0:
+        return
+    host = _get_host(url)
+    async with _host_lock:
+        now = time.monotonic()
+        last = _host_last.get(host, 0.0)
+        wait = (last + delay) - now
+        if wait > 0:
+            await asyncio.sleep(wait + _random.random() * delay * 0.5)
+        _host_last[host] = time.monotonic()
+
+
+def _is_blocked_status(url: str) -> bool:
+    """Best-effort: does this URL live behind a known anti-bot / blocked host?"""
+    host = _get_host(url)
+    return any(h in host for h in _FORCED_PROXY_HOSTS)
+
+
+def _proxy_url() -> str | None:
+    """Return the SOCKS5 proxy URL when proxying is enabled, else None."""
+    try:
+        from src.configuration import get_config
+
+        cfg = get_config().render
+        return cfg.socks_proxy if cfg.use_proxy else None
+    except Exception:
+        return None
+
+
+def _should_proxy(url: str, status: int | None) -> bool:
+    """Route through SOCKS5 when the plain request was blocked, or the host is
+    a known anti-bot target."""
+    if status in _BLOCKED_STATUS:
+        try:
+            from src.configuration import get_config
+
+            if get_config().render.proxy_on_block:
+                return True
+        except Exception:
+            return True
+    # Known anti-bot hosts (Cloudflare-fronted WWR, VC portfolios) always go
+    # through the proxy when one is configured — that's the masking ask.
+    return bool(_proxy_url() and _is_blocked_status(url))
+
+
+# ── Persistent Chromium pool for JS rendering ──────────────────────────
+#
+# Browsers are launched once and REUSED across pages (a ~2s launch would
+# otherwise be paid per page). The pool is bounded by _RENDER_CONCURRENCY
+# (one browser per concurrent render slot); browsers sit idle in the pool
+# between uses and are closed after _RENDERER_IDLE_MS of inactivity by a
+# background reaper. Static fetches are NOT gated by this — they stay fully
+# concurrent async I/O.
+_RENDER_CONCURRENCY = max(1, int(os.environ.get("RENDER_CONCURRENCY", "4")))
+_RENDERER_IDLE_MS = int(os.environ.get("RENDER_IDLE_MS", "30000"))
+_render_sem = asyncio.Semaphore(_RENDER_CONCURRENCY)
+
+# Total browsers launched (never exceeds the semaphore's concurrency).
+_pw: Any = None  # shared async_playwright driver
+_pw_lock = asyncio.Lock()
+_pool: list[tuple[Any, float]] = []  # (browser, last_used_monotonic)
+_pool_cond: asyncio.Condition | None = None
+_reaper_task: Any = None
+
+_PAGE_UA = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+)
+
+
+def _browser_executable() -> str | None:
+    # Prefer a system-installed Chrome/Chromium when the bundled headless
+    # shell is missing system libs (libglib etc.), common in containers.
+    for cand in (
+        "/usr/bin/google-chrome",
+        "/usr/bin/google-chrome-stable",
+        "/usr/bin/chromium",
+        "/run/current-system/sw/bin/google-chrome",
+    ):
+        if os.path.exists(cand):
+            return cand
+    return None
+
+
+async def _get_playwright() -> Any:
+    global _pw
+    if _pw is None:
+        async with _pw_lock:
+            if _pw is None:
+                from playwright.async_api import async_playwright  # type: ignore
+
+                _pw = await async_playwright().start()
+    return _pw
+
+
+async def _launch_browser() -> Any:
+    p = await _get_playwright()
+    return await p.chromium.launch(
+        headless=True,
+        executable_path=_browser_executable(),
+        args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
+    )
+
+
+async def _acquire_browser() -> Any:
+    """Get a pooled browser (reusing an idle one, or launching a fresh one).
+
+    The caller holds a ``_render_sem`` slot, so at most ``_RENDER_CONCURRENCY``
+    browsers ever exist: every live render holds one, and released browsers sit
+    in the pool for reuse. No waiting is needed — the semaphore bounds us.
+    """
+    global _pool_cond
+    if _pool_cond is None:
+        _pool_cond = asyncio.Condition()
+    async with _pool_cond:
+        if _pool:
+            browser, _ = _pool.pop()
+        else:
+            browser = await _launch_browser()
+        # Drop crashed browsers and relaunch.
+        if not browser.is_connected():
+            await _close_browser(browser)
+            browser = await _launch_browser()
+        return browser
+
+
+async def _release_browser(browser: Any) -> None:
+    global _pool_cond
+    if _pool_cond is None:
+        _pool_cond = asyncio.Condition()
+    async with _pool_cond:
+        if browser.is_connected() and len(_pool) < _RENDER_CONCURRENCY:
+            _pool.append((browser, time.monotonic()))
+        else:
+            await _close_browser(browser)
+        _pool_cond.notify()
+
+
+async def _close_browser(browser: Any) -> None:
+    with contextlib.suppress(Exception):
+        await browser.close()
+
+
+async def _reap_idle() -> None:
+    """Background task: close browsers idle longer than the idle window."""
+    global _pool
+    while True:
+        await asyncio.sleep(max(5.0, _RENDERER_IDLE_MS / 1000 / 2))
+        if not _pool_cond:
+            continue
+        async with _pool_cond:
+            now = time.monotonic()
+            stale: list[Any] = []
+            keep: list[tuple[Any, float]] = []
+            for browser, last in _pool:
+                if now - last > _RENDERER_IDLE_MS / 1000:
+                    stale.append(browser)
+                else:
+                    keep.append((browser, last))
+            _pool = keep
+        for browser in stale:
+            await _close_browser(browser)
+
+
+def _ensure_reaper() -> None:
+    global _reaper_task
+    if _reaper_task is None or _reaper_task.done():
+        _reaper_task = asyncio.create_task(_reap_idle())
+
+
+async def _close_browser_pool() -> None:
+    """Close all pooled browsers and the shared driver (on shutdown)."""
+    global _pool, _pw, _reaper_task, _pool_cond
+    if _reaper_task is not None:
+        _reaper_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await _reaper_task
+        _reaper_task = None
+    if _pool_cond is not None:
+        async with _pool_cond:
+            browsers = _pool
+            _pool = []
+        for browser, _ in browsers:
+            await _close_browser(browser)
+    if _pw is not None:
+        with contextlib.suppress(Exception):
+            await _pw.stop()
+        _pw = None
+
 
 # Pages that return this shell have NOT rendered; they need a browser.
 _JS_SHELL_TEXT_MARKERS = (
@@ -154,74 +377,128 @@ def _absolutize(html: str, base_url: str) -> str:
 
 
 async def fetch_html(url: str, timeout: float = 20.0) -> str:
-    """Static httpx GET (cached); returns raw HTML or '' on failure."""
+    """Static httpx GET (cached); returns raw HTML or '' on failure.
+
+    Applies per-host politeness spacing and falls back to the SOCKS5 proxy
+    when the plain request is blocked (403/429) or the host is a known
+    anti-bot target.
+    """
+    await _throttle(url)
+    client = await get_client("render_fetch", timeout=timeout)
+    resp = await _get_with_proxy(client, url, timeout)
+    if resp.status_code == 200 and resp.text:
+        return resp.text
+    return ""
+
+
+async def _get_with_proxy(client: Any, url: str, timeout: float) -> Any:
+    """GET through the shared client; retry via SOCKS5 proxy on a block."""
+    headers = {"User-Agent": _PAGE_UA}
     try:
-        client = await get_client("render_fetch", timeout=timeout)
-        resp = await client.get(
-            url, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"}
-        )
-        if resp.status_code == 200 and resp.text:
-            return resp.text
-        return ""
+        resp = await client.get(url, headers=headers)
     except Exception as e:
         logger.debug("fetch_html failed", url=url, error=str(e))
-        return ""
+        return type("R", (), {"status_code": 0, "text": ""})()
+    if _should_proxy(url, resp.status_code):
+        proxy_url = _proxy_url()
+        if proxy_url:
+            try:
+                import httpx
+
+                async def _proxied_get() -> Any:
+                    async with httpx.AsyncClient(
+                        proxy=proxy_url, timeout=timeout, follow_redirects=True
+                    ) as pclient:
+                        return await pclient.get(url, headers=headers)
+
+                # Hard deadline: a slow/stalled Tor exit must never hang the
+                # pipeline. asyncio.wait_for cancels on expiry.
+                presp = await asyncio.wait_for(_proxied_get(), timeout=max(5.0, timeout))
+                if presp.status_code == 200 and presp.text:
+                    return presp
+            except Exception as e:
+                logger.warning("proxy fetch failed", url=url, error=str(e))
+    return resp
 
 
 # ── JS rendering (lazy playwright) ──────────────────────────────────────
 
 
-async def _render_with_playwright(url: str) -> str:
-    """Render a JS-only page with a lazily-spawned Chromium, then return HTML.
+async def _render_with_playwright(url: str, use_proxy: bool = False) -> str:
+    """Render a JS-only page with a pooled Chromium, then return HTML.
 
-    The browser is launched only on demand and closed after a short idle
-    window, so it never sits resident. Returns '' on any failure.
+    Browsers are reused across pages (no per-page launch cost); idle ones are
+    closed by a background reaper. When ``use_proxy`` is set (blocked/known
+    anti-bot host), a separate SOCKS5-proxied browser is launched for this
+    page so the datacenter IP is never the one that hits the target.
+    Returns '' on any failure.
     """
     try:
-        from playwright.async_api import async_playwright  # type: ignore
+        from playwright.async_api import async_playwright  # type: ignore  # noqa: F401
+
+        _ = async_playwright
     except ImportError:
         logger.warning("playwright not installed; cannot render JS pages", url=url)
         return ""
 
-    async with _browser_lock:
+    if use_proxy:
+        return await _render_proxied(url)
+
+    _ensure_reaper()
+    async with _render_sem:
+        browser = await _acquire_browser()
         try:
-            async with async_playwright() as p:
-                # Prefer a system-installed Chrome/Chromium when the bundled
-                # headless shell is missing system libs (libglib etc.), which
-                # is common in container/dev shells.
-                executable = None
-                for cand in (
-                    "/usr/bin/google-chrome",
-                    "/usr/bin/google-chrome-stable",
-                    "/usr/bin/chromium",
-                    "/run/current-system/sw/bin/google-chrome",
-                ):
-                    if os.path.exists(cand):
-                        executable = cand
-                        break
-                browser = await p.chromium.launch(
-                    headless=True,
-                    executable_path=executable,
-                    args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
-                )
-                page = await browser.new_page(
-                    user_agent=(
-                        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                        "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
-                    )
-                )
-                await page.goto(url, wait_until="domcontentloaded", timeout=20_000)
-                # Let client-side render settle.
-                await page.wait_for_timeout(2500)
-                html = await page.content()
-                await browser.close()
-                if _is_js_shell(html):
-                    logger.warning("Rendered page still a JS shell", url=url)
-                    return ""
-                return html
+            page = await browser.new_page(user_agent=_PAGE_UA)
+            await page.goto(url, wait_until="domcontentloaded", timeout=20_000)
+            # Let client-side render settle.
+            await page.wait_for_timeout(2500)
+            html = await page.content()
+            await page.close()
+            if _is_js_shell(html):
+                logger.warning("Rendered page still a JS shell", url=url)
+                return ""
+            return html
         except Exception as e:
             logger.warning("playwright render failed", url=url, error=str(e))
             return ""
+        finally:
+            await _release_browser(browser)
+
+
+async def _render_proxied(url: str) -> str:
+    """Render through a one-shot SOCKS5-proxied browser (not pooled)."""
+    try:
+        from playwright.async_api import async_playwright  # type: ignore  # noqa: F401
+    except ImportError:
+        return ""
+    proxy_url = _proxy_url()
+    if not proxy_url:
+        return await _render_with_playwright(url, use_proxy=False)
+
+    async def _run() -> str:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=True,
+                executable_path=_browser_executable(),
+                proxy={"server": proxy_url},
+                args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
+            )
+            page = await browser.new_page(user_agent=_PAGE_UA)
+            await page.goto(url, wait_until="domcontentloaded", timeout=25_000)
+            await page.wait_for_timeout(3000)
+            html = await page.content()
+            await browser.close()
+            if _is_js_shell(html):
+                logger.warning("Proxied render still a JS shell", url=url)
+                return ""
+            return html
+
+    try:
+        # Hard deadline (40s): a stalled Tor exit must never hang the pipeline.
+        return await asyncio.wait_for(_run(), timeout=40.0)
+    except Exception as e:
+        logger.warning("proxied playwright render failed", url=url, error=str(e))
+        return ""
 
 
 async def render_html(url: str, timeout: float = 20.0) -> str:
@@ -232,8 +509,10 @@ async def render_html(url: str, timeout: float = 20.0) -> str:
     html = await fetch_html(url, timeout=timeout)
     if html and not _is_js_shell(html) and not _requires_js(html):
         return _absolutize(html, url)
-    # JS-only (or empty): render it.
-    rendered = await _render_with_playwright(url)
+    # JS-only (or empty): render it. Use the proxy when the plain request was
+    # blocked or the host is a known anti-bot target.
+    use_proxy = _should_proxy(url, None) or bool(not html and _is_blocked_status(url))
+    rendered = await _render_with_playwright(url, use_proxy=use_proxy)
     if rendered:
         return _absolutize(rendered, url)
     return html  # return whatever we have (may be a shell) so callers can retry
@@ -288,6 +567,20 @@ async def extract_links(
 # ── markdown extraction ─────────────────────────────────────────────────
 
 
+def _markitdown_text(html_bytes: bytes) -> str:
+    """Convert raw HTML bytes to markdown in a worker thread.
+
+    A fresh MarkItDown is created per call (it is not documented thread-safe),
+    so concurrent conversions never share mutable state.
+    """
+    import io
+
+    from markitdown import MarkItDown
+
+    result = MarkItDown().convert(io.BytesIO(html_bytes))
+    return (result.text_content or "").strip()
+
+
 async def markdownify(url: str, timeout: float = 20.0) -> str:
     """Turn any URL into clean markdown (main content).
 
@@ -297,19 +590,17 @@ async def markdownify(url: str, timeout: float = 20.0) -> str:
     html = await fetch_html(url, timeout=timeout)
     need_render = not html or _is_js_shell(html) or _requires_js(html)
     if need_render:
-        html = await _render_with_playwright(url)
+        use_proxy = _should_proxy(url, None) or bool(not html and _is_blocked_status(url))
+        html = await _render_with_playwright(url, use_proxy=use_proxy)
         if not html:
             return ""
 
     try:
-        from markitdown import MarkItDown
-
-        md = MarkItDown()
-        # markitdown.convert accepts an in-memory stream for HTML bytes.
-        import io
-
-        result = md.convert(io.BytesIO(html.encode("utf-8", errors="ignore")))
-        text = (result.text_content or "").strip()
+        # markitdown.convert is CPU-bound (lxml parse + HTML→MD) and would
+        # block the asyncio loop for every posting. Run it in a thread so
+        # concurrent static fetches stay parallel while the conversion runs.
+        html_bytes = html.encode("utf-8", errors="ignore")
+        text = await asyncio.to_thread(_markitdown_text, html_bytes)
         return text
     except Exception as e:
         logger.warning("markitdown failed", url=url, error=str(e))

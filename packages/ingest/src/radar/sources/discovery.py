@@ -581,8 +581,11 @@ async def discover_from_weworkremotely(limit: int = 30) -> list[dict[str, str]]:
         html = await render_html("https://weworkremotely.com/", timeout=60.0)
         if not html:
             return companies
+        # WWR's job cards use the aria-label on the logo:
+        #   "... [<Company>] is hiring a remote [<Role>] at We Work Remotely."
+        # Company names may repeat (multiple postings per company) — dedupe.
         for m in re.finditer(
-            r'<span class="company">([^<]+)</span>',
+            r'aria-label="([^"]+?)\s+is hiring a remote\s',
             html,
             re.IGNORECASE,
         ):
