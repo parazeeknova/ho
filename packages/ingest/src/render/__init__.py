@@ -48,6 +48,38 @@ _BLOCKED_STATUS = {403, 429}
 # Cloudflare-fronted boards) — always route those through the proxy.
 _FORCED_PROXY_HOSTS = {"weworkremotely.com", "cloudflare.com", "vercel.app"}
 
+# In-memory render cache: {url: (result, expiry_monotonic)}. A full browser
+# render costs seconds; within a sweep the same board/job URL is often hit
+# many times (poll + gate + re-verify), so cache both success AND negative
+# (empty-shell) results for a short window. The negative cache is what stops
+# an empty Ashby board from being re-rendered 2.5s every sweep.
+_RENDER_CACHE_TTL = float(os.environ.get("RENDER_CACHE_TTL", "600"))
+_render_cache: dict[str, tuple[str, float]] = {}
+_render_cache_lock = asyncio.Lock()
+
+
+async def _cache_get(url: str) -> str | None:
+    async with _render_cache_lock:
+        entry = _render_cache.get(url)
+        if entry is None:
+            return None
+        result, expiry = entry
+        if time.monotonic() > expiry:
+            _render_cache.pop(url, None)
+            return None
+        return result
+
+
+async def _cache_set(url: str, result: str) -> None:
+    async with _render_cache_lock:
+        # Bound memory: when the cache grows large, evict stale entries.
+        if len(_render_cache) > 4000:
+            now = time.monotonic()
+            for u in list(_render_cache):
+                if _render_cache[u][1] <= now:
+                    _render_cache.pop(u, None)
+        _render_cache[url] = (result, time.monotonic() + _RENDER_CACHE_TTL)
+
 
 def _get_host(url: str) -> str:
     try:
@@ -612,13 +644,20 @@ async def markdownify(url: str, timeout: float = 20.0) -> str:
 
     Tries static fetch + markitdown first; for JS-only pages falls back to the
     browser render, then converts. Returns '' when nothing usable came back.
+    Results (including empty/negative) are cached briefly so repeated hits in
+    a sweep don't re-fetch or re-render.
     """
+    cached = await _cache_get(url)
+    if cached is not None:
+        return cached
+
     html = await fetch_html(url, timeout=timeout)
     need_render = not html or _is_js_shell(html) or _requires_js(html)
     if need_render:
         use_proxy = _should_proxy(url, None) or bool(not html and _is_blocked_status(url))
         html = await _render_with_playwright(url, use_proxy=use_proxy)
         if not html:
+            await _cache_set(url, "")
             return ""
 
     try:
@@ -627,10 +666,13 @@ async def markdownify(url: str, timeout: float = 20.0) -> str:
         # concurrent static fetches stay parallel while the conversion runs.
         html_bytes = html.encode("utf-8", errors="ignore")
         text = await asyncio.to_thread(_markitdown_text, html_bytes)
+        await _cache_set(url, text)
         return text
     except Exception as e:
         logger.warning("markitdown failed", url=url, error=str(e))
         # Fall back to stripping tags off the rendered HTML.
         text = re.sub(r"<script[\s\S]*?</script>|<style[\s\S]*?</style>", "", html)
         text = re.sub(r"<[^>]+>", " ", text)
-        return re.sub(r"\s{2,}", " ", text).strip()
+        text = re.sub(r"\s{2,}", " ", text).strip()
+        await _cache_set(url, text)
+        return text
