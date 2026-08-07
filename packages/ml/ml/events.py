@@ -28,9 +28,7 @@ from . import (
     RANKER_VERSION,
 )
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 def make_impression_id() -> str:
@@ -42,9 +40,7 @@ def make_snapshot_id(payload: dict[str, Any]) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()[:12]
 
 
-# ---------------------------------------------------------------------------
 # Event dataclass (also the DB row shape)
-# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -82,11 +78,9 @@ class DecisionEvent:
         return asdict(self)
 
 
-# ---------------------------------------------------------------------------
 # DB helpers — thin wrappers over MemoryStore pool so callers don't import
 # asyncpg directly. All writes are best-effort (event loss is acceptable;
 # training tolerates sparse outcomes).
-# ---------------------------------------------------------------------------
 
 
 async def emit_event(store: Any, event: DecisionEvent) -> None:
@@ -141,9 +135,7 @@ async def emit_events(store: Any, events: list[DecisionEvent]) -> None:
         await emit_event(store, ev)
 
 
-# ---------------------------------------------------------------------------
 # Snapshot helpers
-# ---------------------------------------------------------------------------
 
 
 def snapshot_candidate(profile: dict[str, Any]) -> tuple[str, dict[str, Any]]:

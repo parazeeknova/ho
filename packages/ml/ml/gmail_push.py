@@ -198,9 +198,7 @@ def extract_text_from_message(msg: dict[str, Any]) -> tuple[str, str, str]:
     return subject, sender, body
 
 
-# ---------------------------------------------------------------------------
 # Pub/Sub streaming pull loop
-# ---------------------------------------------------------------------------
 
 
 async def run_gmail_push_loop(store: Any) -> None:
@@ -354,7 +352,9 @@ def extract_role(subject: str) -> str | None:
     import re
 
     m = re.search(
-        r"(?:re:|update on|regarding|for)\s+(.+?)(?:\s+at\s+|\s+—|\s+-|$)", subject or "", re.IGNORECASE
+        r"(?:re:|update on|regarding|for)\s+(.+?)(?:\s+at\s+|\s+—|\s+-|$)",
+        subject or "",
+        re.IGNORECASE,
     )
     if m:
         return m.group(1).strip()[:80]

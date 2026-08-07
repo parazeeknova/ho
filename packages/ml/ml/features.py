@@ -17,9 +17,7 @@ from typing import Any
 
 from . import FEATURE_VERSION
 
-# ---------------------------------------------------------------------------
 # Leakage guard
-# ---------------------------------------------------------------------------
 
 
 class FeatureLeakageError(RuntimeError):
@@ -35,9 +33,7 @@ def assert_no_leakage(features: dict[str, Any], decision_ts: float) -> None:
                 )
 
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 def _salary_fit(candidate_floor: float | None, job_salary: float | None) -> float:
@@ -62,9 +58,7 @@ def _location_fit(candidate_loc: str | None, job_loc: str | None, is_remote: boo
     return 0.3
 
 
-# ---------------------------------------------------------------------------
 # Main extraction
-# ---------------------------------------------------------------------------
 
 
 def extract_features(
