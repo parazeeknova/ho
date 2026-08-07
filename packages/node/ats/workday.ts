@@ -1357,7 +1357,13 @@ export class WorkdayAdapter extends ATSAdapter {
       // wizard's nav buttons — drive it through the same synthetic dispatch.
       await this.clickSubmitAction(page, submitBtn);
     } else {
-      await this.stagehand.act("Click the Submit Application button");
+      await this.controls.clickSubmitButton({
+        preferredSelector:
+          '[data-automation-id="bottom-navigation-submit-button"], ' +
+          '[data-automation-id="submitButton"], ' +
+          '[data-automation-id="pageFooterSubmitButton"], ' +
+          'button:has-text("Submit Application")',
+      });
     }
     await randomSleep(1500, 2500);
 

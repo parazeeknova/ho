@@ -203,7 +203,10 @@ export class AshbyAdapter extends ATSAdapter {
     // before the Apply click hands control to the form view.
     this.jobCtx = await this.readJobContext();
 
-    await this.controls.safeAct("click the 'Apply now' button to open the application form");
+    await this.controls.clickButtonByText(
+      ["Apply now", "Apply for this job", "Apply"],
+      ["button:has-text('Apply')", "a:has-text('Apply')"],
+    );
     if (!(await this.controls.focusPage(/\/application(?:\/|$)/))) {
       // The tab may not carry /application (custom embeds); adopt any page
       // that now shows the form.
@@ -406,7 +409,9 @@ export class AshbyAdapter extends ATSAdapter {
     if (await submitBtn.isVisible().catch(() => false)) {
       await this.controls.humanClick(submitBtn, "button.ashby-application-form-submit-button");
     } else {
-      await this.stagehand.act("Click the Submit Application button");
+      await this.controls.clickSubmitButton({
+        preferredSelector: "button.ashby-application-form-submit-button",
+      });
     }
     await randomSleep(800, 1600);
 

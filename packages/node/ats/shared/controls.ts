@@ -142,36 +142,40 @@ export class FormControls {
   }
 
   /**
-   * Run an AI-powered act() call but never let a single failure abort the
-   * whole form fill (e.g. a field that doesn't exist on this job's form).
-   * Values are passed through Stagehand's `variables` so arbitrary profile
-   * text is never parsed as a prompt.
-   */
-  async safeAct(instruction: string, variables?: Record<string, string>): Promise<void> {
-    try {
-      await this.stagehand.act(instruction, variables ? { variables } : {});
-    } catch (err: any) {
-      console.warn(`[${this.tagName}] act() failed (continuing): ${err?.message || err}`);
-    }
-  }
-
-  /**
-   * Prefer a deterministic locator fill; fall back to an AI-driven act() using
-   * %variables% so arbitrary profile text (quotes, newlines) is handled safely.
+   * Prefer a deterministic locator fill; fall back to a name/placeholder-based
+   * locator fill. No LLM: the fallback derives the field from the selector's
+   * own id/name so arbitrary profile text is never parsed as a prompt.
    */
   async fillField(
     selector: string,
     value: string | undefined | null,
-    actPrompt: string,
+    _actPrompt: string,
     variableName: string,
   ): Promise<void> {
     if (!value) return;
-    const locator = this.getPage().locator(selector).first();
+    const page = this.getPage();
+    const locator = page.locator(selector).first();
     if (await locator.isVisible().catch(() => false)) {
       await this.fillLikeHuman(locator, value);
       await randomSleep(100, 300);
     } else {
-      await this.safeAct(actPrompt, { [variableName]: value });
+      // Deterministic fallback: locate by the field's own name/placeholder,
+      // then fill. (The former LLM act() fallback is gone — no model calls.)
+      const candidates = [
+        `input[name="${variableName}"], textarea[name="${variableName}"]`,
+        `input[id="${variableName}"], textarea[id="${variableName}"]`,
+      ];
+      let fallback = null as any;
+      for (const sel of candidates) {
+        const probe = page.locator(sel).first();
+        if (await probe.isVisible().catch(() => false)) {
+          fallback = probe;
+          break;
+        }
+      }
+      if (fallback) {
+        await this.fillLikeHuman(fallback, value);
+      }
       await randomSleep(200, 500);
     }
   }
@@ -300,6 +304,81 @@ export class FormControls {
       await this.getPage().keyPress("Escape");
     } catch {
       // Menu may already be closed; harmless.
+    }
+  }
+
+  /**
+   * Deterministically click a button/link by matching its visible text, trying
+   * candidate phrases in order. Works across the whole internet's job boards —
+   * no LLM, no Stagehand `act`. Returns true when a click was dispatched.
+   */
+  async clickButtonByText(phrases: string[], extraSelectors: string[] = []): Promise<boolean> {
+    const page = this.getPage();
+    const selectors = [
+      ...extraSelectors,
+      ...phrases.flatMap((p) => [
+        `button:has-text("${p}")`,
+        `a:has-text("${p}")`,
+        `input[type='button'][value*="${p}"]`,
+      ]),
+      "a[href*='apply'], a[href*='application']",
+    ];
+    for (const selector of selectors) {
+      try {
+        const locator = page.locator(selector).first();
+        if (await locator.isVisible().catch(() => false)) {
+          await this.humanClick(locator, selector);
+          return true;
+        }
+      } catch {
+        // Try the next selector.
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Deterministically click the application form's submit button. Tries a
+   * curated list of common ATS submit selectors (Ashby, Greenhouse, Workday,
+   * Workable, Lever, generic), then falls back to pressing Enter in the last
+   * focused field — which is how a real human submits a form. No LLM, no
+   * Stagehand `act`/`observe`; every step is a plain Playwright locator.
+   * Returns true when a click or keypress was dispatched.
+   */
+  async clickSubmitButton(options: { preferredSelector?: string } = {}): Promise<boolean> {
+    const page = this.getPage();
+    const selectors = [
+      options.preferredSelector,
+      "button[type='submit']",
+      "input[type='submit']",
+      "button[data-testid*='submit' i]",
+      "button[data-automation-id*='submit' i]",
+      "button[data-qa*='submit' i]",
+      "button.ashby-application-form-submit-button",
+      "button.greenhouse-form-submit",
+      "[data-automation-id='bottom-navigation'] button[type='submit']",
+      "button:has-text('Submit')",
+      "button:has-text('Submit Application')",
+      "button:has-text('Apply')",
+      "button:has-text('Continue')",
+    ].filter((s): s is string => Boolean(s));
+
+    for (const selector of selectors) {
+      try {
+        const locator = page.locator(selector).first();
+        if (await locator.isVisible().catch(() => false)) {
+          await this.humanClick(locator, selector);
+          return true;
+        }
+      } catch {
+        // Try the next selector.
+      }
+    }
+    try {
+      await page.keyPress("Enter");
+      return true;
+    } catch {
+      return false;
     }
   }
 

@@ -186,7 +186,12 @@ export class GreenhouseAdapter extends ATSAdapter {
     // poll for the form so fill() never walks an empty JD page (the ABBYY bug:
     // submit clicked nothing because the form was never reached).
     console.log("[GreenhouseAdapter] Application form not visible; clicking Apply...");
-    await this.controls.safeAct("click the 'Apply for this job' or 'Apply now' button");
+    await this.controls.clickButtonByText([
+      "Apply for this job",
+      "Apply now",
+      "Apply to this job",
+      "Apply",
+    ]);
     for (let i = 0; i < 24; i++) {
       await randomSleep(900, 1200);
       if (await formVisible()) {
@@ -974,7 +979,10 @@ export class GreenhouseAdapter extends ATSAdapter {
   async submit(): Promise<SubmitOutcome> {
     console.log("[GreenhouseAdapter] Submitting application form...");
     const page = this.getPage();
-    await this.stagehand.act("Click the Submit Application button");
+    await this.controls.clickSubmitButton({
+      preferredSelector:
+        "input[type='submit'], button[type='submit'], button:has-text('Submit Application')",
+    });
     await randomSleep(500, 1000);
 
     // Email-verification gate: some boards require a code emailed to the

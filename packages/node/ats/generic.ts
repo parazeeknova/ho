@@ -439,9 +439,7 @@ export class GenericAdapter extends ATSAdapter {
       await randomSleep(1500, 2500);
       return;
     }
-    await this.controls.safeAct(
-      "click the 'Apply', 'Apply now', or 'Apply for this job' button or link to open the application form",
-    );
+    await this.controls.clickButtonByText(["Apply", "Apply now", "Apply for this job"]);
   }
 
   /**
@@ -1235,16 +1233,12 @@ export class GenericAdapter extends ATSAdapter {
   ): Promise<number> {
     let filledCount = 0;
     try {
-      const actions: Action[] = (await this.stagehand.observe(
-        "Find every fillable free-text input field in the application form: " +
-          "text inputs, textareas, and email/phone/number/url inputs. " +
-          "Return one Action per field with a selector that identifies exactly that field " +
-          "and a description naming the field's label (e.g. 'fill the First Name field'). " +
-          "Do NOT include buttons, links, dropdowns, checkboxes, radio buttons, or file uploads.",
-        { page: this.getPage() },
-      )) as Action[];
+      // Deterministic DOM scan for fillable free-text fields — no LLM, no
+      // Stagehand observe(). Returns {selector, description} pairs shaped like
+      // observe() Actions so the rest of the machinery is unchanged.
+      const actions = await this.scanFreeTextActions();
       let counter = 0;
-      for (const action of actions ?? []) {
+      for (const action of actions) {
         const label = cleanObserveLabel(action.description);
         if (!label) continue;
         const id = `observe:${counter++}`;
@@ -1265,6 +1259,79 @@ export class GenericAdapter extends ATSAdapter {
       this.warn(`observeFallback failed: ${err?.message || err}`);
     }
     return filledCount;
+  }
+
+  /** Enumerate every visible free-text input/textarea with a nearby label via
+   *  the DOM — the deterministic replacement for Stagehand's LLM observe(). */
+  private async scanFreeTextActions(): Promise<Array<{ selector: string; description: string }>> {
+    const page = this.getPage();
+    const nodes = await page.evaluate(() => {
+      // WARNING: only anonymous arrows may be defined inside this evaluate
+      // (tsx keepNames stringifies the callback into the page).
+      const clean = (s: string) => (s || "").replace(/\s+/g, " ").trim().slice(0, 60);
+      const escAttr = (s: string) => (s || "").replace(/["\\]/g, "\\$&");
+      const labelFor = (el: Element): string => {
+        const id = el.getAttribute("id");
+        if (id) {
+          const lab = document.querySelector(`label[for="${escAttr(id)}"]`);
+          if (lab?.textContent) return clean(lab.textContent);
+        }
+        const wrap = el.closest("label");
+        if (wrap?.textContent) return clean(wrap.textContent);
+        const aria = el.getAttribute("aria-label");
+        if (aria) return clean(aria);
+        const placeholder = el.getAttribute("placeholder");
+        if (placeholder) return clean(placeholder);
+        const name = el.getAttribute("name");
+        if (name) return clean(name.replace(/[_-]/g, " "));
+        return "";
+      };
+      const isTextish = (el: Element): boolean => {
+        const t = (el.getAttribute("type") || "").toLowerCase();
+        if (t && !["text", "email", "tel", "url", "number", "password", "date"].includes(t)) {
+          return false;
+        }
+        return true;
+      };
+      const visible = (el: Element): boolean => {
+        const r = (el as HTMLElement).getBoundingClientRect();
+        const st = window.getComputedStyle(el);
+        return r.width > 0 && r.height > 0 && st.visibility !== "hidden" && st.display !== "none";
+      };
+      const out: { selector: string; description: string }[] = [];
+      const els: Element[] = Array.from(document.querySelectorAll("input, textarea")) as Element[];
+      for (const el of els) {
+        if (el.tagName === "INPUT" && !isTextish(el)) continue;
+        if (!visible(el)) continue;
+        if ((el as HTMLInputElement).disabled) continue;
+        if ((el as HTMLInputElement).readOnly) continue;
+        const label = labelFor(el);
+        if (!label) continue;
+        // Build a selector that identifies exactly this field.
+        const attrs = el.getAttributeNames().filter((n) => n !== "class");
+        const id = el.getAttribute("id");
+        let selector = "";
+        if (id && !/[:"'=.]/.test(id)) {
+          selector = `#${id}`;
+        } else {
+          const name = el.getAttribute("name");
+          if (name && !/[:"'=.]/.test(name)) {
+            selector = `${el.tagName.toLowerCase()}[name="${name}"]`;
+          } else if (el.getAttribute("placeholder")) {
+            selector = `${el.tagName.toLowerCase()}[placeholder="${el.getAttribute("placeholder")}"]`;
+          }
+        }
+        if (!selector && attrs.length === 0) {
+          selector = `${el.tagName.toLowerCase()}:not([type='checkbox']):not([type='radio'])`;
+        }
+        if (!selector) continue;
+        // Dedupe by element identity.
+        if (out.some((o) => o.selector === selector)) continue;
+        out.push({ selector, description: `fill the ${label || "field"} field` });
+      }
+      return out;
+    });
+    return (nodes ?? []) as Array<{ selector: string; description: string }>;
   }
 
   // --------------------------------------------------------------------------
@@ -1580,7 +1647,12 @@ export class GenericAdapter extends ATSAdapter {
     if (await submitBtn.isVisible().catch(() => false)) {
       await submitBtn.click();
     } else {
-      await this.controls.safeAct("click the 'Submit Application' or 'Submit' button");
+      await this.controls.clickSubmitButton({
+        preferredSelector:
+          "button[type='submit'], input[type='submit'], button:has-text('Submit Application'), " +
+          "button:has-text('Submit'), a:has-text('Submit Application'), " +
+          "[data-automation-id*='submit' i]",
+      });
     }
     await randomSleep(1500, 2500);
 
