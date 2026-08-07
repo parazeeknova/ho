@@ -104,7 +104,12 @@ class EnrichmentAgent:
                 avg_sim = sum(similarities) / len(similarities)
                 calculated_match = int(min(98, max(30, (avg_sim - 0.4) * 200)))
                 job["match_percent"] = max(job.get("match_percent", 0), calculated_match)
-                job["shortlist_probability"] = int(job["match_percent"] * 0.85)
+                # shortlist_probability is now the calibrated P(screen/interview/offer)
+                # from ml/calibration.py (separate binary classifiers). Do not
+                # derive it as match_percent*0.85 — that fake is removed. Preserve
+                # any LLM-set value in shadow mode; the calibrated value will
+                # overwrite it when the model is live (Phase 4).
+                job.setdefault("shortlist_probability", job["match_percent"])
 
         return job
 
