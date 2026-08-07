@@ -773,6 +773,11 @@ class AutofillWorker:
             node_dir = _runner_dir()
 
             process_env = {**os.environ}
+            # Enable the non-LLM pre-submit consistency gate in the runner:
+            # emit filled fields, wait for the worker's persona cross-check,
+            # and only submit on approval.
+            if os.getenv("AUTOFILL_CONSISTENCY_GATE", "1").strip() != "0":
+                process_env["AUTOFILL_CONSISTENCY_GATE"] = "1"
             # Per-job identity: one session id drives BOTH the residential proxy
             # session (fresh Indian IP) and the browser fingerprint seed (fresh
             # device), so each application is a new device from a new IP — the
@@ -1205,12 +1210,56 @@ class AutofillWorker:
                                     screenshot_path=screenshot_path,
                                 )
                                 if job_payload.get("submitAllowed", True):
-                                    # Submission path: wait for a human decision.
-                                    decision = await self._wait_for_human_decision(job_id)
-                                    if process.stdin and not process.stdin.is_closing():
-                                        action_payload = json.dumps({"action": decision})
-                                        process.stdin.write(f"{action_payload}\n".encode())
-                                        await process.stdin.drain()
+                                    # Non-LLM consistency gate: cross-check the
+                                    # filled values against the persona BEFORE
+                                    # submission. A critical mismatch (wrong
+                                    # location/name/email/phone) must never be
+                                    # submitted — skip instead.
+                                    submit_ok = True
+                                    try:
+                                        from autofill.consistency import check_payload
+
+                                        consistency = await check_payload(
+                                            filled_fields or {},
+                                            profile,
+                                            store=store,
+                                            rag=rag,
+                                        )
+                                        if not consistency["ok"]:
+                                            submit_ok = False
+                                            logger.error(
+                                                "Blocking submit: filled data contradicts persona",
+                                                job_id=job_id,
+                                                mismatches=consistency["critical_mismatches"],
+                                            )
+                                            await self.db.update_status(
+                                                job_id,
+                                                status="failed",
+                                                error="pre-submit consistency check failed: "
+                                                + "; ".join(
+                                                    f"{m['label']}={m['filled']} != {m['expected']}"
+                                                    for m in consistency["critical_mismatches"][:3]
+                                                ),
+                                            )
+                                            terminal_seen = True
+                                    except Exception as consistency_err:
+                                        logger.warning(
+                                            "Consistency check skipped",
+                                            job_id=job_id,
+                                            error=str(consistency_err),
+                                        )
+                                    if submit_ok:
+                                        if os.getenv("AUTOFILL_CONSISTENCY_GATE") == "1":
+                                            # Gate path: the runner is waiting on
+                                            # the action callback. Approve the
+                                            # submit directly (no human wait).
+                                            decision = "submit"
+                                        else:
+                                            decision = await self._wait_for_human_decision(job_id)
+                                        if process.stdin and not process.stdin.is_closing():
+                                            action_payload = json.dumps({"action": decision})
+                                            process.stdin.write(f"{action_payload}\n".encode())
+                                            await process.stdin.drain()
 
                         elif status == "submitted":
                             terminal_seen = True

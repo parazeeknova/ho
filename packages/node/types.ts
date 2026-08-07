@@ -48,6 +48,7 @@ export const StatusEventSchema = z.object({
   jobId: z.string(),
   status: z.enum(["in_progress", "awaiting_review", "submitted", "failed", "skipped", "expired"]),
   screenshotPath: z.string().optional(),
+  filledFields: z.record(z.string(), z.string()).optional(),
   error: z.string().optional(),
   message: z.string().optional(),
 });

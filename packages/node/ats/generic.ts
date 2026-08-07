@@ -1477,11 +1477,12 @@ export class GenericAdapter extends ATSAdapter {
     // it as required (the runner must not submit with any unknown blank).
     setBlankedRequiredCount(stillBlank.length);
 
-    // Pre-submit readback: log every visible field's ACTUAL committed value so
-    // a wrong value (e.g. a location guessed as "United Kingdom") is visible in
-    // the runner log BEFORE the application is submitted. This is the positive
-    // recheck the user asked for — not just "is the field non-empty", but
-    // "does it hold the right value".
+    // Pre-submit readback: capture every visible field's ACTUAL committed value
+    // so a wrong value (e.g. a location guessed as "United Kingdom") is caught
+    // BEFORE the application is submitted. This is the positive recheck the
+    // user asked for — not just "is the field non-empty", but "does it hold
+    // the right value". The map is exposed for the worker's non-LLM
+    // consistency check (persona/payload cross-check).
     try {
       const domReadback = await this.collectQuestions();
       const readback = mergeFormInventory(jsonModel, domReadback);
@@ -1493,6 +1494,7 @@ export class GenericAdapter extends ATSAdapter {
         reported.add(key);
         const val = await this.controls.readFieldValue(f).catch(() => "");
         if (val) {
+          this.filledValues[f.label] = String(val);
           console.log(
             `[Generic] Pre-submit value [${f.kind}] "${escapePromptValue(f.label)}" = ` +
               `"${escapePromptValue(String(val).slice(0, 120))}"`,

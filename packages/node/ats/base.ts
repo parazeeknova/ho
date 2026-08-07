@@ -12,6 +12,14 @@ export abstract class ATSAdapter {
     this.stagehand = stagehand;
   }
 
+  /**
+   * The filled form fields as label -> committed value, captured before
+   * submit. The runner emits this in the status event so the worker can run a
+   * non-LLM consistency check against the persona before marking submitted.
+   * Adapters populate this during their pre-submit readback.
+   */
+  filledValues: Record<string, string> = {};
+
   /** The page to screenshot after fill. Defaults to the first context page;
    *  adapters that switch tabs (e.g. a form opened in a new tab) override. */
   getActivePage(): any {

@@ -458,6 +458,7 @@ async function main() {
         jobId: payload.jobId,
         status: "awaiting_review",
         screenshotPath: screenshotPath,
+        filledFields: adapter.filledValues,
         message: "Form filled successfully. Submission is disabled in this phase.",
       });
       const holdMs = parseInt(process.env.AUTOFILL_REVIEW_HOLD_MS || "360000", 10);
@@ -500,6 +501,72 @@ async function main() {
         process.exit(0);
       }
       console.log("[Runner] Auto mode enabled. Submitting application immediately...");
+
+      // Non-LLM consistency gate: when enabled, emit the filled fields first
+      // and WAIT for the worker's go/no-go before submitting. The worker runs
+      // the persona cross-check and replies submit/skip via the action
+      // callback — so a wrong value (e.g. location guessed as "United
+      // Kingdom") is caught before the application is sent.
+      if (process.env.AUTOFILL_CONSISTENCY_GATE === "1") {
+        watchdog?.stop();
+        clearInterval(captchaTimer);
+        emitStatus({
+          jobId: payload.jobId,
+          status: "awaiting_review",
+          screenshotPath: screenshotPath,
+          filledFields: adapter.filledValues,
+          message: "Form filled; awaiting consistency gate before submission.",
+        });
+        const action = await new Promise<"submit" | "skip">((resolve) => {
+          actionCallbackResolver = resolve;
+        });
+        if (action !== "submit") {
+          console.log("[Runner] Consistency gate declined submission; skipping.");
+          rl.close();
+          await stagehand.close();
+          emitStatus({
+            jobId: payload.jobId,
+            status: "skipped",
+            screenshotPath: screenshotPath,
+            message: "Application skipped by pre-submit consistency gate.",
+          });
+          process.exit(0);
+        }
+        console.log("[Runner] Consistency gate approved; submitting...");
+        // Re-arm the watchdog + captcha timer for the actual submit.
+        if (activityTimeoutMs > 0) {
+          watchdog = new ActivityWatchdog(activityTimeoutMs, () => {
+            const err = new Error(
+              `STUCK_TIMEOUT: no runner/browser activity for ${Math.round(activityTimeoutMs / 1000)}s`,
+            );
+            console.error("[Runner] Activity watchdog fired; aborting stuck run:", err.message);
+            emitStatus({ jobId: payload.jobId, status: "failed", error: err.message });
+            watchdog?.stop();
+            try {
+              rl.close();
+            } catch {}
+            const forceExit = setTimeout(() => process.exit(1), 5000);
+            Promise.resolve(stagehand.close())
+              .catch(() => {})
+              .then(() => {
+                clearTimeout(forceExit);
+                process.exit(1);
+              });
+          });
+          const touch = () => watchdog?.touch();
+          const origLog = console.log;
+          console.log = (...a) => {
+            touch();
+            origLog(...a);
+          };
+          const origError = console.error;
+          console.error = (...a) => {
+            touch();
+            origError(...a);
+          };
+          watchdog.start();
+        }
+      }
       // The watchdog stays armed through submit so a stuck submit is also
       // killed, and a captcha blocking the submit button is attempted once and
       // then aborts the run; it disarms once the outcome is reported.
@@ -556,6 +623,7 @@ async function main() {
             jobId: payload.jobId,
             status: "submitted",
             screenshotPath: confirmShot,
+            filledFields: adapter.filledValues,
             message: "Application filled and submitted automatically (confirmation verified).",
           });
           watchdog?.stop();
