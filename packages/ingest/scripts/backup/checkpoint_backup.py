@@ -1,6 +1,6 @@
 """Local checkpoint backup: snapshot named container volumes to disk.
 
-Creates timestamped tarballs of the firecrawl stack's named volumes under
+Creates timestamped tarballs of the ingest stack's named volumes under
 ``checkpoints/<timestamp>/``. Postgres + Neo4j are the critical ones; the
 script snapshots any volume passed (default = the ho stack's named volumes).
 

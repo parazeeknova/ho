@@ -3,7 +3,7 @@
 
 Runs every CHECK_INTERVAL seconds and repairs any component that died:
   * llama-server embedding service (:8900)          -> relaunch scripts/serve.py
-  * firecrawl containers (8)                        -> podman start / compose up
+  * infra containers (searxng, neo4j, agent-memory) -> podman start / compose up
   * pipeline supervisor (scripts/run.py)            -> full relaunch if dead
   * azure ingest loop (scripts/azure/ingest.py)     -> relaunch with stored creds
 
@@ -33,14 +33,9 @@ PIPELINE_COOLDOWN = 300  # run.py can take >3min to come up; avoid double relaun
 
 EMBED_HEALTH = "http://127.0.0.1:8900/health"
 CONTAINERS = [
-    "firecrawl_redis_1",
-    "firecrawl_nuq-postgres_1",
     "firecrawl_searxng_1",
     "firecrawl_neo4j_1",
     "firecrawl_agent-memory-db_1",
-    "firecrawl_rabbitmq_1",
-    "firecrawl_playwright-service_1",
-    "firecrawl_api_1",
 ]
 
 

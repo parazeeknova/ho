@@ -120,8 +120,7 @@ async def _start_postgres() -> bool:
     """Auto-start the agent-memory Postgres container and wait for it.
 
     The app database is the ``agent-memory-db`` service (host port 5433,
-    pgvector image, persistent volume) — not ``nuq-postgres``, which only
-    serves the firecrawl network internally.
+    pgvector image, persistent volume).
     """
     import shutil
 

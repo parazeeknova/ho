@@ -161,8 +161,12 @@ class SearXNGCongfig:
 
 
 @dataclass
-class FirecrawlConfig:
-    """Firecrawl service settings."""
+class RenderConfig:
+    """In-process page-rendering budget (replaces the Firecrawl service).
+
+    Kept env names (FIRECRAWL_*) for backward compatibility; the values now
+    bound the in-process renderer, not an external service.
+    """
 
     url: str = field(default_factory=lambda: _env_str("FIRECRAWL_URL", "http://127.0.0.1:3002"))
     timeout: float = field(default_factory=lambda: _env_float("FIRECRAWL_TIMEOUT", 60.0))
@@ -355,7 +359,7 @@ class Config:
     neo4j: Neo4jConfig = field(default_factory=Neo4jConfig)
     postgres: PostgresConfig = field(default_factory=PostgresConfig)
     searxng: SearXNGCongfig = field(default_factory=SearXNGCongfig)
-    firecrawl: FirecrawlConfig = field(default_factory=FirecrawlConfig)
+    render: RenderConfig = field(default_factory=RenderConfig)
     embed: EmbedConfig = field(default_factory=EmbedConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
     linkedin_guest: LinkedinGuestConfig = field(default_factory=LinkedinGuestConfig)

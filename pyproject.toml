@@ -71,9 +71,9 @@ files = ["packages/ingest/src", "packages/ingest/scripts", "packages/autofill"]
 exclude = ["test_.*\\.py$", "conftest\\.py$", "/tests/"]
 
 # Optional cloud deps (azure-storage-blob not installed locally) and
-# untyped third-party SDKs (asyncpg, generalcompute, firecrawl).
+# untyped third-party SDKs (asyncpg, generalcompute).
 [[tool.mypy.overrides]]
-module = ["azure.*", "asyncpg", "generalcompute", "firecrawl"]
+module = ["azure.*", "asyncpg", "generalcompute"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

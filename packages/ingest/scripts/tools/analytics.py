@@ -3,7 +3,7 @@
 Reports:
   - Disk usage of the project, azure_dump, intel, logs
   - Container list + status + volume mounts + memory
-  - Named podman volumes used by the firecrawl stack (size on disk)
+  - Named volumes used by the ingest stack (size on disk)
   - Database row counts (observations, candidates, companies, embeddings)
   - Process counts for the pipeline workers
 
@@ -29,10 +29,7 @@ PROJECT = Path(__file__).resolve().parents[2]
 CONTAINER_VOLUME_MAP = {
     "firecrawl_agent-memory-db_1": "firecrawl_agent_memory_data",
     "firecrawl_neo4j_1": "firecrawl_neo4j_data",
-    "firecrawl_nuq-postgres_1": None,  # anonymous volume
-    "firecrawl_redis_1": None,
     "firecrawl_searxng_1": None,
-    "firecrawl_rabbitmq_1": None,
 }
 
 

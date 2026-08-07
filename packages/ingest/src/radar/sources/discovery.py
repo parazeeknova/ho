@@ -4,7 +4,7 @@ Discovered via live endpoint scan (2026-07-30):
   READABLE: Crunchbase, Dealroom, Failory, Antler, Plug and Play,
     a16z, Sequoia, Khosla, BVP, Index Ventures, Insight Partners, GV,
     Salesforce Ventures, We Work Remotely, Arc, BetaList, TechCrunch
-  JS-SPA (via Firecrawl): YC, Techstars, 500 Global, Accel, Greylock,
+  JS-SPA (in-process render): YC, Techstars, 500 Global, Accel, Greylock,
     NEA, First Round, Felicis, Tracxn, Himalayas, DevHunt, Lever, Workable
   BLOCKED 403: PitchBook, OpenVC, F6S, StartupBlink, EF, Lightspeed,
     Founders Fund, Sapphire, M12, Wellfound, ProductHunt, Sifted
@@ -256,11 +256,11 @@ async def discover_from_yc(limit: int = 50) -> list[dict[str, str]]:
 
 
 async def discover_from_vc_portfolios(limit: int = 40) -> list[dict[str, str]]:
-    """Discover companies from VC portfolio pages via Firecrawl.
+    """Discover companies from VC portfolio pages (JS-rendered).
 
     All VC portfolio pages are JS-rendered (React/WordPress); static HTTP
-    won't produce company names. We use Firecrawl's Playwright-backed
-    scrape to get rendered content.
+    won't produce company names. render_html renders them in-process with a
+    lazily-spawned browser.
     """
     companies: list[dict[str, str]] = []
     sem = asyncio.Semaphore(6)
@@ -276,7 +276,7 @@ async def discover_from_vc_portfolios(limit: int = 40) -> list[dict[str, str]]:
 
     tasks = [_scrape_one(url) for url in _VC_PORTFOLIOS]
     total_vc = len(_VC_PORTFOLIOS)
-    logger.info(f"Scraping {total_vc} VC portfolio pages via Firecrawl...")
+    logger.info(f"Scraping {total_vc} VC portfolio pages (in-process render)...")
     htmls = await asyncio.gather(*tasks)
     done = sum(1 for h in htmls if h)
     logger.info(f"VC portfolios: {done}/{total_vc} scraped successfully")
@@ -567,10 +567,11 @@ async def discover_from_remoteok(limit: int = 30) -> list[dict[str, str]]:
 
 
 async def discover_from_weworkremotely(limit: int = 30) -> list[dict[str, str]]:
-    """Discover companies from We Work Remotely via Firecrawl.
+    """Discover companies from We Work Remotely.
 
-    WWR is Cloudflare-protected; direct httpx gets 403. Use Firecrawl's
-    Playwright-backed scrape to bypass the challenge and get rendered HTML.
+    WWR is Cloudflare-protected; direct httpx gets 403. render_html renders it
+    in-process with a lazily-spawned browser to bypass the challenge and get
+    rendered HTML.
     """
     companies: list[dict[str, str]] = []
     seen: set[str] = set()

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Rich dev launcher: start llama-server + firecrawl + agent-memory with live status."""
+"""Rich dev launcher: start llama-server + ingest infra (searxng, neo4j,
+agent-memory-db) with live status. Firecrawl stack removed — not started."""
 
 import contextlib
 import socket
@@ -107,7 +108,6 @@ def main() -> None:
         live.update(t)
 
         run(f"{DOCKER_COMPOSE} down 2>/dev/null", silent=True)
-        run("podman rm -f firecrawl_rabbitmq_1 2>/dev/null", silent=True)
         run("killall llama-server 2>/dev/null", silent=True)
         time.sleep(1)
 
@@ -118,13 +118,10 @@ def main() -> None:
     # Start everything under a live-updating status table
 
     llama_started = False
-    llama_ok = embed_ok = False
+    embed_ok = False
     pgvector_ok = False
     pgvector_container = False
-
-    infra_started = False
-    api_started = False
-    api_ok = False
+    neo4j_ok = searxng_ok = False
     have_model = model_exists()
 
     deadman = 240  # max total startup seconds
@@ -133,7 +130,7 @@ def main() -> None:
         for elapsed in range(deadman):
             t = build_table()
 
-            # Launch llama-server processes (first iteration only)
+            # Launch llama-server process (first iteration only)
             if not llama_started:
                 subprocess.Popen(
                     [sys.executable, f"{PROJECT}/scripts/serve.py"],
@@ -142,10 +139,7 @@ def main() -> None:
                 )
                 llama_started = True
 
-            llama_ok = True
             embed_ok = check_http("http://localhost:8900/health")
-
-            row(t, "GeneralCompute (gemma-4-31B-it)", STATUS_UP, "Cloud API")
             row(
                 t,
                 "llama-server (Embed)",
@@ -157,9 +151,19 @@ def main() -> None:
                 ":8900",
             )
 
-            # Launch agent-memory-db (first iteration only)
+            # Launch the compose services (first iteration only)
             if elapsed == 2:
-                run(f"{DOCKER_COMPOSE} up -d agent-memory-db", silent=True)
+                subprocess.Popen(
+                    f"{DOCKER_COMPOSE} up -d searxng neo4j agent-memory-db",
+                    shell=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+
+            searxng_ok = check_http("http://localhost:8080")
+            row(t, "searxng", status_for(searxng_ok), ":8080")
+            neo4j_ok = check_port("localhost", 7687)
+            row(t, "neo4j", status_for(neo4j_ok), ":7687")
 
             pgvector_container = container_running("agent-memory-db")
             pgvector_ok = pgvector_container and check_port("localhost", 5433)
@@ -170,88 +174,20 @@ def main() -> None:
                 ":5433",
             )
 
-            # Launch firecrawl infra (first iteration only)
-            if not infra_started:
-                subprocess.Popen(
-                    f"{DOCKER_COMPOSE} up -d redis playwright-service nuq-postgres searxng neo4j",
-                    shell=True,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-                infra_started = True
-
-            row(t, "redis", status_for(container_running("firecrawl_redis")), ":6379")
-            row(t, "nuq-postgres", status_for(container_running("firecrawl_nuq-postgres")), ":5432")
-            row(t, "searxng", status_for(check_http("http://localhost:8080")), ":8080")
-            row(t, "neo4j", status_for(check_port("localhost", 7687)), ":7687")
-
-            # rabbitmq
-            if elapsed == 3:
-                run(
-                    "podman rm -f firecrawl_rabbitmq_1 2>/dev/null; "
-                    "podman run -d --name firecrawl_rabbitmq_1 "
-                    "--network firecrawl_default --network-alias rabbitmq "
-                    "--restart unless-stopped "
-                    "--entrypoint /bin/bash rabbitmq:3-management "
-                    '-c "rm -f /var/lib/rabbitmq/.erlang.cookie; '
-                    'exec docker-entrypoint.sh rabbitmq-server"',
-                    silent=True,
-                )
-            row(
-                t,
-                "rabbitmq",
-                status_for(elapsed > 5 and container_running("firecrawl_rabbitmq")),
-                ":5672",
-            )
-
-            row(t, "playwright", status_for(container_running("firecrawl_playwright")), ":3000")
-
-            # firecrawl api
-            if elapsed == 6:
-                subprocess.Popen(
-                    f"{DOCKER_COMPOSE} up -d api",
-                    shell=True,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-                api_started = True
-            api_ok = check_http("http://localhost:3002")
-            row(
-                t,
-                "firecrawl api",
-                status_for(api_ok, initializing=api_started and not api_ok),
-                ":3002",
-            )
-
             live.update(t)
 
             # All up? Break early
-            all_up = (
-                llama_ok
-                and embed_ok
-                and pgvector_ok
-                and api_ok
-                and container_running("firecrawl_redis")
-                and container_running("firecrawl_rabbitmq")
-            )
-            if all_up:
+            if embed_ok and searxng_ok and neo4j_ok and pgvector_ok:
                 break
 
             time.sleep(1)
 
     # Final status
     t = build_table()
-    row(t, "GeneralCompute (gemma-4-31B-it)", STATUS_UP, "Cloud API")
     row(t, "llama-server (Embed)", status_for(embed_ok), ":8900")
+    row(t, "searxng", status_for(searxng_ok), ":8080")
+    row(t, "neo4j", status_for(neo4j_ok), ":7687")
     row(t, "agent-memory-db", status_for(pgvector_ok), ":5433")
-    row(t, "firecrawl api", status_for(api_ok), ":3002")
-    row(t, "redis", status_for(container_running("firecrawl_redis")), ":6379")
-    row(t, "rabbitmq", status_for(container_running("firecrawl_rabbitmq")), ":5672")
-    row(t, "playwright", status_for(container_running("firecrawl_playwright")), ":3000")
-    row(t, "nuq-postgres", status_for(container_running("firecrawl_nuq-postgres")), ":5432")
-    row(t, "searxng", status_for(check_http("http://localhost:8080")), ":8080")
-
-    row(t, "neo4j", status_for(check_port("localhost", 7687)), ":7687")
     console.print()
     console.print(t)
     console.print("\n[dim]Press Ctrl+C to stop all services.[/dim]")

@@ -456,7 +456,7 @@ async def _poll_board(
     try:
         from src.render import extract_links
 
-        fc_cfg = get_config().firecrawl
+        fc_cfg = get_config().render
         direct_urls = await asyncio.wait_for(
             extract_links(board_url, job_only=True, limit=fc_cfg.map_limit),
             timeout=120.0,
@@ -807,7 +807,7 @@ async def _fetch_postings_and_gate(
 ) -> tuple[list[JobCandidate], dict[str, Any]]:
     import time as _time
 
-    cfg = get_config().firecrawl
+    cfg = get_config().render
     passed: list[JobCandidate] = []
     rejected_count = 0
     gate_stats: dict[str, int] = {}
@@ -859,7 +859,7 @@ async def _fetch_postings_and_gate(
 
                 if not obs.raw_markdown or len(obs.raw_markdown) < 100:
                     if scrape_used >= scrape_budget:
-                        # Per-sweep scrape cap (FIRECRAWL_SCRAPE_LIMIT):
+                        # Per-sweep scrape cap (render budget):
                         # never-gated postings without content drain one
                         # bounded batch per sweep instead of re-scraping the
                         # whole corpus every time. Persist the observation so
