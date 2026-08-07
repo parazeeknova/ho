@@ -233,6 +233,7 @@ async def main() -> None:
 
     db = await AutofillDB.create()
     idle_cycles = 0
+    radar_done = False
     try:
         while True:
             await asyncio.sleep(args.bridge_interval)
@@ -240,13 +241,22 @@ async def main() -> None:
             for child in children:
                 if not child.is_alive():
                     # Exit code 42 = the radar finished its bounded batch
-                    # (stop_after_gated reached) — NOT a crash. Stop the whole
-                    # loop cleanly instead of restarting.
-                    if child.proc is not None and child.proc.returncode == 42:
-                        print(f"[loop] {child.name} reached its target batch; done.", flush=True)
-                        for c in children:
-                            c.stop()
-                        return
+                    # (stop_after_gated reached). Stop ONLY the radar — the
+                    # autofill worker + email listener keep draining the queue
+                    # and capturing outcomes.
+                    if (
+                        child.name == "radar-master"
+                        and child.proc is not None
+                        and child.proc.returncode == 42
+                    ):
+                        print(
+                            "[loop] radar-master reached its target batch; "
+                            "stopping radar, keeping autofill+email.",
+                            flush=True,
+                        )
+                        child.stop()
+                        radar_done = True
+                        continue
                     if child.restarts >= 5:
                         print(f"[loop] {child.name} crashed and exceeded restarts", flush=True)
                         continue
@@ -264,13 +274,20 @@ async def main() -> None:
                 flush=True,
             )
 
-            if enqueued == 0 and balance["open"] == 0:
-                idle_cycles += 1
-                if idle_cycles >= args.idle_cycles:
-                    print(f"[loop] queue idle for {idle_cycles} cycles; finishing", flush=True)
-                    break
-            else:
-                idle_cycles = 0
+            # Once the radar reached its target, we only wait for the autofill
+            # queue to drain (open = pending/filling/awaiting_review) before
+            # exiting. While radar is still sweeping, the usual idle rule.
+            if radar_done and balance["open"] == 0:
+                print("[loop] radar done and autofill queue drained; finishing", flush=True)
+                break
+            if not radar_done:
+                if enqueued == 0 and balance["open"] == 0:
+                    idle_cycles += 1
+                    if idle_cycles >= args.idle_cycles:
+                        print(f"[loop] queue idle for {idle_cycles} cycles; finishing", flush=True)
+                        break
+                else:
+                    idle_cycles = 0
 
             if args.max_minutes and (time.monotonic() - started_at) / 60 >= args.max_minutes:
                 print("[loop] --max-minutes reached; finishing", flush=True)
