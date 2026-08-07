@@ -1313,10 +1313,21 @@ class AutofillWorker:
                         elif status == "submitted":
                             terminal_seen = True
                             email_status = event.get("emailStatus")
+                            # Persist the filled answers. If the runner's
+                            # filledFields came through empty (adapter state can
+                            # be cleared across the gate loop), fall back to the
+                            # autofill_fills audit trail so every submitted
+                            # response is still saved to the DB.
+                            persist_payload = filled_fields
+                            if not persist_payload:
+                                try:
+                                    persist_payload = await self._fills_as_payload(job_id)
+                                except Exception:
+                                    persist_payload = None
                             await self.db.update_status(
                                 job_id,
                                 status="submitted",
-                                filled_payload=filled_fields,
+                                filled_payload=persist_payload,
                                 screenshot_path=screenshot_path,
                                 email_status=email_status,
                             )
@@ -1596,6 +1607,22 @@ class AutofillWorker:
         with contextlib.suppress(Exception):
             await bridge.send(text)
             logger.info("Email-feedback notification sent", job_id=job_id, kind=kind)
+
+    async def _fills_as_payload(self, job_id: str) -> dict[str, str]:
+        """Rebuild a {question: answer} payload from the autofill_fills audit
+        trail — used when the runner's filledFields is empty at submit so the
+        DB still records every submitted response."""
+        try:
+            rows = await self.db.get_fills(job_id)
+            out: dict[str, str] = {}
+            for r in rows or []:
+                q = (r.get("question") or "").strip()
+                a = (r.get("answer") or "").strip()
+                if q and a and q not in out:
+                    out[q] = a
+            return out
+        except Exception:
+            return {}
 
     async def _job_country_ineligible(
         self, rag: Any, profile: Any, apply_link: str, store: Any, job: dict[str, Any]

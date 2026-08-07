@@ -1167,14 +1167,12 @@ async def _emit_ranking_impression(
                     await conn.execute(
                         "INSERT INTO candidate_snapshots (snapshot_id, payload) VALUES ($1,$2::jsonb) ON CONFLICT DO NOTHING",  # noqa: E501
                         cand_snap_id,
-                        json.dumps(
-                            {"skills": c.matching_skills, "role_family": str(c.role_family)}
-                        ),
+                        {"skills": c.matching_skills, "role_family": str(c.role_family)},
                     )
                     await conn.execute(
                         "INSERT INTO job_snapshots (snapshot_id, payload) VALUES ($1,$2::jsonb) ON CONFLICT DO NOTHING",  # noqa: E501
                         job_snap_id,
-                        json.dumps({"role": c.normalized_role, "company": c.normalized_company}),
+                        {"role": c.normalized_role, "company": c.normalized_company},
                     )
                     await conn.execute(
                         "INSERT INTO impressions (impression_id, policy, "  # noqa: E501

@@ -108,7 +108,7 @@ async def emit_event(store: Any, event: DecisionEvent) -> None:
                 event.candidate_id,
                 event.candidate_snapshot_id,
                 event.job_snapshot_id,
-                json.dumps(event.features),
+                event.features,  # jsonb codec serializes dicts; do NOT pre-json.dumps
                 event.rank,
                 event.policy,
                 event.model_version,
@@ -122,8 +122,8 @@ async def emit_event(store: Any, event: DecisionEvent) -> None:
                 event.source,
                 event.query,
                 event.primary_discovery_source,
-                json.dumps(event.secondary_sources),
-                json.dumps(event.meta),
+                event.secondary_sources,
+                event.meta,
             )
     except Exception:
         # Event loss is tolerable; training is sparse-tolerant.
