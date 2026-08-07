@@ -23,7 +23,10 @@ const stagehand = new Stagehand({
     openaiEndpointFormat: "chat",
   },
   localBrowserLaunchOptions: {
-    headless: false,
+    // Headless when PROBE_HEADLESS=1 (CI / no display); the real worker runs
+    // headful on the user's machine.
+    headless: process.env.PROBE_HEADLESS === "1",
+    executablePath: process.env.PROBE_CHROME || undefined,
     args: ["--disable-blink-features=AutomationControlled"],
     ignoreDefaultArgs: [
       "--metrics-recording-only",
@@ -46,15 +49,8 @@ await stagehand.init();
 await applyFingerprint(stagehand, fingerprint);
 
 const page = stagehand.context.pages()[0];
-const reqLog: string[] = [];
 const consoleLog: string[] = [];
 
-page.on("request", (r: any) => {
-  const u = r.url();
-  if (/ashby|segment|posthog|heap|amplitude|clarity|sentry|/i.test(u)) {
-    reqLog.push(`${r.method()} ${u.slice(0, 120)}`);
-  }
-});
 page.on("console", (m: any) => {
   const t = (m.text && m.text()) || "";
   if (/error|warn|spam|automation|bot|block/i.test(t)) consoleLog.push(t.slice(0, 160));
@@ -62,7 +58,7 @@ page.on("console", (m: any) => {
 
 console.log("[Probe] Navigating to", url);
 await page.goto(url, { waitUntil: "domcontentloaded" });
-await new Promise((r) => setTimeout(r, 3000));
+await new Promise((r) => setTimeout(r, 4000));
 
 // Anti-bot surface
 const surface = await page.evaluate(() => {
@@ -75,14 +71,20 @@ const surface = await page.evaluate(() => {
     deviceMemory: (navigator as any).deviceMemory,
     plugins: Array.from(navigator.plugins).map((p) => p.name),
     chrome: !!(window as any).chrome,
-    permissions: typeof navigator.permissions,
+    hasCdp: typeof (window as any).cdp !== "undefined",
   };
-  // CDP leak: does calling Runtime.evaluate surface?
-  out.hasCdp = typeof (window as any).cdp !== "undefined";
   return out;
 });
 
-// Submit button / apply presence
+// Network requests via the Resource Timing API (works headless, no CDP hook).
+const resources = await page.evaluate(() =>
+  (performance.getEntriesByType("resource") as PerformanceResourceTiming[])
+    .map((e) => e.name)
+    .filter((u) => /ashby|segment|posthog|heap|amplitude|clarity|sentry|fingerprint|fingerprin/i.test(u))
+    .slice(0, 60),
+);
+
+// Apply / submit button presence
 const applyState = await page.evaluate(() => {
   const btns = Array.from(document.querySelectorAll("button, a[href*='/application']"));
   const text = btns.map((b) => ((b as HTMLElement).textContent || "").trim()).filter(Boolean);
@@ -93,10 +95,10 @@ console.log("\n=== ANTI-BOT SURFACE ===");
 console.log(JSON.stringify(surface, null, 2));
 console.log("\n=== APPLY/SUBMIT STATE ===");
 console.log(JSON.stringify(applyState, null, 2));
-console.log("\n=== NETWORK REQUESTS (tracked) ===");
-console.log(reqLog.slice(0, 40).join("\n"));
+console.log("\n=== NETWORK RESOURCES (tracking/analytics/anti-bot) ===");
+console.log((resources || []).join("\n"));
 console.log("\n=== CONSOLE (spam/error/bot) ===");
-console.log(consoleLog.slice(0, 20).join("\n"));
+console.log((consoleLog || []).slice(0, 20).join("\n"));
 
 await stagehand.close();
 process.exit(0);
