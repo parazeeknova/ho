@@ -136,7 +136,15 @@ class AutofillDB:
 
         Deduplicates against active rows (pending / filling / awaiting_review /
         deferred) for the same apply_link, returning the existing job_id.
+
+        ``ats_platform`` defaults to ``classify_ats(apply_link)`` so every row
+        is tagged with the ATS platform the browser adapter will use — callers
+        don't need to remember to pass it.
         """
+        if not ats_platform:
+            from autofill.ats import classify_ats
+
+            ats_platform = classify_ats(apply_link)
         async with self._pool.acquire() as conn:
             existing = await conn.fetchval(
                 """
