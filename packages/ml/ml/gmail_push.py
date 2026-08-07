@@ -335,19 +335,91 @@ async def _process_history(store: Any, service: Any, history_id: str) -> None:
             except Exception:
                 pass
             continue
-        # Emit reward event
+        # Emit reward event, backfilled to the ORIGINATING impression so the
+        # delayed reward credits the decision that generated it (the review's
+        # "reward → impression linkage" fix).
         from .events import DecisionEvent
         from .reward import reward_for
 
+        originating = await _latest_impression_for_job(store, job_id) or {}
         event = DecisionEvent(
             job_id=job_id,
             event_type=kind,
             reward=reward_for(kind),
+            impression_id=originating.get("impression_id")
+            if originating.get("impression_id")
+            else None,
+            candidate_snapshot_id=(
+                originating.get("candidate_snapshot_id")
+                if originating.get("candidate_snapshot_id")
+                else None
+            ),
+            job_snapshot_id=(
+                originating.get("job_snapshot_id") if originating.get("job_snapshot_id") else None
+            ),
+            model_version=str(originating.get("model_version") or ""),
+            policy=str(originating.get("policy") or ""),
+            feature_version=str(originating.get("feature_version") or ""),
+            source=str(originating.get("source") or ""),
             meta={"gmail_message_id": msg_id, "subject": subject[:200], "confidence": confidence},
         )
         from .events import emit_event
 
         await emit_event(store, event)
+
+
+async def _latest_impression_for_job(store: Any, job_id: str) -> dict[str, Any] | None:
+    """The most recent job_ranked event for a job — the impression/decision
+    that originally surfaced it. Used to attach delayed email rewards to the
+    originating ranking decision (not a bare job_id).
+
+    The reward carries the AUTOFILL job_id (job-xxxx) while the ranked event
+    carries the RADAR canonical_id (a url hash). Bridge the two via the apply
+    URL: autofill_queue.apply_link == radar_candidates.direct_apply_url == the
+    ranked event's job_id source. Falls back to a direct job_id match.
+    """
+    try:
+        async with store._pool.acquire() as conn:
+            # 1. Resolve the autofill job's apply URL (if this is an autofill id).
+            apply_url = None
+            try:
+                row = await conn.fetchrow(
+                    "SELECT apply_link FROM autofill_queue WHERE job_id = $1", job_id
+                )
+                if row:
+                    apply_url = row["apply_link"]
+            except Exception:
+                apply_url = None
+            # 2. Find the ranked event: by apply URL (canonical match) or job_id.
+            query = """
+                SELECT impression_id, candidate_snapshot_id, job_snapshot_id,
+                       model_version, policy, feature_version, source, created_at
+                FROM decision_events
+                WHERE event_type = 'job_ranked' AND impression_id IS NOT NULL
+                  AND (job_id = $1 OR job_id IN (
+                        SELECT canonical_id FROM radar_candidates
+                        WHERE direct_apply_url = $2 AND $2 IS NOT NULL))
+                ORDER BY created_at DESC
+                LIMIT 1
+            """
+            row = await conn.fetchrow(query, job_id, apply_url)
+            if row:
+                return dict(row)
+            # 3. Fallback: any reward/outcome already on this job with an impression.
+            row = await conn.fetchrow(
+                """
+                SELECT impression_id, candidate_snapshot_id, job_snapshot_id,
+                       model_version, policy, feature_version, source, created_at
+                FROM decision_events
+                WHERE job_id = $1 AND impression_id IS NOT NULL
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                job_id,
+            )
+            return dict(row) if row else None
+    except Exception:
+        return None
 
 
 def extract_role(subject: str) -> str | None:

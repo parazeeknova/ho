@@ -38,13 +38,16 @@ target-version = "py314"
 [tool.ruff.lint.per-file-ignores]
 # ML ingest daemon: defensive error handling is intentional (must never crash
 # mid-poll). Blind Exception catches are graceful-degradation on purpose.
-"ml/gmail_push.py" = ["BLE001", "S110"]
 "ml/outcome_resolver.py" = ["BLE001", "S110"]
 "ml/events.py" = ["BLE001", "S110"]
 "ml/features.py" = ["BLE001", "S110"]
 "ml/ltr.py" = ["BLE001"]
 "ml/config.py" = ["BLE001"]
+"ml/dataset.py" = ["BLE001", "S110"]
+"ml/gmail_push.py" = ["BLE001", "S110"]
 "scripts/gmail_watch_setup.py" = ["BLE001"]
+"scripts/train_model.py" = ["BLE001"]
+"scripts/eval.py" = ["BLE001"]
 
 [tool.mypy]
 python_version = "3.14"
