@@ -9,7 +9,7 @@
     "format:check": "oxfmt --check .",
     "typecheck": "tsc --noEmit",
     "runner": "tsx runner.ts",
-    "test": "tsx --test tests/ats/*.test.ts tests/utils/*.test.ts"
+    "test": "tsx --test ats/*.test.ts utils/*.test.ts"
   },
   "dependencies": {
     "@browserbasehq/stagehand": "^3.7.1",

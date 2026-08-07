@@ -17,8 +17,8 @@ import {
   translateToDate,
   unprocessedFields,
   xpathStringLiteral,
-} from "../../ats/greenhouse";
-import type { FormField } from "../../ats/greenhouse";
+} from "./greenhouse";
+import type { FormField } from "./greenhouse";
 
 describe("normalizeOptionText", () => {
   it("normalizes case and whitespace", () => {

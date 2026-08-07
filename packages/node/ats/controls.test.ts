@@ -6,7 +6,7 @@ import {
   sanitizeNumberAnswer,
   cleanPlaceholderValue,
   firstUrl,
-} from "../../ats/shared/controls.js";
+} from "./shared/controls.js";
 
 /**
  * A FormControls whose page serves a single controllable locator. Records the

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { ATSAdapter } from "../../ats/base";
-import { verifySubmitOutcome } from "../../ats/shared/audit";
+import { ATSAdapter } from "./base";
+import { verifySubmitOutcome } from "./shared/audit";
 
 // A minimal fake page that models the outcomes verifySubmitOutcome polls for:
 // URL transitions, error banners, inline confirmation text, and a submit

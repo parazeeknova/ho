@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { humanTypingEnabled, humanTypingMaxLength, typingDelayMs } from "../../utils/evasion";
+import { humanTypingEnabled, humanTypingMaxLength, typingDelayMs } from "./evasion";
 
 describe("human typing knobs", () => {
   it("is enabled by default and disabled by AUTOFILL_TYPING=0", () => {

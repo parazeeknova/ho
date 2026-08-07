@@ -20,6 +20,33 @@ def now_utc() -> Any:
     return datetime.now(UTC)
 
 
+_FAILURE_TAXONOMY: dict[str, str] = {
+    "ban": "ban",
+    "blocked": "ban",
+    "selector": "selector_drift",
+    "captcha": "captcha",
+    "challenge": "captcha",
+    "bot": "captcha",
+    "network": "network",
+    "timeout": "network",
+    "econn": "network",
+    "127": "infra",
+}
+
+
+def _failure_label(error: str) -> str:
+    """Map a raw error message onto the failure taxonomy.
+
+    selector_drift | captcha | ban | network | infra — used by the circuit
+    breaker so the same-class error can be counted together.
+    """
+    low = (error or "").lower()
+    for token, label in _FAILURE_TAXONOMY.items():
+        if token in low:
+            return label
+    return "unknown"
+
+
 logger = get_logger("autofill.db")
 
 CREATE_TABLE_SQL = """
@@ -98,6 +125,36 @@ CREATE INDEX IF NOT EXISTS idx_discord_mailbox_msgs
 CREATE TABLE IF NOT EXISTS discord_poller_state (
     poller_id TEXT PRIMARY KEY,
     last_seen TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Procedural memory: resolved selectors / flow classification / per-field
+-- strategies learned from successful fills, keyed by host + form signature.
+-- Consulted before the LLM; written on success, decayed on failure. This is
+-- what turns the five adapters into one generic adapter plus learned overrides.
+CREATE TABLE IF NOT EXISTS autofill_site_knowledge (
+    host            TEXT NOT NULL,
+    form_signature  TEXT NOT NULL,
+    platform        TEXT NOT NULL DEFAULT 'generic',
+    selectors       JSONB NOT NULL DEFAULT '{}'::jsonb,
+    flow            TEXT NOT NULL DEFAULT '',
+    strategies      JSONB NOT NULL DEFAULT '{}'::jsonb,
+    success_count   INTEGER NOT NULL DEFAULT 0,
+    fail_count      INTEGER NOT NULL DEFAULT 0,
+    last_good_at    TIMESTAMPTZ,
+    updated_at      TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (host, form_signature)
+);
+
+-- Per-domain health + circuit breaker. After N consecutive identical errors a
+-- host is quarantined (cooldown_until) so a broken/blocking ATS doesn't burn
+-- job retries; a human handoff is triggered instead.
+CREATE TABLE IF NOT EXISTS site_health (
+    domain          TEXT PRIMARY KEY,
+    fail_count      INTEGER NOT NULL DEFAULT 0,
+    last_fail       TEXT NOT NULL DEFAULT '',
+    last_good       TIMESTAMPTZ,
+    cooldown_until  TIMESTAMPTZ,
+    updated_at      TIMESTAMPTZ DEFAULT NOW()
 );
 """
 
@@ -718,3 +775,165 @@ class AutofillDB:
                 res["options"] = json.loads(res["options"])
             result.append(res)
         return result
+
+    # ── site knowledge (procedural memory) ──────────────────────────────
+
+    async def get_site_knowledge(self, host: str, form_signature: str) -> dict[str, Any] | None:
+        """Look up learned selectors/flow for a host+form before the LLM probes."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT host, form_signature, platform, selectors, flow, strategies,
+                       success_count, fail_count, last_good_at
+                FROM autofill_site_knowledge
+                WHERE host = $1 AND form_signature = $2
+                """,
+                host,
+                form_signature,
+            )
+        if not row:
+            return None
+        res = dict(row)
+        for key in ("selectors", "strategies"):
+            if isinstance(res.get(key), str):
+                res[key] = json.loads(res[key])
+        return res
+
+    async def upsert_site_knowledge(
+        self,
+        host: str,
+        form_signature: str,
+        platform: str = "generic",
+        selectors: dict[str, Any] | None = None,
+        flow: str = "",
+        strategies: dict[str, Any] | None = None,
+        success: bool = True,
+    ) -> None:
+        """Record a successful/failed selector map for a host+form.
+
+        On success: increment success_count, set last_good_at, store the
+        resolved selectors/flow/strategies. On failure: increment fail_count
+        (drift detection) without overwriting the last-known-good map.
+        """
+        async with self._pool.acquire() as conn:
+            if success:
+                await conn.execute(
+                    """
+                    INSERT INTO autofill_site_knowledge (
+                        host, form_signature, platform, selectors, flow, strategies,
+                        success_count, fail_count, last_good_at
+                    ) VALUES ($1, $2, $3, $4::jsonb, $5, $6::jsonb, 1, 0, NOW())
+                    ON CONFLICT (host, form_signature) DO UPDATE SET
+                        platform = EXCLUDED.platform,
+                        selectors = EXCLUDED.selectors,
+                        flow = EXCLUDED.flow,
+                        strategies = EXCLUDED.strategies,
+                        success_count = autofill_site_knowledge.success_count + 1,
+                        last_good_at = NOW(),
+                        updated_at = NOW()
+                    """,
+                    host,
+                    form_signature,
+                    platform,
+                    json.dumps(selectors or {}),
+                    flow,
+                    json.dumps(strategies or {}),
+                )
+            else:
+                await conn.execute(
+                    """
+                    INSERT INTO autofill_site_knowledge (
+                        host, form_signature, platform, success_count, fail_count
+                    ) VALUES ($1, $2, $3, 0, 1)
+                    ON CONFLICT (host, form_signature) DO UPDATE SET
+                        fail_count = autofill_site_knowledge.fail_count + 1,
+                        updated_at = NOW()
+                    """,
+                    host,
+                    form_signature,
+                    platform,
+                )
+
+    # ── site health + circuit breaker ───────────────────────────────────
+
+    async def site_health(self, domain: str) -> dict[str, Any] | None:
+        """Current health record for a domain."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT domain, fail_count, last_fail, last_good, cooldown_until
+                FROM site_health WHERE domain = $1
+                """,
+                domain,
+            )
+        return dict(row) if row else None
+
+    async def record_site_failure(
+        self, domain: str, error: str, cooldown_seconds: int = 3600
+    ) -> None:
+        """Increment a domain's consecutive-failure count; quarantine on threshold.
+
+        ``error`` is a failure-taxonomy label (selector_drift / captcha / ban /
+        network) or the raw message. When the consecutive failures reach the
+        quarantine threshold, ``cooldown_until`` is set so the domain is skipped
+        for a while instead of burning job retries.
+        """
+        threshold = int(os.environ.get("SITE_HEALTH_QUARANTINE", "3"))
+        label = _failure_label(error)
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO site_health (domain, fail_count, last_fail, cooldown_until, updated_at)
+                VALUES ($1, 1, $2, NULL, NOW())
+                ON CONFLICT (domain) DO UPDATE SET
+                    fail_count = site_health.fail_count + 1,
+                    last_fail = $2,
+                    updated_at = NOW(),
+                    cooldown_until = CASE
+                        WHEN site_health.fail_count + 1 >= $3
+                        THEN NOW() + ($4::int * INTERVAL '1 second')
+                        ELSE site_health.cooldown_until
+                    END
+                RETURNING fail_count, cooldown_until
+                """,
+                domain,
+                label,
+                threshold,
+                cooldown_seconds,
+            )
+            if row and row["cooldown_until"]:
+                logger.warning(
+                    "Domain quarantined by circuit breaker",
+                    domain=domain,
+                    failures=row["fail_count"],
+                    until=str(row["cooldown_until"]),
+                    label=label,
+                )
+
+    async def record_site_success(self, domain: str) -> None:
+        """Reset a domain's failure count on a successful fill."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO site_health (domain, fail_count, last_good, updated_at)
+                VALUES ($1, 0, NOW(), NOW())
+                ON CONFLICT (domain) DO UPDATE SET
+                    fail_count = 0,
+                    last_good = NOW(),
+                    cooldown_until = NULL,
+                    updated_at = NOW()
+                """,
+                domain,
+            )
+
+    async def domain_quarantined(self, domain: str) -> bool:
+        """True when a domain is in its circuit-breaker cooldown."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT 1 FROM site_health
+                WHERE domain = $1 AND cooldown_until IS NOT NULL AND cooldown_until > NOW()
+                """,
+                domain,
+            )
+            return row is not None

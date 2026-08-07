@@ -31,13 +31,19 @@ async def db():
 
     # Clean up test table records before test
     async with instance._pool.acquire() as conn:
-        await conn.execute("TRUNCATE autofill_queue, autofill_fills")
+        await conn.execute(
+            "TRUNCATE autofill_queue, autofill_fills, autofill_site_knowledge, "
+            "site_health, discord_question_mailbox"
+        )
 
     yield instance
 
     # Clean up test table records after test
     async with instance._pool.acquire() as conn:
-        await conn.execute("TRUNCATE autofill_queue, autofill_fills")
+        await conn.execute(
+            "TRUNCATE autofill_queue, autofill_fills, autofill_site_knowledge, "
+            "site_health, discord_question_mailbox"
+        )
     await instance.close()
 
 
@@ -334,7 +340,7 @@ async def test_queue_summary_counts(db: AutofillDB):
 
     await db.update_status(a, status="submitted")
     await db.update_status(b, status="failed", error="boom")
-    await db.update_status(c, status="deferred", reason="needs user input")
+    await db.update_status(c, status="deferred", error="needs user input")
 
     summary = await db.queue_summary()
     assert summary["applied"] == 1
@@ -371,7 +377,7 @@ async def test_poller_alive_staleness(db: AutofillDB):
     assert await db.poller_alive() is True
     async with db._pool.acquire() as conn:
         await conn.execute(
-            "UPDATE telegram_poller_state SET last_seen = NOW() - INTERVAL '60 seconds'"
+            "UPDATE discord_poller_state SET last_seen = NOW() - INTERVAL '60 seconds'"
         )
     assert await db.poller_alive() is False
     assert await db.poller_alive(max_age_seconds=120) is True
@@ -384,3 +390,87 @@ async def test_close_mailbox_question(db: AutofillDB):
     assert await db.poll_mailbox_question("q-3") == ("timed_out", None)
     # A late reply to a closed question must not resurrect it.
     assert await db.answer_mailbox_message(301, "late") is False
+
+
+# ── site knowledge (procedural memory) ─────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_site_knowledge_upsert_and_get(db: AutofillDB):
+    assert await db.get_site_knowledge("jobs.ashbyhq.com", "form-a") is None
+    await db.upsert_site_knowledge(
+        "jobs.ashbyhq.com",
+        "form-a",
+        platform="ashby",
+        selectors={"location": 'input[role="combobox"]'},
+        flow="wizard",
+        strategies={"location": "two-keystrokes-arrow-down"},
+    )
+    rec = await db.get_site_knowledge("jobs.ashbyhq.com", "form-a")
+    assert rec is not None
+    assert rec["platform"] == "ashby"
+    assert rec["selectors"]["location"] == 'input[role="combobox"]'
+    assert rec["flow"] == "wizard"
+    assert rec["success_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_site_knowledge_success_increments(db: AutofillDB):
+    await db.upsert_site_knowledge("x.com", "f", success=True)
+    await db.upsert_site_knowledge("x.com", "f", success=True)
+    rec = await db.get_site_knowledge("x.com", "f")
+    assert rec["success_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_site_knowledge_failure_increments_without_overwriting_selectors(
+    db: AutofillDB,
+):
+    await db.upsert_site_knowledge("x.com", "f", selectors={"name": "#name"}, flow="single")
+    await db.upsert_site_knowledge("x.com", "f", success=False)
+    rec = await db.get_site_knowledge("x.com", "f")
+    assert rec["fail_count"] == 1
+    # last-known-good selectors preserved on failure (drift detection)
+    assert rec["selectors"]["name"] == "#name"
+
+
+# ── site health + circuit breaker ──────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_site_health_success_resets_failures(db: AutofillDB):
+    await db.record_site_failure("blocked-ats.com", "captcha")
+    await db.record_site_failure("blocked-ats.com", "captcha")
+    health = await db.site_health("blocked-ats.com")
+    assert health is not None and health["fail_count"] == 2
+    await db.record_site_success("blocked-ats.com")
+    health = await db.site_health("blocked-ats.com")
+    assert health is not None and health["fail_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_site_health_quarantines_after_threshold(db: AutofillDB, monkeypatch):
+    monkeypatch.setenv("SITE_HEALTH_QUARANTINE", "2")
+    await db.record_site_failure("bad.com", "selector_drift", cooldown_seconds=60)
+    await db.record_site_failure("bad.com", "selector_drift", cooldown_seconds=60)
+    health = await db.site_health("bad.com")
+    assert health is not None and health["cooldown_until"] is not None
+    assert await db.domain_quarantined("bad.com") is True
+
+
+@pytest.mark.asyncio
+async def test_site_health_not_quarantined_below_threshold(db: AutofillDB):
+    await db.record_site_failure("ok.com", "network", cooldown_seconds=60)
+    assert await db.domain_quarantined("ok.com") is False
+
+
+@pytest.mark.asyncio
+async def test_failure_label_taxonomy():
+    from autofill.db import _failure_label
+
+    assert _failure_label("selector not found") == "selector_drift"
+    assert _failure_label("CAPTCHA_DETECTED") == "captcha"
+    assert _failure_label("blocked by anti-bot") == "ban"
+    assert _failure_label("network timeout") == "network"
+    assert _failure_label("Runner infra failure (exit 127)") == "infra"
+    assert _failure_label("something else") == "unknown"

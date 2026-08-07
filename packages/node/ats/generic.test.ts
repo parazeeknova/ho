@@ -9,8 +9,8 @@ import {
   extractQuestionsFromJsonObject,
   isVoluntaryText,
   parseJsonQuestions,
-} from "../../ats/generic";
-import type { FlowProbe } from "../../ats/generic";
+} from "./generic";
+import type { FlowProbe } from "./generic";
 
 describe("classifyFlow", () => {
   const probe = (p: Partial<FlowProbe>): FlowProbe => ({

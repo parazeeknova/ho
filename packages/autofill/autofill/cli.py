@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import uuid
+from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
@@ -41,7 +42,7 @@ async def _stream_runner(
     """Spawn the Node runner, stream status events, handle RPC answers and
     review decisions. Returns the final status event (submitted/failed/skipped).
     """
-    node_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "node"))
+    node_dir = str(Path(__file__).resolve().parents[2] / "node")
     print(
         f"[Python CLI] Spawning Stagehand Node runner for {payload['url']} "
         f"(ID: {job_id}, Mode: {payload['mode']})..."

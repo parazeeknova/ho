@@ -3,8 +3,8 @@
 Downloads the candidate resume from RESUME_URL (or returns an existing local
 RESUME_PATH) so the node adapter can upload it via setInputFiles().
 
-Downloads are cached in node/artifacts/resume.pdf for RESUME_TTL_HOURS (default
-6h); the artifact is refreshed when the source URL changes or the cache
+Downloads are cached in packages/node/artifacts/resume.pdf for RESUME_TTL_HOURS
+(default 6h); the artifact is refreshed when the source URL changes or the cache
 expires.
 """
 
@@ -17,7 +17,7 @@ from src.logging import get_logger
 
 logger = get_logger("autofill.resume")
 
-_ARTIFACTS_DIR = Path(__file__).resolve().parent.parent / "node" / "artifacts"
+_ARTIFACTS_DIR = Path(__file__).resolve().parents[2] / "node" / "artifacts"
 _RESUME_FILENAME = "resume.pdf"
 _RESUME_URL_SIDECAR = f"{_RESUME_FILENAME}.url"
 

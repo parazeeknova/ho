@@ -44,6 +44,9 @@ logger = get_logger("autofill.worker")
 # for the torproxy lifecycle commands.
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
+# Node/TS runner package at the repo root's packages/node.
+_NODE_DIR = Path(__file__).resolve().parents[2] / "node"
+
 
 def is_overnight() -> bool:
     """True when running in overnight mode (OVERNIGHT_LOOP=true).
@@ -59,12 +62,22 @@ def _runner_dir() -> str:
     """Resolve the Node/TS runner package directory.
 
     ``worker.py`` lives at ``packages/autofill/autofill/``; the TS package
-    (runner.ts, package.json, node_modules/.bin/tsx) is one level up at
-    ``packages/autofill/node``. Deriving it as ``dirname(__file__)/node``
-    resolved to ``autofill/autofill/node`` (no runner), which caused every
-    fill to die with "Runner exited with code 127".
+    (runner.ts, package.json, node_modules/.bin/tsx) lives at the repo root's
+    ``packages/node``. Deriving it as ``dirname(__file__)/node`` resolved to
+    ``autofill/autofill/node`` (no runner), which caused every fill to die
+    with "Runner exited with code 127".
     """
-    return os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "node"))
+    return str(_NODE_DIR)
+
+
+def _domain_of(url: str) -> str:
+    """Host part of a posting URL, lowercased, minus the leading ``www.``."""
+    try:
+        from urllib.parse import urlparse
+
+        return (urlparse(url).netloc or "").lower().removeprefix("www.")
+    except Exception:
+        return ""
 
 
 def _assert_runner_ready() -> None:
@@ -220,13 +233,7 @@ def _per_job_resume(
     name_slug = re.sub(r"[^A-Za-z0-9]+", "_", f"{first_name}_{last_name}").strip("_")
     if not name_slug:
         name_slug = src.stem
-    dest_dir = (
-        Path(__file__).resolve().parent.parent
-        / "node"
-        / "artifacts"
-        / "resumes"
-        / _safe_segment(job_id)
-    )
+    dest_dir = _NODE_DIR / "artifacts" / "resumes" / _safe_segment(job_id)
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / f"{name_slug}_Resume{src.suffix}"
     if not dest.exists():
@@ -386,7 +393,7 @@ class AutofillWorker:
         ``min_size`` (the worker's concurrency) so a concurrent runner never
         silently falls back to no persistent profile.
         """
-        base = Path(__file__).resolve().parent.parent / "node" / "artifacts" / "profiles"
+        base = _NODE_DIR / "artifacts" / "profiles"
         try:
             pool_size = int(os.getenv("AUTOFILL_PROFILE_POOL_SIZE", "4"))
         except TypeError, ValueError:
@@ -492,6 +499,23 @@ class AutofillWorker:
                     self.semaphore.release()
                     await asyncio.sleep(2)
                     continue
+
+                # Circuit breaker: skip a job whose domain is in cooldown after
+                # repeated failures — don't keep burning its retry budget.
+                domain = _domain_of(job.get("apply_link") or "")
+                if domain:
+                    try:
+                        if await self.db.domain_quarantined(domain):
+                            self.semaphore.release()
+                            logger.warning(
+                                "Skipping job: domain in circuit-breaker cooldown",
+                                job_id=job["job_id"],
+                                domain=domain,
+                            )
+                            await asyncio.sleep(2)
+                            continue
+                    except Exception:
+                        pass
 
                 logger.info(
                     "Claimed job for processing", job_id=job["job_id"], link=job["apply_link"]
@@ -638,6 +662,7 @@ class AutofillWorker:
     async def _process_job(self, job: dict[str, Any]) -> None:
         job_id = job["job_id"]
         apply_link = job["apply_link"]
+        domain = _domain_of(apply_link)
 
         deferred_pending: list[dict[str, Any]] = []
         rag: ScreenerRAG | None = None
@@ -1104,6 +1129,9 @@ class AutofillWorker:
                                 filled_payload=filled_fields,
                                 screenshot_path=screenshot_path,
                             )
+                            if domain:
+                                with contextlib.suppress(Exception):
+                                    await self.db.record_site_success(domain)
                             await self._debug_finalize(debug_rec, "submitted")
                         elif status == "skipped":
                             terminal_seen = True
@@ -1134,6 +1162,9 @@ class AutofillWorker:
                                 await self.db.update_status(
                                     job_id, status="failed", error=error_msg
                                 )
+                                if domain:
+                                    with contextlib.suppress(Exception):
+                                        await self.db.record_site_failure(domain, error_msg)
                                 await self._debug_finalize(debug_rec, "failed", error=error_msg)
                                 if "CAPTCHA_DETECTED" in error_msg:
                                     # A bot-detection challenge blocked the form:
@@ -1197,6 +1228,9 @@ class AutofillWorker:
                     error=error,
                     infra_failure=infra,
                 )
+                if domain and not infra:
+                    with contextlib.suppress(Exception):
+                        await self.db.record_site_failure(domain, error)
                 await self._debug_finalize(debug_rec, "failed", error=error)
             elif not terminal_seen:
                 # A normal runner exit WITHOUT a terminal status event and

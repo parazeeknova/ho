@@ -1,6 +1,6 @@
 """ATS platform classification from a job posting URL.
 
-Mirrors the runner's adapter registry (packages/autofill/node/runner.ts) so the
+Mirrors the runner's adapter registry (packages/node/runner.ts) so the
 enqueued job is tagged with the same platform the browser adapter will pick.
 This is what makes per-platform metrics and the specialized adapters measurable:
 without it every job falls through to the generic adapter and classification is

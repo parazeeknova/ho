@@ -5,7 +5,7 @@
     "": {
       "name": "ho",
     },
-    "packages/autofill/node": {
+    "packages/node": {
       "name": "autofill-node",
       "version": "0.1.0",
       "dependencies": {
@@ -305,7 +305,7 @@
 
     "atomic-sleep": ["atomic-sleep@1.0.0", "", {}, "sha512-kNOjDqAh7px0XWNI+4QbzoiR/nTkHAWNud2uvnJquD1/x5a7EQZMJT0AczqK0Qn67oY/TTQ1LbUKajZpp3I9tQ=="],
 
-    "autofill-node": ["autofill-node@workspace:packages/autofill/node"],
+    "autofill-node": ["autofill-node@workspace:packages/node"],
 
     "aws4fetch": ["aws4fetch@1.0.20", "", {}, "sha512-/djoAN709iY65ETD6LKCtyyEI04XIBP5xVvfmNxsEP0uJB5tyaGBztSryRr4HqMStr9R06PisQE7m9zDTXKu6g=="],
 

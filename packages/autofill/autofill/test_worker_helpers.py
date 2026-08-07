@@ -270,27 +270,25 @@ async def test_record_fill_helper_is_best_effort() -> None:
 
 
 def test_node_dir_points_to_ts_package() -> None:
-    """The autofill Node runner lives one level above the Python package.
+    """The autofill Node runner lives at the repo root's packages/node.
 
     Regression: node_dir used ``dirname(__file__)/node`` which resolved to
-    ``autofill/autofill/node`` (no runner.ts) instead of ``autofill/node``,
-    so every fill failed with "Runner exited with code 127".
+    ``autofill/autofill/node`` (no runner.ts), so every fill failed with
+    "Runner exited with code 127". The package now lives at ``packages/node``.
     """
     import os
 
     import autofill.worker as w
 
-    node_dir = os.path.normpath(os.path.join(os.path.dirname(w.__file__), "..", "node"))
-    assert node_dir.endswith("packages/autofill/node")
+    node_dir = w._runner_dir()
+    assert node_dir.endswith("packages/node")
     assert os.path.isfile(os.path.join(node_dir, "runner.ts"))
     assert os.path.isfile(os.path.join(node_dir, "package.json"))
 
 
 def test_profiles_dir_points_to_ts_package() -> None:
-    from pathlib import Path
-
     import autofill.worker as w
 
-    base = Path(w.__file__).resolve().parent.parent / "node" / "artifacts" / "profiles"
-    assert str(base).endswith("packages/autofill/node/artifacts/profiles")
+    base = w._NODE_DIR / "artifacts" / "profiles"
+    assert str(base).endswith("packages/node/artifacts/profiles")
     assert base.exists()

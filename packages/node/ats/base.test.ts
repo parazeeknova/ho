@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { ATSAdapter } from "../../ats/base";
+import { ATSAdapter } from "./base";
 
 // Runs the real detectCaptcha page.evaluate body against a stubbed DOM so the
 // exact classification logic (selectors + size + viewport + visibility) is

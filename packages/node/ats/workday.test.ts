@@ -7,7 +7,7 @@ import {
   workdayApplyManuallyUrl,
   workdayCompanyFromHostname,
   workdayPostingUrl,
-} from "../../ats/workday";
+} from "./workday";
 
 describe("workdayCompanyFromHostname", () => {
   it("extracts the company from a *.wd<N>.myworkdayjobs.com host", () => {

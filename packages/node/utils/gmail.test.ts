@@ -1,11 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import {
-  extractCodeFromEmail,
-  extractVerificationCode,
-  gmailConfigured,
-} from "../../utils/gmail.js";
+import { extractCodeFromEmail, extractVerificationCode, gmailConfigured } from "./gmail.js";
 
 describe("extractVerificationCode", () => {
   it("extracts a keyword-anchored 6-digit code", () => {

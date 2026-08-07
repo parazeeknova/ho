@@ -4,7 +4,7 @@
   "private": true,
   "description": "ho monorepo - ingest radar pipeline (Python) + autofill product (Python + TypeScript)",
   "workspaces": [
-    "packages/autofill/node"
+    "packages/node"
   ],
   "packageManager": "bun@1.3.13",
   "scripts": {
