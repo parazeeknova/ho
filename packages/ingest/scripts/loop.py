@@ -31,8 +31,10 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "autofill"))
@@ -79,6 +81,7 @@ class Child:
         self.env = env
         self.proc: subprocess.Popen[str] | None = None
         self.restarts = 0
+        self._stream_thread: Any | None = None
 
     async def start(self) -> None:
         LOG_DIR.mkdir(exist_ok=True)
@@ -93,7 +96,12 @@ class Child:
         )
         print(f"[loop] started {self.name} (pid {self.proc.pid})", flush=True)
 
-        async def _stream() -> None:
+        # Stream the child's stdout in a DEDICATED THREAD. A synchronous
+        # `for line in proc.stdout` inside a coroutine blocks the whole event
+        # loop (radar-master floods stdout during board polling), which starves
+        # the bridge/restart cycle. A thread lets the async loop keep running
+        # while output is drained.
+        def _stream_blocking() -> None:
             assert self.proc is not None and self.proc.stdout is not None
             with (
                 open(LOG_DIR / f"{self.name}.log", "ab") as log_file,
@@ -107,7 +115,9 @@ class Child:
                     loop_log.write(line.encode())
                     loop_log.flush()
 
-        asyncio.get_running_loop().create_task(_stream())
+        thread = threading.Thread(target=_stream_blocking, daemon=True)
+        thread.start()
+        self._stream_thread = thread
 
     def is_alive(self) -> bool:
         return self.proc is not None and self.proc.poll() is None

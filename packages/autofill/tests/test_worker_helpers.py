@@ -167,6 +167,33 @@ def test_format_digest_accepts_custom_title() -> None:
         title="🏁 Overnight run finished — deferred jobs",
     )
     assert "Overnight run finished" in text
+
+
+def test_format_digest_is_markdown_not_html() -> None:
+    """Discord renders Markdown, not Telegram HTML — no <b>/<a>/<code> tags."""
+    text = AutofillWorker._format_digest(
+        [
+            {
+                "job_id": "job-1",
+                "company": "Acme",
+                "role": "Backend Engineer",
+                "apply_link": "https://boards.greenhouse.io/acme/123",
+                "pending_questions": ["Are you authorized to work in the country?"],
+            }
+        ],
+        title="🏁 Overnight run finished — deferred jobs",
+    )
+    assert "Overnight run finished" in text
+    # No Telegram HTML
+    assert "<b>" not in text
+    assert "<a href" not in text
+    assert "<code>" not in text
+    assert "&lt;" not in text
+    # Discord Markdown
+    assert "**1. Acme** — Backend Engineer" in text
+    assert "[Open posting →](https://boards.greenhouse.io/acme/123)" in text
+    assert "`python -m autofill resume <job_id>`" in text
+    assert "• Are you authorized to work in the country?" in text
     assert "Acme" in text
     assert "https://boards.greenhouse.io/acme/123" in text
 

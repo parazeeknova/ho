@@ -283,10 +283,10 @@ async def _stream_runner(
                                         if pending["options"]:
                                             option_hint = "\n" + " | ".join(pending["options"][:6])
                                         text = (
-                                            f"⛔ <b>Deferred</b>: "
+                                            f"⛔ **Deferred**: "
                                             f"{payload.get('company', 'Company')} — "
                                             f"{payload.get('role', 'Position')}\n"
-                                            f'<a href="{payload["url"]}">Open posting →</a>\n'
+                                            f"[Open posting →]({payload['url']})\n"
                                             f"Needs your input:\n"
                                             f"• {deferred.question}{option_hint}"
                                         )

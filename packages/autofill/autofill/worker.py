@@ -579,15 +579,15 @@ class AutofillWorker:
     def _format_digest(
         rows: list[dict[str, Any]], title: str = "⏰ Morning Digest — jobs deferred for your input"
     ) -> str:
-        lines = [f"<b>{title}</b>", ""]
+        lines = [f"**{title}**", ""]
         for i, r in enumerate(rows, 1):
             role = r.get("role") or "Position"
             company = r.get("company") or "Company"
             link = r.get("apply_link") or ""
             questions = r.get("pending_questions") or []
-            lines.append(f"<b>{i}. {company}</b> — {role}")
+            lines.append(f"**{i}. {company}** — {role}")
             if link:
-                lines.append(f'    <a href="{link}">Open posting →</a>')
+                lines.append(f"    [Open posting →]({link})")
             if questions:
                 lines.append(f"    Needs input ({len(questions)}):")
                 for entry in questions[:6]:
@@ -596,7 +596,7 @@ class AutofillWorker:
                     else:
                         lines.append(f"    • {AutofillWorker._format_pending(entry)}")
             lines.append("")
-        lines.append("Answer them with <code>python -m autofill resume &lt;job_id&gt;</code>")
+        lines.append("Answer them with `python -m autofill resume <job_id>`")
         return "\n".join(lines)
 
     async def _process_job(self, job: dict[str, Any]) -> None:
@@ -1186,8 +1186,8 @@ class AutofillWorker:
             role_str = str(role or "Position")
             company_str = str(company or "Company")
             text = (
-                f"⛔ <b>Deferred</b>: {company_str} — {role_str}\n"
-                f'<a href="{apply_link}">Open posting →</a>\n'
+                f"⛔ **Deferred**: {company_str} — {role_str}\n"
+                f"[Open posting →]({apply_link})\n"
                 f"Needs your input ({len(questions)}):\n"
                 + "\n".join(self._format_pending(q) for q in questions[:6])
             )
@@ -1218,11 +1218,11 @@ class AutofillWorker:
         role_str = str(role or "Position")
         company_str = str(company or "Company")
         text = (
-            f"🛡️ <b>Captcha blocked</b>: {company_str} — {role_str}\n"
-            f'<a href="{apply_link}">Open posting →</a>\n'
+            f"🛡️ **Captcha blocked**: {company_str} — {role_str}\n"
+            f"[Open posting →]({apply_link})\n"
             f"The application form is behind a bot-detection challenge "
             f"({error_msg.split(':', 1)[-1].strip()}). Automation could not "
-            f"fill it — the job was marked <b>failed</b>.\n"
+            f"fill it — the job was marked **failed**.\n"
             f"Submit it manually or retry later."
         )
         ok = await bridge.send(text)
@@ -1288,8 +1288,9 @@ async def run_worker() -> None:
     load_dotenv()
     db = await AutofillDB.create()
     # Number of simultaneous Stagehand runs (browser processes). Env-driven so
-    # a batch can override the default of 4 concurrent job fills.
-    max_concurrent = int(os.getenv("AUTOFILL_MAX_CONCURRENT", "4"))
+    # a batch can override the default of 1 concurrent job fill (a single
+    # browser keeps memory/CPU light and avoids ATS anti-bot overlaps).
+    max_concurrent = int(os.getenv("AUTOFILL_MAX_CONCURRENT", "1"))
     if _autofill_proxy() and not _autofill_proxy_template() and max_concurrent > 1:
         # Legacy static proxy (Tor): only one SOCKS5 circuit exists, so runs
         # must serialize or they would share the same exit IP.

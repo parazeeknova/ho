@@ -35,7 +35,7 @@ services:
       playwright-service:
         condition: service_started
       rabbitmq:
-        condition: service_started
+        condition: service_healthy
     ports:
       - "3002:3002"
     command: node dist/src/harness.js --start-docker
@@ -104,6 +104,18 @@ services:
     environment:
       RABBITMQ_DEFAULT_USER: guest
       RABBITMQ_DEFAULT_PASS: guest
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "rabbitmq-diagnostics",
+          "-q",
+          "ping",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
     logging:
       driver: "json-file"
       options:
