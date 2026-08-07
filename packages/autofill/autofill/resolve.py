@@ -59,6 +59,36 @@ def is_decline_option(text: str) -> bool:
     return bool(_DECLINE_OPTION_RE.search(text or ""))
 
 
+async def _fallback_open_ended(rag: Any, q: str, job_context: dict[str, Any] | None) -> str:
+    """Retry an open-ended text question the batch LLM couldn't ground.
+
+    The first LLM pass returns __ASK_USER__ when it isn't confident; ATS
+    boards reject submissions with blank required free-text fields. This
+    retries with a directive to answer from the resume, and returns a
+    concise grounded fallback so the field is never empty. Returns "" when
+    even the fallback can't produce anything (caller then defers).
+    """
+    try:
+        jt = (job_context or {}).get("title", "the role")
+        jc = (job_context or {}).get("company", "the company")
+        prompt = (
+            "Answer this application question briefly (2-3 sentences) based ONLY on the "
+            "candidate's resume and background. Do NOT refuse; a short honest answer "
+            "is required.\n"
+            f"Question: {q}\n"
+            f"Job: {jt} at {jc}\n"
+            "Write in the candidate's first-person voice. Never mention that you are an AI."
+        )
+        result = await rag.cm.chat(prompt, max_tokens=200, interactive=True)
+        text = (result or "").strip()
+        # Reject obvious non-answers / refusals.
+        if not text or len(text) < 15 or "i'm an ai" in text.lower():
+            return ""
+        return text[:500]
+    except Exception:
+        return ""
+
+
 def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").strip()).lower()
 
@@ -288,6 +318,16 @@ async def resolve_question(
         )
         if answer != ASK_USER and (answer or "").strip():
             return (answer.strip(), "llm")
+        # A free-text open-ended question (about the candidate's work) that the
+        # LLM couldn't confidently ground must NOT be left blank — ATS boards
+        # reject the submission. Retry once with a "must answer from resume"
+        # prompt; if that still fails, fill a concise fallback so the field is
+        # never empty. Never fabricate identity/contact facts — only generative
+        # experience questions get this fallback.
+        if kind == "text" and rag is not None:
+            fallback = await _fallback_open_ended(rag, q, job_context)
+            if fallback:
+                return (fallback, "llm")
 
     if overnight:
         # Overnight (no human present): an unresolved question either defers
