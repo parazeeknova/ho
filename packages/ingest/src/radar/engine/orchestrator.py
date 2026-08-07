@@ -1199,7 +1199,7 @@ async def _emit_ranking_impression(
                     propensity=1.0 / len(ranked) if c.extra.get("exploration") else None,
                     exploration=bool(c.extra.get("exploration")),
                     source=c.source,
-                    meta={"sweep": sweep},
+                    meta={"sweep": sweep, "url": c.direct_apply_url or ""},
                     timestamp=now,
                 )
             )

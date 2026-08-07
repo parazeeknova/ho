@@ -190,7 +190,9 @@ async def fetch_all_job_events(store: Any) -> dict[str, list[dict[str, Any]]]:
         by_job: dict[str, list[dict[str, Any]]] = {}
         for r in rows:
             by_job.setdefault(r["job_id"], []).append(dict(r))
-        # Bridge autofill job_id -> radar canonical_id via apply_url.
+        # Bridge autofill job_id -> radar canonical_id via apply_url. The radar
+        # re-hashes canonical_id each sweep, so also match ranked events whose
+        # meta->>'url' equals the apply_link (the URL is now stored in meta).
         try:
             bridges = await conn.fetch(
                 """
@@ -205,6 +207,22 @@ async def fetch_all_job_events(store: Any) -> dict[str, list[dict[str, Any]]]:
                 canon = b["canonical_id"]
                 if auto_id in by_job:
                     by_job.setdefault(canon, []).extend(by_job[auto_id])
+            # Meta-url bridge: reward's autofill job -> ranked events whose
+            # meta->>'url' matches the apply_link.
+            meta_bridges = await conn.fetch(
+                """
+                SELECT DISTINCT a.job_id AS auto_id, de.job_id AS ranked_job
+                FROM autofill_queue a
+                JOIN decision_events de
+                  ON de.event_type = 'job_ranked' AND de.meta->>'url' = a.apply_link
+                WHERE a.job_id IN (SELECT DISTINCT job_id FROM decision_events WHERE reward IS NOT NULL)
+                """
+            )
+            for b in meta_bridges:
+                auto_id = b["auto_id"]
+                ranked_job = b["ranked_job"]
+                if auto_id in by_job and ranked_job not in by_job:
+                    by_job.setdefault(ranked_job, []).extend(by_job[auto_id])
         except Exception:
             pass
         return by_job

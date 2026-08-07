@@ -390,15 +390,21 @@ async def _latest_impression_for_job(store: Any, job_id: str) -> dict[str, Any] 
                     apply_url = row["apply_link"]
             except Exception:
                 apply_url = None
-            # 2. Find the ranked event: by apply URL (canonical match) or job_id.
+            # 2. Find the ranked event: by apply URL (canonical match, radar
+            #    candidate table, or the URL we now store in the event meta),
+            #    then by job_id.
             query = """
                 SELECT impression_id, candidate_snapshot_id, job_snapshot_id,
                        model_version, policy, feature_version, source, created_at
                 FROM decision_events
                 WHERE event_type = 'job_ranked' AND impression_id IS NOT NULL
-                  AND (job_id = $1 OR job_id IN (
+                  AND (
+                    job_id = $1
+                    OR job_id IN (
                         SELECT canonical_id FROM radar_candidates
-                        WHERE direct_apply_url = $2 AND $2 IS NOT NULL))
+                        WHERE direct_apply_url = $2 AND $2 IS NOT NULL)
+                    OR meta->>'url' = $2 AND $2 IS NOT NULL
+                  )
                 ORDER BY created_at DESC
                 LIMIT 1
             """
