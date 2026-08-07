@@ -149,3 +149,18 @@ async def test_check_payload_unverifiable_field_counts_unchecked():
     assert report["ok"] is True
     assert report["unchecked"] == 1
     assert report["rag_flags"] == []  # no store -> no rag check
+
+
+@pytest.mark.asyncio
+async def test_critical_mismatch_expected_is_correctable():
+    """A critical mismatch must expose the 'expected' persona value so the
+    worker can auto-correct the field before submission."""
+    profile = FakeProfile()
+    filled = {"Location": "United Kingdom", "Email": "harshsahu049@gmail.com"}
+    report = await check_payload(filled, profile, store=None, rag=None)
+    assert report["ok"] is False
+    loc = next(m for m in report["critical_mismatches"] if m["label"] == "Location")
+    assert loc["expected"] == "Bhopal, Madhya Pradesh, India"
+    # The worker turns this into a correction map: {label: expected}.
+    corrections = {m["label"]: m["expected"] for m in report["critical_mismatches"]}
+    assert corrections["Location"] == "Bhopal, Madhya Pradesh, India"

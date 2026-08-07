@@ -197,7 +197,12 @@ async function main() {
     string,
     { resolve: (val: any) => void; reject: (err: any) => void; timer: NodeJS.Timeout }
   >();
-  let actionCallbackResolver: ((action: "submit" | "skip") => void) | null = null;
+  let actionCallbackResolver:
+    | ((cb: {
+        action: "submit" | "skip" | "correct";
+        corrections?: Record<string, string>;
+      }) => void)
+    | null = null;
 
   rl.on("line", (line) => {
     const lineStr = line.trim();
@@ -219,11 +224,11 @@ async function main() {
           }
         }
       }
-      // Handle Action Callbacks (Submit / Skip)
+      // Handle Action Callbacks (Submit / Skip / Correct)
       else if (parsed.action && actionCallbackResolver) {
         const callbackParse = ActionCallbackSchema.safeParse(parsed);
         if (callbackParse.success) {
-          actionCallbackResolver(callbackParse.data.action);
+          actionCallbackResolver(callbackParse.data);
           actionCallbackResolver = null;
         }
       }
@@ -463,7 +468,7 @@ async function main() {
       });
       const holdMs = parseInt(process.env.AUTOFILL_REVIEW_HOLD_MS || "360000", 10);
       await new Promise<"submit" | "skip">((resolve) => {
-        actionCallbackResolver = resolve;
+        actionCallbackResolver = (cb) => resolve(cb.action === "submit" ? "submit" : "skip");
         if (holdMs > 0) {
           setTimeout(() => resolve("skip"), holdMs);
         }
@@ -510,18 +515,83 @@ async function main() {
       if (process.env.AUTOFILL_CONSISTENCY_GATE === "1") {
         watchdog?.stop();
         clearInterval(captchaTimer);
-        emitStatus({
-          jobId: payload.jobId,
-          status: "awaiting_review",
-          screenshotPath: screenshotPath,
-          filledFields: adapter.filledValues,
-          message: "Form filled; awaiting consistency gate before submission.",
-        });
-        const action = await new Promise<"submit" | "skip">((resolve) => {
-          actionCallbackResolver = resolve;
-        });
-        if (action !== "submit") {
-          console.log("[Runner] Consistency gate declined submission; skipping.");
+        // Gate loop: emit filled fields, await the worker's decision, apply
+        // any corrections (re-fill wrong fields), re-read, and re-ask until
+        // the worker approves or skips (bounded rounds so a bad field can't
+        // loop forever).
+        let decision: {
+          action: "submit" | "skip" | "correct";
+          corrections?: Record<string, string>;
+        } = {
+          action: "submit",
+        };
+        for (let round = 0; round < 3; round++) {
+          emitStatus({
+            jobId: payload.jobId,
+            status: "awaiting_review",
+            screenshotPath: screenshotPath,
+            filledFields: adapter.filledValues,
+            message:
+              round === 0
+                ? "Form filled; awaiting consistency gate before submission."
+                : `Consistency gate round ${round + 1}: awaiting decision.`,
+          });
+          decision = await new Promise<{
+            action: "submit" | "skip" | "correct";
+            corrections?: Record<string, string>;
+          }>((resolve) => {
+            actionCallbackResolver = resolve;
+          });
+          if (decision.action === "submit") break;
+          if (decision.action === "skip") {
+            console.log("[Runner] Consistency gate declined submission; skipping.");
+            rl.close();
+            await stagehand.close();
+            emitStatus({
+              jobId: payload.jobId,
+              status: "skipped",
+              screenshotPath: screenshotPath,
+              message: "Application skipped by pre-submit consistency gate.",
+            });
+            process.exit(0);
+          }
+          // "correct": apply the worker's corrected values and re-read.
+          const corrections = decision.corrections ?? {};
+          const keys = Object.keys(corrections);
+          if (keys.length === 0) {
+            console.warn("[Runner] Gate requested corrections but none supplied; skipping.");
+            rl.close();
+            await stagehand.close();
+            emitStatus({
+              jobId: payload.jobId,
+              status: "skipped",
+              screenshotPath: screenshotPath,
+              message: "Application skipped: gate sent no corrections.",
+            });
+            process.exit(0);
+          }
+          let allApplied = true;
+          for (const [label, value] of Object.entries(corrections)) {
+            const ok = await adapter.correctField(label, value);
+            if (!ok) allApplied = false;
+          }
+          if (!allApplied) {
+            console.warn(
+              "[Runner] One or more corrections could not be applied; skipping rather than submitting wrong data.",
+            );
+            rl.close();
+            await stagehand.close();
+            emitStatus({
+              jobId: payload.jobId,
+              status: "skipped",
+              screenshotPath: screenshotPath,
+              message: "Application skipped: corrections could not be applied.",
+            });
+            process.exit(0);
+          }
+        }
+        if (decision.action !== "submit") {
+          console.log("[Runner] Consistency gate did not approve; skipping.");
           rl.close();
           await stagehand.close();
           emitStatus({
@@ -731,7 +801,7 @@ async function main() {
       );
 
       const action = await new Promise<"submit" | "skip">((resolve) => {
-        actionCallbackResolver = resolve;
+        actionCallbackResolver = (cb) => resolve(cb.action === "submit" ? "submit" : "skip");
       });
 
       if (action === "submit") {

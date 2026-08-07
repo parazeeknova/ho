@@ -1502,9 +1502,7 @@ export class GenericAdapter extends ATSAdapter {
         }
       }
     } catch (readbackErr: any) {
-      console.warn(
-        `[Generic] Pre-submit readback failed: ${readbackErr?.message || readbackErr}`,
-      );
+      console.warn(`[Generic] Pre-submit readback failed: ${readbackErr?.message || readbackErr}`);
     }
 
     if (profile.resumePath && !resumeAttached && !(await this.controls.isResumeAttached())) {
@@ -1514,6 +1512,60 @@ export class GenericAdapter extends ATSAdapter {
     }
 
     console.log("[Generic] Form filling completed.");
+  }
+
+  /**
+   * Re-fill a field (found by its label) with a corrected value and verify it
+   * committed. Used by the pre-submit consistency gate to fix a wrong value
+   * instead of blocking the application. Returns true when the corrected value
+   * is committed and readable back.
+   */
+  override async correctField(label: string, value: string): Promise<boolean> {
+    try {
+      const dom = await this.collectQuestions();
+      const fields = mergeFormInventory(this._jsonModel ?? null, dom);
+      const normLabel = normalizeLabel(label);
+      const match =
+        fields.find((f) => normalizeLabel(f.label) === normLabel) ??
+        fields.find(
+          (f) =>
+            normLabel.includes(normalizeLabel(f.label)) ||
+            normalizeLabel(f.label).includes(normLabel),
+        );
+      if (!match) {
+        console.warn(`[Generic] Could not find field "${escapePromptValue(label)}" to correct.`);
+        return false;
+      }
+      let ok: boolean;
+      if (isLocationAutocomplete(match) && (this.profile as any)?.location) {
+        ok = await this.controls.fillAsyncAutocomplete(match.id, String(value));
+        if (!ok) {
+          ok = await this.controls.fillAsyncAutocomplete(match.id, String(value));
+        }
+      } else {
+        ok = await this.controls.fillByKind(match, String(value), match.options);
+        if (!ok) {
+          ok = await this.controls.fillByKind(match, String(value), match.options);
+        }
+      }
+      const committed = await this.controls.readFieldValue(match).catch(() => "");
+      if (ok && committed) {
+        this.filledValues[label] = String(committed);
+        console.log(
+          `[Generic] Corrected "${escapePromptValue(label)}" to ` +
+            `"${escapePromptValue(String(committed).slice(0, 120))}"`,
+        );
+        return true;
+      }
+      console.warn(`[Generic] Correction of "${escapePromptValue(label)}" not committed.`);
+      return false;
+    } catch (err: any) {
+      console.warn(
+        `[Generic] correctField failed for "${escapePromptValue(label)}": ` +
+          `${err?.message || err}`,
+      );
+      return false;
+    }
   }
 
   async submit(): Promise<SubmitOutcome> {

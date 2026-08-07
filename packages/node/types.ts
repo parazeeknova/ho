@@ -54,7 +54,9 @@ export const StatusEventSchema = z.object({
 });
 
 export const ActionCallbackSchema = z.object({
-  action: z.enum(["submit", "skip"]),
+  action: z.enum(["submit", "skip", "correct"]),
+  // label -> corrected value, sent when action is "correct".
+  corrections: z.record(z.string(), z.string()).optional(),
 });
 
 export type Profile = z.infer<typeof ProfileSchema>;

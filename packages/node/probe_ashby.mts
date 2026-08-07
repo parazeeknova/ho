@@ -8,6 +8,7 @@
  * Run: npx tsx probe_ashby.mjs <posting-url>
  */
 import { Stagehand } from "@browserbasehq/stagehand";
+
 import { loadFingerprint, applyFingerprint } from "./utils/fingerprint";
 
 const url = process.argv[2] || "https://jobs.ashbyhq.com/replit/2fa2d079";
@@ -80,7 +81,9 @@ const surface = await page.evaluate(() => {
 const resources = await page.evaluate(() =>
   (performance.getEntriesByType("resource") as PerformanceResourceTiming[])
     .map((e) => e.name)
-    .filter((u) => /ashby|segment|posthog|heap|amplitude|clarity|sentry|fingerprint|fingerprin/i.test(u))
+    .filter((u) =>
+      /ashby|segment|posthog|heap|amplitude|clarity|sentry|fingerprint|fingerprin/i.test(u),
+    )
     .slice(0, 60),
 );
 

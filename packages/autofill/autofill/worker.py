@@ -1212,10 +1212,11 @@ class AutofillWorker:
                                 if job_payload.get("submitAllowed", True):
                                     # Non-LLM consistency gate: cross-check the
                                     # filled values against the persona BEFORE
-                                    # submission. A critical mismatch (wrong
-                                    # location/name/email/phone) must never be
-                                    # submitted — skip instead.
-                                    submit_ok = True
+                                    # submission. A critical mismatch is AUTO-
+                                    # CORRECTED by sending the expected values
+                                    # back to the runner (re-fill + re-verify),
+                                    # never submitted as-is.
+                                    corrections: dict[str, str] = {}
                                     try:
                                         from autofill.consistency import check_payload
 
@@ -1226,33 +1227,44 @@ class AutofillWorker:
                                             rag=rag,
                                         )
                                         if not consistency["ok"]:
-                                            submit_ok = False
-                                            logger.error(
-                                                "Blocking submit: filled data contradicts persona",
+                                            for m in consistency["critical_mismatches"]:
+                                                if m.get("expected"):
+                                                    corrections[m["label"]] = m["expected"]
+                                            logger.warning(
+                                                "Consistency gate: sending corrections",
                                                 job_id=job_id,
-                                                mismatches=consistency["critical_mismatches"],
+                                                count=len(corrections),
+                                                mismatches=[
+                                                    f"{m['label']}={m['filled']}->{m['expected']}"
+                                                    for m in consistency["critical_mismatches"][:5]
+                                                ],
                                             )
-                                            await self.db.update_status(
-                                                job_id,
-                                                status="failed",
-                                                error="pre-submit consistency check failed: "
-                                                + "; ".join(
-                                                    f"{m['label']}={m['filled']} != {m['expected']}"
-                                                    for m in consistency["critical_mismatches"][:3]
-                                                ),
-                                            )
-                                            terminal_seen = True
                                     except Exception as consistency_err:
                                         logger.warning(
                                             "Consistency check skipped",
                                             job_id=job_id,
                                             error=str(consistency_err),
                                         )
-                                    if submit_ok:
+                                    if (
+                                        corrections
+                                        and os.getenv("AUTOFILL_CONSISTENCY_GATE") == "1"
+                                    ):
+                                        # Gate path: send the corrections so the
+                                        # runner re-fills the wrong fields.
+                                        if process.stdin and not process.stdin.is_closing():
+                                            action_payload = json.dumps(
+                                                {
+                                                    "action": "correct",
+                                                    "corrections": corrections,
+                                                }
+                                            )
+                                            process.stdin.write(f"{action_payload}\n".encode())
+                                            await process.stdin.drain()
+                                    else:
                                         if os.getenv("AUTOFILL_CONSISTENCY_GATE") == "1":
-                                            # Gate path: the runner is waiting on
-                                            # the action callback. Approve the
-                                            # submit directly (no human wait).
+                                            # Approved (or nothing to fix): the
+                                            # runner is waiting on the action
+                                            # callback. Approve the submit.
                                             decision = "submit"
                                         else:
                                             decision = await self._wait_for_human_decision(job_id)

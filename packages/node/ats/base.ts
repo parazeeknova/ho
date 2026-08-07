@@ -20,6 +20,17 @@ export abstract class ATSAdapter {
    */
   filledValues: Record<string, string> = {};
 
+  /**
+   * Re-fill a single field (found by its label) with a corrected value and
+   * verify it committed. Used by the pre-submit consistency gate to fix a
+   * wrong value (e.g. location guessed as "United Kingdom") instead of
+   * blocking the application. Returns true when the corrected value is
+   * committed and readable back.
+   */
+  async correctField(_label: string, _value: string): Promise<boolean> {
+    return false;
+  }
+
   /** The page to screenshot after fill. Defaults to the first context page;
    *  adapters that switch tabs (e.g. a form opened in a new tab) override. */
   getActivePage(): any {
