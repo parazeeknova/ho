@@ -122,3 +122,41 @@ async def test_build_profile_deterministic_across_runs():
         second = await build_profile(MagicMock())
 
     assert first.model_dump() == second.model_dump()
+
+
+def test_load_persona_resolves_from_worker_cwd():
+    """Regression: _load_persona_json must resolve the repo-root data/persona.json
+    even when the CWD is packages/ingest (the worker's working dir). It previously
+    computed the base as 3 parents up (-> packages/data, wrong), so the persona
+    was never loaded and identity fell back to semantic-search garbage."""
+    import os
+    import subprocess
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[3]
+    code = (
+        "from pathlib import Path; "
+        "import sys; "
+        "sys.path.insert(0, str(Path.cwd().parent)); "  # repo root
+        "sys.path.insert(0, str(Path.cwd())); "
+        "sys.path.insert(0, str(Path.cwd().parent / 'packages' / 'autofill')); "
+        "from autofill.profile import _load_persona_json; "
+        "d = _load_persona_json(); "
+        "print(d.get('identity', {}).get('linkedin', ''))"
+    )
+    env = dict(os.environ)
+    env["PYTHONPATH"] = (
+        str(repo / "packages" / "ingest") + os.pathsep + str(repo / "packages" / "autofill")
+    )
+    r = subprocess.run(
+        ["uv", "run", "python", "-c", code],
+        cwd=str(repo / "packages" / "ingest"),
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=env,
+    )
+    out = (r.stdout or "").strip()
+    assert "linkedin.com/in" in out, (
+        f"persona not loaded from worker cwd: out={out!r} err={r.stderr[:300]}"
+    )

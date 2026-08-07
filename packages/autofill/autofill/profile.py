@@ -61,15 +61,16 @@ class Profile(BaseModel):
 def _load_persona_json() -> dict[str, Any]:
     """Locate and load data/persona.json at the repo root.
 
-    ``profile.py`` lives at ``packages/autofill/autofill/`` so the repo root is
-    three parents up. Previously the candidate paths resolved to
-    ``packages/data/`` and ``packages/autofill/data/`` (both wrong), so the
+    ``profile.py`` lives at ``packages/autofill/autofill/profile.py`` so the
+    repo root is FOUR parents up (autofill -> autofill -> packages -> root).
+    A CWD-relative lookup is also tried first (covers running from the repo
+    root). Previously the path resolved to ``packages/data/`` (wrong), so the
     persona was never loaded — identity fell back to semantic-search garbage
     and ``customAnswers`` stayed empty.
     """
     import os
 
-    base = Path(__file__).resolve().parent.parent.parent  # repo root
+    base = Path(__file__).resolve().parents[3]  # repo root
     candidates = (
         Path.cwd() / "data" / "persona.json",
         base / "data" / "persona.json",
