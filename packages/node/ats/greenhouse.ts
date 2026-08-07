@@ -1236,9 +1236,15 @@ export class GreenhouseAdapter extends ATSAdapter {
    *  neither pressSequentially nor (in some builds) page.keyboard, so prefer
    *  page-level keyboard typing and fall back to a native fill. */
   private async typeChar(page: any, box: any, text: string): Promise<void> {
-    if (typeof page?.keyboard?.type === "function") {
+    // Type into the SPECIFIC box with pressSequentially (deterministic) so the
+    // char lands in the right segmented OTP field. Global page.keyboard.type
+    // types wherever focus happens to be, which scatters the code across the
+    // wrong boxes on Greenhouse's segmented OTP and silently fails (the
+    // .catch() swallowed it). Fall back to fill() when pressSequentially is
+    // unavailable.
+    if (typeof box?.pressSequentially === "function") {
       try {
-        await page.keyboard.type(text, { delay: typingDelayMs() });
+        await box.pressSequentially(text, { delay: typingDelayMs() });
         return;
       } catch {
         // fall through to fill
