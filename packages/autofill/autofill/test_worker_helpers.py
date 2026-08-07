@@ -4,6 +4,7 @@ import pathlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
 from autofill.worker import (
     _VOICE_SEEDS,
     AutofillWorker,
@@ -266,3 +267,30 @@ async def test_record_fill_helper_is_best_effort() -> None:
     # Must not raise even when the store fails.
     await worker._record_fill("job-1", "Q?", "No", source="kb")
     db.record_fill.assert_called_once()
+
+
+def test_node_dir_points_to_ts_package() -> None:
+    """The autofill Node runner lives one level above the Python package.
+
+    Regression: node_dir used ``dirname(__file__)/node`` which resolved to
+    ``autofill/autofill/node`` (no runner.ts) instead of ``autofill/node``,
+    so every fill failed with "Runner exited with code 127".
+    """
+    import os
+
+    import autofill.worker as w
+
+    node_dir = os.path.normpath(os.path.join(os.path.dirname(w.__file__), "..", "node"))
+    assert node_dir.endswith("packages/autofill/node")
+    assert os.path.isfile(os.path.join(node_dir, "runner.ts"))
+    assert os.path.isfile(os.path.join(node_dir, "package.json"))
+
+
+def test_profiles_dir_points_to_ts_package() -> None:
+    from pathlib import Path
+
+    import autofill.worker as w
+
+    base = Path(w.__file__).resolve().parent.parent / "node" / "artifacts" / "profiles"
+    assert str(base).endswith("packages/autofill/node/artifacts/profiles")
+    assert base.exists()

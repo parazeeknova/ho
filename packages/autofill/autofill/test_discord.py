@@ -3,6 +3,7 @@
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
 from autofill.discord import (
     _SKIP_SENTINEL,
     DiscordNotConfiguredError,

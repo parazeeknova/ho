@@ -3,6 +3,7 @@
 import pathlib
 
 import pytest
+
 from autofill.pdf import create_cover_letter_pdf
 
 

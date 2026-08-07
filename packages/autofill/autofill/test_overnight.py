@@ -3,7 +3,12 @@
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from autofill.discord import DiscordNotConfiguredError, DiscordQuestionBridge
+
+from autofill.discord import (
+    _SKIP_SENTINEL,
+    DiscordNotConfiguredError,
+    DiscordQuestionBridge,
+)
 from autofill.rag import ASK_USER, default_visa_option
 from autofill.resolve import (
     DEFER_MARKER,
@@ -129,11 +134,28 @@ async def test_resolve_decline_leaves_blank() -> None:
     rag.answer_questions = AsyncMock(return_value={"Q1": ASK_USER})
     rag.learn = AsyncMock()
     bridge = _bridge()
-    bridge.ask = AsyncMock(return_value=None)
+    bridge.ask = AsyncMock(return_value=_SKIP_SENTINEL)
     answer, source = await resolve_question(rag, bridge, "Q1", kind="text", overnight=False)
 
     assert (answer, source) == ("", "decline")
     rag.learn.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_resolve_timeout_defers_job() -> None:
+    """A Discord ask that times out (None) is NOT a dismissal — the user
+    wasn't there. The job defers so the question is re-asked later instead of
+    silently blanking a field the user never saw."""
+    rag = _rag()
+    rag.kb_answer = AsyncMock(return_value=None)
+    rag.answer_questions = AsyncMock(return_value={"Q1": ASK_USER})
+    rag.learn = AsyncMock()
+    bridge = _bridge()
+    bridge.ask = AsyncMock(return_value=None)
+
+    with pytest.raises(DeferredError) as exc_info:
+        await resolve_question(rag, bridge, "Q1", kind="text", overnight=False)
+    assert exc_info.value.question == "Q1"
 
 
 @pytest.mark.asyncio
@@ -147,7 +169,7 @@ async def test_resolve_dismissed_select_maps_to_decline_option() -> None:
     rag.resolve_authorization_policy = MagicMock(return_value=None)
     rag.learn = AsyncMock()
     bridge = _bridge()
-    bridge.ask_options = AsyncMock(return_value=None)
+    bridge.ask_options = AsyncMock(return_value=_SKIP_SENTINEL)
 
     answer, source = await resolve_question(
         rag,
@@ -170,7 +192,7 @@ async def test_resolve_dismissed_select_without_decline_option_stays_blank() -> 
     rag.resolve_visa_policy = MagicMock(return_value=None)
     rag.resolve_authorization_policy = MagicMock(return_value=None)
     bridge = _bridge()
-    bridge.ask_options = AsyncMock(return_value=None)
+    bridge.ask_options = AsyncMock(return_value=_SKIP_SENTINEL)
 
     answer, source = await resolve_question(
         rag,

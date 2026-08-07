@@ -1,6 +1,7 @@
 """Unit tests for Centralized Board Registry (src/radar/board_registry.py)."""
 
 import pytest
+
 from src.radar.sources.board_registry import (
     REGISTERED_BOARDS,
     get_all_registered_boards,

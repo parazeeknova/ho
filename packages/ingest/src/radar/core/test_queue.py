@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 
 import pytest
+
 from src.radar.core.models import EligibilityState, JobCandidate, RejectionReason
 from src.radar.core.queue import (
     _queue_state,

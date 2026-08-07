@@ -5,8 +5,9 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
-import autofill.resume as resume_mod
 import pytest
+
+import autofill.resume as resume_mod
 from autofill.resume import resolve_resume_path
 
 

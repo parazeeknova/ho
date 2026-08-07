@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pgvector import Vector
+
 from src.memory.pgvector_store import CREATE_TABLES_SQL, MemoryStore
 
 

@@ -81,9 +81,9 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 pythonpath = [".", "packages/ingest", "packages/autofill"]
-# Per-package tests/ dirs hold same-basename files (test_queue.py,
-# test_overnight.py appear in multiple packages); importlib mode loads each
-# module by file path so they never collide.
+# Tests live alongside their source files. Same-basename test modules
+# (test_queue.py, test_overnight.py) exist in more than one package, so
+# importlib mode loads each by file path and they never collide.
 addopts = "--import-mode=importlib"
 markers = [
     "asyncio: mark a test as an async test",

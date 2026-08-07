@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+
 from src.agent.discord_agent import DiscordAgent
 from src.graph.entity import FrontierEntry, NodeType
 from src.radar.core.models import EligibilityState, JobCandidate

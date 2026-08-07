@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import uuid
 from collections.abc import Sequence
 from typing import Any
@@ -174,27 +175,50 @@ class AutofillDB:
         logger.info("Job enqueued", job_id=job_id, apply_link=apply_link, mode=apply_mode)
         return job_id
 
-    async def claim_next_job(self, lease_seconds: int = 600) -> dict[str, Any] | None:
-        """Atomically claim the next pending job or expired lease using FOR UPDATE SKIP LOCKED."""
+    async def claim_next_job(
+        self, lease_seconds: int = 600, max_retries: int | None = None
+    ) -> dict[str, Any] | None:
+        """Atomically claim the next pending job or expired lease using FOR UPDATE SKIP LOCKED.
+
+        ``max_retries`` caps how many times a job may be claimed/retried before
+        it is marked ``failed`` (terminal). Infra failures (exit 127) do not
+        increment ``retries``, so a broken environment never burns the budget.
+        """
+        if max_retries is None:
+            max_retries = int(os.environ.get("AUTOFILL_MAX_RETRIES", "2"))
         query = """
-        UPDATE autofill_queue
-        SET status = 'filling',
-            lease_expires = NOW() + ($1::int * INTERVAL '1 second'),
-            retries = retries + 1,
-            updated_at = NOW()
-        WHERE job_id = (
+        WITH candidate AS (
             SELECT job_id FROM autofill_queue
             WHERE status = 'pending'
                OR (status IN ('filling', 'awaiting_review') AND lease_expires < NOW())
             ORDER BY created_at ASC
             FOR UPDATE SKIP LOCKED
             LIMIT 1
+        ),
+        exhausted AS (
+            UPDATE autofill_queue SET status = 'failed',
+                error = COALESCE(last_error, '') || ' [retries exhausted]',
+                last_error = COALESCE(last_error, '') || ' [retries exhausted]',
+                last_error_at = NOW(),
+                updated_at = NOW()
+            WHERE job_id IN (SELECT job_id FROM candidate)
+              AND retries >= $2
+            RETURNING job_id
+        )
+        UPDATE autofill_queue
+        SET status = 'filling',
+            lease_expires = NOW() + ($1::int * INTERVAL '1 second'),
+            retries = retries + 1,
+            updated_at = NOW()
+        WHERE job_id = (
+            SELECT job_id FROM candidate
+            WHERE job_id NOT IN (SELECT job_id FROM exhausted)
         )
         RETURNING job_id, apply_link, role, company, ats_platform, apply_mode,
                   status, retries, filled_payload, screenshot_path;
         """
         async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(query, lease_seconds)
+            row = await conn.fetchrow(query, lease_seconds, max_retries)
             if not row:
                 return None
             result = dict(row)
@@ -210,6 +234,7 @@ class AutofillDB:
         screenshot_path: str | None = None,
         error: str | None = None,
         override_terminal: bool = False,
+        infra_failure: bool = False,
     ) -> bool:
         """Update status and payload of a job.
 
@@ -220,6 +245,10 @@ class AutofillDB:
         ``override_terminal=True``: after the user answers the deferred
         questions, clearing ``deferred`` to ``skipped``/``failed`` is exactly
         what is wanted, not a downgrade.
+
+        ``infra_failure`` marks an environment failure (e.g. runner exit 127):
+        the job's ``error_count`` is NOT incremented so a broken environment
+        can never burn a real job's retry budget.
         """
         if not override_terminal and status not in ("deferred", "submitted"):
             current = await self.get_job(job_id)
@@ -250,7 +279,8 @@ class AutofillDB:
         if status == "submitted":
             updates.append("applied_at = NOW()")
         elif status == "failed":
-            updates.append("error_count = error_count + 1")
+            if not infra_failure:
+                updates.append("error_count = error_count + 1")
             updates.append("last_error_at = NOW()")
             if error is not None:
                 args.append(error)

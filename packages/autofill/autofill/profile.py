@@ -9,6 +9,7 @@ No LLM calls happen here; the resolution is fully deterministic.
 
 import json
 import re
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -49,6 +50,8 @@ class Profile(BaseModel):
     twitter: str | None = Field(default=None, alias="twitter")
     preferredName: str | None = Field(default=None, alias="preferred_name")
     location: str | None = Field(default=None, alias="location")
+    school: str | None = Field(default=None, alias="school")
+    university: str | None = Field(default=None, alias="university")
     resumePath: str | None = Field(default=None, alias="resume_path")
     customAnswers: dict[str, str] = Field(default_factory=dict, alias="custom_answers")
 
@@ -56,14 +59,25 @@ class Profile(BaseModel):
 
 
 def _load_persona_json() -> dict[str, Any]:
+    """Locate and load data/persona.json at the repo root.
+
+    ``profile.py`` lives at ``packages/autofill/autofill/`` so the repo root is
+    three parents up. Previously the candidate paths resolved to
+    ``packages/data/`` and ``packages/autofill/data/`` (both wrong), so the
+    persona was never loaded — identity fell back to semantic-search garbage
+    and ``customAnswers`` stayed empty.
+    """
     import os
 
-    for path in (
-        "persona.json",
-        os.path.join(os.path.dirname(__file__), "..", "..", "data", "persona.json"),
-        os.path.join(os.path.dirname(__file__), "..", "data", "persona.json"),
-        os.path.join(os.path.dirname(__file__), "..", "persona.json"),
-    ):
+    base = Path(__file__).resolve().parent.parent.parent  # repo root
+    candidates = (
+        Path.cwd() / "data" / "persona.json",
+        base / "data" / "persona.json",
+        Path(os.environ.get("CANDIDATE_PERSONA_FILE", "")),
+    )
+    for path in candidates:
+        if not str(path):
+            continue
         try:
             with open(path) as f:
                 return json.load(f)
@@ -155,49 +169,63 @@ async def _lookup_resume_header(store: Any) -> str:
 
 
 async def build_profile(store: Any = None) -> Profile:
-    """Build a Profile with fully deterministic identity resolution.
+    """Build a Profile with deterministic-first identity resolution.
 
-    Resolution order per field:
-    1. persona_embeddings identity chunk (semantic match, exact answer)
-    2. regex extraction from resume header chunks (contact fields)
-    3. persona.json ``identity`` block (when no store / nothing matched)
-    4. Profile defaults (last resort, logged)
-    ``customAnswers`` is populated from persona.json answers.
+    Resolution order per field (the persona file is ground truth — it was
+    curated by the user; semantic search over 81 tiny chunks is unreliable and
+    previously returned the website for "location" and "Sahu" for "state"):
+    1. persona.json ``identity`` block (exact values the user set)
+    2. persona.json ``answers`` matched to the field (location, education, …)
+    3. regex extraction from resume header chunks (contact fields only)
+    4. persona_embeddings semantic search — STRICT fallback, only when the
+       persona file has no value AND the match is well above threshold
+    ``customAnswers`` is always populated from persona.json answers.
     """
     persona_data = _load_persona_json()
     identity_json = persona_data.get("identity", {})
+    answers = persona_data.get("answers", []) or []
 
     profile = Profile()
     resolved: dict[str, str] = {}
 
-    header = await _lookup_resume_header(store) if store is not None else ""
-
+    # 1+2: persona.json first — exact, curated, trustworthy.
     for field in _IDENTITY_FIELDS:
-        value = None
-        if store is not None:
-            value = await _lookup_identity_field(store, field)
-            if not value and field in ("email", "phone", "linkedin", "github", "website"):
-                value = _regex_extract(header).get(field)
-        if not value:
-            value = identity_json.get(field)
+        value = identity_json.get(field)
         if value:
-            resolved[field] = value
+            resolved[field] = str(value).strip()
+
+    # Name fallbacks from persona.json name field.
+    if not resolved.get("firstName") or not resolved.get("lastName"):
+        name = persona_data.get("name", "") or identity_json.get("name", "")
+        parts = name.split(maxsplit=1)
+        if parts:
+            resolved.setdefault("firstName", parts[0])
+            if len(parts) > 1:
+                resolved.setdefault("lastName", parts[1])
+
+    # 3: resume header regex for contact fields persona didn't set.
+    header = await _lookup_resume_header(store) if store is not None else ""
+    for field in ("email", "phone", "linkedin", "github", "website"):
+        if not resolved.get(field):
+            v = _regex_extract(header).get(field)
+            if v:
+                resolved[field] = v
+
+    # 4: semantic search only for fields still missing (never overrides the
+    # persona file). Restrict to identity-category chunks at a strict distance.
+    if store is not None:
+        for field in _IDENTITY_FIELDS:
+            if resolved.get(field):
+                continue
+            val = await _lookup_identity_field(store, field)
+            if val:
+                resolved[field] = val
 
     for field, value in resolved.items():
         setattr(profile, field, value)
 
-    if not resolved.get("firstName") and identity_json.get("name"):
-        profile.firstName = identity_json["name"]
-    if not resolved.get("firstName") or not resolved.get("lastName"):
-        name = persona_data.get("name", "")
-        parts = name.split(maxsplit=1)
-        if parts:
-            if not resolved.get("firstName"):
-                profile.firstName = parts[0]
-            if len(parts) > 1 and not resolved.get("lastName"):
-                profile.lastName = parts[1]
-
-    for a in persona_data.get("answers", []):
+    # customAnswers from persona.json answers — the screener's knowledge base.
+    for a in answers:
         q = (a.get("question") or "").strip()
         ans = (a.get("answer") or "").strip()
         if q and ans:
@@ -213,8 +241,9 @@ async def build_profile(store: Any = None) -> Profile:
         for _q, _a in profile.customAnswers.items():
             if (
                 re.search(
-                    r"current location|where (are|do) you (based|live|located|stay)|"
-                    r"your location|location\b",
+                    r"current location|where (are|do) you (currently )?"
+                    r"(based|live|located|stay|reside)|your location|location\b|"
+                    r"where in the world",
                     _q,
                     re.I,
                 )
@@ -223,12 +252,19 @@ async def build_profile(store: Any = None) -> Profile:
                 profile.location = _a.strip()
                 break
 
+    # Education/school from the persona's education answer, if present.
+    if not getattr(profile, "school", None) and not getattr(profile, "university", None):
+        for _q, _a in profile.customAnswers.items():
+            if re.search(r"school|university|college|education|institute", _q, re.I) and _a.strip():
+                profile.school = _a.strip()
+                break
+
     still_defaults = [f for f in _IDENTITY_FIELDS if f not in resolved]
     if still_defaults:
         logger.warning(
             "Profile fields unresolved; using placeholders",
             fields=still_defaults,
-            source="identity chunk / resume header / persona.json",
+            source="persona.json / resume header",
         )
 
     return profile

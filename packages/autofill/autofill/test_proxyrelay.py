@@ -8,6 +8,7 @@ import socket
 import threading
 
 import pytest
+
 from autofill.proxyrelay import ProxyRelay, parse_template_url
 
 

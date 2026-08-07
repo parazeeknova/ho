@@ -5,6 +5,7 @@ freshness, and GitHub index extraction.
 from __future__ import annotations
 
 import pytest
+
 from src.radar.core.extractors import (
     _extract_link,
     extract_github_index_markdown,

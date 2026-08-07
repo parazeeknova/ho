@@ -41,7 +41,7 @@ async def _stream_runner(
     """Spawn the Node runner, stream status events, handle RPC answers and
     review decisions. Returns the final status event (submitted/failed/skipped).
     """
-    node_dir = os.path.join(os.path.dirname(__file__), "node")
+    node_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "node"))
     print(
         f"[Python CLI] Spawning Stagehand Node runner for {payload['url']} "
         f"(ID: {job_id}, Mode: {payload['mode']})..."

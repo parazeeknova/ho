@@ -4,6 +4,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
 from autofill.rag import ASK_USER, ScreenerRAG
 
 

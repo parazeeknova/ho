@@ -26,6 +26,7 @@ import re
 from typing import Any
 
 from autofill.discord import (
+    _SKIP_SENTINEL,
     DiscordNotConfiguredError,
     edit_distance,
 )
@@ -299,16 +300,19 @@ async def resolve_question(
     else:
         picked = await bridge.ask(display_q, timeout=timeout)
 
-    if picked is None or not (picked or "").strip():
-        # Zero-blank policy: when the user dismisses a dropdown prompt, fill the
-        # form's own decline option (e.g. "I don't wish to answer") if one
-        # exists so the field is never silently left empty. Only when no decline
-        # option is offered does the walker treat it as an explicit user skip.
+    # A TIMEOUT (no answer within the ask window) is NOT a dismissal — it
+    # means the user wasn't there. Defer the job so it's re-asked later
+    # instead of silently blanking a field the user never saw.
+    if picked is _SKIP_SENTINEL:
+        # Explicit user skip: fill the form's own decline option if one
+        # exists so the field is never silently empty; otherwise blank it.
         if kind in ("select", "multi") and options:
             decline = next((o for o in options if is_decline_option(o)), None)
             if decline:
                 return (decline, "decline-option")
         return ("", "decline")
+    if picked is None or not (picked or "").strip():
+        raise DeferredError(q, kind=kind, options=options)
 
     picked = picked.strip()
     with contextlib.suppress(Exception):

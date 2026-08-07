@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+
 from src.llm.schemas import CriticReview, JobMatch, canonicalize_markdown
 
 

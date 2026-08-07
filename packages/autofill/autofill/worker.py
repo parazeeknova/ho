@@ -55,6 +55,42 @@ def is_overnight() -> bool:
     return os.getenv("OVERNIGHT_LOOP", "").strip().lower() == "true"
 
 
+def _runner_dir() -> str:
+    """Resolve the Node/TS runner package directory.
+
+    ``worker.py`` lives at ``packages/autofill/autofill/``; the TS package
+    (runner.ts, package.json, node_modules/.bin/tsx) is one level up at
+    ``packages/autofill/node``. Deriving it as ``dirname(__file__)/node``
+    resolved to ``autofill/autofill/node`` (no runner), which caused every
+    fill to die with "Runner exited with code 127".
+    """
+    return os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "node"))
+
+
+def _assert_runner_ready() -> None:
+    """Verify the browser runner is spawnable; raise a clear error otherwise.
+
+    Checks the resolved runner dir exists and contains ``runner.ts`` and a
+    ``node_modules/.bin/tsx`` (the actual transpiler used to run it). A worker
+    whose runner is missing should never claim jobs — this surfaces the
+    infrastructure failure once at boot instead of once per job.
+    """
+    node_dir = _runner_dir()
+    missing = []
+    if not os.path.isdir(node_dir):
+        missing.append(f"runner dir not found: {node_dir}")
+    else:
+        if not os.path.isfile(os.path.join(node_dir, "runner.ts")):
+            missing.append(f"runner.ts missing in {node_dir}")
+        if not os.path.isfile(os.path.join(node_dir, "node_modules", ".bin", "tsx")):
+            missing.append(f"tsx missing (run `bun install` in {node_dir})")
+    if missing:
+        raise RuntimeError(
+            "Autofill runner not ready — refusing to start worker:\n" + "\n".join(missing)
+        )
+    logger.info("Autofill runner ready", node_dir=node_dir)
+
+
 def _next_digest_time(summary_time: str) -> _dt.datetime:
     """Next local-time occurrence of the daily digest hour (e.g. "08:00")."""
     try:
@@ -350,7 +386,7 @@ class AutofillWorker:
         ``min_size`` (the worker's concurrency) so a concurrent runner never
         silently falls back to no persistent profile.
         """
-        base = Path(__file__).resolve().parent / "node" / "artifacts" / "profiles"
+        base = Path(__file__).resolve().parent.parent / "node" / "artifacts" / "profiles"
         try:
             pool_size = int(os.getenv("AUTOFILL_PROFILE_POOL_SIZE", "4"))
         except TypeError, ValueError:
@@ -602,7 +638,6 @@ class AutofillWorker:
     async def _process_job(self, job: dict[str, Any]) -> None:
         job_id = job["job_id"]
         apply_link = job["apply_link"]
-        apply_mode = job.get("apply_mode", "review")
 
         deferred_pending: list[dict[str, Any]] = []
         rag: ScreenerRAG | None = None
@@ -641,23 +676,33 @@ class AutofillWorker:
             )
             rag = ScreenerRAG(profile=profile, store=store)
             bridge = DiscordQuestionBridge()
-            question_timeout = float(os.getenv("AUTOFILL_QUESTION_TIMEOUT", "300"))
+            question_timeout = float(os.getenv("AUTOFILL_QUESTION_TIMEOUT", "60"))
             overnight = is_overnight()
-            run_mode = "auto" if overnight else apply_mode
-            logger.info("Processing job", job_id=job_id, mode=run_mode, overnight=overnight)
+            # Unified mode: no day/night split. Always fill + submit on
+            # success; unknown questions are asked via Discord with a 1-min
+            # timeout (AUTOFILL_QUESTION_TIMEOUT) and deferred if no answer
+            # arrives. `overnight` only tunes pacing (inter-job delay) and the
+            # end-of-run summary, never the fill behaviour.
+            run_mode = "auto"
+            logger.info(
+                "Processing job",
+                job_id=job_id,
+                mode=run_mode,
+                overnight=is_overnight(),
+            )
             job_payload = {
                 "jobId": job_id,
                 "url": apply_link,
                 "mode": run_mode,
                 "profile": profile.model_dump(by_alias=False),
-                # Overnight (no human): fully-fillable jobs are submitted
-                # automatically. In day mode the form is filled and verified
-                # but never submitted (no-apply phase).
-                "submitAllowed": overnight,
+                # Always submit on success — the user reviews via Discord
+                # answers, not by watching a browser. Set false via
+                # AUTOFILL_NO_SUBMIT=1 to run a fill-only pass.
+                "submitAllowed": os.getenv("AUTOFILL_NO_SUBMIT", "").strip() != "1",
             }
             payload_str = json.dumps(job_payload)
 
-            node_dir = os.path.join(os.path.dirname(__file__), "node")
+            node_dir = _runner_dir()
 
             process_env = {**os.environ}
             # Per-job identity: one session id drives BOTH the residential proxy
@@ -764,7 +809,10 @@ class AutofillWorker:
                 process.stdin.write(f"{payload_str}\n".encode())
                 await process.stdin.drain()
 
-            stderr_task = asyncio.create_task(self._read_stderr(process.stderr, job_id))
+            stderr_lines: list[str] = []
+            stderr_task = asyncio.create_task(
+                self._read_stderr(process.stderr, job_id, stderr_lines)
+            )
 
             # True once a terminal status event (submitted/skipped/failed) was
             # handled for this run, so the exit-code fallback below never
@@ -1131,14 +1179,25 @@ class AutofillWorker:
                 # loudly instead of leaving it stuck in 'filling' until the
                 # lease. When a status event already persisted the specific
                 # reason (e.g. CAPTCHA_DETECTED), do not clobber it.
+                # Classify exit codes: 127 = infra failure (runner/browser
+                # couldn't spawn) — record it but do NOT count it as a job
+                # failure (error_count), so a broken environment can't burn a
+                # real job's retry budget.
+                rc = process.returncode
+                stderr_tail = "\n".join(stderr_lines[-15:]) if stderr_lines else "(no stderr)"
+                infra = rc == 127
+                if infra:
+                    error = f"Runner infra failure (exit 127): {stderr_tail[:300]}"
+                else:
+                    error = f"Runner exited with code {rc}: {stderr_tail[:300]}"
+                logger.error("Runner exited abnormally", job_id=job_id, exit_code=rc)
                 await self.db.update_status(
                     job_id,
                     status="failed",
-                    error=f"Runner exited with code {process.returncode}",
+                    error=error,
+                    infra_failure=infra,
                 )
-                await self._debug_finalize(
-                    debug_rec, "failed", error=f"Runner exited with code {process.returncode}"
-                )
+                await self._debug_finalize(debug_rec, "failed", error=error)
             elif not terminal_seen:
                 # A normal runner exit WITHOUT a terminal status event and
                 # without a non-zero return code leaves the job in 'filling'
@@ -1273,20 +1332,29 @@ class AutofillWorker:
             await asyncio.sleep(poll_interval)
         return "skip"
 
-    async def _read_stderr(self, stderr_stream: asyncio.StreamReader | None, job_id: str) -> None:
+    async def _read_stderr(
+        self, stderr_stream: asyncio.StreamReader | None, job_id: str, buffer: list[str]
+    ) -> None:
         if not stderr_stream:
             return
         while True:
             line = await stderr_stream.readline()
             if not line:
                 break
-            logger.debug(f"[NodeRunner Stderr-{job_id}] {line.decode('utf-8').strip()}")
+            text = line.decode("utf-8", errors="replace").rstrip()
+            if text:
+                buffer.append(text)
+                logger.debug(f"[NodeRunner Stderr-{job_id}] {text}")
 
 
 async def run_worker() -> None:
     """CLI Entrypoint to run the background worker."""
     load_dotenv()
     db = await AutofillDB.create()
+    # Fail loudly at boot if the browser runner cannot be spawned. A worker
+    # that can't run its runner is useless — better to exit now than to burn
+    # N job claims on "Runner exited with code 127" at 5-minute intervals.
+    _assert_runner_ready()
     # Number of simultaneous Stagehand runs (browser processes). Env-driven so
     # a batch can override the default of 1 concurrent job fill (a single
     # browser keeps memory/CPU light and avoids ATS anti-bot overlaps).
