@@ -1,8 +1,17 @@
-"""Offline trainer: Postgres → Parquet snapshot → LightGBM (ranker + classifiers).
+"""Offline trainer: Postgres → dataset → Parquet → LightGBM (ranker + classifiers).
+
+Real training pipeline (not a stub):
+  1. Build the dataset from decision_events (impressions + outcome labels).
+  2. Temporal split (train / val / test) — never random.
+  3. Train LambdaMART ranker + binary funnel classifiers.
+  4. Calibrate classifiers (isotonic).
+  5. Snapshot dataset to Parquet (dataset_hash registered).
+  6. Register models in model_registry.
 
 Usage:
-  uv run python -m ml.scripts.train_model --type ranker --version v1
-  uv run python -m ml.scripts.train_model --type clf --version v1
+  uv run python packages/ml/scripts/train_model.py --type ranker --version v1
+  uv run python packages/ml/scripts/train_model.py --type clf --version v1
+  uv run python packages/ml/scripts/train_model.py --type all --version v1
 """
 
 from __future__ import annotations
@@ -10,57 +19,26 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+from pathlib import Path
+from typing import Any
 
 from ml.config import get_ml_config
-
-
-async def _fetch_events(store, window_days: int) -> list[dict]:
-    async with store._pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT * FROM decision_events
-            WHERE created_at > NOW() - make_interval(days => $1)
-            ORDER BY created_at ASC
-            """,
-            window_days,
-        )
-        return [dict(r) for r in rows]
-
-
-async def _build_dataset(store, feature_version: str) -> list[dict]:
-    """Join decision_events with candidate/job snapshots + graph features into
-    training rows. Temporal split (train/val/test by time) applied downstream."""
-    cfg = get_ml_config()
-    events = await _fetch_events(store, cfg.training.train_window_days)
-    out: list[dict] = []
-    for e in events:
-        features = e.get("features") or {}
-        # Only rows with feature_version match (avoid leakage from future models)
-        if e.get("feature_version") != feature_version and feature_version:
-            continue
-        if not features:
-            continue
-        out.append(
-            {
-                "job_id": e["job_id"],
-                "event_type": e["event_type"],
-                "impression_id": e.get("impression_id"),
-                "timestamp": e["created_at"],
-                "features": features,
-                "reward": e.get("reward"),
-            }
-        )
-    return out
+from ml.dataset import (
+    build_dataset,
+    fetch_all_job_events,
+    fetch_impressions,
+)
+from ml.model_registry import dataset_hash_for_rows, register_model
 
 
 async def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--type", choices=["ranker", "clf"], default="ranker")
+    ap.add_argument("--type", choices=["ranker", "clf", "all"], default="all")
     ap.add_argument("--version", default="v1")
     args = ap.parse_args()
 
     from ml import FEATURE_VERSION
-    from ml.model_registry import dataset_hash_for_rows, register_model
+    from ml.ltr import train_classifiers, train_ranker
 
     try:
         from src.memory.pgvector_store import MemoryStore
@@ -73,36 +51,51 @@ async def main() -> None:
         print("No store — nothing to train on yet. Run a few sweeps first.")
         return
 
-    rows = await _build_dataset(store, FEATURE_VERSION)
-    print(f"Training rows: {len(rows)}")
-    if not rows:
+    # Build the dataset once (shared by ranker + classifiers).
+    impressions = await fetch_impressions(store, FEATURE_VERSION)
+    job_events = await fetch_all_job_events(store)
+    ds = build_dataset(impressions, job_events)
+    print(f"Impressions: {len(ds.impression_ids())} | ranked rows: {len(ds.rows)}")
+    if ds.is_empty():
+        print("No data — run sweeps so job_ranked events + outcomes accumulate first.")
         await store.close()
         return
 
-    dhash = dataset_hash_for_rows(rows)
-    print(f"dataset_hash={dhash}")
+    # Snapshot dataset to Parquet for reproducibility.
+    cfg = get_ml_config()
+    ds_path = Path(cfg.dataset_dir)
+    ds_path.mkdir(parents=True, exist_ok=True)
+    dhash = dataset_hash_for_rows([r.as_dict() for r in ds.rows])
+    parquet_path = str(ds_path / f"dataset_{dhash}.parquet")
+    ds.to_parquet(parquet_path)
+    print(f"Dataset snapshot: {parquet_path} (rows={len(ds.rows)}, hash={dhash})")
 
-    from ml.ltr import train_classifiers, train_ranker
-
-    if args.type == "ranker":
-        result = await train_ranker(store, FEATURE_VERSION, version=args.version)
-    else:
-        result = await train_classifiers(store, FEATURE_VERSION, version=args.version)
-    print(
-        json.dumps({k: (str(v)[:100] if k == "model" else v) for k, v in result.items()}, indent=2)
-    )
-    if result.get("status") == "trained":
-        await register_model(
-            store,
-            "lgb_ranker" if args.type == "ranker" else "clf",
-            args.version,
-            FEATURE_VERSION,
-            "now",
-            "now",
-            dhash,
-            {"rows": len(rows)},
-            "",
-        )
+    results: dict[str, Any] = {}
+    if args.type in ("ranker", "all"):
+        results["ranker"] = await train_ranker(store, FEATURE_VERSION, version=args.version)
+        r = results["ranker"]
+        print(f"Ranker: {r.get('status')} | {json.dumps(r.get('metrics', {}))}")
+        if r.get("status") == "trained" and "model" in r:
+            r.pop("model", None)  # don't serialize the lgb object
+            await register_model(
+                store,
+                "lgb_ranker",
+                args.version,
+                FEATURE_VERSION,
+                "now",
+                "now",
+                dhash,
+                r.get("metrics", {}),
+                parquet_path,
+            )
+            print(f"Registered lgb_ranker {args.version} (dataset {dhash})")
+    if args.type in ("clf", "all"):
+        results["clf"] = await train_classifiers(store, FEATURE_VERSION, version=args.version)
+        c = results["clf"]
+        print(f"Classifiers: {c.get('status')}")
+        for stage, meta in (c.get("stages") or {}).items():
+            if isinstance(meta, dict):
+                print(f"  {stage}: {meta.get('status')} {json.dumps(meta.get('metrics', {}))}")
     await store.close()
 
 

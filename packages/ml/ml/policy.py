@@ -34,13 +34,22 @@ def expected_utility(
 
 
 def ev_rank_key(candidate: dict[str, Any]) -> float:
-    """Rank key for a candidate given calibrated probabilities on the candidate."""
+    """Rank key for a candidate given calibrated CONDITIONAL probabilities.
+
+    Names are explicit: p_interview_given_screen and p_offer_given_interview
+    are CONDITIONAL, never marginals — feeding P(interview) here would
+    silently inflate EV.
+    """
     p_screen = float(candidate.get("p_screen", 0.5))
-    p_int = float(candidate.get("p_interview", 0.25))
-    p_offer = float(candidate.get("p_offer", 0.05))
+    p_int_given_screen = float(
+        candidate.get("p_interview_given_screen", candidate.get("p_interview", 0.25))
+    )
+    p_offer_given_interview = float(
+        candidate.get("p_offer_given_interview", candidate.get("p_offer", 0.05))
+    )
     utility = float(candidate.get("offer_utility", 120000.0))
     cost = float(candidate.get("application_cost", application_cost()))
-    return expected_utility(p_screen, p_int, p_offer, utility, cost)
+    return expected_utility(p_screen, p_int_given_screen, p_offer_given_interview, utility, cost)
 
 
 # Hard constraints — deterministic, never learned away (#28)

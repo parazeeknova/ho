@@ -588,6 +588,21 @@ CREATE TABLE IF NOT EXISTS unattributed_outcomes (
     created_at  TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_unattributed_company ON unattributed_outcomes(company, created_at DESC);
+
+-- Dead-letter for decision-event writes that could not be persisted. Events
+-- are ground truth for the learning system; a lost `application` next to a
+-- kept `rejection` would corrupt funnel histories, so failed writes land here
+-- (observable + retryable) instead of silently disappearing.
+CREATE TABLE IF NOT EXISTS event_write_errors (
+    id            BIGSERIAL PRIMARY KEY,
+    job_id        TEXT NOT NULL,
+    event_type    TEXT DEFAULT '',
+    impression_id TEXT,
+    payload       JSONB DEFAULT '{{}}'::jsonb,
+    error         TEXT DEFAULT '',
+    created_at    TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_event_write_errors ON event_write_errors(created_at DESC);
 """
 
 

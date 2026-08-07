@@ -79,55 +79,109 @@ class DecisionEvent:
 
 
 # DB helpers — thin wrappers over MemoryStore pool so callers don't import
-# asyncpg directly. All writes are best-effort (event loss is acceptable;
-# training tolerates sparse outcomes).
+# asyncpg directly. Event writes are DURABLE: a failed insert is retried once
+# and then written to a dead-letter table (event_write_errors) so ground-truth
+# events are never silently dropped. Losing an `application` but keeping a
+# `rejection` would corrupt funnel histories, so this is not optional.
+
+# In-memory retry buffer for events whose DB write transiently failed.
+_failed_events: list[DecisionEvent] = []
 
 
-async def emit_event(store: Any, event: DecisionEvent) -> None:
-    """Persist one decision event. store is a MemoryStore (has _pool)."""
+async def _write_one(conn: Any, event: DecisionEvent) -> None:
+    await conn.execute(
+        """
+        INSERT INTO decision_events (
+            job_id, event_type, impression_id, candidate_id,
+            candidate_snapshot_id, job_snapshot_id,
+            features, rank, policy, model_version, feature_version,
+            prompt_version, embedding_version,
+            exploration, propensity, action, reward,
+            source, query, primary_discovery_source, secondary_sources,
+            meta, created_at
+        ) VALUES (
+            $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
+            $18,$19,$20,$21,$22, NOW()
+        )
+        """,
+        event.job_id,
+        event.event_type,
+        event.impression_id,
+        event.candidate_id,
+        event.candidate_snapshot_id,
+        event.job_snapshot_id,
+        event.features,  # jsonb codec serializes dicts; do NOT pre-json.dumps
+        event.rank,
+        event.policy,
+        event.model_version,
+        event.feature_version,
+        event.prompt_version,
+        event.embedding_version,
+        event.exploration,
+        event.propensity,
+        event.action,
+        event.reward,
+        event.source,
+        event.query,
+        event.primary_discovery_source,
+        event.secondary_sources,
+        event.meta,
+    )
+
+
+async def _dead_letter(store: Any, event: DecisionEvent, error: str) -> None:
+    """Record a permanently-failed event write so it's observable, not lost."""
     try:
         async with store._pool.acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO decision_events (
-                    job_id, event_type, impression_id, candidate_id,
-                    candidate_snapshot_id, job_snapshot_id,
-                    features, rank, policy, model_version, feature_version,
-                    prompt_version, embedding_version,
-                    exploration, propensity, action, reward,
-                    source, query, primary_discovery_source, secondary_sources,
-                    meta, created_at
-                ) VALUES (
-                    $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
-                    $18,$19,$20,$21,$22, NOW()
-                )
+                INSERT INTO event_write_errors (
+                    job_id, event_type, impression_id, payload, error, created_at
+                ) VALUES ($1,$2,$3,$4,$5, NOW())
                 """,
                 event.job_id,
                 event.event_type,
                 event.impression_id,
-                event.candidate_id,
-                event.candidate_snapshot_id,
-                event.job_snapshot_id,
-                event.features,  # jsonb codec serializes dicts; do NOT pre-json.dumps
-                event.rank,
-                event.policy,
-                event.model_version,
-                event.feature_version,
-                event.prompt_version,
-                event.embedding_version,
-                event.exploration,
-                event.propensity,
-                event.action,
-                event.reward,
-                event.source,
-                event.query,
-                event.primary_discovery_source,
-                event.secondary_sources,
-                event.meta,
+                asdict(event),
+                error[:500],
             )
     except Exception:
-        # Event loss is tolerable; training is sparse-tolerant.
-        pass
+        # If even the dead-letter table is unreachable, keep it in the retry
+        # buffer so a later flush can salvage it.
+        _failed_events.append(event)
+
+
+async def flush_failed_events(store: Any) -> int:
+    """Retry buffered events that failed a previous write. Returns flushed count."""
+    if not _failed_events:
+        return 0
+    events = list(_failed_events)
+    _failed_events.clear()
+    flushed = 0
+    for ev in events:
+        try:
+            async with store._pool.acquire() as conn:
+                await _write_one(conn, ev)
+            flushed += 1
+        except Exception as e:
+            await _dead_letter(store, ev, str(e))
+    return flushed
+
+
+async def emit_event(store: Any, event: DecisionEvent) -> None:
+    """Persist one decision event (durable). Retries once, then dead-letters."""
+    try:
+        async with store._pool.acquire() as conn:
+            await _write_one(conn, event)
+    except Exception:
+        # Retry once (transient DB blip).
+        try:
+            async with store._pool.acquire() as conn:
+                await _write_one(conn, event)
+        except Exception as e2:
+            await _dead_letter(store, event, str(e2))
+        # First attempt may have partially succeeded on the server; treat as
+        # flushed if the retry succeeded. If both failed, it's dead-lettered.
 
 
 async def emit_events(store: Any, events: list[DecisionEvent]) -> None:

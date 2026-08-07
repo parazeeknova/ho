@@ -27,7 +27,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -43,7 +42,7 @@ ENV_PATH = Path(__file__).resolve().parents[3] / ".env"
 
 
 def _sh(cmd: list[str]) -> str:
-    r = subprocess.run(cmd, capture_output=True, text=True)
+    r = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if r.returncode != 0:
         print(f"  ✗ {cmd[0]} failed: {r.stderr.strip()[-300:]}", file=sys.stderr)
     return (r.stdout or "").strip()
@@ -96,7 +95,10 @@ def gcloud_setup() -> None:
     print("[gcloud] granting gmail-api-push publisher on topic...")
     _sh(
         [
-            "gcloud", "projects", "add-iam-policy-binding", project,
+            "gcloud",
+            "projects",
+            "add-iam-policy-binding",
+            project,
             "--member=serviceAccount:gmail-api-push@system.gserviceaccount.com",
             "--role=roles/pubsub.publisher",
             "--condition=None",
@@ -109,8 +111,13 @@ def gcloud_setup() -> None:
     if not any(f"subscriptions/{subscription}" in s for s in subs.splitlines()):
         _sh(
             [
-                "gcloud", "pubsub", "subscriptions", "create", subscription,
-                "--topic=" + topic, "--ack-deadline=60",
+                "gcloud",
+                "pubsub",
+                "subscriptions",
+                "create",
+                subscription,
+                "--topic=" + topic,
+                "--ack-deadline=60",
             ]
         )
     else:
@@ -180,7 +187,9 @@ async def arm() -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Gmail Pub/Sub watch setup")
-    ap.add_argument("--gcloud", action="store_true", help="GCP infra via gcloud CLI (apis/topic/sub/iam)")
+    ap.add_argument(
+        "--gcloud", action="store_true", help="GCP infra via gcloud CLI (apis/topic/sub/iam)"
+    )
     ap.add_argument("--authorize", action="store_true", help="OAuth flow to mint refresh token")
     ap.add_argument("--arm", action="store_true", help="Arm users.watch push")
     args = ap.parse_args()

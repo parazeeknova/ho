@@ -56,5 +56,38 @@ def inverse_propensity_weight(propensity: float) -> float:
     return 1.0 / p
 
 
-def snips_weight(propensity: float, action_probability: float, num_actions: int) -> float:
-    return inverse_propensity_weight(propensity) / action_probability * (1.0 / num_actions)
+def ips_estimate(rewards: list[float], propensities: list[float]) -> float:
+    """Standard IPS: Σ (r_i / μ(a_i|x_i)) / N."""
+    if not rewards:
+        return 0.0
+    n = len(rewards)
+    total = 0.0
+    for r, mu in zip(rewards, propensities, strict=True):
+        total += float(r) / max(float(mu), 0.001)
+    return total / n
+
+
+def snips_estimate(
+    rewards: list[float],
+    behavior_propensities: list[float],
+    eval_propensities: list[float] | None = None,
+) -> float:
+    """SNIPS (self-normalized IPS):
+        w_i = π(a_i|x_i) / μ(a_i|x_i)
+        SNIPS = Σ w_i r_i / Σ w_i
+    If eval_propensities is None, it assumes a uniform evaluation policy
+    (w_i = 1/(N·μ_i)), the standard self-normalized form."""
+    if not rewards:
+        return 0.0
+    if eval_propensities is None:
+        n = len(rewards)
+        weights = [1.0 / (n * max(float(mu), 0.001)) for mu in behavior_propensities]
+    else:
+        weights = [
+            float(pi) / max(float(mu), 0.001)
+            for pi, mu in zip(eval_propensities, behavior_propensities, strict=True)
+        ]
+    wsum = sum(weights)
+    if wsum <= 0:
+        return 0.0
+    return sum(w * r for w, r in zip(weights, rewards, strict=True)) / wsum
