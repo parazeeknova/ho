@@ -25,6 +25,7 @@ import os
 import random as _random
 import re
 import time
+from collections.abc import Awaitable
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
@@ -52,16 +53,58 @@ _FORCED_PROXY_HOSTS = {"weworkremotely.com", "cloudflare.com", "vercel.app"}
 # render costs seconds; within a sweep the same board/job URL is often hit
 # many times (poll + gate + re-verify), so cache both success AND negative
 # (empty-shell) results for a short window. The negative cache is what stops
-# an empty Ashby board from being re-rendered 2.5s every sweep.
-_RENDER_CACHE_TTL = float(os.environ.get("RENDER_CACHE_TTL", "600"))
+# an empty Ashby board from being re-rendered 2.5s every sweep. When
+# RENDER_CACHE_PERSIST is on, entries are also mirrored to Postgres so they
+# survive restarts and are shared across ingest workers.
 _render_cache: dict[str, tuple[str, float]] = {}
 _render_cache_lock = asyncio.Lock()
+
+_cache_cfg: dict[str, Any] | None = None
+
+
+def _cache_config() -> dict[str, Any]:
+    """Cache/render tuning values, read once from RenderConfig (env-tunable)."""
+    global _cache_cfg
+    if _cache_cfg is None:
+        try:
+            from src.configuration import get_config
+
+            r = get_config().render
+            _cache_cfg = {
+                "ttl": r.cache_ttl,
+                "max_entries": r.cache_max_entries,
+                "persist": r.cache_persist,
+                "shell_threshold": r.shell_threshold_chars,
+                "settle_ms": r.render_settle_ms,
+                "proxied_settle_ms": r.proxied_settle_ms,
+                "concurrency": max(1, r.concurrency),
+                "pool_idle_ms": r.pool_idle_ms,
+            }
+        except Exception:
+            _cache_cfg = {
+                "ttl": 600,
+                "max_entries": 4000,
+                "persist": False,
+                "shell_threshold": 200,
+                "settle_ms": 2500,
+                "proxied_settle_ms": 3000,
+                "concurrency": 4,
+                "pool_idle_ms": 30000,
+            }
+    return _cache_cfg
 
 
 async def _cache_get(url: str) -> str | None:
     async with _render_cache_lock:
         entry = _render_cache.get(url)
         if entry is None:
+            # Miss: try the Postgres-backed store (shared across workers) when
+            # persistence is enabled.
+            persisted = await _persist_cache_get(url)
+            if persisted is not None:
+                now = time.monotonic()
+                _render_cache[url] = (persisted, now + _cache_config()["ttl"])
+                return persisted
             return None
         result, expiry = entry
         if time.monotonic() > expiry:
@@ -71,14 +114,101 @@ async def _cache_get(url: str) -> str | None:
 
 
 async def _cache_set(url: str, result: str) -> None:
+    ttl = float(_cache_config()["ttl"])
     async with _render_cache_lock:
         # Bound memory: when the cache grows large, evict stale entries.
-        if len(_render_cache) > 4000:
+        if len(_render_cache) > int(_cache_config()["max_entries"]):
             now = time.monotonic()
             for u in list(_render_cache):
                 if _render_cache[u][1] <= now:
                     _render_cache.pop(u, None)
-        _render_cache[url] = (result, time.monotonic() + _RENDER_CACHE_TTL)
+        _render_cache[url] = (result, time.monotonic() + ttl)
+    # Mirror to Postgres (best-effort, never blocks).
+    await _persist_cache_set(url, result, ttl)
+
+
+# ── optional Postgres-backed cache mirror ──────────────────────────────
+
+_pg_cache: Any = None
+_pg_cache_checked = False
+
+
+async def _pg_cache_pool() -> Any:
+    """A lazily-created Postgres pool for the shared render cache, or None."""
+    global _pg_cache, _pg_cache_checked
+    if _pg_cache_checked:
+        return _pg_cache
+    _pg_cache_checked = True
+    if not _cache_config().get("persist"):
+        return None
+    try:
+        import asyncpg
+
+        url = os.environ.get(
+            "AGENT_MEMORY_DB_URL", "postgresql://postgres:postgres@127.0.0.1:5433/agent_memory"
+        )
+        _pg_cache = await asyncpg.create_pool(url, min_size=0, max_size=2, command_timeout=3)
+    except Exception as e:
+        logger.warning("render cache: Postgres unavailable; in-memory only", error=str(e))
+        _pg_cache = None
+    return _pg_cache
+
+
+async def _ensure_cache_table(pool: Any) -> None:
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS render_cache (
+                    url TEXT PRIMARY KEY,
+                    body TEXT NOT NULL,
+                    expires_at TIMESTAMP WITH TIME ZONE NOT NULL
+                )
+                """
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_render_cache_expires ON render_cache(expires_at)"
+            )
+    except Exception as e:
+        logger.warning("render cache: could not ensure table", error=str(e))
+
+
+async def _persist_cache_get(url: str) -> str | None:
+    pool = await _pg_cache_pool()
+    if pool is None:
+        return None
+    try:
+        await _ensure_cache_table(pool)
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT body FROM render_cache WHERE url=$1 AND expires_at > NOW()",
+                url,
+            )
+            return row["body"] if row else None
+    except Exception:
+        return None
+
+
+async def _persist_cache_set(url: str, body: str, ttl: float) -> None:
+    pool = await _pg_cache_pool()
+    if pool is None:
+        return
+    try:
+        await _ensure_cache_table(pool)
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO render_cache (url, body, expires_at)
+                VALUES ($1, $2, NOW() + make_interval(secs => $3))
+                ON CONFLICT (url) DO UPDATE
+                  SET body = EXCLUDED.body, expires_at = EXCLUDED.expires_at
+                """,
+                url,
+                body,
+                ttl,
+            )
+    except Exception:
+        pass
 
 
 def _get_host(url: str) -> str:
@@ -154,6 +284,72 @@ def _is_challenge(body: str) -> bool:
     return any(m in low for m in _CHALLENGE_MARKERS)
 
 
+def _board_of(url: str) -> str:
+    """A stable board key for routing stats: host + first path segment."""
+    try:
+        p = urlparse(url)
+        seg = (p.path or "").strip("/").split("/")
+        return f"{p.netloc}/{seg[0]}" if seg and seg[0] else p.netloc
+    except Exception:
+        return _get_host(url)
+
+
+def _fire(awaitable: Awaitable[Any]) -> None:
+    """Run a best-effort background task (DB telemetry) that never blocks or
+    crashes the render path."""
+    try:
+        task = asyncio.ensure_future(awaitable)
+        task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+    except Exception:
+        pass
+
+
+async def _record_render_outcome(board: str, ok: bool, settle_ms: float = 0.0) -> None:
+    try:
+        from src.memory.pgvector_store import MemoryStore
+
+        store = await MemoryStore.create()
+        try:
+            await store.record_board_render(board, ok, settle_ms)
+        finally:
+            await store.close()
+    except Exception:
+        pass
+
+
+async def _record_board_block(board: str) -> None:
+    try:
+        from src.memory.pgvector_store import MemoryStore
+
+        store = await MemoryStore.create()
+        try:
+            await store.record_board_block(board)
+        finally:
+            await store.close()
+    except Exception:
+        pass
+
+
+async def _routing_proxy_recommended(url: str) -> bool:
+    """Preemptive proxy decision from accumulated per-board stats. Returns True
+    only when the board has enough history (>=3 attempts) and a high block
+    ratio — a learned upgrade over the hardcoded _FORCED_PROXY_HOSTS set."""
+    board = _board_of(url)
+    if board in _FORCED_PROXY_HOSTS or _is_blocked_status(url):
+        return True
+    try:
+        from src.memory.pgvector_store import MemoryStore
+
+        store = await MemoryStore.create()
+        try:
+            rec = await store.get_board_routing(board)
+            return bool(rec and rec.get("proxy_recommended"))
+        finally:
+            await store.close()
+    except Exception:
+        return False
+
+
 def _should_proxy(url: str, status: int | None, body: str = "") -> bool:
     """Route through SOCKS5 when the request hit a real anti-bot challenge
     (Cloudflare/captcha) or the host is a known anti-bot target. Plain
@@ -175,14 +371,24 @@ def _should_proxy(url: str, status: int | None, body: str = "") -> bool:
 # ── Persistent Chromium pool for JS rendering ──────────────────────────
 #
 # Browsers are launched once and REUSED across pages (a ~2s launch would
-# otherwise be paid per page). The pool is bounded by _RENDER_CONCURRENCY
-# (one browser per concurrent render slot); browsers sit idle in the pool
-# between uses and are closed after _RENDERER_IDLE_MS of inactivity by a
-# background reaper. Static fetches are NOT gated by this — they stay fully
+# otherwise be paid per page). The pool is bounded by the configured
+# concurrency (one browser per concurrent render slot); browsers sit idle in
+# the pool between uses and are closed after the idle window of inactivity by
+# a background reaper. Static fetches are NOT gated by this — they stay fully
 # concurrent async I/O.
-_RENDER_CONCURRENCY = max(1, int(os.environ.get("RENDER_CONCURRENCY", "4")))
-_RENDERER_IDLE_MS = int(os.environ.get("RENDER_IDLE_MS", "30000"))
-_render_sem = asyncio.Semaphore(_RENDER_CONCURRENCY)
+_render_sem: asyncio.Semaphore | None = None
+
+
+def _render_semaphore() -> asyncio.Semaphore:
+    global _render_sem
+    if _render_sem is None:
+        _render_sem = asyncio.Semaphore(_cache_config()["concurrency"])
+    return _render_sem
+
+
+def _pool_idle_seconds() -> float:
+    return max(5.0, _cache_config()["pool_idle_ms"] / 1000 / 2)
+
 
 # Total browsers launched (never exceeds the semaphore's concurrency).
 _pw: Any = None  # shared async_playwright driver
@@ -234,7 +440,8 @@ async def _launch_browser() -> Any:
 async def _acquire_browser() -> Any:
     """Get a pooled browser (reusing an idle one, or launching a fresh one).
 
-    The caller holds a ``_render_sem`` slot, so at most ``_RENDER_CONCURRENCY``
+    The caller holds a ``_render_sem`` slot, so at most the configured
+    concurrency
     browsers ever exist: every live render holds one, and released browsers sit
     in the pool for reuse. No waiting is needed — the semaphore bounds us.
     """
@@ -258,7 +465,7 @@ async def _release_browser(browser: Any) -> None:
     if _pool_cond is None:
         _pool_cond = asyncio.Condition()
     async with _pool_cond:
-        if browser.is_connected() and len(_pool) < _RENDER_CONCURRENCY:
+        if browser.is_connected() and len(_pool) < _cache_config()["concurrency"]:
             _pool.append((browser, time.monotonic()))
         else:
             await _close_browser(browser)
@@ -274,7 +481,7 @@ async def _reap_idle() -> None:
     """Background task: close browsers idle longer than the idle window."""
     global _pool
     while True:
-        await asyncio.sleep(max(5.0, _RENDERER_IDLE_MS / 1000 / 2))
+        await asyncio.sleep(_pool_idle_seconds())
         if not _pool_cond:
             continue
         async with _pool_cond:
@@ -282,7 +489,7 @@ async def _reap_idle() -> None:
             stale: list[Any] = []
             keep: list[tuple[Any, float]] = []
             for browser, last in _pool:
-                if now - last > _RENDERER_IDLE_MS / 1000:
+                if now - last > _pool_idle_seconds() * 2:
                     stale.append(browser)
                 else:
                     keep.append((browser, last))
@@ -360,13 +567,13 @@ def _is_js_shell(html: str) -> bool:
     text = re.sub(r"\s+", " ", text).strip()
     # Content-rich enough (a real job page always carries a description body
     # of hundreds+ chars) -> rendered or server-rendered.
-    if len(text) >= 200:
+    if len(text) >= _cache_config()["shell_threshold"]:
         return False
     # Low visible text: flag as a shell if it's genuinely a JS-only app or
     # explicitly requires JS.
     if any(m in low for m in _JS_SHELL_TEXT_MARKERS):
         return True
-    return len(text) < 200
+    return len(text) < _cache_config()["shell_threshold"]
 
 
 # Extensions that are never a job page.
@@ -458,6 +665,9 @@ async def _get_with_proxy(client: Any, url: str, timeout: float) -> Any:
         logger.debug("fetch_html failed", url=url, error=str(e))
         return type("R", (), {"status_code": 0, "text": ""})()
     if _should_proxy(url, resp.status_code, body=resp.text or ""):
+        # Record the block so the learned routing table can preemptively proxy
+        # this board on future sweeps.
+        _fire(_record_board_block(_board_of(url)))
         proxy_url = _proxy_url()
         if proxy_url:
             try:
@@ -503,21 +713,26 @@ async def _render_with_playwright(url: str, use_proxy: bool = False) -> str:
         return await _render_proxied(url)
 
     _ensure_reaper()
-    async with _render_sem:
+    async with _render_semaphore():
         browser = await _acquire_browser()
+        started = time.monotonic()
         try:
             page = await browser.new_page(user_agent=_PAGE_UA)
             await page.goto(url, wait_until="domcontentloaded", timeout=20_000)
             # Let client-side render settle.
-            await page.wait_for_timeout(2500)
+            await page.wait_for_timeout(_cache_config()["settle_ms"])
             html = await page.content()
             await page.close()
+            settle = (time.monotonic() - started) * 1000
+            _fire(_record_render_outcome(_board_of(url), ok=True, settle_ms=settle))
             if _is_js_shell(html):
                 logger.warning("Rendered page still a JS shell", url=url)
+                _fire(_record_render_outcome(_board_of(url), ok=False, settle_ms=settle))
                 return ""
             return html
         except Exception as e:
             logger.warning("playwright render failed", url=url, error=str(e))
+            _fire(_record_render_outcome(_board_of(url), ok=False))
             return ""
         finally:
             await _release_browser(browser)
@@ -543,7 +758,7 @@ async def _render_proxied(url: str) -> str:
             )
             page = await browser.new_page(user_agent=_PAGE_UA)
             await page.goto(url, wait_until="domcontentloaded", timeout=25_000)
-            await page.wait_for_timeout(3000)
+            await page.wait_for_timeout(_cache_config()["proxied_settle_ms"])
             html = await page.content()
             await browser.close()
             if _is_js_shell(html):
@@ -553,9 +768,14 @@ async def _render_proxied(url: str) -> str:
 
     try:
         # Hard deadline (40s): a stalled Tor exit must never hang the pipeline.
-        return await asyncio.wait_for(_run(), timeout=40.0)
+        started = time.monotonic()
+        result = await asyncio.wait_for(_run(), timeout=40.0)
+        settle = (time.monotonic() - started) * 1000
+        _fire(_record_render_outcome(_board_of(url), ok=bool(result), settle_ms=settle))
+        return result
     except Exception as e:
         logger.warning("proxied playwright render failed", url=url, error=str(e))
+        _fire(_record_render_outcome(_board_of(url), ok=False))
         return ""
 
 
@@ -568,8 +788,11 @@ async def render_html(url: str, timeout: float = 20.0) -> str:
     if html and not _is_js_shell(html) and not _requires_js(html):
         return _absolutize(html, url)
     # JS-only (or empty): render it. Use the proxy when the plain request was
-    # blocked or the host is a known anti-bot target.
+    # blocked, the host is a known anti-bot target, OR the learned per-board
+    # routing table recommends it (high historical block ratio).
     use_proxy = _should_proxy(url, None) or bool(not html and _is_blocked_status(url))
+    if not use_proxy:
+        use_proxy = await _routing_proxy_recommended(url)
     rendered = await _render_with_playwright(url, use_proxy=use_proxy)
     if rendered:
         return _absolutize(rendered, url)
@@ -655,6 +878,8 @@ async def markdownify(url: str, timeout: float = 20.0) -> str:
     need_render = not html or _is_js_shell(html) or _requires_js(html)
     if need_render:
         use_proxy = _should_proxy(url, None) or bool(not html and _is_blocked_status(url))
+        if not use_proxy:
+            use_proxy = await _routing_proxy_recommended(url)
         html = await _render_with_playwright(url, use_proxy=use_proxy)
         if not html:
             await _cache_set(url, "")

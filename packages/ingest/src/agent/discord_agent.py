@@ -840,8 +840,18 @@ class DiscordAgent:
     async def begin_sweep(self, sweep: int) -> None:
         """Create the per-sweep thread before alerts fire, so every message of
         a sweep (alerts + summary) is concentrated in one thread."""
+        if not self.is_configured:
+            return
+        # If the gateway hasn't finished connecting yet, wait a bounded window
+        # so the very first sweep's thread isn't silently dropped.
+        if self._client is not None and not self._client.is_ready():
+            try:
+                await asyncio.wait_for(self._wait_gateway_ready(), timeout=20.0)
+            except Exception:
+                logger.warning("Discord gateway not ready; sweep thread skipped")
         channel = await self._wait_channel()
         if channel is None:
+            logger.warning("Discord channel unavailable; sweep thread skipped")
             return
         try:
             if sweep != self._last_sweep:
@@ -892,6 +902,10 @@ class DiscordAgent:
                 self._last_sweep = sweep
         except Exception as e:
             logger.warning("Sweep thread creation failed", error=str(e))
+
+    async def _wait_gateway_ready(self) -> None:
+        while self._client is not None and not self._client.is_ready():
+            await asyncio.sleep(0.5)
 
     async def begin_recovery_thread(self, title: str = "Startup Re-delivery") -> None:
         """Create a thread for the startup re-delivery of previously-accepted

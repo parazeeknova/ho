@@ -587,6 +587,14 @@ class AutofillDB:
                 return None
             return str(row["thread_id"])
 
+    async def clear_active_thread(self) -> None:
+        """Drop the active sweep thread (called when it 404s: archived/deleted),
+        so the bridge falls back to the main channel instead of dropping alerts."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE discord_thread_state SET thread_id = '' WHERE state_id = 'active_sweep'"
+            )
+
     async def unapplied_stats(self, stale_hours: int = 48) -> dict[str, int]:
         """Autofill-side job stats for the startup message.
 

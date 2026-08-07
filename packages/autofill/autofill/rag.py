@@ -3080,7 +3080,14 @@ Questions:
         try:
             schema = {"type": "object", "additionalProperties": {"type": "string"}}
             raw_resp = await self.cm.chat(
-                prompt, schema=schema, system_prompt=SCREENER_SYSTEM_PROMPT
+                prompt,
+                schema=schema,
+                system_prompt=SCREENER_SYSTEM_PROMPT,
+                # interactive: the reserved lane — a per-application question
+                # answer must not be starved by (or add to) the radar sweep's
+                # aggressive shared budget, which trips provider 429s and stalls
+                # a single application for 30-40s per question.
+                interactive=True,
             )
             cleaned = raw_resp.strip()
 
@@ -3182,7 +3189,11 @@ candidate has submitted; never copy phrasing verbatim across applications.
 
         try:
             return _strip_em_dashes(
-                (await self.cm.chat(prompt, system_prompt=COVER_LETTER_SYSTEM_PROMPT)).strip()
+                (
+                    await self.cm.chat(
+                        prompt, system_prompt=COVER_LETTER_SYSTEM_PROMPT, interactive=True
+                    )
+                ).strip()
             )
         except Exception as e:
             logger.exception("Failed to generate cover letter", error=str(e))

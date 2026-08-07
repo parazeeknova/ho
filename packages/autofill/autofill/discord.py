@@ -16,6 +16,7 @@ and the job is deferred (same as Telegram's ask-user fallback).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -148,7 +149,10 @@ class DiscordQuestionBridge:
         try:
             db = await self._db()
             thread = await db.active_thread()
-            if thread:
+            # A valid Discord thread id is a 15-20 digit snowflake. Reject any
+            # corrupt/stale value (e.g. "702") — posting to it 404s with
+            # "Unknown Channel", which silently drops every notification.
+            if thread and re.fullmatch(r"\d{15,20}", str(thread)):
                 target_id = thread
         except Exception:
             pass
@@ -163,6 +167,30 @@ class DiscordQuestionBridge:
 
         try:
             resp = await retry_http(_post, max_retries=2, base_delay=0.5, max_delay=4.0)
+            # If a thread-targeted post 404s (thread archived/deleted), fall
+            # back to the main channel so a notification is never lost.
+            if resp.status_code == 404 and target_id != self.channel_id:
+                with contextlib.suppress(Exception):
+                    db = await self._db()
+                    await db.clear_active_thread()
+                fallback = await retry_http(
+                    lambda: httpx.AsyncClient(timeout=15.0).post(
+                        f"{DISCORD_API}/channels/{self.channel_id}/messages",
+                        headers={"Authorization": f"Bot {self.bot_token}"},
+                        json=payload,
+                    ),
+                    max_retries=1,
+                    base_delay=0.5,
+                    max_delay=2.0,
+                )
+                if fallback.status_code < 300:
+                    return fallback.json().get("id")
+                logger.warning(
+                    "Discord send failed (channel fallback)",
+                    status=fallback.status_code,
+                    body=fallback.text[:200],
+                )
+                return None
             if resp.status_code >= 300:
                 logger.warning(
                     "Discord send failed",

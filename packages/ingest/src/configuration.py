@@ -188,6 +188,30 @@ class RenderConfig:
     use_proxy: bool = field(default_factory=lambda: _env_bool("RENDER_USE_PROXY", True))
     # Retry a blocked request (429/403/Cloudflare challenge) via the proxy.
     proxy_on_block: bool = field(default_factory=lambda: _env_bool("RENDER_PROXY_ON_BLOCK", True))
+    # JS-shell heuristic: a page whose visible text is below this many chars is
+    # treated as an un-rendered SPA shell and sent to the browser. Real job
+    # pages carry a description body far above this.
+    shell_threshold_chars: int = field(
+        default_factory=lambda: _env_int("RENDER_SHELL_THRESHOLD_CHARS", 200)
+    )
+    # Client-side render settle time after domcontentloaded (JS-SPA hydration).
+    render_settle_ms: int = field(default_factory=lambda: _env_int("RENDER_SETTLE_MS", 2500))
+    proxied_settle_ms: int = field(
+        default_factory=lambda: _env_int("RENDER_PROXIED_SETTLE_MS", 3000)
+    )
+    # In-memory + (optional) Postgres-backed render cache: TTL seconds and the
+    # max in-memory entries before stale eviction.
+    cache_ttl: int = field(default_factory=lambda: _env_int("RENDER_CACHE_TTL", 600))
+    cache_max_entries: int = field(
+        default_factory=lambda: _env_int("RENDER_CACHE_MAX_ENTRIES", 4000)
+    )
+    # Whether to persist the render cache in Postgres (survives restarts and is
+    # shared across ingest workers). Falls back to the in-memory dict when the
+    # DB is unreachable.
+    cache_persist: bool = field(default_factory=lambda: _env_bool("RENDER_CACHE_PERSIST", True))
+    # Chromium pool: max concurrent JS renders and idle-close window (ms).
+    concurrency: int = field(default_factory=lambda: _env_int("RENDER_CONCURRENCY", 4))
+    pool_idle_ms: int = field(default_factory=lambda: _env_int("RENDER_IDLE_MS", 30000))
 
 
 @dataclass
@@ -283,13 +307,20 @@ class CandidateConfig:
 
 @dataclass
 class LlmQueueConfig:
-    """LLM work-queue rate-limiting and budget controls for the radar pipeline."""
+    """LLM work-queue rate-limiting and budget controls for the radar pipeline.
 
-    requests_per_minute: int = field(default_factory=lambda: _env_int("LLM_QUEUE_RPM", 240))
+    Defaults stay under the provider's real cap (GeneralCompute: 100 RPM /
+    200K TPM) so the sweep never trips a 429 and stalls a single application
+    on a 30-40s cooldown. The queue reserves most of it; radar's shared budget
+    is a fraction, and autofill's per-question answers use the interactive
+    reserved lane.
+    """
+
+    requests_per_minute: int = field(default_factory=lambda: _env_int("LLM_QUEUE_RPM", 85))
     estimated_tokens_per_minute: int = field(
-        default_factory=lambda: _env_int("LLM_QUEUE_TPM", 400000)
+        default_factory=lambda: _env_int("LLM_QUEUE_TPM", 180000)
     )
-    max_in_flight: int = field(default_factory=lambda: _env_int("LLM_QUEUE_MAX_IN_FLIGHT", 30))
+    max_in_flight: int = field(default_factory=lambda: _env_int("LLM_QUEUE_MAX_IN_FLIGHT", 12))
     match_token_budget: int = field(
         default_factory=lambda: _env_int("LLM_QUEUE_MATCH_TOKENS", 2000)
     )
@@ -301,11 +332,11 @@ class LlmQueueConfig:
     )
     cooldown_seconds: float = field(default_factory=lambda: _env_float("LLM_QUEUE_COOLDOWN", 30.0))
     jitter_seconds: float = field(default_factory=lambda: _env_float("LLM_QUEUE_JITTER", 5.0))
-    # Shared provider budget: the provider (and Firecrawl's LLM calls) share one
-    # per-minute quota. Radar reserves this fraction of it; Redis makes the
-    # budget hold across radar processes (master + workers) atomically.
-    budget_radar_rpm: int = field(default_factory=lambda: _env_int("LLM_BUDGET_RADAR_RPM", 70))
-    budget_radar_tpm: int = field(default_factory=lambda: _env_int("LLM_BUDGET_RADAR_TPM", 140000))
+    # Shared provider budget: the provider's per-minute quota (100 RPM / 200K
+    # TPM). Radar reserves a fraction of it; Redis makes the budget hold across
+    # radar processes (master + workers) atomically.
+    budget_radar_rpm: int = field(default_factory=lambda: _env_int("LLM_BUDGET_RADAR_RPM", 60))
+    budget_radar_tpm: int = field(default_factory=lambda: _env_int("LLM_BUDGET_RADAR_TPM", 120000))
     budget_redis_url: str = field(
         default_factory=lambda: _env_str("LLM_BUDGET_REDIS_URL", "redis://127.0.0.1:6379/1")
     )

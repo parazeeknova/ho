@@ -1260,6 +1260,16 @@ class AutofillWorker:
                                             )
                                             process.stdin.write(f"{action_payload}\n".encode())
                                             await process.stdin.drain()
+                                        # Telemetry: this board needed correction.
+                                        await self._record_outcome(
+                                            store,
+                                            job,
+                                            "consistency_corrected",
+                                            corrections=[
+                                                {"label": k, "expected": v}
+                                                for k, v in corrections.items()
+                                            ],
+                                        )
                                     else:
                                         if os.getenv("AUTOFILL_CONSISTENCY_GATE") == "1":
                                             # Approved (or nothing to fix): the
@@ -1302,6 +1312,12 @@ class AutofillWorker:
                                         job.get("company"),
                                         email_status,
                                     )
+                            await self._record_outcome(
+                                store,
+                                job,
+                                "submitted",
+                                email_kind=(email_status or {}).get("kind", ""),
+                            )
                             await self._debug_finalize(debug_rec, "submitted")
                         elif status == "skipped":
                             terminal_seen = True
@@ -1317,6 +1333,7 @@ class AutofillWorker:
                                     filled_payload=filled_fields,
                                     screenshot_path=screenshot_path,
                                 )
+                                await self._record_outcome(store, job, "skipped")
                                 await self._debug_finalize(debug_rec, "skipped")
                         elif status == "expired":
                             # The posting was removed/expired (404 / "no longer
@@ -1552,6 +1569,46 @@ class AutofillWorker:
         with contextlib.suppress(Exception):
             await bridge.send(text)
             logger.info("Email-feedback notification sent", job_id=job_id, kind=kind)
+
+    async def _record_outcome(
+        self,
+        store: Any,
+        job: dict[str, Any],
+        outcome: str,
+        *,
+        email_kind: str = "",
+        corrections: list[dict[str, Any]] | None = None,
+        error: str = "",
+        render_path: str = "",
+        proxy_used: bool = False,
+    ) -> None:
+        """Best-effort application-outcome telemetry (the feedback signal)."""
+        if store is None:
+            return
+        try:
+            domain = _domain_of(job.get("apply_link") or "")
+            board = domain
+            await store.record_application_outcome(
+                {
+                    "job_id": job.get("job_id", ""),
+                    "board": board,
+                    "company": job.get("company", ""),
+                    "role": job.get("role", ""),
+                    "outcome": outcome,
+                    "ats_platform": job.get("ats_platform", ""),
+                    "render_path": render_path,
+                    "proxy_used": proxy_used,
+                    "corrections": corrections or [],
+                    "email_kind": email_kind,
+                    "error": error[:300],
+                }
+            )
+            # Feed the routing table too: a successful submit is a good signal.
+            await store.record_board_submission(
+                board, ok=outcome == "submitted", corrections=len(corrections or [])
+            )
+        except Exception:
+            pass
 
     @staticmethod
     def _format_pending(entry: dict[str, Any]) -> str:

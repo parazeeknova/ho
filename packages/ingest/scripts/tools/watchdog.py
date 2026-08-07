@@ -5,7 +5,6 @@ Runs every CHECK_INTERVAL seconds and repairs any component that died:
   * llama-server embedding service (:8900)          -> relaunch scripts/serve.py
   * infra containers (searxng, neo4j, agent-memory) -> podman start / compose up
   * pipeline supervisor (scripts/run.py)            -> full relaunch if dead
-  * azure ingest loop (scripts/azure/ingest.py)     -> relaunch with stored creds
 
 Each component has a per-item cooldown so crash-loops do not thrash.
 Logs to logs/watchdog.log. Single-instance via lockfile.
@@ -140,26 +139,11 @@ class Watchdog:
             f"> {PROJECT / 'logs' / 'run.out'} 2>&1 &"
         )
 
-    def heal_ingest(self) -> None:
-        alive = count_of(r"scripts/azure/ingest.py")
-        if alive > 0:
-            return
-        if not self.due("ingest"):
-            return
-        log("azure ingest dead, relaunching")
-        creds = PROJECT / "scripts" / ".watchdog.env"
-        source = f"set -a; . {creds}; set +a;" if creds.exists() else ""
-        run_detached(
-            f"cd {PROJECT} && {source} PYTHONPATH={PROJECT} nohup uv run --with azure-storage-blob "
-            f"python3 scripts/azure/ingest.py >> {PROJECT / 'logs' / 'ingest.out'} 2>&1 &"
-        )
-
     def cycle(self) -> None:
         try:
             self.heal_embed()
             statuses = self.heal_containers()
             self.heal_pipeline(statuses)
-            self.heal_ingest()
         except Exception as exc:
             log(f"cycle error: {exc}")
 
@@ -178,7 +162,7 @@ class Watchdog:
         try:
             code, out = sh(
                 f"cd {PROJECT} && PYTHONPATH={PROJECT} "
-                f"nohup uv run python3 scripts/embed_pending.py 2>/dev/null",
+                f"nohup uv run python3 scripts/embed/embed_pending.py 2>/dev/null",
                 timeout=30,
             )
             if code != 0:
@@ -247,7 +231,6 @@ class Watchdog:
             if pg_down and self.due("pg"):
                 log("postgres container down, starting it")
                 sh("podman start firecrawl_agent-memory-db_1")
-            self.heal_ingest()
             self.heal_embed_backfill()
             self.heal_intel_loop()
             self.heal_smart_intel()

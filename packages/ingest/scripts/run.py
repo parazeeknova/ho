@@ -408,13 +408,15 @@ def main() -> None:
             if _line and not _line.startswith("#") and "=" in _line:
                 _k, _v = _line.split("=", 1)
                 env.setdefault(_k.strip(), _v.strip().strip('"').strip("'"))
-    # Full-force LLM matching: force the queue throttles so the workers
-    # blast through the corpus (the cloud provider quota allows it).
-    env["LLM_QUEUE_RPM"] = "240"
-    env["LLM_QUEUE_MAX_IN_FLIGHT"] = "30"
-    env["LLM_QUEUE_TPM"] = "400000"
-    env["LLM_BUDGET_RADAR_RPM"] = "240"
-    env["LLM_BUDGET_RADAR_TPM"] = "400000"
+    # LLM throttles stay under the provider's real cap (GeneralCompute:
+    # 100 RPM / 200K TPM). Forcing 240+ tripped 429s and stalled autofill on
+    # a 30-40s cooldown per question, so these are set only if the user has
+    # not already chosen a value in .env.
+    env.setdefault("LLM_QUEUE_RPM", "90")
+    env.setdefault("LLM_QUEUE_MAX_IN_FLIGHT", "10")
+    env.setdefault("LLM_QUEUE_TPM", "180000")
+    env.setdefault("LLM_BUDGET_RADAR_RPM", "60")
+    env.setdefault("LLM_BUDGET_RADAR_TPM", "120000")
 
     # Background container stats logger
     stop_stats = threading.Event()

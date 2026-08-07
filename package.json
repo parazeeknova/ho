@@ -17,8 +17,6 @@
     "init-memory": "PYTHONPATH=.:packages/ingest:packages/autofill uv run python packages/autofill/scripts/init_memory.py",
     "grill-persona": "PYTHONPATH=.:packages/ingest:packages/autofill uv run python packages/autofill/scripts/grill_persona.py",
     "index-resume": "PYTHONPATH=.:packages/ingest uv run python packages/ingest/scripts/index_resume.py",
-    "crawl": "PYTHONPATH=.:packages/ingest:packages/autofill uv run python packages/ingest/scripts/cli/local_crawler.py",
-    "crawl:ingest": "PYTHONPATH=.:packages/ingest:packages/autofill uv run python packages/ingest/scripts/cli/local_crawler.py --ingest",
     "intel": "PYTHONPATH=.:packages/ingest:packages/autofill uv run python packages/ingest/scripts/intel/radar_intel.py",
     "intel:smart": "PYTHONPATH=.:packages/ingest:packages/autofill uv run python packages/ingest/scripts/intel/smart_intel.py --write",
     "intel:planning": "PYTHONPATH=.:packages/ingest:packages/autofill uv run python packages/ingest/scripts/intel/planning_pass.py --write",

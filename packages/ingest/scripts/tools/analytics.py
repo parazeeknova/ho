@@ -176,7 +176,6 @@ def main() -> None:
     for pat, label in (
         ("src[.]radar[.]engine[.]orchestrator", "orchestrators"),
         ("scripts/run[.]py", "run.py"),
-        ("azure/ingest[.]py", "azure ingest"),
         ("intel_loop[.]py", "intel loop"),
         ("smart_intel_loop[.]py", "smart intel loop"),
     ):
