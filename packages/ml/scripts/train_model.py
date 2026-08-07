@@ -11,7 +11,7 @@ import argparse
 import asyncio
 import json
 
-from ..config import get_ml_config
+from ml.config import get_ml_config
 
 
 async def _fetch_events(store, window_days: int) -> list[dict]:
@@ -59,8 +59,8 @@ async def main() -> None:
     ap.add_argument("--version", default="v1")
     args = ap.parse_args()
 
-    from .. import FEATURE_VERSION
-    from ..model_registry import dataset_hash_for_rows, register_model
+    from ml import FEATURE_VERSION
+    from ml.model_registry import dataset_hash_for_rows, register_model
 
     try:
         from src.memory.pgvector_store import MemoryStore
@@ -82,7 +82,7 @@ async def main() -> None:
     dhash = dataset_hash_for_rows(rows)
     print(f"dataset_hash={dhash}")
 
-    from ..ltr import train_classifiers, train_ranker
+    from ml.ltr import train_classifiers, train_ranker
 
     if args.type == "ranker":
         result = await train_ranker(store, FEATURE_VERSION, version=args.version)
