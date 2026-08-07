@@ -40,7 +40,9 @@ def company_from_sender(sender: str) -> str | None:
 def extract_role_from_subject(subject: str) -> str | None:
     # Common patterns: "Re: Backend Engineer at Acme", "Update on ... Engineer"
     m = re.search(
-        r"(?:re:|update on|regarding|for)\s+(.+?)(?:\s+at\s+|\s+—|\s+-|$)", subject or "", re.IGNORECASE
+        r"(?:re:|update on|regarding|for)\s+(.+?)(?:\s+at\s+|\s+—|\s+-|$)",
+        subject or "",
+        re.IGNORECASE,
     )
     if m:
         return m.group(1).strip()[:80]
@@ -54,7 +56,7 @@ async def resolve_outcome(
     """Resolve an ATS email to a job. Returns {job_id, confidence, ...}."""
     subject = email.get("subject", "")
     sender = email.get("from", "") or email.get("sender", "")
-    body = email.get("snippet", "") or email.get("body", "")
+    _body = email.get("snippet", "") or email.get("body", "")
 
     # Fetch recent applied jobs as candidates
     try:

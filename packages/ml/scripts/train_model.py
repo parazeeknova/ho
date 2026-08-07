@@ -10,8 +10,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import time
-from pathlib import Path
 
 from ..config import get_ml_config
 
@@ -90,7 +88,9 @@ async def main() -> None:
         result = await train_ranker(store, FEATURE_VERSION, version=args.version)
     else:
         result = await train_classifiers(store, FEATURE_VERSION, version=args.version)
-    print(json.dumps({k: (str(v)[:100] if k == "model" else v) for k, v in result.items()}, indent=2))
+    print(
+        json.dumps({k: (str(v)[:100] if k == "model" else v) for k, v in result.items()}, indent=2)
+    )
     if result.get("status") == "trained":
         await register_model(
             store,

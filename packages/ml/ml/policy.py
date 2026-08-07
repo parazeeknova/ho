@@ -30,9 +30,7 @@ def expected_utility(
     cost: float | None = None,
 ) -> float:
     cost = cost if cost is not None else application_cost()
-    return (
-        p_screen * p_interview_given_screen * p_offer_given_interview * offer_utility - cost
-    )
+    return p_screen * p_interview_given_screen * p_offer_given_interview * offer_utility - cost
 
 
 def ev_rank_key(candidate: dict[str, Any]) -> float:
@@ -53,9 +51,7 @@ def satisfies_hard_constraints(candidate: dict[str, Any]) -> bool:
         return False
     floor = candidate.get("salary_floor")
     sal = candidate.get("salary_amount")
-    if floor is not None and sal is not None and sal < floor:
-        return False
-    return True
+    return not (floor is not None and sal is not None and sal < floor)
 
 
 def rank_by_ev(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:

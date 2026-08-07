@@ -6,6 +6,7 @@
     pkgs.uv
     pkgs.python314
     pkgs.stdenv.cc.cc.lib
+    pkgs.zlib
   ];
 
   languages.python = {
@@ -22,7 +23,7 @@
 
   dotenv.enable = true;
 
-  env.LD_LIBRARY_PATH = "${pkgs.stdenv.cc.cc.lib}/lib";
+  env.LD_LIBRARY_PATH = "${pkgs.stdenv.cc.cc.lib}/lib:${pkgs.zlib}/lib";
   env.SSL_CERT_FILE = "/etc/ssl/certs/ca-bundle.crt";
   env.REQUESTS_CA_BUNDLE = "/etc/ssl/certs/ca-bundle.crt";
 

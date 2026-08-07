@@ -254,11 +254,13 @@ async def _poll_cycle(store: Any, service: Any) -> None:
                 history_id = str(data.get("historyId", ""))
                 if history_id:
                     await _process_history(store, service, history_id)
-                await asyncio.to_thread(
-                    lambda m=msg: subscriber.acknowledge(
+
+                def _ack(m: Any = msg) -> None:
+                    subscriber.acknowledge(
                         request={"subscription": subscription_path, "ack_ids": [m.ack_id]}
                     )
-                )
+
+                await asyncio.to_thread(_ack)
             except Exception:
                 pass
         if response.received_messages:
@@ -359,3 +361,18 @@ def extract_role(subject: str) -> str | None:
     if m:
         return m.group(1).strip()[:80]
     return None
+
+
+async def _run() -> None:
+    from src.memory.pgvector_store import MemoryStore
+
+    store = await MemoryStore.create()
+    await run_gmail_push_loop(store)
+
+
+if __name__ == "__main__":
+    import asyncio
+    import logging
+
+    logging.basicConfig(level=logging.INFO)
+    asyncio.run(_run())

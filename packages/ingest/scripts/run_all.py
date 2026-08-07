@@ -167,7 +167,7 @@ def _ensure_memory() -> None:
 
 async def _run_loop(args: argparse.Namespace) -> int:
     env = dict(os.environ)
-    paths = [str(PROJECT), str(REPO / "packages" / "autofill")]
+    paths = [str(PROJECT), str(REPO / "packages" / "autofill"), str(REPO / "packages" / "ml")]
     if env.get("PYTHONPATH"):
         paths.append(env["PYTHONPATH"])
     env["PYTHONPATH"] = os.pathsep.join(paths)

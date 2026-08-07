@@ -11,7 +11,9 @@ from __future__ import annotations
 import random
 
 
-def annealed_epsilon(step: int, initial: float = 0.30, mature: float = 0.05, anneal_steps: int = 500) -> float:
+def annealed_epsilon(
+    step: int, initial: float = 0.30, mature: float = 0.05, anneal_steps: int = 500
+) -> float:
     if step >= anneal_steps:
         return mature
     t = step / max(anneal_steps, 1)
@@ -54,7 +56,5 @@ def inverse_propensity_weight(propensity: float) -> float:
     return 1.0 / p
 
 
-def snips_weight(
-    propensity: float, action_probability: float, num_actions: int
-) -> float:
+def snips_weight(propensity: float, action_probability: float, num_actions: int) -> float:
     return inverse_propensity_weight(propensity) / action_probability * (1.0 / num_actions)

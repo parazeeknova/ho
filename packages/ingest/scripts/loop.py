@@ -60,7 +60,7 @@ def _base_env() -> dict[str, str]:
     env = os.environ.copy()
     env.setdefault("OVERNIGHT_LOOP", "true")
     env.setdefault("PYTHONUNBUFFERED", "1")
-    _paths = [str(PROJECT), str(REPO / "packages" / "autofill")]
+    _paths = [str(PROJECT), str(REPO / "packages" / "autofill"), str(REPO / "packages" / "ml")]
     if env.get("PYTHONPATH"):
         _paths.append(env["PYTHONPATH"])
     env["PYTHONPATH"] = os.pathsep.join(_paths)
@@ -173,6 +173,22 @@ async def _spawn_worker(children: list[Child]) -> None:
     children.append(child)
 
 
+async def _spawn_email_listener(children: list[Child]) -> None:
+    """3rd child: Gmail push daemon (instant outcome emails → ML events).
+
+    Only starts when GMAIL_PUSH=1; otherwise it exits immediately. Crashed
+    children are restarted by the loop's supervisor.
+    """
+    env = _base_env()
+    child = Child(
+        "email-listener",
+        [sys.executable, "-m", "ml.gmail_push"],
+        env,
+    )
+    await child.start()
+    children.append(child)
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--no-radar", action="store_true", help="Do not start the radar pipeline")
@@ -195,6 +211,9 @@ async def main() -> None:
             await _spawn_radar(children, args.radar_workers)
         if not args.no_fill:
             await _spawn_worker(children)
+        # Gmail push daemon (only if GMAIL_PUSH=1; exits immediately otherwise)
+        if not args.no_fill and os.getenv("GMAIL_PUSH", "").strip() == "1":
+            await _spawn_email_listener(children)
         if not children:
             print("[loop] nothing to run (--no-radar and --no-fill both given)")
             return

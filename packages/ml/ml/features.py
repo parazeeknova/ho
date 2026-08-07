@@ -26,11 +26,12 @@ class FeatureLeakageError(RuntimeError):
 
 def assert_no_leakage(features: dict[str, Any], decision_ts: float) -> None:
     for k, v in features.items():
-        if isinstance(v, dict) and "observed_at" in v:
-            if v["observed_at"] > decision_ts + 1.0:  # 1s clock skew tolerance
-                raise FeatureLeakageError(
-                    f"feature {k} observed_at {v['observed_at']} > decision {decision_ts}"
-                )
+        if (
+            isinstance(v, dict) and "observed_at" in v and v["observed_at"] > decision_ts + 1.0
+        ):  # 1s clock skew tolerance
+            raise FeatureLeakageError(
+                f"feature {k} observed_at {v['observed_at']} > decision {decision_ts}"
+            )
 
 
 # Helpers
@@ -78,12 +79,12 @@ def extract_features(
     ctx = context or {}
     gs = graph_signals or {}
 
-    cand_skills = set(s.lower() for s in (candidate.get("skills") or []))
-    job_skills = set(s.lower() for s in (job.get("matching_skills") or []))
-    missing = set(s.lower() for s in (job.get("missing_skills") or []))
+    cand_skills = {s.lower() for s in (candidate.get("skills") or [])}
+    job_skills = {s.lower() for s in (job.get("matching_skills") or [])}
+    missing = {s.lower() for s in (job.get("missing_skills") or [])}
 
     tech_overlap = 0.0
-    company_techs: set[str] = set(t.lower() for t in (gs.get("company_techs") or []))
+    company_techs: set[str] = {t.lower() for t in (gs.get("company_techs") or [])}
     if cand_skills and company_techs:
         tech_overlap = len(cand_skills & company_techs) / max(len(cand_skills), 1)
 

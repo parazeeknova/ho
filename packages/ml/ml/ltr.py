@@ -36,11 +36,11 @@ async def train_ranker(
     feature_version: str = FEATURE_VERSION,
     version: str = "v1",
 ) -> dict[str, Any]:
-    try:
-        import lightgbm as lgb
-        import pandas as pd
-    except ImportError as e:
-        return {"error": f"missing dep: {e}", "model_type": "lgb_ranker"}
+    import importlib.util
+
+    if importlib.util.find_spec("lightgbm") is None:
+        return {"error": "missing dep: lightgbm", "model_type": "lgb_ranker"}
+    import lightgbm as lgb
 
     frame = _load_training_frame(store, feature_version)
     if frame is None or len(frame) == 0:
@@ -67,11 +67,10 @@ async def train_classifiers(
     feature_version: str = FEATURE_VERSION,
     version: str = "v1",
 ) -> dict[str, Any]:
-    try:
-        import lightgbm as lgb
-        from sklearn.isotonic import IsotonicRegression
-    except ImportError as e:
-        return {"error": f"missing dep: {e}", "model_type": "clf"}
+    import importlib.util
+
+    if importlib.util.find_spec("lightgbm") is None:
+        return {"error": "missing dep: lightgbm", "model_type": "clf"}
 
     stages = ["screening", "interview", "offer"]
     results: dict[str, Any] = {}

@@ -23,6 +23,16 @@ dependencies = [
     "questionary>=2.1.1",
     "redis>=5.0",
     "rich>=15.0.0",
+    # learning system (packages/ml)
+    "lightgbm>=4.5.0",
+    "scikit-learn>=1.6.0",
+    "pandas>=2.2.0",
+    "pyarrow>=17.0.0",
+    "joblib>=1.4.0",
+    "google-api-python-client>=2.140.0",
+    "google-auth>=2.35.0",
+    "google-auth-oauthlib>=1.2.0",
+    "google-cloud-pubsub>=2.27.0",
 ]
 
 [tool.ruff]
@@ -54,6 +64,13 @@ known-first-party = ["ho"]
 
 [tool.ruff.lint.per-file-ignores]
 "src/graph/graph_store.py" = ["E501"]
+# ML ingest daemon: defensive error handling is intentional (must never crash
+# mid-poll). Blind Exception catches are graceful-degradation on purpose.
+"packages/ml/ml/gmail_push.py" = ["BLE001", "S110"]
+"packages/ml/ml/outcome_resolver.py" = ["BLE001", "S110"]
+"packages/ml/ml/events.py" = ["BLE001", "S110"]
+"packages/ml/ml/features.py" = ["BLE001", "S110"]
+"packages/ml/ml/ltr.py" = ["BLE001"]
 
 [dependency-groups]
 dev = [
@@ -66,19 +83,31 @@ dev = [
 
 [tool.mypy]
 python_version = "3.14"
-mypy_path = ["packages/ingest", "packages/autofill"]
-files = ["packages/ingest/src", "packages/ingest/scripts", "packages/autofill"]
+mypy_path = ["packages/ingest", "packages/autofill", "packages/ml"]
+files = ["packages/ingest/src", "packages/ingest/scripts", "packages/autofill", "packages/ml/ml"]
 exclude = ["test_.*\\.py$", "conftest\\.py$", "/tests/"]
 
 # Optional cloud deps (azure-storage-blob not installed locally) and
-# untyped third-party SDKs (asyncpg, generalcompute).
+# untyped third-party SDKs (asyncpg, generalcompute, sklearn, google).
 [[tool.mypy.overrides]]
-module = ["azure.*", "asyncpg", "generalcompute"]
+module = [
+    "azure.*",
+    "asyncpg",
+    "generalcompute",
+    "sklearn.*",
+    "google.*",
+    "googleapiclient.*",
+    "google.auth.*",
+    "google.cloud.*",
+    "lightgbm.*",
+    "pandas.*",
+    "pyarrow.*",
+]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-pythonpath = [".", "packages/ingest", "packages/autofill"]
+pythonpath = [".", "packages/ingest", "packages/autofill", "packages/ml"]
 # Tests live alongside their source files. Same-basename test modules
 # (test_queue.py, test_overnight.py) exist in more than one package, so
 # importlib mode loads each by file path and they never collide.
