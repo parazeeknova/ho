@@ -1305,6 +1305,18 @@ export class GenericAdapter extends ATSAdapter {
     const processedKeys = new Set<string>();
     const userSkippedKeys = new Set<string>();
 
+    // Batch pre-resolve the first visible questions in one RPC (one LLM call)
+    // instead of a round-trip per field. Later/conditional fields still fall
+    // back to per-field resolution, but the common case collapses to one call.
+    try {
+      const firstInventory = await this.collectQuestions();
+      if (firstInventory.length > 0) {
+        await screener.preResolveBatch(firstInventory);
+      }
+    } catch (err: any) {
+      console.warn(`[Generic] Batch pre-resolve skipped: ${err?.message || err}`);
+    }
+
     const MAX_STEPS = 12;
     for (let step = 0; step < MAX_STEPS; step++) {
       await randomSleep(1200, 1800);

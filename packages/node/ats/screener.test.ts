@@ -156,3 +156,75 @@ describe("blanked-required counter (screener)", () => {
     assert.equal(getBlankedRequiredCount(), 2);
   });
 });
+
+describe("batch pre-resolve (screener)", () => {
+  const selField = (label: string): FormField => ({
+    label,
+    id: "s",
+    kind: "multi",
+    required: true,
+    options: ["Yes", "No"],
+    optionTargets: [],
+  });
+
+  it("resolves multiple questions in one RPC and fills from cache", async () => {
+    let rpcCalls = 0;
+    const controls = {
+      tagName: "Test",
+      fillByKind: async () => true,
+      readFieldValue: async () => "Yes",
+      readSelectOptions: async () => ["Yes", "No"],
+      closeMenu: async () => {},
+      readSelectValue: async () => "Yes",
+      fillAsyncAutocomplete: async () => true,
+    } as any;
+    const rpc = async (method: string, args: any) => {
+      rpcCalls += 1;
+      assert.equal(method, "answer_questions_batch");
+      assert.equal(args.questions.length, 2);
+      return {
+        answers: {
+          "Are you authorized to work?": "Yes",
+          "Years of experience?": "4",
+        },
+      };
+    };
+    const screener = new Screener(controls, "Test", profile, rpc);
+    await screener.preResolveBatch([
+      selField("Are you authorized to work?"),
+      textField("Years of experience?"),
+    ]);
+    assert.equal(rpcCalls, 1);
+
+    // process() fills from cache without another RPC.
+    const filled: string[] = [];
+    const blanked: { label: string; reason: string }[] = [];
+    await screener.process(selField("Are you authorized to work?"), filled, blanked, new Set());
+    await screener.process(textField("Years of experience?"), filled, blanked, new Set());
+    assert.equal(rpcCalls, 1, "cached answers must not issue a second RPC");
+    assert.equal(filled.length, 2);
+  });
+
+  it("falls back to per-field RPC when batch fails", async () => {
+    const controls = {
+      tagName: "Test",
+      fillByKind: async () => true,
+      readFieldValue: async () => "filled",
+      readSelectOptions: async () => [],
+      closeMenu: async () => {},
+      readSelectValue: async () => "filled",
+      fillAsyncAutocomplete: async () => true,
+    } as any;
+    const rpc = async (method: string) => {
+      if (method === "answer_questions_batch") throw new Error("batch down");
+      return { answer: "X", source: "kb" };
+    };
+    const screener = new Screener(controls, "Test", profile, rpc);
+    await screener.preResolveBatch([textField("Q?")]);
+    // Cache empty -> process issues per-field RPC.
+    const filled: string[] = [];
+    const blanked: { label: string; reason: string }[] = [];
+    await screener.process(textField("Q?"), filled, blanked, new Set());
+    assert.equal(filled.length, 1);
+  });
+});

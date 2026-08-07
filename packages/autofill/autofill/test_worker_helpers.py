@@ -292,3 +292,30 @@ def test_profiles_dir_points_to_ts_package() -> None:
     base = w._NODE_DIR / "artifacts" / "profiles"
     assert str(base).endswith("packages/node/artifacts/profiles")
     assert base.exists()
+
+
+def test_normalize_batch_specs_coerces_and_drops():
+    from autofill.worker import _normalize_batch_specs
+
+    out = _normalize_batch_specs(
+        [
+            {"question": "  Are you authorized?  ", "kind": "select", "options": ["Yes", "No"]},
+            {"question": "Radio?", "kind": "radio", "options": ["A", "B"]},
+            {"question": "Check?", "kind": "checkbox", "options": ["X", "Y"]},
+            {"question": "", "kind": "text"},
+            "not-a-dict",
+        ]
+    )
+    assert len(out) == 3
+    assert out[0]["question"] == "Are you authorized?"
+    assert out[0]["kind"] == "select"
+    assert out[1]["kind"] == "select"  # radio coerced
+    assert out[2]["kind"] == "multi"  # checkbox coerced
+    assert out[0]["required"] is True  # default
+
+
+def test_normalize_batch_specs_required_flag():
+    from autofill.worker import _normalize_batch_specs
+
+    out = _normalize_batch_specs([{"question": "Q", "required": False}])
+    assert out[0]["required"] is False

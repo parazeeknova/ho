@@ -68,6 +68,8 @@ export class Screener {
   /** Boards with a dedicated cover-letter path skip cover-letter fields in
    *  the walk — those are generated once via the "cover_letter" RPC. */
   protected skipCoverLetterFields: boolean;
+  /** Answers pre-resolved in one batch RPC, keyed by normalized label. */
+  protected batchCache: Map<string, { answer: string; source: string }> = new Map();
 
   constructor(
     controls: FormControls,
@@ -81,6 +83,61 @@ export class Screener {
     this.profile = profile;
     this.rpc = rpc;
     this.skipCoverLetterFields = skipCoverLetterFields;
+  }
+
+  /**
+   * Batch-resolve a set of fields' answers in one RPC round-trip (one LLM call
+   * for the whole form instead of one per field). Fields that answer from the
+   * profile, structural checkbox rules, or async location are excluded — only
+   * fields that would otherwise fall through to the per-field answer_question
+   * RPC are sent. Results are cached by normalized label; process() consults
+   * the cache before issuing an individual RPC.
+   */
+  async preResolveBatch(fields: FormField[]): Promise<void> {
+    const specs: Array<{ question: string; kind: string; options: string[]; required: boolean }> =
+      [];
+    for (const field of fields) {
+      if (this.skipCoverLetterFields && isCoverLetterField(field)) continue;
+      const key = normalizeQuestionLabel(field.label);
+      // Already covered deterministically — skip.
+      const profileKey = PROFILE_FILLS[key] ?? IDENTITY_FILLS[key];
+      if (profileKey && (this.profile as any)?.[profileKey]) continue;
+      if (field.kind === "checkbox" && checkboxAction(field) !== "ask") continue;
+      if (isLocationAutocomplete(field) && (this.profile as any)?.location) continue;
+      let optionTexts = field.options.slice();
+      if ((field.kind === "select" || field.kind === "multi") && optionTexts.length === 0) {
+        // Read options now so the batch gets the same ground truth a per-field
+        // walk would. Best-effort: if reading fails, resolve without them.
+        optionTexts = await this.controls.readSelectOptions(field.id).catch(() => []);
+      }
+      specs.push({
+        question: field.label,
+        kind: field.kind === "radio" ? "select" : field.kind === "checkbox" ? "multi" : field.kind,
+        options: optionTexts,
+        required: !!field.required,
+      });
+    }
+    if (specs.length === 0) return;
+    try {
+      const result: any = await this.rpc("answer_questions_batch", { questions: specs });
+      const answers: Record<string, string> = result?.answers ?? {};
+      for (const s of specs) {
+        const ans = (answers[s.question] ?? "").toString().trim();
+        if (ans && ans !== "__ASK_USER__") {
+          this.batchCache.set(normalizeQuestionLabel(s.question), { answer: ans, source: "kb" });
+        }
+      }
+      console.log(
+        `[${this.tagName}] Batch-resolved ${specs.length} question(s) in one RPC ` +
+          `(${this.batchCache.size} answered from cache).`,
+      );
+    } catch (err: any) {
+      // Fall back to per-field resolution on any batch failure.
+      console.warn(
+        `[${this.tagName}] Batch pre-resolve failed; using per-field resolution: ` +
+          `${err?.message || err}`,
+      );
+    }
   }
 
   async process(
@@ -198,6 +255,36 @@ export class Screener {
 
     const rpcKind =
       field.kind === "radio" ? "select" : field.kind === "checkbox" ? "multi" : field.kind;
+
+    // Batch cache hit: an answer pre-resolved in one form-wide RPC. Use it
+    // directly (fill + verify) without a second per-field RPC round-trip.
+    const cached = this.batchCache.get(normalizeQuestionLabel(field.label));
+    if (cached && cached.answer) {
+      let ok: boolean;
+      if (isAsyncLocation) {
+        ok = await this.controls.fillAsyncAutocomplete(field.id, cached.answer);
+        if (!ok) {
+          ok = await this.controls.fillAsyncAutocomplete(field.id, cached.answer);
+        }
+        const committed = await this.controls.readSelectValue(field.id);
+        ok = ok && !!committed;
+      } else {
+        ok = await this.controls.fillByKind(field, cached.answer, optionTexts);
+        if (!ok) {
+          ok = await this.controls.fillByKind(field, cached.answer, optionTexts);
+        }
+      }
+      if (ok) {
+        filled.push(field.label);
+        await randomSleep(150, 300);
+      } else {
+        blanked.push({
+          label: field.label,
+          reason: `batch answer "${cached.answer}" not committable`,
+        });
+      }
+      return;
+    }
 
     let result: any;
     try {

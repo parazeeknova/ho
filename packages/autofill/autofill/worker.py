@@ -80,6 +80,35 @@ def _domain_of(url: str) -> str:
         return ""
 
 
+def _normalize_batch_specs(specs: list[Any]) -> list[dict[str, Any]]:
+    """Normalize raw ``answer_questions_batch`` RPC specs.
+
+    Drops entries without a question and coerces kind/options/required to the
+    shapes ``rag.answer_questions`` expects (radio -> select, checkbox -> multi).
+    """
+    out: list[dict[str, Any]] = []
+    for s in specs if isinstance(specs, list) else []:
+        if not isinstance(s, dict):
+            continue
+        question = str(s.get("question", "")).strip()
+        if not question:
+            continue
+        kind = str(s.get("kind", "text"))
+        if kind == "radio":
+            kind = "select"
+        elif kind == "checkbox":
+            kind = "multi"
+        out.append(
+            {
+                "question": question,
+                "kind": kind,
+                "options": [str(o) for o in (s.get("options") or [])],
+                "required": bool(s.get("required", True)),
+            }
+        )
+    return out
+
+
 def _assert_runner_ready() -> None:
     """Verify the browser runner is spawnable; raise a clear error otherwise.
 
@@ -1066,6 +1095,54 @@ class AutofillWorker:
                                         "source": source,
                                     }
                                 )
+                            continue
+
+                        if method == "answer_questions_batch":
+                            # Batch resolution: collect all form questions that
+                            # still need an answer (KB/LLM tiers) and resolve
+                            # them in ONE rag.answer_questions call — a single
+                            # LLM round-trip for the whole form instead of one
+                            # per field. Deterministic policy answers (visa,
+                            # authorization, residence, affiliation) are applied
+                            # inside answer_questions. Unresolved questions are
+                            # returned as ASK_USER so the screener can ask them
+                            # one at a time (or defer overnight).
+                            try:
+                                specs = args.get("questions") or []
+                                if not isinstance(specs, list):
+                                    raise ValueError("questions must be a list")
+                                normalized = _normalize_batch_specs(specs)
+                                answers = {}
+                                if rag is not None and normalized:
+                                    answers = await rag.answer_questions(
+                                        normalized, job_context=job_context
+                                    )
+                                if process.stdin and not process.stdin.is_closing():
+                                    rpc_resp = json.dumps(
+                                        {
+                                            "type": "RPC_RESPONSE",
+                                            "id": req_id,
+                                            "result": {"answers": answers},
+                                        }
+                                    )
+                                    process.stdin.write(f"{rpc_resp}\n".encode())
+                                    await process.stdin.drain()
+                            except Exception as batch_err:
+                                logger.error(
+                                    "Batch answer failed",
+                                    job_id=job_id,
+                                    error=str(batch_err),
+                                )
+                                if process.stdin and not process.stdin.is_closing():
+                                    rpc_resp = json.dumps(
+                                        {
+                                            "type": "RPC_RESPONSE",
+                                            "id": req_id,
+                                            "error": str(batch_err),
+                                        }
+                                    )
+                                    process.stdin.write(f"{rpc_resp}\n".encode())
+                                    await process.stdin.drain()
                             continue
 
                     except Exception as rpc_err:
