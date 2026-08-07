@@ -158,6 +158,11 @@ export async function verifySubmitOutcome(
     submitButtonSelector?: string;
     errorSelectors?: string[];
     polls?: number;
+    /** Listen for the submit network request and require a 2xx response
+     *  before declaring the submission confirmed. When provided, `confirmed`
+     *  is only true if BOTH a 2xx submit response AND the page-level success
+     *  signal (redirect / success text) are observed. */
+    submitResponse?: () => Promise<{ ok: boolean; status?: number } | undefined>;
   },
 ): Promise<SubmitOutcome> {
   const { tag } = opts;
@@ -171,6 +176,21 @@ export async function verifySubmitOutcome(
   for (let i = 0; i < polls; i++) {
     const url = page.url();
     if (urlRe.test(url)) {
+      // A success-page redirect is only a confirmation when the submit request
+      // itself succeeded (2xx). If we cannot observe the response (no hook),
+      // the redirect alone stands (backwards compatible).
+      if (opts.submitResponse) {
+        const resp = await opts.submitResponse().catch(() => undefined);
+        if (!resp || !resp.ok) {
+          const code = resp?.status ?? "no-response";
+          console.error(`[${tag}] Success URL reached but submit response was not 2xx (${code}).`);
+          return {
+            confirmed: false,
+            error: `submit response not 2xx (${code}) despite success-page redirect`,
+            retryable: true,
+          };
+        }
+      }
       console.log(`[${tag}] Submitted: success-page redirect confirmed (${url}).`);
       return { confirmed: true, retryable: false };
     }

@@ -1477,6 +1477,34 @@ export class GenericAdapter extends ATSAdapter {
     // it as required (the runner must not submit with any unknown blank).
     setBlankedRequiredCount(stillBlank.length);
 
+    // Pre-submit readback: log every visible field's ACTUAL committed value so
+    // a wrong value (e.g. a location guessed as "United Kingdom") is visible in
+    // the runner log BEFORE the application is submitted. This is the positive
+    // recheck the user asked for — not just "is the field non-empty", but
+    // "does it hold the right value".
+    try {
+      const domReadback = await this.collectQuestions();
+      const readback = mergeFormInventory(jsonModel, domReadback);
+      const reported = new Set<string>();
+      for (const f of readback) {
+        if (PRE_FILLED_LABELS.has(normalizeLabel(f.label))) continue;
+        const key = fieldKey(f);
+        if (reported.has(key)) continue;
+        reported.add(key);
+        const val = await this.controls.readFieldValue(f).catch(() => "");
+        if (val) {
+          console.log(
+            `[Generic] Pre-submit value [${f.kind}] "${escapePromptValue(f.label)}" = ` +
+              `"${escapePromptValue(String(val).slice(0, 120))}"`,
+          );
+        }
+      }
+    } catch (readbackErr: any) {
+      console.warn(
+        `[Generic] Pre-submit readback failed: ${readbackErr?.message || readbackErr}`,
+      );
+    }
+
     if (profile.resumePath && !resumeAttached && !(await this.controls.isResumeAttached())) {
       console.warn("[Generic] REVERIFY: resume is NOT attached after the final pass.");
     } else if (profile.resumePath) {

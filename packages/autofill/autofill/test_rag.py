@@ -1437,3 +1437,20 @@ async def test_residence_composite_with_willingness_option_deferred() -> None:
             )
             is None
         )
+
+
+@pytest.mark.asyncio
+async def test_bare_location_field_answers_from_profile():
+    """A bare 'Location'/'City'/'Country of residence' field must resolve from
+    the profile, never the LLM (which guessed 'United Kingdom')."""
+    from autofill.profile import Profile
+
+    profile = Profile(location="Bhopal, Madhya Pradesh, India")
+    with patch("autofill.rag.get_config", return_value=_cfg()):
+        rag = ScreenerRAG(exact_answers={}, scoped_answers={}, profile=profile, store=None)
+        assert await rag.kb_answer("Location") == "Bhopal, Madhya Pradesh, India"
+        assert await rag.kb_answer("City") == "Bhopal, Madhya Pradesh, India"
+        assert await rag.kb_answer("Country of residence") == "Bhopal, Madhya Pradesh, India"
+        assert await rag.kb_answer("What is your current location?") == (
+            "Bhopal, Madhya Pradesh, India"
+        )

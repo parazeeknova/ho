@@ -202,3 +202,30 @@ describe("ATSAdapter.retryAfterSpamFlag", () => {
     assert.equal(await adapter.retryAfterSpamFlag(), false);
   });
 });
+
+describe("verifySubmitOutcome — 200-gate", () => {
+  it("requires a 2xx submit response even on a success-URL redirect", async () => {
+    const page = new FakePage();
+    page.evaluate = makeEvaluator(page) as any;
+    page.urlValue = "https://example.com/apply/confirmation";
+    page.submitVisible = false;
+    const out = await verifySubmitOutcome(page as any, {
+      tag: "Test",
+      submitResponse: async () => ({ ok: false, status: 429 }),
+    });
+    assert.equal(out.confirmed, false, "success URL with non-2xx must NOT confirm");
+    assert.equal(out.retryable, true);
+  });
+
+  it("confirms on a success-URL redirect with a 2xx submit response", async () => {
+    const page = new FakePage();
+    page.evaluate = makeEvaluator(page) as any;
+    page.urlValue = "https://example.com/apply/confirmation";
+    page.submitVisible = false;
+    const out = await verifySubmitOutcome(page as any, {
+      tag: "Test",
+      submitResponse: async () => ({ ok: true, status: 200 }),
+    });
+    assert.equal(out.confirmed, true);
+  });
+});

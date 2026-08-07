@@ -368,6 +368,40 @@ export class AshbyAdapter extends ATSAdapter {
     await randomSleep(2500, 6000);
     await this.controls.humanFormInteractions(page);
     await randomSleep(400, 900);
+
+    // Track the application submit request and its response so confirmation
+    // is gated on an actual 2xx from the ATS — a success-page redirect alone
+    // is not proof the POST succeeded (the user's "check for 200 only" ask).
+    let lastSubmitResp: { ok: boolean; status?: number } | undefined;
+    // Listen for the submit response on the page. `r.ok()`/`r.status()` are
+    // Playwright Response methods; a fetch/XHR or navigation to an
+    // application/submission URL is treated as the submit.
+    let respListener: ((r: any) => void) | null = (r: any) => {
+      const u = String(r?.url?.() || r?.url || "");
+      if (!/candidate-submissions|application|apply|submission/i.test(u)) return;
+      try {
+        const ok = typeof r.ok === "function" ? r.ok() : false;
+        const status = typeof r.status === "function" ? r.status() : undefined;
+        lastSubmitResp = { ok, status };
+        console.log(
+          `[Ashby] Submit response: ${status ?? "?"} ${u.slice(0, 100)}` +
+            ` (${ok ? "ok" : "FAILED"})`,
+        );
+      } catch {
+        // Ignore responses we can't read.
+      }
+    };
+    if (typeof page.on === "function") {
+      try {
+        page.on("response", respListener);
+      } catch {
+        respListener = null;
+      }
+    }
+    // Drain the captured response right before verifying.
+    const submitResponse = async (): Promise<{ ok: boolean; status?: number } | undefined> =>
+      lastSubmitResp;
+
     const submitBtn = page.locator("button.ashby-application-form-submit-button").first();
     if (await submitBtn.isVisible().catch(() => false)) {
       await this.controls.humanClick(submitBtn, "button.ashby-application-form-submit-button");
@@ -376,10 +410,31 @@ export class AshbyAdapter extends ATSAdapter {
     }
     await randomSleep(800, 1600);
 
-    return verifySubmitOutcome(page, {
-      tag: "Ashby",
-      submitButtonSelector: "button.ashby-application-form-submit-button",
-    });
+    try {
+      const outcome = await verifySubmitOutcome(page, {
+        tag: "Ashby",
+        submitButtonSelector: "button.ashby-application-form-submit-button",
+        submitResponse,
+      });
+      // Detach the response listener if the page supports it.
+      if (respListener && typeof page.off === "function") {
+        try {
+          page.off("response", respListener);
+        } catch {
+          // ignore
+        }
+      }
+      return outcome;
+    } catch (err) {
+      if (respListener && typeof page.off === "function") {
+        try {
+          page.off("response", respListener);
+        } catch {
+          // ignore
+        }
+      }
+      throw err;
+    }
   }
 
   /**

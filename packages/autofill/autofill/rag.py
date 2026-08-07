@@ -1070,10 +1070,15 @@ _WHICH_COUNTRY_RE = re.compile(
     re.I,
 )
 
-# "Where are you located now?"-style free-text questions.
+# "Where are you located now?"-style free-text questions. A bare "Location",
+# "City", "Country" or "Country of residence" field label is a current-location
+# question too — the LLM has guessed "United Kingdom" for these, so they must
+# resolve deterministically from the persona.
 _WHERE_LOCATED_RE = re.compile(
     r"where are you (currently )?(based|located|living|staying)|"
-    r"what is your current location|current location",
+    r"what is your current location|current location|"
+    r"^(location|city|country|country of residence|current location|"
+    r"city/town|town|state|region)\s*[:?]?\s*$",
     re.I,
 )
 
@@ -2762,6 +2767,22 @@ class ScreenerRAG:
         if not q:
             return None
         q_lower = q.lower()
+
+        # A bare location/place-of-residence field ("Location", "City",
+        # "Country", "Country of residence") is the candidate's current
+        # residence — a fact from the profile, never a guess. The LLM has
+        # answered "United Kingdom" for these, so resolve deterministically.
+        # A question that ALSO asks about relocation/office/commute is not a
+        # plain location field and falls through to the policies below.
+        if (
+            not _RELOCATION_QUERY_RE.search(q)
+            and not _RESIDENCE_QUERY_RE.search(q)
+            and _WHERE_LOCATED_RE.search(q)
+        ):
+            location = (self.profile.location or "").strip()
+            if location:
+                logger.info("Location resolved from profile", question=q, location=location)
+                return location
 
         matched_rule = next(((p, key) for p, key in _PERSONAL_RULES if p.search(q)), None)
         key = matched_rule[1] if matched_rule else None
