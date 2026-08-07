@@ -63,6 +63,35 @@ def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").strip()).lower()
 
 
+# Gender-identity synonym map: persona answers ("Male", "Female", "Non-binary")
+# vs the option labels Greenhouse/Lever/Workday etc. actually use ("Man",
+# "Woman", "Non-binary"). Without this, a gender question whose options are
+# "Man/Woman/Non-binary" gets declined/blanked even though the persona has an
+# answer, and a required DEI question then blocks submission.
+_GENDER_SYNONYMS: dict[str, str] = {
+    "male": "man",
+    "man": "male",
+    "female": "woman",
+    "woman": "female",
+    "nonbinary": "non-binary",
+    "non-binary": "nonbinary",
+    "non binary": "non-binary",
+}
+
+
+def _gender_alias(answer: str) -> list[str]:
+    """Extra candidate spellings for a gender/DEI answer so option matching
+    can bridge persona-vs-form label differences."""
+    a = (answer or "").strip().lower()
+    out: list[str] = []
+    if a in _GENDER_SYNONYMS:
+        out.append(_GENDER_SYNONYMS[a])
+    # "I prefer to self-describe" style answers
+    if "self-describe" in a or "self describe" in a:
+        out.append("self-describe")
+    return out
+
+
 def _candidates(answer: str) -> list[str]:
     """Ordered candidate values: raw answer, first clause, leading Yes/No token."""
     out: list[str] = []
@@ -94,7 +123,8 @@ def match_option(answer: str, options: list[str]) -> str | None:
     tolerance). Returns None when nothing matches confidently — callers must
     ask rather than guess."""
     eligible = [o for o in (options or []) if not is_decline_option(o)]
-    for cand in _candidates(answer):
+    candidates = list(_candidates(answer)) + _gender_alias(answer)
+    for cand in candidates:
         nc = _norm(cand)
         if not nc:
             continue

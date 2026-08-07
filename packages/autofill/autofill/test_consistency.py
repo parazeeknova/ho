@@ -202,3 +202,16 @@ async def test_check_payload_enforces_live_persona_answers(monkeypatch):
         {"Are you legally authorized to work in Germany?": "No"}, profile, store=None, rag=None
     )
     assert report2["ok"] is True
+
+
+def test_match_option_gender_synonyms():
+    """Persona gender answers (Male/Female) must map to the option labels
+    ATS boards actually use (Man/Woman) so a required DEI question resolves
+    instead of declining and blocking submission."""
+    from autofill.resolve import match_option
+
+    opts = ["Man", "Non-binary", "Woman", "I prefer to self-describe", "I don't wish to answer"]
+    assert match_option("Male", opts) == "Man"
+    assert match_option("Female", opts) == "Woman"
+    assert match_option("Non-binary", opts) == "Non-binary"
+    assert match_option("Nonbinary", opts) == "Non-binary"
