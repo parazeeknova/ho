@@ -27,6 +27,13 @@
   env.REQUESTS_CA_BUNDLE = "/etc/ssl/certs/ca-bundle.crt";
 
   enterShell = ''
+    # Guard against a stale/non-devenv VIRTUAL_ENV (e.g. a leftover .venv) so
+    # `uv run` never warns about an environment-path mismatch or targets the
+    # wrong interpreter. uv is configured via UV_PROJECT_ENVIRONMENT to use
+    # the devenv venv; any other VIRTUAL_ENV is ignored by unsetting it.
+    if [ -n "$VIRTUAL_ENV" ] && [ "$VIRTUAL_ENV" != "$UV_PROJECT_ENVIRONMENT" ]; then
+      unset VIRTUAL_ENV
+    fi
     echo "ho dev env — python $(python --version) | node $(node --version) | uv ready"
   '';
 }
