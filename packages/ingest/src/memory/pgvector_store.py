@@ -489,6 +489,105 @@ CREATE TABLE IF NOT EXISTS board_routing_stats (
     last_seen             TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     proxy_recommended     BOOLEAN DEFAULT FALSE
 );
+
+-- Unified event stream for the learning system (Phase 0). Every ranking
+-- decision is an impression (group of jobs); downstream outcomes are reward
+-- events linked by job_id + impression_id. Fixes selection bias by
+-- distinguishing never-seen / seen-not-selected / selected-ignored / applied.
+CREATE TABLE IF NOT EXISTS impressions (
+    impression_id   TEXT PRIMARY KEY,
+    policy          TEXT DEFAULT '',
+    model_version   TEXT DEFAULT '',
+    feature_version TEXT DEFAULT '',
+    group_size      INT DEFAULT 0,
+    created_at      TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS candidate_snapshots (
+    snapshot_id TEXT PRIMARY KEY,
+    payload     JSONB NOT NULL,
+    created_at  TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS job_snapshots (
+    snapshot_id TEXT PRIMARY KEY,
+    payload     JSONB NOT NULL,
+    created_at  TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS decision_events (
+    event_id                BIGSERIAL PRIMARY KEY,
+    job_id                  TEXT NOT NULL,
+    event_type              TEXT NOT NULL,
+    impression_id           TEXT,
+    candidate_id            TEXT,
+    candidate_snapshot_id   TEXT,
+    job_snapshot_id         TEXT,
+    features                JSONB DEFAULT '{{}}'::jsonb,
+    rank                    INT,
+    policy                  TEXT DEFAULT '',
+    model_version           TEXT DEFAULT '',
+    feature_version         TEXT DEFAULT '',
+    prompt_version          TEXT DEFAULT '',
+    embedding_version       TEXT DEFAULT '',
+    exploration             BOOLEAN DEFAULT FALSE,
+    propensity              REAL,
+    action                  TEXT,
+    reward                  REAL,
+    reward_raw              JSONB DEFAULT '{{}}'::jsonb,
+    source                  TEXT DEFAULT '',
+    query                   TEXT DEFAULT '',
+    primary_discovery_source TEXT DEFAULT '',
+    secondary_sources       JSONB DEFAULT '[]'::jsonb,
+    meta                    JSONB DEFAULT '{{}}'::jsonb,
+    created_at              TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_decision_events_job ON decision_events(job_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_decision_events_impression ON decision_events(impression_id);
+CREATE INDEX IF NOT EXISTS idx_decision_events_type ON decision_events(event_type, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_decision_events_reward ON decision_events(reward) WHERE reward IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS model_registry (
+    model_id        TEXT PRIMARY KEY,
+    model_type      TEXT NOT NULL,
+    version         TEXT NOT NULL,
+    feature_version TEXT DEFAULT '',
+    training_start  TEXT DEFAULT '',
+    training_end    TEXT DEFAULT '',
+    dataset_hash    TEXT DEFAULT '',
+    metrics         JSONB DEFAULT '{{}}'::jsonb,
+    artifact_path   TEXT DEFAULT '',
+    status          TEXT DEFAULT 'active',
+    created_at      TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS dataset_registry (
+    dataset_hash TEXT PRIMARY KEY,
+    rows         INT DEFAULT 0,
+    window_start TEXT DEFAULT '',
+    window_end   TEXT DEFAULT '',
+    artifact_path TEXT DEFAULT '',
+    created_at   TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS gmail_push_state (
+    id              INT PRIMARY KEY,
+    history_id      TEXT DEFAULT '',
+    watch_expiry    TEXT DEFAULT '',
+    updated_at      TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS unattributed_outcomes (
+    id          BIGSERIAL PRIMARY KEY,
+    email_kind  TEXT DEFAULT '',
+    company     TEXT DEFAULT '',
+    role        TEXT DEFAULT '',
+    subject     TEXT DEFAULT '',
+    snippet     TEXT DEFAULT '',
+    confidence  REAL DEFAULT 0,
+    created_at  TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_unattributed_company ON unattributed_outcomes(company, created_at DESC);
 """
 
 
