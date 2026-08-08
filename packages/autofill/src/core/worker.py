@@ -695,6 +695,12 @@ class AutofillWorker:
         apply_link = job["apply_link"]
         domain = _domain_of(apply_link)
 
+        # Attribute this job to the active learning epoch (the review's P0):
+        # a confirmed submission only counts toward the epoch that generated
+        # it. Jobs claimed with no active epoch stay unstamped (legacy rows).
+        with contextlib.suppress(Exception):
+            await self.db.attach_active_epoch(job_id)
+
         deferred_pending: list[dict[str, Any]] = []
         rag: ScreenerRAG | None = None
         debug_rec: dict[str, Any] | None = None

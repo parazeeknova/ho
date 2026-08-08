@@ -2189,6 +2189,26 @@ async def _run_radar_pipeline() -> None:
                 logger.warning(f"Worker post-processing failed: {exc}")
         return
 
+    # The review's P0: the 20-submission boundary must be PER-EPOCH, not a
+    # lifetime count. Open a fresh learning epoch at run begin; every
+    # submission attributed to it counts toward ITS target only.
+    epoch_target = getattr(cfg.radar, "session_application_target", 0) or 0
+    active_epoch_id: str | None = None
+    try:
+        from autofill.src.core.db import AutofillDB
+        from ml import POLICY_VERSION, RANKER_VERSION
+
+        _db = await AutofillDB.create()
+        active_epoch_id = await _db.start_epoch(
+            target_submissions=epoch_target,
+            model_version=str(RANKER_VERSION or ""),
+            policy_version=str(POLICY_VERSION or ""),
+        )
+        logger.info(f"Learning epoch started: {active_epoch_id}")
+        await _db.close()
+    except Exception as exc:
+        logger.warning(f"Failed to start learning epoch: {exc}")
+
     reached_target = False
     while True:
         if shutdown_requested.is_set():
@@ -2336,24 +2356,23 @@ async def _run_radar_pipeline() -> None:
             candidates, gate_stats = await _fetch_postings_and_gate(all_obs, store)
             set_pipeline_state(scraped=len(all_obs), gated=len(candidates))
             logger.info(f"Gating: {len(candidates)} passed, {gate_stats['rejected']} rejected")
-            # Work-session epoch boundary (the review's pivot #3): the session
-            # completes when `session_application_target` applications are
-            # CONFIRMED SUBMITTED (applied_at set — attempts, deferred,
-            # captcha, and duplicates do NOT count). The radar keeps feeding the
-            # application reservoir; the session boundary is throughput, not
-            # discovery count. Falls back to the gated-count stop when the
-            # submission target is 0.
+            # Work-session epoch boundary (the review's P0 fix): the session
+            # completes when THIS EPOCH's applications are CONFIRMED SUBMITTED
+            # (applied_at set — attempts, deferred, captcha, and duplicates do
+            # NOT count). The count is PER-EPOCH (autofill_queue.epoch_id), so
+            # a fresh run never inherits the lifetime application total. Falls
+            # back to the gated-count stop when the submission target is 0.
             session_target = getattr(cfg.radar, "session_application_target", 0)
             confirmed = 0
-            if not is_worker and session_target > 0:
+            if not is_worker and session_target > 0 and active_epoch_id:
                 try:
-                    async with store._pool.acquire() as conn:
-                        confirmed = (
-                            await conn.fetchval(
-                                "SELECT COUNT(*) FROM autofill_queue WHERE applied_at IS NOT NULL"
-                            )
-                            or 0
-                        )
+                    from autofill.src.core.db import AutofillDB
+
+                    _db = await AutofillDB.create()
+                    try:
+                        confirmed = await _db.epoch_completed_submissions(active_epoch_id)
+                    finally:
+                        await _db.close()
                 except Exception:
                     confirmed = 0
             reached_target = not is_worker and (
@@ -2472,8 +2491,9 @@ async def _run_radar_pipeline() -> None:
                 session_target = getattr(cfg.radar, "session_application_target", 0)
                 if session_target > 0:
                     logger.info(
-                        f"Sweep {sweep}: reached {confirmed} confirmed submissions "
-                        f"(>= {session_target} session target) — stopping loop."
+                        f"Sweep {sweep}: epoch {active_epoch_id} reached {confirmed} "
+                        f"confirmed submissions (>= {session_target} session target) "
+                        f"— stopping loop."
                     )
                 else:
                     logger.info(
@@ -2490,6 +2510,19 @@ async def _run_radar_pipeline() -> None:
             logger.exception(f"Radar sweep {sweep} crashed", exc=e)
             set_pipeline_state(last_error=str(e), phase="crashed")
             await asyncio.sleep(cfg.pipeline.sweep_interval)
+
+    # Mark the learning epoch complete (records its final submission count).
+    if active_epoch_id:
+        try:
+            from autofill.src.core.db import AutofillDB
+
+            _db = await AutofillDB.create()
+            try:
+                await _db.complete_epoch(active_epoch_id)
+            finally:
+                await _db.close()
+        except Exception as exc:
+            logger.warning(f"Failed to complete learning epoch {active_epoch_id}: {exc}")
 
     await engine.shutdown(drain=False)
     await ta.stop_polling()

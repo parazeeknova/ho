@@ -33,7 +33,7 @@ async def db():
     async with instance._pool.acquire() as conn:
         await conn.execute(
             "TRUNCATE autofill_queue, autofill_fills, autofill_site_knowledge, "
-            "site_health, discord_question_mailbox"
+            "site_health, discord_question_mailbox, learning_epochs"
         )
 
     yield instance
@@ -42,7 +42,7 @@ async def db():
     async with instance._pool.acquire() as conn:
         await conn.execute(
             "TRUNCATE autofill_queue, autofill_fills, autofill_site_knowledge, "
-            "site_health, discord_question_mailbox"
+            "site_health, discord_question_mailbox, learning_epochs"
         )
     await instance.close()
 
@@ -558,3 +558,70 @@ async def test_clean_question_caps_long_single_line():
     cleaned = AutofillWorker._clean_question(long)
     assert len(cleaned) <= 140
     assert cleaned.endswith("...")
+
+
+@pytest.mark.asyncio
+async def test_epoch_boundary_is_per_epoch_not_lifetime(db: AutofillDB):
+    """The review's P0: the 20-submission boundary must count THIS epoch's
+    submissions, never the lifetime total. A fresh epoch starts at 0 even when
+    older (epoch-less or prior-epoch) submissions exist."""
+    # Pre-existing lifetime submissions with NO epoch (legacy rows).
+    await db.enqueue_job(
+        apply_link="https://jobs.ashbyhq.com/legacy/1",
+        role="R1",
+        company="Legacy",
+        apply_mode="auto",
+    )
+    await db.enqueue_job(
+        apply_link="https://jobs.ashbyhq.com/legacy/2",
+        role="R2",
+        company="Legacy",
+        apply_mode="auto",
+    )
+    async with db._pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE autofill_queue SET status='submitted', applied_at=NOW() "
+            "WHERE apply_link LIKE '%legacy%'"
+        )
+
+    # New epoch must start its counter at 0, ignoring the 2 lifetime rows.
+    epoch_id = await db.start_epoch(target_submissions=20)
+    assert await db.epoch_completed_submissions(epoch_id) == 0
+
+    # One submission attributed to the epoch counts toward it.
+    job_id = await db.enqueue_job(
+        apply_link="https://jobs.ashbyhq.com/new/1", role="N1", company="New", apply_mode="auto"
+    )
+    await db.attach_active_epoch(job_id)
+    async with db._pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE autofill_queue SET status='submitted', applied_at=NOW() WHERE job_id=$1",
+            job_id,
+        )
+    assert await db.epoch_completed_submissions(epoch_id) == 1
+
+    # Opening a NEW epoch resets the boundary: prior epoch's submission no
+    # longer counts.
+    epoch2 = await db.start_epoch(target_submissions=20)
+    assert await db.epoch_completed_submissions(epoch2) == 0
+
+    # Completing an epoch records its final per-epoch count.
+    await db.complete_epoch(epoch_id)
+    async with db._pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT * FROM learning_epochs WHERE epoch_id=$1", epoch_id)
+        assert row["status"] == "completed"
+        assert row["completed_submissions"] == 1
+
+
+@pytest.mark.asyncio
+async def test_start_epoch_closes_prior_active(db: AutofillDB):
+    """Only one epoch is active at a time; starting a new run closes the old."""
+    e1 = await db.start_epoch(target_submissions=20)
+    e2 = await db.start_epoch(target_submissions=20)
+    active = await db.get_active_epoch()
+    assert active is not None
+    assert active["epoch_id"] == e2
+    assert e1 != e2
+    async with db._pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT status FROM learning_epochs WHERE epoch_id=$1", e1)
+        assert row["status"] == "completed"

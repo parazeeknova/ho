@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import time
 import uuid
 from collections.abc import Sequence
 from typing import Any
@@ -202,6 +203,30 @@ CREATE TABLE IF NOT EXISTS candidate_evidence (
 );
 CREATE INDEX IF NOT EXISTS idx_candidate_evidence_kind ON candidate_evidence(kind);
 CREATE INDEX IF NOT EXISTS idx_candidate_evidence_created ON candidate_evidence(created_at DESC);
+
+-- Learning epochs (the review's P0 fix): the 20-application boundary must be
+-- PER-EPOCH, not a lifetime count — otherwise a fresh run that already has 20
+-- historical applications would immediately consider itself complete. Each
+-- epoch owns its submission target and tracks which submissions belong to it.
+CREATE TABLE IF NOT EXISTS learning_epochs (
+    epoch_id                TEXT PRIMARY KEY,
+    started_at              TIMESTAMPTZ DEFAULT NOW(),
+    target_submissions      INTEGER NOT NULL DEFAULT 20,
+    completed_submissions   INTEGER NOT NULL DEFAULT 0,
+    status                  TEXT NOT NULL DEFAULT 'active',  -- active|completed
+    model_version           TEXT DEFAULT '',
+    policy_version          TEXT DEFAULT '',
+    reservoir_version       TEXT DEFAULT '',
+    completed_at            TIMESTAMPTZ,
+    meta                    JSONB DEFAULT '{}'::jsonb
+);
+CREATE INDEX IF NOT EXISTS idx_learning_epochs_status ON learning_epochs(status, started_at DESC);
+
+-- Each confirmed submission is attributed to the epoch that generated it, so
+-- the boundary counts only the current epoch's applications.
+ALTER TABLE autofill_queue ADD COLUMN IF NOT EXISTS epoch_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_autofill_queue_epoch
+    ON autofill_queue(epoch_id) WHERE epoch_id IS NOT NULL;
 """
 
 
@@ -473,6 +498,99 @@ class AutofillDB:
                 """
             )
             return dict(rows[0])
+
+    # ---- learning epochs (the review's P0: per-epoch 20-submission boundary) --
+
+    async def start_epoch(
+        self,
+        target_submissions: int = 20,
+        model_version: str = "",
+        policy_version: str = "",
+        reservoir_version: str = "",
+    ) -> str:
+        """Open a NEW learning epoch and return its epoch_id.
+
+        Only one epoch is active at a time: any prior active epoch is marked
+        completed (it reached its boundary or a new run took over). A fresh
+        run must NEVER inherit the lifetime application count — each epoch
+        starts its own counter at 0.
+        """
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE learning_epochs SET status='completed', completed_at=NOW() "
+                "WHERE status='active'"
+            )
+            epoch_id = f"epoch_{int(time.time())}_{uuid.uuid4().hex[:6]}"
+            await conn.execute(
+                """
+                INSERT INTO learning_epochs (
+                    epoch_id, target_submissions, status,
+                    model_version, policy_version, reservoir_version
+                ) VALUES ($1,$2,'active',$3,$4,$5)
+                """,
+                epoch_id,
+                target_submissions,
+                model_version,
+                policy_version,
+                reservoir_version,
+            )
+            return epoch_id
+
+    async def get_active_epoch(self) -> dict[str, Any] | None:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM learning_epochs WHERE status='active' "
+                "ORDER BY started_at DESC LIMIT 1"
+            )
+            return dict(row) if row else None
+
+    async def epoch_completed_submissions(self, epoch_id: str) -> int:
+        """Confirmed submissions attributed to THIS epoch (not lifetime)."""
+        async with self._pool.acquire() as conn:
+            n = await conn.fetchval(
+                "SELECT COUNT(*) FROM autofill_queue "
+                "WHERE epoch_id = $1 AND applied_at IS NOT NULL",
+                epoch_id,
+            )
+            return int(n or 0)
+
+    async def attach_submission_epoch(self, job_id: str, epoch_id: str) -> None:
+        """Attribute a confirmed submission to its originating epoch."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE autofill_queue SET epoch_id=$2 WHERE job_id=$1", job_id, epoch_id
+            )
+
+    async def complete_epoch(self, epoch_id: str) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE learning_epochs SET status='completed', completed_at=NOW(), "
+                "completed_submissions=(SELECT COUNT(*) FROM autofill_queue "
+                "WHERE epoch_id=$1 AND applied_at IS NOT NULL) WHERE epoch_id=$1",
+                epoch_id,
+            )
+
+    async def attach_active_epoch(self, job_id: str) -> str | None:
+        """Stamp a job with the currently-active learning epoch.
+
+        Called when a job is claimed for processing, so a later confirmed
+        submission counts toward the epoch that generated it. Jobs claimed
+        while no epoch is active get no stamp (legacy rows).
+        """
+        async with self._pool.acquire() as conn:
+            epoch = await conn.fetchrow(
+                "SELECT epoch_id FROM learning_epochs WHERE status='active' "
+                "ORDER BY started_at DESC LIMIT 1"
+            )
+            if not epoch:
+                return None
+            epoch_id = epoch["epoch_id"]
+            await conn.execute(
+                "UPDATE autofill_queue SET epoch_id=$2 WHERE job_id=$1 AND epoch_id IS NULL",
+                job_id,
+                epoch_id,
+            )
+            return epoch_id
 
     async def open_mailbox_question(
         self, question_id: str, chat_id: str, message_ids: list[int], question: str
