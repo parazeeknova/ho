@@ -403,38 +403,41 @@ async def main() -> None:
                 print("[loop] radar done and autofill queue drained; finishing", flush=True)
                 break
             if not radar_done:
-                # Do NOT idle-out while a work-session epoch is still below its
-                # application target: a quiet bridge cycle does not mean the run
-                # is finished, it means discovery is still filling the reservoir.
-                # Without this, the loop exits after ~3 empty cycles and a fresh
-                # epoch that hasn't hit 20 applications is abandoned.
+                # target_submissions <= 0 means NO upper bound: keep discovering
+                # and filing applications until the queue goes idle, --max-minutes
+                # elapses, or the user Ctrl+C's. A positive target stops the run
+                # once that many CONFIRMED applications are reached for the
+                # current epoch.
                 epoch_open = 0
+                epoch_target = 0
                 try:
                     active = await db.get_active_epoch()
                     if active:
                         epoch_open = await db.epoch_completed_submissions(active["epoch_id"])
                         epoch_target = int(active.get("target_submissions") or 0)
-                    else:
-                        epoch_target = 0
                 except Exception:
-                    epoch_target = 0
-                if epoch_open < epoch_target:
-                    if enqueued > 0 or balance["open"] > 0:
-                        idle_cycles = 0
-                    continue
-                # Epoch target reached: the run's goal is met. Mark the radar
-                # done so we only drain whatever remains, then exit.
-                if epoch_open >= epoch_target:
-                    _eid = str((active or {}).get("epoch_id") or "")[:16]
-                    print(
-                        f"[loop] epoch {_eid} reached "
-                        f"{epoch_open}/{epoch_target} applications; finishing",
-                        flush=True,
-                    )
-                    radar_done = True
-                    if balance["open"] == 0:
-                        break
-                    continue
+                    pass
+                if epoch_target > 0:
+                    # A work-session epoch below its target: a quiet bridge
+                    # cycle does not mean the run is finished, it means
+                    # discovery is still filling the reservoir.
+                    if epoch_open < epoch_target:
+                        if enqueued > 0 or balance["open"] > 0:
+                            idle_cycles = 0
+                        continue
+                    # Epoch target reached: the run's goal is met. Mark the
+                    # radar done so we only drain whatever remains, then exit.
+                    if epoch_open >= epoch_target:
+                        _eid = str((active or {}).get("epoch_id") or "")[:16]
+                        print(
+                            f"[loop] epoch {_eid} reached "
+                            f"{epoch_open}/{epoch_target} applications; finishing",
+                            flush=True,
+                        )
+                        radar_done = True
+                        if balance["open"] == 0:
+                            break
+                        continue
                 if enqueued == 0 and balance["open"] == 0:
                     idle_cycles += 1
                     if idle_cycles >= args.idle_cycles:

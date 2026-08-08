@@ -582,10 +582,17 @@ def _status_report() -> int:
         if epoch["active"]:
             a = epoch["active"]
             t.add_row("active", a["epoch_id"])
-            t.add_row(
-                "progress",
-                f"{a['completed_submissions']}/{a['target_submissions']} submitted",
-            )
+            target = a.get("target_submissions") or 0
+            if target > 0:
+                t.add_row(
+                    "progress",
+                    f"{a['completed_submissions']}/{target} submitted",
+                )
+            else:
+                t.add_row(
+                    "progress",
+                    f"{a['completed_submissions']} submitted (no target cap)",
+                )
         else:
             t.add_row("active", "none")
         t.add_row("total", str(epoch["total"]))
@@ -900,9 +907,14 @@ def main() -> int:
         print(f"[ho] ml: {ml}", flush=True)
         print(f"[ho] discord: {disc}", flush=True)
         # One-line sweep intent so the user knows what this run will do
+        import os as _os2
+
+        epoch_target = int(_os2.environ.get("RADAR_SESSION_APPLICATION_TARGET", "0") or "0")
+        target_desc = f"target={epoch_target} confirmed" if epoch_target > 0 else "no target cap"
         print(  # noqa: E501
             f"[ho] sweep config: workers={args.radar_workers}"
-            f" bridge={args.bridge_interval}s target=20 confirmed (per-epoch)",
+            f" bridge={args.bridge_interval}s {target_desc} (per-epoch); "
+            "stops on queue idle / --max-minutes / Ctrl+C",
             flush=True,
         )
         if args.dry_run:

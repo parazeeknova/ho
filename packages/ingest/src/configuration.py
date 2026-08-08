@@ -383,7 +383,7 @@ class RadarConfig:
     # loop finalizes the session (learning update + re-rank of the remaining
     # reservoir). 0 = disable (bounded by stop_after_gated instead).
     session_application_target: int = field(
-        default_factory=lambda: _env_int("RADAR_SESSION_APPLICATION_TARGET", 20)
+        default_factory=lambda: _env_int("RADAR_SESSION_APPLICATION_TARGET", 0)
     )
     urgent_window_hours: int = field(
         default_factory=lambda: _env_int("RADAR_URGENT_WINDOW_HOURS", 48)

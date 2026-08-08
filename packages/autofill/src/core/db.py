@@ -537,7 +537,7 @@ class AutofillDB:
 
     async def start_epoch(
         self,
-        target_submissions: int = 20,
+        target_submissions: int = 0,
         model_version: str = "",
         policy_version: str = "",
         reservoir_version: str = "",
