@@ -54,7 +54,13 @@ async def test_expected_comp_answers_in_question_currency():
     mock_cm.chat = AsyncMock(return_value="{}")
     rag = ScreenerRAG(context_manager=mock_cm, exact_answers={})
 
-    with patch("autofill.src.screener.rag.get_config", return_value=_cfg()):
+    with (
+        patch("autofill.src.screener.rag.get_config", return_value=_cfg()),
+        patch(
+            "autofill.src.screener.rag._load_expected_comp_persona",
+            return_value=("USD", "60000"),
+        ),
+    ):
         # USD matches the persona's explicit "60000 USD" expected comp — the
         # configured answer wins over the per-currency default.
         assert await rag.kb_answer("What is your expected salary in USD?") == "60000"
@@ -75,7 +81,13 @@ async def test_expected_comp_uses_job_country_currency():
     mock_cm.chat = AsyncMock(return_value="{}")
     rag = ScreenerRAG(context_manager=mock_cm, exact_answers={})
 
-    with patch("autofill.src.screener.rag.get_config", return_value=_cfg()):
+    with (
+        patch("autofill.src.screener.rag.get_config", return_value=_cfg()),
+        patch(
+            "autofill.src.screener.rag._load_expected_comp_persona",
+            return_value=("USD", "60000"),
+        ),
+    ):
         assert (
             await rag.kb_answer(
                 "What is your expected salary?",
@@ -104,7 +116,13 @@ async def test_expected_comp_currency_overrides_inr_custom_answer():
             _normalise_question_import("what is your expected compensation?"): "80000 INR/ month"
         },
     )
-    with patch("autofill.src.screener.rag.get_config", return_value=_cfg()):
+    with (
+        patch("autofill.src.screener.rag.get_config", return_value=_cfg()),
+        patch(
+            "autofill.src.screener.rag._load_expected_comp_persona",
+            return_value=("USD", "60000"),
+        ),
+    ):
         # An explicit USD question gets the persona's configured USD figure
         # ("60000 USD"), never the INR answer and never the hardcoded default.
         assert await rag.kb_answer("What is your expected compensation in USD?") == "60000"

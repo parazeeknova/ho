@@ -7,15 +7,15 @@ import pytest
 from autofill.src.screener.profile import build_profile
 
 PERSONA_DATA = {
-    "name": "Aman Aziz",
+    "name": "Test Candidate",
     "identity": {
         "firstName": "Aman",
-        "lastName": "Aziz",
-        "email": "amanaziz2020@gmail.com",
-        "phone": "+91 93159 78211",
-        "linkedin": "linkedin.com/in/aman-aziz",
-        "github": "github.com/tutankhaman",
-        "website": "aamn.dev/tldr",
+        "lastName": "Candidate",
+        "email": "candidate@example.com",
+        "phone": "+1 555 0100",
+        "linkedin": "linkedin.com/in/test-candidate",
+        "github": "github.com/test-user-github",
+        "website": "example.com",
     },
     "answers": [
         {
@@ -26,7 +26,7 @@ PERSONA_DATA = {
         {
             "category": "current_location",
             "question": "What is your current location?",
-            "answer": "Delhi, India",
+            "answer": "Bangalore, India",
         },
     ],
 }
@@ -65,19 +65,19 @@ async def test_build_profile_resolves_identity_from_persona_store():
         profile = await build_profile(MagicMock())
 
     assert profile.firstName == "Aman"
-    assert profile.lastName == "Aziz"
-    assert profile.email == "amanaziz2020@gmail.com"
-    assert profile.phone == "+91 93159 78211"
-    assert profile.linkedin == "linkedin.com/in/aman-aziz"
-    assert profile.github == "github.com/tutankhaman"
-    assert profile.website == "aamn.dev/tldr"
+    assert profile.lastName == "Candidate"
+    assert profile.email == "candidate@example.com"
+    assert profile.phone == "+1 555 0100"
+    assert profile.linkedin == "linkedin.com/in/test-candidate"
+    assert profile.github == "github.com/test-user-github"
+    assert profile.website == "example.com"
 
 
 @pytest.mark.asyncio
 async def test_build_profile_resume_header_regex_fallback():
     header = (
-        "+91 93159 78211 amanaziz2020@gmail.com "
-        "linkedin.com/in/aman-aziz github.com/tutankhaman aamn.dev/tldr"
+        "+1 555 0100 candidate@example.com "
+        "linkedin.com/in/test-candidate github.com/test-user-github example.com"
     )
     data = dict(PERSONA_DATA)
     data["identity"] = {}
@@ -93,11 +93,11 @@ async def test_build_profile_resume_header_regex_fallback():
     ):
         profile = await build_profile(MagicMock())
 
-    assert profile.email == "amanaziz2020@gmail.com"
-    assert profile.phone == "+91 93159 78211"
-    assert profile.linkedin == "linkedin.com/in/aman-aziz"
-    assert profile.github == "github.com/tutankhaman"
-    assert profile.website == "aamn.dev/tldr"
+    assert profile.email == "candidate@example.com"
+    assert profile.phone == "+1 555 0100"
+    assert profile.linkedin == "linkedin.com/in/test-candidate"
+    assert profile.github == "github.com/test-user-github"
+    assert profile.website == "example.com"
 
 
 @pytest.mark.asyncio
@@ -106,9 +106,9 @@ async def test_build_profile_persona_json_fallback_without_store():
         profile = await build_profile(store=None)
 
     assert profile.firstName == "Aman"
-    assert profile.lastName == "Aziz"
-    assert profile.email == "amanaziz2020@gmail.com"
-    assert profile.github == "github.com/tutankhaman"
+    assert profile.lastName == "Candidate"
+    assert profile.email == "candidate@example.com"
+    assert profile.github == "github.com/test-user-github"
 
 
 @pytest.mark.asyncio
@@ -117,7 +117,7 @@ async def test_build_profile_custom_answers_from_persona():
         profile = await build_profile(store=None)
 
     assert profile.customAnswers["Do you require visa sponsorship?"] == "Yes"
-    assert profile.customAnswers["What is your current location?"] == "Delhi, India"
+    assert profile.customAnswers["What is your current location?"] == "Bangalore, India"
 
 
 @pytest.mark.asyncio
@@ -138,15 +138,27 @@ async def test_build_profile_deterministic_across_runs():
 
 
 def test_load_persona_resolves_from_worker_cwd():
-    """Regression: _load_persona_json must resolve the repo-root data/persona.json
-    even when the CWD is packages/ingest (the worker's working dir). It previously
+    """Regression: _load_persona_json must resolve data/persona.json even when
+    the CWD is packages/ingest (the worker's working dir). It previously
     computed the base as 3 parents up (-> packages/data, wrong), so the persona
     was never loaded and identity fell back to semantic-search garbage."""
+    import json
     import os
     import subprocess
     from pathlib import Path
 
     repo = Path(__file__).resolve().parents[4]
+    # Point the loader at a deterministic fixture (never the user's real
+    # persona.json) via CANDIDATE_PERSONA_FILE.
+    fixture = Path(__file__).resolve().parent / "_fixture_persona.json"
+    fixture.write_text(
+        json.dumps(
+            {
+                "name": "Test Candidate",
+                "identity": {"linkedin": "linkedin.com/in/test-candidate"},
+            }
+        )
+    )
     code = (
         "from pathlib import Path; "
         "import sys; "
@@ -161,15 +173,19 @@ def test_load_persona_resolves_from_worker_cwd():
     env["PYTHONPATH"] = (
         str(repo / "packages" / "ingest") + os.pathsep + str(repo / "packages" / "autofill")
     )
-    r = subprocess.run(
-        ["uv", "run", "python", "-c", code],
-        cwd=str(repo / "packages" / "ingest"),
-        capture_output=True,
-        text=True,
-        timeout=60,
-        env=env,
-    )
-    out = (r.stdout or "").strip()
-    assert "linkedin.com/in" in out, (
-        f"persona not loaded from worker cwd: out={out!r} err={r.stderr[:300]}"
-    )
+    env["CANDIDATE_PERSONA_FILE"] = str(fixture)
+    try:
+        r = subprocess.run(
+            ["uv", "run", "python", "-c", code],
+            cwd=str(repo / "packages" / "ingest"),
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=env,
+        )
+        out = (r.stdout or "").strip()
+        assert "linkedin.com/in" in out, (
+            f"persona not loaded from worker cwd: out={out!r} err={r.stderr[:300]}"
+        )
+    finally:
+        fixture.unlink(missing_ok=True)

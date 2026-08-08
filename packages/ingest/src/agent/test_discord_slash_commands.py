@@ -294,13 +294,15 @@ async def test_help_lists_all_commands() -> None:
 @pytest.mark.asyncio
 async def test_persona_renders_stored_persona(monkeypatch, tmp_path) -> None:
     p = tmp_path / "persona.json"
-    p.write_text(json.dumps({"name": "Harsh Sahu", "identity": {"website": "https://przknv.cc"}}))
+    p.write_text(
+        json.dumps({"name": "Test Candidate", "identity": {"website": "https://example.com"}})
+    )
     monkeypatch.setattr("src.agent.memory_wizard.PERSONA_JSON", p)
     agent = make_agent()
     await agent._handle_persona(FakeMessage(content="/persona", channel=agent._channel))
     text = sent_text(agent)
-    assert "Harsh Sahu" in text
-    assert "przknv.cc" in text
+    assert "Test Candidate" in text
+    assert "example.com" in text
 
 
 @pytest.mark.asyncio
@@ -588,13 +590,17 @@ async def test_dispatcher_routes_commands(monkeypatch) -> None:
         handled.append(text)
 
     agent._reply = fake_reply  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        "src.agent.memory_wizard.format_persona",
+        lambda: "# Test Candidate\n**Contact**\n· linkedin: linkedin.com/in/test-candidate",
+    )
 
     for cmd in ("/status", "/health", "/help", "/persona"):
         await agent.on_message_for_test(FakeMessage(content=cmd, channel=agent._channel))
     assert any("Pipeline Status" in t for t in handled)
     assert any("System Health Check" in t for t in handled)
     assert any("Commands" in t for t in handled)
-    assert any("Harsh Sahu" in t for t in handled)
+    assert any("Test Candidate" in t for t in handled)
 
 
 @pytest.mark.asyncio
@@ -754,8 +760,8 @@ async def test_send_full_persona_creates_thread(monkeypatch, tmp_path) -> None:
     p.write_text(
         json.dumps(
             {
-                "name": "Harsh Sahu",
-                "identity": {"website": "https://przknv.cc"},
+                "name": "Test Candidate",
+                "identity": {"website": "https://example.com"},
                 "answers": [{"category": "identity", "question": "Location", "answer": "India"}],
                 "resume_summary": "TypeScript/Rust engineer",
             }
@@ -799,8 +805,8 @@ async def test_send_full_persona_creates_thread(monkeypatch, tmp_path) -> None:
     await agent._send_full_persona(FakeInter())
     assert thread_sent, "persona should be posted to the created thread"
     combined = "".join(thread_sent)
-    assert "Harsh Sahu" in combined
-    assert "przknv.cc" in combined
+    assert "Test Candidate" in combined
+    assert "example.com" in combined
     assert "TypeScript/Rust engineer" in combined
 
 
