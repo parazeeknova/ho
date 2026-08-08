@@ -357,6 +357,231 @@ def _handle_sig(signum: int, frame) -> None:  # noqa: ANN001
     raise KeyboardInterrupt
 
 
+def _status_report() -> int:
+    """`bun run run --status`: a full read-only snapshot of every counter the
+    pipeline tracks — DB, graph, RAG, ML, autofill, epochs, sources, and
+    whether anything is currently running. No side effects: does not touch
+    containers, the lock, or the embed server."""
+    import asyncio as _asyncio
+    from typing import Any
+
+    async def _pg_section() -> dict[str, Any]:
+        from src.memory.pgvector_store import MemoryStore
+
+        store = await MemoryStore.create()
+        try:
+            async with store._pool.acquire() as c:
+                obs = await c.fetchval("SELECT COUNT(*) FROM job_observations")
+                cand = await c.fetchval("SELECT COUNT(*) FROM radar_candidates")
+                sources = await c.fetchval("SELECT COUNT(*) FROM source_checkpoints")
+                sources_active = await c.fetchval(
+                    "SELECT COUNT(*) FROM source_checkpoints WHERE active"
+                )
+                sources_polled = await c.fetchval(
+                    "SELECT COUNT(*) FROM source_checkpoints WHERE last_polled > 0"
+                )
+                events = await c.fetchval("SELECT COUNT(*) FROM decision_events")
+                rewards = await c.fetchval(
+                    "SELECT COUNT(*) FROM decision_events WHERE reward IS NOT NULL"
+                )
+                imp = await c.fetchval("SELECT COUNT(*) FROM impressions")
+                outcomes = await c.fetchval("SELECT COUNT(*) FROM unattributed_outcomes")
+                frontier = await c.fetchval("SELECT COUNT(*) FROM frontier_state")
+                discovered = await c.fetchval("SELECT COUNT(*) FROM discovered_domains")
+                model = await c.fetchrow(
+                    "SELECT version, status FROM model_registry "
+                    "WHERE status='active' ORDER BY created_at DESC LIMIT 1"
+                )
+                gmail = await c.fetchval(
+                    "SELECT 1 FROM gmail_push_state WHERE history_id != '' LIMIT 1"
+                )
+                return {
+                    "obs": obs,
+                    "cand": cand,
+                    "sources": sources,
+                    "sources_active": sources_active,
+                    "sources_polled": sources_polled,
+                    "events": events,
+                    "rewards": rewards,
+                    "impressions": imp,
+                    "outcomes": outcomes,
+                    "frontier": frontier,
+                    "discovered": discovered,
+                    "model": f"{model['version']}({model['status']})" if model else "none",
+                    "gmail": "ON" if gmail else "off",
+                }
+        finally:
+            await store.close()
+
+    async def _eligibility_section() -> dict[str, int]:
+        from src.memory.pgvector_store import MemoryStore
+
+        store = await MemoryStore.create()
+        try:
+            async with store._pool.acquire() as c:
+                rows = await c.fetch(
+                    "SELECT eligibility, COUNT(*) AS n FROM radar_candidates GROUP BY eligibility"
+                )
+                return {str(r["eligibility"]): r["n"] for r in rows}
+        finally:
+            await store.close()
+
+    async def _queue_section() -> dict[str, int]:
+        from autofill.src.core.db import AutofillDB
+
+        db = await AutofillDB.create()
+        try:
+            async with db._pool.acquire() as c:
+                rows = await c.fetch(
+                    "SELECT status, COUNT(*) AS n FROM autofill_queue GROUP BY status"
+                )
+                fills = await c.fetchval("SELECT COUNT(*) FROM autofill_fills")
+            d = {str(r["status"]): r["n"] for r in rows}
+            d["fills"] = fills
+            return d
+        finally:
+            await db.close()
+
+    async def _epoch_section() -> dict[str, Any]:
+        from src.memory.pgvector_store import MemoryStore
+
+        store = await MemoryStore.create()
+        try:
+            async with store._pool.acquire() as c:
+                active = await c.fetchrow(
+                    "SELECT epoch_id, started_at, target_submissions, "
+                    "completed_submissions FROM learning_epochs "
+                    "WHERE status='active' ORDER BY started_at DESC LIMIT 1"
+                )
+                total = await c.fetchval("SELECT COUNT(*) FROM learning_epochs")
+                done = await c.fetchval(
+                    "SELECT COUNT(*) FROM learning_epochs WHERE status IN "
+                    "('completed','target_reached')"
+                )
+            a = dict(active) if active else None
+            return {"active": a, "total": total, "done": done}
+        finally:
+            await store.close()
+
+    async def _rag_section() -> dict[str, int]:
+        from src.memory.pgvector_store import MemoryStore
+
+        store = await MemoryStore.create()
+        try:
+            resume = await store.chunk_count()
+            persona = await store.persona_chunk_count()
+            async with store._pool.acquire() as c:
+                obs_emb = await c.fetchval("SELECT COUNT(*) FROM obs_embeddings")
+                embed_cache = await c.fetchval("SELECT COUNT(*) FROM embed_cache")
+                render_cache = await c.fetchval("SELECT COUNT(*) FROM render_cache")
+            return {
+                "resume_chunks": resume,
+                "persona_chunks": persona,
+                "obs_embeddings": obs_emb,
+                "embed_cache": embed_cache,
+                "render_cache": render_cache,
+            }
+        finally:
+            await store.close()
+
+    async def _graph_section() -> str:
+        try:
+            from src.graph.graph_store import GraphStore
+
+            g = await GraphStore.create()
+            try:
+                nodes = await g.node_count()
+                rels = await g.relationship_count()
+            finally:
+                await g.close()
+            return f"nodes={nodes} rels={rels}"
+        except Exception:
+            return "graph unavailable"
+
+    async def _top_sources() -> list[tuple[str, int]]:
+        from src.memory.pgvector_store import MemoryStore
+
+        store = await MemoryStore.create()
+        try:
+            async with store._pool.acquire() as c:
+                rows = await c.fetch(
+                    "SELECT source, COUNT(*) AS n FROM radar_candidates "
+                    "GROUP BY source ORDER BY n DESC LIMIT 12"
+                )
+                return [(str(r["source"]), r["n"]) for r in rows]
+        finally:
+            await store.close()
+
+    def _fmt(key: str, value: Any) -> str:
+        return f"  {key:<22} {value}"
+
+    async def _all() -> int:
+        pg = await _pg_section()
+        elig = await _eligibility_section()
+        queue = await _queue_section()
+        epoch = await _epoch_section()
+        rag = await _rag_section()
+        graph = await _graph_section()
+        top = await _top_sources()
+        running = _pipeline_running()
+
+        status = f"RUNNING (pid {running})" if running else "not running"
+        print(f"\n[ho] STATUS  ·  {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"[ho] pipeline: {status}")
+        print("\n[ho] POSTGRES (agent-memory)")
+        for k, v in pg.items():
+            print(_fmt(k, v))
+        print("\n[ho] RADAR CANDIDATES by eligibility")
+        for k, v in sorted(elig.items(), key=lambda kv: (-kv[1], kv[0])):
+            print(_fmt(k, v))
+        print("\n[ho] TOP SOURCES (radar_candidates)")
+        for src, n in top:
+            print(_fmt(src, n))
+        print("\n[ho] AUTOFILL QUEUE")
+        for k, v in sorted(queue.items(), key=lambda kv: (-kv[1], kv[0])):
+            print(_fmt(k, v))
+        print("\n[ho] LEARNING EPOCHS")
+        if epoch["active"]:
+            a = epoch["active"]
+            print(_fmt("active", f"{a['epoch_id']} started {a['started_at']}"))
+            print(
+                _fmt(
+                    "progress",
+                    f"{a['completed_submissions']}/{a['target_submissions']} submitted",
+                )
+            )
+        else:
+            print(_fmt("active", "none"))
+        print(_fmt("total", epoch["total"]))
+        print(_fmt("completed", epoch["done"]))
+        print("\n[ho] RAG / MEMORY")
+        for k, v in rag.items():
+            print(_fmt(k, v))
+        print("\n[ho] GRAPH (neo4j)")
+        print(_fmt("counts", graph))
+        print(flush=True)
+        return 0
+
+    return _asyncio.run(_all())
+
+
+def _pipeline_running() -> int | None:
+    """Return the loop.py pid if the pipeline is running, else None."""
+    import subprocess as _sp
+
+    try:
+        r = _sp.run(
+            ["pgrep", "-f", "scripts/loop.py"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        pids = [int(p) for p in (r.stdout or "").split() if p.isdigit()]
+        return pids[0] if pids else None
+    except Exception:
+        return None
+
+
 async def _system_stats() -> tuple[str, str, str, str, str]:
     """Startup snapshot of DB, graph, RAG, ML, and Discord status.
 
@@ -477,6 +702,20 @@ async def _system_stats() -> tuple[str, str, str, str, str]:
 
 
 def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--status", action="store_true", help="Print all pipeline counters and exit")
+    ap.add_argument("--dry-run", action="store_true", help="Start infra only, then stop")
+    ap.add_argument("--no-fill", action="store_true", help="Skip the autofill worker")
+    ap.add_argument("--radar-workers", type=int, default=2, help="Extra radar worker procs")
+    ap.add_argument("--bridge-interval", type=int, default=120, help="Bridge drain seconds")
+    ap.add_argument("--bridge-batch", type=int, default=50, help="Max candidates per drain")
+    ap.add_argument("--max-minutes", type=int, default=0, help="Hard stop after N minutes")
+    args = ap.parse_args()
+
+    # Read-only status: no lock, no takeover, no infra — just print counters.
+    if args.status:
+        return _status_report()
+
     # Single-instance lock: only one `bun run run` may own the pipeline at a
     # time. If another instance is already running, STOP it (kill its whole
     # tree) and take over — running `bun run run` again should always start a
@@ -569,15 +808,6 @@ def main() -> int:
                         pass
             time.sleep(1)
     lock_path.write_text(str(_os.getpid()))
-
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--dry-run", action="store_true", help="Start infra only, then stop")
-    ap.add_argument("--no-fill", action="store_true", help="Skip the autofill worker")
-    ap.add_argument("--radar-workers", type=int, default=2, help="Extra radar worker procs")
-    ap.add_argument("--bridge-interval", type=int, default=120, help="Bridge drain seconds")
-    ap.add_argument("--bridge-batch", type=int, default=50, help="Max candidates per drain")
-    ap.add_argument("--max-minutes", type=int, default=0, help="Hard stop after N minutes")
-    args = ap.parse_args()
 
     signal.signal(signal.SIGINT, _handle_sig)
     signal.signal(signal.SIGTERM, _handle_sig)

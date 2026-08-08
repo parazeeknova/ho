@@ -39,6 +39,7 @@ def main() -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("run", help="start the full pipeline (containers, radar, autofill)")
+    sub.add_parser("status", help="print all pipeline counters and exit")
     sub.add_parser("initm", help="set up resume + persona memory")
     sub.add_parser("intel", help="market / skill-arbitrage report")
     sub.add_parser("backup", help="checkpoint backup / restore")
@@ -50,6 +51,8 @@ def main() -> int:
 
     if args.cmd == "run":
         return _run(INGEST / "scripts" / "run_all.py", extra)
+    if args.cmd == "status":
+        return _run(INGEST / "scripts" / "run_all.py", ["--status"] + extra)
     if args.cmd == "initm":
         return _run(AUTOFILL / "scripts" / "init_memory.py", extra)
     if args.cmd == "intel":
