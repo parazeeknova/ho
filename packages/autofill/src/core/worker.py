@@ -1462,6 +1462,16 @@ class AutofillWorker:
 
                     except json.JSONDecodeError:
                         logger.error("Failed to parse status event JSON", raw=event_raw)
+                else:
+                    # Forward the Node runner's own console output (adapter
+                    # logs: submit responses, consent checks, verification
+                    # outcomes). Dropped lines make submit failures impossible
+                    # to debug — the adapter's reasoning never reaches the log.
+                    if line_str and not line_str.startswith("RPC_REQUEST:"):
+                        logger.info(
+                            f"[runner] {line_str[:500]}",
+                            job_id=job_id,
+                        )
 
             await process.wait()
             stderr_task.cancel()
