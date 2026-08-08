@@ -27,6 +27,33 @@ PERSONA_TXT = Path(__file__).resolve().parents[4] / "data" / "persona.txt"
 # The CLI prompts the user for these; the worker leaves them blank.
 ASK_USER = "__ASK_USER__"
 
+# LLM placeholder tell-tales: "[Your X]", "[insert X]", "your <x> here", etc.
+# The model sometimes answers a personal-URL question (Replit, portfolio,
+# personal site) with a literal placeholder instead of a real URL. Such an
+# answer is FAKE DATA — worse than a blank — so it must never be filled.
+_PLACEHOLDER_RE = re.compile(
+    r"\[(?:your|insert|add|paste|replace|enter)\b[^\]]*\]|"
+    r"\[your\s+[a-z ]{1,30}\]|"
+    r"your\s+(?:replit|github|linkedin|portfolio|website|profile)\s+"
+    r"(?:username|url|link|profile|handle)|"
+    r"<your\s+[^>]+>|"
+    r"xxx|example\.com|yourdomain",
+    re.I,
+)
+
+
+def _looks_like_placeholder(text: str) -> bool:
+    """True when an LLM answer is a literal placeholder, not a real value."""
+    t = (text or "").strip()
+    if not t:
+        return False
+    if _PLACEHOLDER_RE.search(t):
+        return True
+    # A "URL" answer that contains no scheme/domain is not a real URL.
+    low = t.lower()
+    return "url" in low and "http" not in low and "." not in low
+
+
 # Cosine distance (embedding <=>) below which a persona chunk is a confident match.
 PERSONA_MATCH_THRESHOLD = 0.35
 
@@ -476,6 +503,43 @@ _COMP_CURRENCY_PATTERNS: list[tuple[re.Pattern, str]] = [
 # never answered with the INR min-salary. These appear AFTER the symbol-bearing
 # and common-code patterns so the specific ones win first.
 _COMP_OTHER_CURRENCY_RE = re.compile(r"\b([A-Z]{3})\b")
+
+# "salary range" / "range" questions want a range, not a single figure.
+_COMP_RANGE_RE = re.compile(r"\b(range|band)\b", re.I)
+
+
+def _strip_amount(text: str) -> str:
+    """Normalize a currency figure for range rendering ("$100,000" stays)."""
+    return (text or "").strip()
+
+
+def _load_expected_comp_persona() -> tuple[str, str] | None:
+    """The persona's explicit expected-compensation answer as (currency, value).
+
+    Reads the ``expected_compensation`` answer entry (e.g. "60000 USD") from
+    persona.json. Returns None when absent or unparseable.
+    """
+    try:
+        data = json.loads(PERSONA_JSON.read_text())
+    except Exception:
+        return None
+    answers = data.get("answers") if isinstance(data, dict) else None
+    entries = answers if isinstance(answers, list) else []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        cat = str(entry.get("category") or "").lower()
+        if cat in ("expected_compensation", "expected_comp"):
+            ans = str(entry.get("answer") or "").strip()
+            m = re.search(r"\b([A-Z]{3})\b\s*([\d,]+(?:\.[\d]+)?)", ans)
+            if m:
+                return m.group(1).upper(), m.group(2).replace(",", "")
+            # Bare number without currency code: treat as USD.
+            m2 = re.search(r"([\d,]+(?:\.[\d]+)?)", ans)
+            if m2:
+                return "USD", m2.group(1).replace(",", "")
+    return None
+
 
 # Canonical scope keys (see _COUNTRY_PATTERNS) -> the currency that country pays in.
 _COUNTRY_CURRENCY: dict[str, str] = {
@@ -2462,11 +2526,37 @@ class ScreenerRAG:
         if code is None:
             country = self.target_country(question, job_context)
             code = _COUNTRY_CURRENCY.get(country) if country else None
+
+        # The user's EXPLICIT expected-compensation answer (persona, e.g.
+        # "60000 USD") is the primary source. When its currency matches the
+        # question's currency (or the question names no currency), use it
+        # verbatim instead of the per-currency default tables — a configured
+        # "60000 USD" must never be replaced by a hardcoded C$7,900.
+        exact = self.exact_answer(question)
+        if exact is not None:
+            return exact
+        try:
+            persona_comp = _load_expected_comp_persona()
+        except Exception:
+            persona_comp = None
+        if persona_comp and code and code != "INR":
+            persona_cur, persona_val = persona_comp
+            if persona_cur == code:
+                return persona_val
+
         if code and code != "INR":
             entry = self._compensation_by_currency().get(code)
             if entry:
                 annual = bool(_COMP_ANNUAL_RE.search(q_lower))
                 monthly = bool(_COMP_MONTHLY_RE.search(q_lower))
+                # A "range" question gets a range, never a single monthly
+                # figure (the old code answered "desired salary range" with
+                # the monthly default — "the salary's dumb").
+                if _COMP_RANGE_RE.search(q_lower):
+                    lo = _strip_amount(entry.get("annual") or "")
+                    if lo:
+                        return f"{lo} - {lo}"
+                    return entry.get("annual") or entry.get("monthly")
                 if annual and not monthly:
                     return entry["annual"]
                 if monthly and not annual:
@@ -2476,9 +2566,6 @@ class ScreenerRAG:
             return _COMP_CURRENCY_UNCOVERED
         # INR question (or no currency/country resolvable): the learned exact
         # INR answer / persona min-salary applies unchanged.
-        exact = self.exact_answer(question)
-        if exact is not None:
-            return exact
         return None
 
     def _compensation_by_currency(self) -> dict[str, dict[str, str]]:
@@ -3121,7 +3208,16 @@ Questions:
                     picked = _select_answer_matches(a, spec["options"])
                     answers[q] = picked if picked else ASK_USER
                 elif isinstance(a, str) and a.strip() and a.strip() != ASK_USER:
-                    answers[q] = _strip_em_dashes(a.strip())
+                    # Reject LLM-fabricated placeholders and ungrounded URLs
+                    # (e.g. "Replit Profile URL -> You can find my Replit
+                    # profile at [Your Replit Username]"). A literal placeholder
+                    # is worse than a blank: it ships fake data. Such answers
+                    # become __ASK_USER__ (Discord) / defer instead.
+                    cleaned_a = _strip_em_dashes(a.strip())
+                    if _looks_like_placeholder(cleaned_a):
+                        answers[q] = ASK_USER
+                    else:
+                        answers[q] = cleaned_a
                 else:
                     answers[q] = ASK_USER
 

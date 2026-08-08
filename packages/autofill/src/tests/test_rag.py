@@ -55,7 +55,9 @@ async def test_expected_comp_answers_in_question_currency():
     rag = ScreenerRAG(context_manager=mock_cm, exact_answers={})
 
     with patch("autofill.src.screener.rag.get_config", return_value=_cfg()):
-        assert await rag.kb_answer("What is your expected salary in USD?") == "$8,300"
+        # USD matches the persona's explicit "60000 USD" expected comp — the
+        # configured answer wins over the per-currency default.
+        assert await rag.kb_answer("What is your expected salary in USD?") == "60000"
         assert await rag.kb_answer("What is your expected annual salary in EUR?") == "€65,000"
         # Unspecified granularity defaults to monthly (matches the INR persona).
         assert await rag.kb_answer("What are your salary expectations in GBP?") == "£4,600"
@@ -66,7 +68,9 @@ async def test_expected_comp_answers_in_question_currency():
 @pytest.mark.asyncio
 async def test_expected_comp_uses_job_country_currency():
     """A salary question without an explicit currency follows the job's
-    country currency (US job -> USD figure, India job -> INR figure)."""
+    country currency (US job -> the persona's explicit USD figure, India job
+    -> INR figure). The persona's configured expected compensation ("60000
+    USD") must win over the hardcoded per-currency defaults for a US role."""
     mock_cm = MagicMock()
     mock_cm.chat = AsyncMock(return_value="{}")
     rag = ScreenerRAG(context_manager=mock_cm, exact_answers={})
@@ -77,7 +81,7 @@ async def test_expected_comp_uses_job_country_currency():
                 "What is your expected salary?",
                 {"location": "San Francisco, CA", "description": ""},
             )
-            == "$8,300"
+            == "60000"
         )
         assert (
             await rag.kb_answer(
@@ -101,7 +105,9 @@ async def test_expected_comp_currency_overrides_inr_custom_answer():
         },
     )
     with patch("autofill.src.screener.rag.get_config", return_value=_cfg()):
-        assert await rag.kb_answer("What is your expected compensation in USD?") == "$8,300"
+        # An explicit USD question gets the persona's configured USD figure
+        # ("60000 USD"), never the INR answer and never the hardcoded default.
+        assert await rag.kb_answer("What is your expected compensation in USD?") == "60000"
         # The exact INR question still answers INR.
         assert await rag.kb_answer("What is your expected compensation?") == "80000 INR/ month"
 
