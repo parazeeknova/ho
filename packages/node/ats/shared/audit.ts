@@ -245,6 +245,19 @@ export async function verifySubmitOutcome(
 
     await randomSleep(1500, 2000);
   }
+  // The ATS POST succeeded (2xx) but the page never visibly changed (SPA /
+  // custom-domain boards like mongodb.com/careers keep the form mounted and
+  // only swap content). A captured 2xx submit response IS the confirmation —
+  // do not mark a successful submission as failed.
+  if (opts.submitResponse) {
+    const resp = await opts.submitResponse().catch(() => undefined);
+    if (resp && resp.ok) {
+      console.log(
+        `[${tag}] Submitted: submit POST returned ${resp.status} (no page change; treated as confirmed).`,
+      );
+      return { confirmed: true, retryable: false };
+    }
+  }
   console.error(`[${tag}] Submit outcome not detected at ${page.url()}.`);
   const lastUrl = page.url();
   // Keep the error diagnostic short (and avoid dumping the applicant's own
