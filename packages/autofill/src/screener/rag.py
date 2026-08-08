@@ -1475,6 +1475,15 @@ _NEGATED_SPONSOR_RE = re.compile(
 # — companies the candidate never worked at), so these must be resolved
 # deterministically to the negative/decline stance.
 
+# Referrer-name free-text that follows a referral gate (e.g. "Name of referrer",
+# "Who referred you?"). When the gate was answered No (employee_relation=No,
+# no referrer), the name field must stay blank/N/A — never invent a name.
+_REFERRAL_NAME_RE = re.compile(
+    r"(?:name|email|contact).*(?:referr|related|employee)|referr.*(?:name|email)|"
+    r"who (?:referred|recommended) you|referral (?:name|contact|email)",
+    re.I,
+)
+
 # Explicitly an EMPLOYMENT/RELATIONSHIP/REFERRAL question, not a skill question
 # ("have you worked with Python?") — anchored on the candidate's own status.
 _AFFILIATION_QUERY_RE = re.compile(
