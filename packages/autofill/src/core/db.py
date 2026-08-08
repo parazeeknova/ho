@@ -766,9 +766,13 @@ class AutofillDB:
                 str(thread_id),
             )
 
-    async def active_thread(self, max_age_seconds: float = 3600.0) -> str | None:
+    async def active_thread(self, max_age_seconds: float = 86400.0) -> str | None:
         """The current active Discord thread id, if fresh (the autofill bridge
-        reads this so notifications land inside the sweep thread)."""
+        reads this so notifications land inside the sweep thread).
+
+        Default freshness is 24h (not 1h) so a long overnight run's deferred /
+        end-of-run notifications still land in the thread instead of falling
+        back to the main channel hours after the thread was created."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """

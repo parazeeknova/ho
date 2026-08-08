@@ -841,8 +841,15 @@ class DiscordAgent:
                 await thread.send(f"```{chunk}```")
 
     async def begin_sweep(self, sweep: int) -> None:
-        """Create the per-sweep thread before alerts fire, so every message of
-        a sweep (alerts + summary) is concentrated in one thread."""
+        """Ensure a thread is live for this run's alerts.
+
+        One thread per RUN, not per sweep: once a sweep thread exists (this
+        process's or a fresh one persisted for the autofill bridge), later
+        sweeps post their "started" + summary into the SAME thread instead of
+        spawning "Sweep #1, #2, #3..." — which read as messy restarts. A new
+        thread is created only when none is live (first sweep of a run, or the
+        previous one was archived/expired).
+        """
         if not self.is_configured:
             return
         # If the gateway hasn't finished connecting yet, wait a bounded window
@@ -857,56 +864,104 @@ class DiscordAgent:
             logger.warning("Discord channel unavailable; sweep thread skipped")
             return
         try:
-            if sweep != self._last_sweep:
-                embed = discord.Embed(
-                    title=f"🔄 Sweep #{sweep} Started",
-                    color=0x42A5F5,
-                    description=(
-                        "Scanning sources, matching jobs, and filing applications — "
-                        "this thread collects everything from this sweep."
-                    ),
-                )
-                starter = await channel.send(embed=embed)
-                self._sweep_thread = await starter.create_thread(
-                    name=f"Sweep #{sweep}",
-                    auto_archive_duration=1440,
-                )
-                # Record the thread id so the autofill bridge (a separate
-                # process) can send deferred/captcha/queue notifications into
-                # this thread instead of the main channel.
-                with contextlib.suppress(Exception):
-                    from autofill.src.core.db import AutofillDB
-
-                    db = await AutofillDB.create()
-                    try:
-                        await db.set_active_thread(str(self._sweep_thread.id))
-                    finally:
-                        await db.close()
-                # Second message: an opening summary of the current queue
-                # state, so the thread opens with context before alerts land.
-                try:
-                    summary = await self._queue_summary_map()
-                    applied = summary.get("applied", 0)
-                    remaining = summary.get("pending", 0) + summary.get("filling", 0)
-                    review = summary.get("deferred", 0) + summary.get("awaiting_review", 0)
-                    failed = summary.get("failed", 0)
-                    ml_line = await self._ml_status_line()
-                    intro = discord.Embed(
-                        title=f"📊 Sweep #{sweep} Starting Point",
-                        color=0x42A5F5,
-                        description=(
-                            f"**Queue** — Applied `{applied}` · Remaining `{remaining}` · "
-                            f"Review `{review}` · Failed `{failed}`\n"
-                            f"{ml_line}\n"
-                            "Watching for new matches — alerts land below as they're found."
-                        ),
-                    )
-                    await self._sweep_thread.send(embed=intro)
-                except Exception as e:
-                    logger.debug("Sweep intro summary skipped", error=str(e))
+            if sweep == self._last_sweep and self._sweep_thread is not None:
+                return
+            # Reuse a fresh active thread (persisted for the autofill bridge)
+            # instead of creating a new one per sweep.
+            existing = self._sweep_thread
+            if existing is None:
+                existing = await self._fetch_active_thread(channel)
+            if existing is not None:
+                self._sweep_thread = existing
                 self._last_sweep = sweep
+                await self._send_sweep_intro(sweep)
+                return
+
+            embed = discord.Embed(
+                title=f"🔄 Sweep #{sweep} Started",
+                color=0x42A5F5,
+                description=(
+                    "Scanning sources, matching jobs, and filing applications — "
+                    "this thread collects everything from this run."
+                ),
+            )
+            starter = await channel.send(embed=embed)
+            self._sweep_thread = await starter.create_thread(
+                name=f"Sweep #{sweep}",
+                auto_archive_duration=1440,
+            )
+            # Record the thread id so the autofill bridge (a separate
+            # process) can send deferred/captcha/queue notifications into
+            # this thread instead of the main channel.
+            with contextlib.suppress(Exception):
+                from autofill.src.core.db import AutofillDB
+
+                db = await AutofillDB.create()
+                try:
+                    await db.set_active_thread(str(self._sweep_thread.id))
+                finally:
+                    await db.close()
+            await self._send_sweep_intro(sweep)
+            self._last_sweep = sweep
         except Exception as e:
             logger.warning("Sweep thread creation failed", error=str(e))
+
+    async def _fetch_active_thread(self, channel: Any) -> Any | None:
+        """Return the persisted fresh active thread object, or None."""
+        try:
+            from autofill.src.core.db import AutofillDB
+
+            db = await AutofillDB.create()
+            try:
+                tid = await db.active_thread()
+            finally:
+                await db.close()
+            if not tid:
+                return None
+            # Re-fetch the thread object so `.send` works and we know it's real.
+            try:
+                return channel.guild.get_thread(int(tid))  # type: ignore[attr-defined]
+            except Exception:
+                try:
+                    return await channel.guild.fetch_channel(int(tid))  # type: ignore[attr-defined]
+                except Exception:
+                    return None
+        except Exception:
+            return None
+
+    async def _send_sweep_intro(self, sweep: int) -> None:
+        """Post the per-sweep started + starting-point intro into the thread."""
+        if self._sweep_thread is None:
+            return
+        try:
+            embed = discord.Embed(
+                title=f"🔄 Sweep #{sweep} Started",
+                color=0x42A5F5,
+                description="Scanning sources, matching jobs, and filing applications.",
+            )
+            await self._sweep_thread.send(embed=embed)
+        except Exception as e:
+            logger.debug("Sweep started embed skipped", error=str(e))
+        try:
+            summary = await self._queue_summary_map()
+            applied = summary.get("applied", 0)
+            remaining = summary.get("pending", 0) + summary.get("filling", 0)
+            review = summary.get("deferred", 0) + summary.get("awaiting_review", 0)
+            failed = summary.get("failed", 0)
+            ml_line = await self._ml_status_line()
+            intro = discord.Embed(
+                title=f"📊 Sweep #{sweep} Starting Point",
+                color=0x42A5F5,
+                description=(
+                    f"**Queue** — Applied `{applied}` · Remaining `{remaining}` · "
+                    f"Review `{review}` · Failed `{failed}`\n"
+                    f"{ml_line}\n"
+                    "Watching for new matches — alerts land below as they're found."
+                ),
+            )
+            await self._sweep_thread.send(embed=intro)
+        except Exception as e:
+            logger.debug("Sweep intro summary skipped", error=str(e))
 
     async def _wait_gateway_ready(self) -> None:
         while self._client is not None and not self._client.is_ready():
