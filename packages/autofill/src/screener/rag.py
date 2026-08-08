@@ -3191,6 +3191,30 @@ class ScreenerRAG:
         if persona_ans is not None:
             return _normalize_start_date(persona_ans) if key in _START_DATE_KEYS else persona_ans
 
+        # Conditional free-text sibling of a sourcing select
+        # "If specified fill below" / "If Other please specify"). The main
+        # sourcing select already handled `Others`; this conditional box must
+        # stay blank when a concrete source was chosen — filling it with
+        # "LinkedIn" again is wrong (the user saw it repeat for ElevenLabs).
+        if "if" in q_lower and (
+            "if specified" in q_lower
+            or "if other" in q_lower
+            or ("other" in q_lower and "please specify" in q_lower)
+        ):
+            return None
+        # Defer "Others (please specify)" sourcing selects even harder at the
+        # conditional-free-text sibling: blank text fields would otherwise
+        # reach the LLM which mirrors the select's "LinkedIn" into the box.
+        if q_lower.strip() in (
+            "others",
+            "others (please specify)",
+            "other (please specify)",
+            "other",
+        ):
+            # This label (no surrounding question) is the conditional companion
+            # box itself — never fill it. The main sourcing select's answer
+            # decides whether Others was actually chosen.
+            return None
         # Education facts resolve ONLY from configured data (exact answers /
         # persona above, or the profile's education block). The LLM has
         # fabricated a university and guessed enrollment — never let it answer
@@ -3317,6 +3341,14 @@ class ScreenerRAG:
             # through to the LLM: the deterministic policies above resolve the
             # common cases, and the grounded LLM is a better backstop than
             # deferring a clearly-answerable form.
+            # Conditional sourcing free-text companion (e.g. the "If Other please
+            # specify" box after "How did you hear about us?"). Leave blank unless
+            # the main sourcing select actually chose Others — never mirror LinkedIn.
+            ql = q.lower()
+            if "if" in ql and ("if specified" in ql or ("other" in ql and "please specify" in ql)):
+                continue
+            if ql.strip() in ("others (please specify)", "other (please specify)"):
+                continue
             if _SENSITIVE_QUESTION_RE.search(q.lower()):
                 answers[q] = ASK_USER
                 continue
