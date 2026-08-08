@@ -624,7 +624,7 @@ class AutofillWorker:
         the end, never every few minutes. Falls back to the worker-shutdown
         path (run_worker finally) as well.
         """
-        last_sent_ts = 0.0
+        last_sent_dt: _dt.datetime | None = None
         idle_cycles = 0
         while self._running:
             try:
@@ -637,7 +637,9 @@ class AutofillWorker:
                     + (q.get("filling") or 0)
                     + (q.get("awaiting_review") or 0)
                 )
-                subs = await self.db.get_confirmed_submissions_since(since=last_sent_ts or None)
+                subs = await self.db.get_confirmed_submissions_since(
+                    since=last_sent_dt, unemailed_only=True
+                )
                 if open_jobs > 0:
                     # Batch still running — keep waiting for the batch to drain.
                     idle_cycles = 0
@@ -652,10 +654,10 @@ class AutofillWorker:
                     continue
                 label = f"sweep-{_dt.datetime.now().strftime('%Y%m%d-%H%M')}"
                 ok = await self.send_sweep_email_summary(
-                    sweep_label=label, epoch_id=None, since=last_sent_ts or None
+                    sweep_label=label, epoch_id=None, since=last_sent_dt
                 )
                 if ok:
-                    last_sent_ts = _dt.datetime.now().timestamp()
+                    last_sent_dt = _dt.datetime.now(_dt.UTC)
                     idle_cycles = 0
                     logger.info("batch email sent", count=len(subs), sweep=label)
             except asyncio.CancelledError:
