@@ -362,6 +362,30 @@ class AutofillDB:
                 result["filled_payload"] = json.loads(result["filled_payload"])
             return result
 
+    async def release_stale_leases(self, stale_minutes: int = 30) -> int:
+        """Release ``filling``/``awaiting_review`` rows whose owner process died.
+
+        A crashed/killed worker leaves its claimed jobs in ``filling`` with a
+        long lease (3600s). A fresh worker would otherwise wait out the whole
+        lease before reclaiming them. On startup we reset any lease that has
+        not been touched in ``stale_minutes`` back to ``pending`` so the new
+        worker picks them up immediately. Returns the count released.
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT job_id FROM autofill_queue "
+                "WHERE status IN ('filling', 'awaiting_review') "
+                "AND updated_at < NOW() - ($1 * INTERVAL '1 minute')",
+                stale_minutes,
+            )
+            for r in rows:
+                await conn.execute(
+                    "UPDATE autofill_queue SET status='pending', lease_expires=NOW() "
+                    "WHERE job_id=$1",
+                    r["job_id"],
+                )
+            return len(rows)
+
     async def update_status(
         self,
         job_id: str,

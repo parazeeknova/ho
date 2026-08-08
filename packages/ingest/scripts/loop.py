@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import os
 import signal
 import subprocess
@@ -64,6 +65,12 @@ RADAR_ENV_OVERRIDES = {
     "LLM_BUDGET_RADAR_TPM": "120000",
 }
 
+# Hang-watchdog: a child (e.g. the radar-master) that is still alive but has
+# produced no log output for this many minutes is treated as STUCK and is
+# restarted automatically. Prevents a silent sweep-phase freeze from halting
+# the whole run until a human notices.
+HANG_MINUTES = int(os.environ.get("LOOP_HANG_MINUTES", "6"))
+
 
 def _base_env() -> dict[str, str]:
     env = os.environ.copy()
@@ -95,6 +102,7 @@ class Child:
         self.proc: subprocess.Popen[str] | None = None
         self.restarts = 0
         self._stream_thread: Any | None = None
+        self.log_path = LOG_DIR / f"{name}.log"
 
     async def start(self) -> None:
         LOG_DIR.mkdir(exist_ok=True)
@@ -246,6 +254,34 @@ async def main() -> None:
             await asyncio.sleep(args.bridge_interval)
 
             for child in children:
+                # Hang-watchdog: a process can be alive yet STUCK (e.g. the
+                # radar-master freezes between sweep phases with no log output,
+                # silently halting discovery). If a child has produced no log
+                # line for HANG_MINUTES while still running, kill and restart
+                # it so a stall never requires manual intervention.
+                if child.is_alive():
+                    child.log_path.touch(exist_ok=True)
+                    try:
+                        age = time.time() - child.log_path.stat().st_mtime
+                    except OSError:
+                        age = 0.0
+                    if age > HANG_MINUTES * 60 and child.name != "autofill.src.core.worker":
+                        print(
+                            f"[loop] {child.name} hung (no output {age:.0f}s); restarting",
+                            flush=True,
+                        )
+                        child.stop()
+                        with contextlib.suppress(Exception):
+                            await child.wait(timeout=8)
+                        if child.restarts >= 5:
+                            print(
+                                f"[loop] {child.name} hung and exceeded restarts",
+                                flush=True,
+                            )
+                            continue
+                        child.restarts += 1
+                        await child.start()
+                        continue
                 if not child.is_alive():
                     # Exit code 42 = the radar finished its bounded batch
                     # (stop_after_gated reached). Stop ONLY the radar — the

@@ -1091,9 +1091,8 @@ class AutofillWorker:
                             try:
                                 from autofill.src.filling.tailor import tailor_resume_for_job
 
-                                if (
-                                    self._tailor_tasks.get(job_id) is None
-                                    and job_context.get("description")
+                                if self._tailor_tasks.get(job_id) is None and job_context.get(
+                                    "description"
                                 ):
                                     self._tailor_tasks[job_id] = asyncio.create_task(
                                         tailor_resume_for_job(job_id, job_context, rag.cm)
@@ -2077,9 +2076,7 @@ class AutofillWorker:
             try:
                 pdf_path = await asyncio.wait_for(asyncio.shield(task), timeout=90)
                 if pdf_path:
-                    logger.info(
-                        "Tailored resume ready", job_id=job_id, path=str(pdf_path)
-                    )
+                    logger.info("Tailored resume ready", job_id=job_id, path=str(pdf_path))
                     named_path = _per_job_resume(
                         pdf_path,
                         first_name=first_name,
@@ -2148,6 +2145,15 @@ async def run_worker() -> None:
     """CLI Entrypoint to run the background worker."""
     load_dotenv()
     db = await AutofillDB.create()
+    # Reclaim jobs left in 'filling' by a previously-crashed worker (its lease
+    # outlived the process). Without this, a restart waits out the whole
+    # 1-hour lease before re-processing those jobs.
+    try:
+        released = await db.release_stale_leases(stale_minutes=30)
+        if released:
+            logger.info("Released stale filling leases from prior worker", count=released)
+    except Exception as release_err:
+        logger.warning("Stale lease release skipped", error=str(release_err))
     # Fail loudly at boot if the browser runner cannot be spawned. A worker
     # that can't run its runner is useless — better to exit now than to burn
     # N job claims on "Runner exited with code 127" at 5-minute intervals.
