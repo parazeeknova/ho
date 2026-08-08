@@ -1450,6 +1450,14 @@ class AutofillWorker:
                                 "submitted",
                                 email_kind=(email_status or {}).get("kind", ""),
                             )
+                            with contextlib.suppress(Exception):
+                                await self._notify_applied(
+                                    bridge,
+                                    job_id,
+                                    apply_link,
+                                    role=job.get("role"),
+                                    company=job.get("company"),
+                                )
                             await self._debug_finalize(debug_rec, "submitted")
                         elif status == "skipped":
                             terminal_seen = True
@@ -1671,6 +1679,36 @@ class AutofillWorker:
             logger.info("Captcha-blocked notification sent", job_id=job_id)
         else:
             logger.warning("Captcha-blocked notification send failed", job_id=job_id)
+
+    async def _notify_applied(
+        self,
+        bridge: DiscordQuestionBridge,
+        job_id: str,
+        apply_link: str,
+        role: Any = None,
+        company: Any = None,
+    ) -> None:
+        """Reply in the job's thread that the application was submitted.
+
+        Mirrors _defer_job / _notify_captcha: routes through the sweep's
+        active thread so the update lands with the original job embed, not
+        the main channel. Best-effort — Discord downtime never fails the job.
+        """
+        if not bridge.is_configured:
+            return
+        role_str = str(role or "Position")
+        company_str = str(company or "Company")
+        text = (
+            f"\u2705 **Applied**: {company_str} \u2014 {role_str}\n"
+            f"[Open posting \u2192]({apply_link})\n"
+            f"Status: submitted (`{job_id}`)"
+        )
+        with contextlib.suppress(Exception):
+            ok = await bridge.send(text)
+            if ok:
+                logger.info("Applied notification sent", job_id=job_id)
+            else:
+                logger.warning("Applied notification send failed", job_id=job_id)
 
     async def _surface_email_feedback(
         self,
