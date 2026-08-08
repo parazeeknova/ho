@@ -325,10 +325,19 @@ class AutofillDB:
             max_retries = int(os.environ.get("AUTOFILL_MAX_RETRIES", "2"))
         query = """
         WITH candidate AS (
-            SELECT job_id FROM autofill_queue
-            WHERE status = 'pending'
-               OR (status IN ('filling', 'awaiting_review') AND lease_expires < NOW())
-            ORDER BY created_at ASC
+            SELECT q.job_id FROM autofill_queue q
+            WHERE (
+                q.status = 'pending'
+                OR (q.status IN ('filling', 'awaiting_review') AND q.lease_expires < NOW())
+            )
+            AND NOT EXISTS (
+                SELECT 1 FROM site_health sh
+                WHERE sh.domain = SPLIT_PART(SPLIT_PART(
+                    COALESCE(NULLIF(q.apply_link, ''), ''),
+                    '://', 2), '/', 1)
+                  AND sh.cooldown_until IS NOT NULL AND sh.cooldown_until > NOW()
+            )
+            ORDER BY q.created_at ASC
             FOR UPDATE SKIP LOCKED
             LIMIT 1
         ),
