@@ -58,6 +58,14 @@ _PROJECT_ROOT = _REPO_ROOT / "packages" / "ingest"
 # Node/TS runner package at the repo root's packages/node.
 _NODE_DIR = _REPO_ROOT / "packages" / "node"
 
+# Sentinel returned by ``readline`` to signal EOF without a real stream.
+_EOF = b""
+
+# Worker-side runner watchdog: if the Node runner produces no stdout for this
+# many seconds, it is dead or hung (its own activity watchdog died with it).
+# Kill and fail the job rather than block forever on a stale pipe.
+_RUNNER_IDLE_TIMEOUT_S = int(os.environ.get("AUTOFILL_RUNNER_IDLE_TIMEOUT_S", "420"))
+
 
 def is_overnight() -> bool:
     """True when running in overnight mode (OVERNIGHT_LOOP=true).
@@ -1069,7 +1077,41 @@ class AutofillWorker:
 
             # Monitor stdout for status events and RPC requests
             while True:
-                line = await process.stdout.readline() if process.stdout else b""
+                try:
+                    line = await asyncio.wait_for(
+                        process.stdout.readline() if process.stdout else _EOF,
+                        timeout=_RUNNER_IDLE_TIMEOUT_S,
+                    )
+                except TimeoutError:
+                    # The runner produced nothing for _RUNNER_IDLE_TIMEOUT_S —
+                    # it is dead or fully hung even though its stdout pipe is
+                    # still open. Kill it and fail the job loudly instead of
+                    # holding the slot in 'filling' until the lease.
+                    logger.error(
+                        "Runner silent for too long; aborting job",
+                        job_id=job_id,
+                        timeout_s=_RUNNER_IDLE_TIMEOUT_S,
+                    )
+                    with contextlib.suppress(Exception):
+                        process.kill()
+                    terminal_seen = True
+                    await self.db.update_status(
+                        job_id,
+                        status="failed",
+                        error=(
+                            f"RUNNER_IDLE_TIMEOUT: no runner output for {_RUNNER_IDLE_TIMEOUT_S}s"
+                        ),
+                    )
+                    with contextlib.suppress(Exception):
+                        await self._notify_failed(
+                            bridge,
+                            job_id,
+                            apply_link,
+                            f"Runner idle timeout ({_RUNNER_IDLE_TIMEOUT_S}s)",
+                            role=job.get("role"),
+                            company=job.get("company"),
+                        )
+                    break
                 if not line:
                     break
 
