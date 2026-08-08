@@ -338,6 +338,24 @@ async def generate_dynamic_questions(
         return []
 
 
+def _report_llm_fallback(ctx: Any, reason: str, detail: str = "") -> None:
+    """Print a clean [ho] line telling the user which models were tried and why
+    the optional LLM follow-up questions fell back to the static set."""
+    chain = " -> ".join(ctx.model_chain()) if ctx is not None else "(no LLM client)"
+    tried = f"tried [{chain}]"
+    if ctx is not None:
+        try:
+            rep = ctx.failure_report()
+            if rep and rep != "no attempts recorded":
+                tried = f"tried [{chain}]: {rep}"
+        except Exception:
+            pass
+    msg = f"LLM follow-up questions {reason} {detail}; using static set".strip()
+    logger.warning(msg, models=chain, reason=reason)
+    ux.chip("warn", msg)
+    ux.chip("info", tried)
+
+
 async def build_question_set(
     ctx: Any,
     resume_summary: str,
@@ -360,9 +378,10 @@ async def build_question_set(
             timeout=_DYN_QUESTION_TIMEOUT_S,
         )
     except TimeoutError:
-        logger.warning("Dynamic question generation timed out; using static set")
+        _report_llm_fallback(ctx, "timed out", f"after {int(_DYN_QUESTION_TIMEOUT_S)}s")
         dynamic = []
-    except Exception:
+    except Exception as exc:
+        _report_llm_fallback(ctx, "failed", str(exc))
         dynamic = []
     core_cats = {c for c, _ in CORE_QUESTIONS}
     merged = list(CORE_QUESTIONS)

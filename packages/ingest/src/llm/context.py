@@ -47,11 +47,24 @@ class ContextManager:
         self._max_retries = cfg.max_retries
         self._retry_delay = cfg.retry_delay
         self._max_tokens = cfg.max_tokens
+        # Per-model failure notes from the last chat() so callers can tell the
+        # user what was tried and why ("deepseek-v3.2: read timeout", ...).
+        self.last_failures: list[tuple[str, str]] = []
         try:
             self._client = GeneralCompute(api_key=cfg.api_key)
         except ValueError:
             self._client = None
         _ensure_governor()
+
+    def model_chain(self) -> list[str]:
+        """Primary model + fallbacks, in the order chat() tries them."""
+        return [self.model, *self._fallback_models]
+
+    def failure_report(self) -> str:
+        """Human-readable summary of what chat() last tried and what failed."""
+        if not self.last_failures:
+            return "no attempts recorded"
+        return "; ".join(f"{m}: {err}" for m, err in self.last_failures)
 
     async def aclose(self) -> None:
         pass
@@ -100,6 +113,7 @@ class ContextManager:
         # move to the next model instead of failing the whole request.
         chain = [self.model, *self._fallback_models]
         last_error: Exception | None = None
+        self.last_failures = []
         for model in chain:
             backoff = self._retry_delay
             for attempt in range(1, self._max_retries + 1):
@@ -117,6 +131,7 @@ class ContextManager:
                     # 429 = provider throttled. Don't hammer the same model;
                     # move to the next one in the chain immediately.
                     if _is_429(str(e)):
+                        self.last_failures.append((model, "rate-limited (429)"))
                         logger.warning(
                             f"LLM model {model} rate-limited (429); switching fallback",
                             model=model,
@@ -124,6 +139,7 @@ class ContextManager:
                         await handle_429()
                         break
                     wait = max(5.0, backoff * 3) if _is_transient(e) else backoff
+                    self.last_failures.append((model, str(e)[:120]))
                     logger.warning(
                         f"LLM retry {attempt}/{self._max_retries} on {model}",
                         retry_count=attempt,
