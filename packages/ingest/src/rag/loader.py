@@ -257,7 +257,12 @@ def chunk_resume(text: str) -> dict[str, str]:
 async def index_resume_in_pgvector(
     chunks: dict[str, str],
     store,
-) -> None:
+) -> dict[str, int]:
+    """Index resume (+ portfolio) chunks into resume_embeddings.
+
+    Returns {section: count} of chunks actually indexed this call, so callers
+    can report what was refreshed (e.g. a fresh portfolio scrape).
+    """
     import os
 
     # Enrich the resume chunks with the candidate's portfolio site (PORTFOLIO_URL)
@@ -265,6 +270,7 @@ async def index_resume_in_pgvector(
     # detailed descriptions) than the resume PDF, which is what the matcher
     # should ground on. Best-effort: a scrape failure never fails indexing.
     portfolio_url = os.environ.get("PORTFOLIO_URL", "").strip()
+    portfolio_source = ""
     if portfolio_url:
         try:
             from src.rag.github_linkedin_loader import scrape_portfolio
@@ -272,6 +278,7 @@ async def index_resume_in_pgvector(
             p_text = await scrape_portfolio(portfolio_url)
             if p_text:
                 chunks = {**chunks, "portfolio": p_text}
+                portfolio_source = f"{portfolio_url} ({len(p_text)} chars)"
         except Exception:
             pass
 
@@ -281,6 +288,7 @@ async def index_resume_in_pgvector(
         timeout=httpx.Timeout(120.0, connect=10.0),
         extra_limits={"max_keepalive_connections": 2, "max_connections": 4},
     )
+    indexed: dict[str, int] = {}
     try:
         records: list[dict[str, object]] = []
         current_hashes: set[str] = set()
@@ -322,5 +330,11 @@ async def index_resume_in_pgvector(
                 )
         if records:
             await store.index_resume_chunks(records, current_hashes=current_hashes)
+        for rec in records:
+            sec = str(rec.get("section") or "header")
+            indexed[sec] = indexed.get(sec, 0) + 1
+        # Tag the returned metadata so callers can report the portfolio source.
+        indexed["_portfolio_source"] = portfolio_source
     finally:
         await embed_client.aclose()
+    return indexed

@@ -98,8 +98,17 @@ async def main() -> None:
     store = await MemoryStore.create()
     try:
         with ux.console.status("Embedding and indexing into resume_embeddings...", spinner="dots"):
-            await index_resume_in_pgvector(chunks, store)
+            indexed = await index_resume_in_pgvector(chunks, store)
             count = await store.chunk_count()
+        for section in ("header", "skills", "experience", "projects", "portfolio"):
+            n = indexed.get(section, 0)
+            if n:
+                ux.chip("ok", f"Indexed {n} {section} chunk(s)")
+        src = indexed.get("_portfolio_source", "")
+        if src:
+            ux.chip("ok", f"Portfolio scraped fresh: {src}")
+        elif os.environ.get("PORTFOLIO_URL", "").strip():
+            ux.chip("warn", "Portfolio scrape returned nothing; kept existing chunks")
     finally:
         await store.close()
     ux.chip("ok", f"Done - {count} resume chunks indexed.")
