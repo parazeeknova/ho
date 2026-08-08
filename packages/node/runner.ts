@@ -46,6 +46,13 @@ interface AdapterRegistration {
 
 const adapterRegistry: AdapterRegistration[] = [
   { pattern: /greenhouse\.io/, factory: (s) => new GreenhouseAdapter(s) },
+  // Greenhouse custom domains: companies host their greenhouse board on their
+  // own domain (careers.airbnb.com, mongodb.com/careers?gh_jid=, abnormal.ai/
+  // careers/jobs/...?gh_jid=). The gh_jid query param is the greenhouse
+  // posting id — the form is the greenhouse form and needs the greenhouse
+  // adapter (consent checkboxes, OTP handling, submit verification). Without
+  // this they fell to the GenericAdapter and failed submit verification.
+  { pattern: /[?&]gh_jid=\d+/, factory: (s) => new GreenhouseAdapter(s) },
   { pattern: /jobs\.ashbyhq\.com/, factory: (s) => new AshbyAdapter(s) },
   { pattern: /jobs\.lever\.co/, factory: (s) => new LeverAdapter(s) },
   { pattern: /myworkdayjobs\.com/, factory: (s) => new WorkdayAdapter(s) },
