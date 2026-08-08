@@ -118,7 +118,7 @@ async def _status_dashboard(db: Any) -> str:
             accepted = await c.fetchval(
                 "SELECT COUNT(*) FROM radar_candidates WHERE eligibility='accepted'"
             )
-            sources = await c.fetchval("SELECT COUNT(*) FROM discovered_sources")
+            sources = await c.fetchval("SELECT COUNT(*) FROM source_checkpoints")
             events = await c.fetchval("SELECT COUNT(*) FROM decision_events")
             rewards = await c.fetchval(
                 "SELECT COUNT(*) FROM decision_events WHERE reward IS NOT NULL"
