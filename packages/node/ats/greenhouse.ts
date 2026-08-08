@@ -1382,37 +1382,34 @@ export class GreenhouseAdapter extends ATSAdapter {
     const count = await loc.count().catch(() => 0);
     if (count === 0) return false;
     if (prompt.segmented && count > 1) {
-      // Greenhouse's segmented OTP spreads a full paste across all 8 boxes, so
-      // fill the whole code into the first box first (deterministic); fall
-      // back to per-box entry if the board doesn't spread it.
-      await loc
-        .first()
-        .click()
-        .catch(() => {});
-      await loc
-        .first()
-        .fill(code)
-        .catch(() => {});
-      await randomSleep(400, 700);
-      let committed = await this.readVerificationCode(page, prompt);
-      if (committed !== code) {
-        await loc
-          .first()
-          .fill("")
-          .catch(() => {});
-        const n = Math.min(count, code.length);
-        for (let i = 0; i < n; i++) {
-          const box = loc.nth(i);
-          await box.click();
-          await this.typeChar(page, box, code[i]);
-        }
-        if (code.length > n) {
-          await loc.nth(n - 1).click();
-          await this.typeChar(page, loc.nth(n - 1), code.slice(n));
-        }
-        await randomSleep(400, 700);
-        committed = await this.readVerificationCode(page, prompt);
+      // Segmented OTP: each box holds ONE character (maxLength=1). A full
+      // .fill(code) into the first box truncates to its first letter — that
+      // was the 'only fills the first letter' bug. Enter one character per
+      // box, letting the browser's own auto-advance move focus along.
+      let committed = "";
+      const n = Math.min(count, code.length);
+      // Clear every box first so stale values never leave a partial code.
+      for (let i = 0; i < count; i++) {
+        await loc.nth(i).fill("").catch(() => {});
       }
+      for (let i = 0; i < n; i++) {
+        const box = loc.nth(i);
+        // Click to focus, then type the single character into THIS box.
+        // pressSequentially on a maxLength=1 input commits exactly one char.
+        await box.click().catch(() => {});
+        await randomSleep(80, 160);
+        await this.typeChar(page, box, code[i]);
+        await randomSleep(80, 160);
+      }
+      // If the code is longer than the box count, put the tail into the last
+      // box (some boards accept a full code pasted into the final slot).
+      if (code.length > n) {
+        await loc.nth(n - 1).click().catch(() => {});
+        await randomSleep(80, 160);
+        await this.typeChar(page, loc.nth(n - 1), code.slice(n - 1));
+      }
+      await randomSleep(400, 700);
+      committed = await this.readVerificationCode(page, prompt);
       if (committed !== code) {
         console.warn(
           `[GreenhouseAdapter] Verification code not fully committed (got "${committed}"); submitting anyway.`,
