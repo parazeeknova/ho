@@ -310,7 +310,23 @@ class DiscordQuestionBridge:
     ) -> str | None:
         qid = f"q-{uuid.uuid4().hex[:12]}"
         db = await self._db()
-        await db.open_mailbox_question(qid, self.channel_id, [msg_id], question)
+        # Discord's REST API returns snowflake ids as JSON STRINGS. The mailbox
+        # column is BIGINT[], so coerce before insert — a str snowflake inside
+        # the array is "invalid array element" for Postgres (the Deepgram job
+        # died on exactly this: ['1535503494239359006']). Coerce only when the
+        # value is a numeric snowflake; non-numeric test/fallback ids pass
+        # through untouched.
+        msg_id_int = None
+        try:
+            if msg_id is not None and str(msg_id).isdigit():
+                msg_id_int = int(msg_id)
+        except TypeError, ValueError:
+            msg_id_int = None
+        if msg_id_int is None and msg_id is not None:
+            msg_id_int = msg_id  # non-numeric id (tests, legacy): keep as-is
+        await db.open_mailbox_question(
+            qid, self.channel_id, [msg_id_int] if msg_id_int is not None else [], question
+        )
         deadline = asyncio.get_event_loop().time() + timeout
         try:
             while True:

@@ -522,24 +522,43 @@ async function main() {
 
     if (payload.mode === "auto") {
       if (getDeferredFieldCount() > 0 || getBlankedRequiredCount() > 0) {
-        // A question was deferred (overnight, no human) or a required field
-        // failed to commit. Never submit an incomplete application — abort
-        // for the morning digest / resume flow instead. The worker keeps the
-        // job retryable (skipped/deferred), never submitted.
+        // A required field is blank (or a question was deferred). Before
+        // giving up, GO BACK and re-fill the blank required fields via the
+        // adapter's recheck (it re-asks unresolved questions through the RPC
+        // bridge — which now includes Discord prompting for unknown fields).
+        // Only if blanks genuinely remain does the job defer instead of
+        // submitting an incomplete application.
         console.log(
-          `[Runner] ${getDeferredFieldCount()} deferred + ${getBlankedRequiredCount()} required-blank question(s) remain; not submitting. ` +
-            "Job stays deferred for the morning digest / resume flow.",
+          `[Runner] ${getDeferredFieldCount()} deferred + ${getBlankedRequiredCount()} required-blank question(s) remain; re-filling before deciding...`,
         );
-        emitStatus({
-          jobId: payload.jobId,
-          status: "skipped",
-          screenshotPath: screenshotPath,
-          message: "Deferred/blank required questions remain; application not submitted.",
-        });
-        watchdog?.stop();
-        rl.close();
-        await stagehand.close();
-        process.exit(0);
+        try {
+          const stillBlank = await adapter.recheckMissingFields(askPythonRpc);
+          if (stillBlank === 0) {
+            console.log("[Runner] Re-fill resolved all blank required fields; proceeding to submit.");
+          } else {
+            console.warn(`[Runner] ${stillBlank} required field(s) still blank after re-fill.`);
+          }
+        } catch (recheckErr: any) {
+          console.warn("[Runner] Re-fill failed:", recheckErr?.message || recheckErr);
+        }
+        if (getBlankedRequiredCount() > 0 || getDeferredFieldCount() > 0) {
+          // Still incomplete: never submit a half-filled application — abort
+          // for the morning digest / resume flow instead.
+          console.log(
+            `[Runner] ${getDeferredFieldCount()} deferred + ${getBlankedRequiredCount()} required-blank question(s) remain; not submitting. ` +
+              "Job stays deferred for the morning digest / resume flow.",
+          );
+          emitStatus({
+            jobId: payload.jobId,
+            status: "skipped",
+            screenshotPath: screenshotPath,
+            message: "Deferred/blank required questions remain; application not submitted.",
+          });
+          watchdog?.stop();
+          rl.close();
+          await stagehand.close();
+          process.exit(0);
+        }
       }
       console.log("[Runner] Auto mode enabled. Submitting application immediately...");
 

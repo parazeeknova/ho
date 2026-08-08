@@ -973,7 +973,66 @@ export class GreenhouseAdapter extends ATSAdapter {
       }
     }
 
+    // Terms/consent/privacy checkboxes: ATS boards show an inline
+    // "Please accept the terms to proceed" error when these are left
+    // unchecked. They are often outside the question inventory, so check any
+    // consent-type checkbox that is still unchecked (best-effort).
+    await this.checkConsentCheckboxes(page);
+
     console.log("[GreenhouseAdapter] Form filling completed.");
+  }
+
+  private async checkConsentCheckboxes(page: any): Promise<void> {
+    try {
+      const checked = await page
+        .evaluate(() => {
+          const terms = Array.from(
+            document.querySelectorAll<HTMLInputElement>(
+              "#application-form input[type='checkbox'], .application--questions input[type='checkbox'], " +
+                "form input[type='checkbox']",
+            ),
+          );
+          return terms
+            .filter((cb) => {
+              if (cb.checked) return false;
+              const label = (
+                (cb.closest("label")?.textContent ?? "") +
+                " " +
+                (cb.getAttribute("aria-label") ?? "") +
+                " " +
+                (cb.getAttribute("name") ?? "")
+              ).toLowerCase();
+              return /term|agree|consent|privacy|acknowledge|accept/.test(label);
+            })
+            .map((cb) => {
+              const label =
+                (cb.closest("label")?.textContent ?? "").trim().slice(0, 80) ||
+                cb.getAttribute("aria-label") ||
+                cb.getAttribute("name") ||
+                "terms";
+              return { id: cb.id || "", label, name: cb.getAttribute("name") || "" };
+            });
+        })
+        .catch(() => []);
+      if (!checked.length) return;
+      console.log(`[GreenhouseAdapter] Checking ${checked.length} consent checkbox(es):`);
+      for (const c of checked) {
+        const sel = c.id
+          ? `#${CSS.escape(c.id)}`
+          : c.name
+            ? `input[type='checkbox'][name='${CSS.escape(c.name)}']`
+            : `input[type='checkbox']`;
+        try {
+          await page.locator(sel).first().check({ force: true });
+          console.log(`[GreenhouseAdapter]   checked: ${c.label}`);
+        } catch {
+          console.warn(`[GreenhouseAdapter]   could not check: ${c.label}`);
+        }
+        await randomSleep(200, 400);
+      }
+    } catch (e: any) {
+      console.warn("[GreenhouseAdapter] Consent checkbox sweep failed:", e?.message || e);
+    }
   }
 
   async submit(): Promise<SubmitOutcome> {

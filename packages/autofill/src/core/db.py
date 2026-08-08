@@ -882,6 +882,42 @@ class AutofillDB:
             result.append(res)
         return result
 
+    async def get_confirmed_submissions_since(
+        self, since: Any = None, epoch_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Confirmed submissions (applied_at set) with their field-level fills.
+
+        Used by the per-sweep summary email. When ``since`` is given only
+        submissions applied after it are returned; when ``epoch_id`` is given
+        only submissions belonging to that learning epoch.
+        """
+        where = ["applied_at IS NOT NULL"]
+        params: list[Any] = []
+        if since is not None:
+            params.append(since)
+            where.append(f"applied_at >= ${len(params)}")
+        if epoch_id:
+            params.append(epoch_id)
+            where.append(f"epoch_id = ${len(params)}")
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"""
+                SELECT q.job_id, q.apply_link, q.role, q.company, q.applied_at, q.epoch_id,
+                       COALESCE(
+                         (SELECT jsonb_agg(jsonb_build_object(
+                            'question', f.question, 'answer', f.answer, 'source', f.source)
+                          ) FROM autofill_fills f
+                          WHERE f.job_id = q.job_id
+                            AND f.created_at <= q.applied_at + interval '1 hour'),
+                         '[]'::jsonb
+                       ) AS fills
+                FROM autofill_queue q
+                WHERE {" AND ".join(where)}
+                ORDER BY q.applied_at DESC
+                """
+            )
+            return [dict(r) for r in rows]
+
     async def get_pending_summary_jobs(self) -> list[dict[str, Any]]:
         """Deferred jobs not yet included in a morning digest."""
         async with self._pool.acquire() as conn:
