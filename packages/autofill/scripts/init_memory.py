@@ -124,6 +124,9 @@ async def index_resume(resume_url: str | None, resume_path: str | None) -> None:
         # instead of the child printing a traceback and us "continuing".
         raise SystemExit(_INPUT_ABORT) from None
     if result.returncode != 0:
+        if result.returncode == 130:
+            # The resume indexer was interrupted (Ctrl+C): abort the whole run.
+            raise SystemExit(_INPUT_ABORT)
         ux.chip(
             "warn",
             "Resume indexing failed; continuing (fix RESUME_URL/RESUME_PATH and re-run).",

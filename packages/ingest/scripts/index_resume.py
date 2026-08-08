@@ -109,8 +109,10 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt, asyncio.CancelledError:
-        # Ctrl+C during a download/embed: exit cleanly, never a traceback.
+        # Ctrl+C during a download/embed: exit with 130 (SIGINT's code) so the
+        # caller (init_memory) sees a non-zero exit and aborts the whole run —
+        # not 0, which would look like success and let setup continue.
         print(
             "\n[ho] Exiting resume indexer. Nothing was committed unless it finished.", flush=True
         )
-        raise SystemExit(0) from None
+        raise SystemExit(130) from None
