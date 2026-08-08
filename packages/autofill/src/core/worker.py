@@ -246,6 +246,7 @@ def _per_job_resume(
     first_name: str = "",
     last_name: str = "",
     job_id: str = "",
+    force: bool = False,
 ) -> str | None:
     """Point this job's resume at a name-based temp copy.
 
@@ -255,6 +256,10 @@ def _per_job_resume(
     subdirectory so concurrent jobs for the same person never clobber each
     other) varies the uploaded filename without touching the resume content.
     Returns the new path, or the original when nothing needs copying.
+
+    ``force=True`` overwrites an existing per-job copy (used when the JD-
+    tailored resume replaces the base copy that was created up front under the
+    same name).
     """
     if not resume_path:
         return None
@@ -267,7 +272,7 @@ def _per_job_resume(
     dest_dir = _NODE_DIR / "artifacts" / "resumes" / _safe_segment(job_id)
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / f"{name_slug}_Resume{src.suffix}"
-    if not dest.exists():
+    if force or not dest.exists():
         # Atomic: write to a temp file first so a concurrent reader (or a
         # parallel worker process) never observes a half-written resume.
         tmp = dest.with_suffix(dest.suffix + ".tmp")
@@ -1976,6 +1981,9 @@ class AutofillWorker:
                         first_name=first_name,
                         last_name=last_name,
                         job_id=job_id,
+                        # Overwrite the base copy made up front under the same
+                        # name: the tailored resume must win the attachment.
+                        force=True,
                     )
                     return str(named_path or pdf_path)
             except TimeoutError:
