@@ -311,12 +311,18 @@ def should_poll(source_id: str) -> bool:
 def select_sources_for_sweep(sources: list[dict[str, str]]) -> list[dict[str, str]]:
     """Order sources for this sweep: expected-value first, with a low-lane
     floor so quiet-but-important sources are never starved out entirely.
+    Never-polled sources (``last_polled == 0``) rank FIRST — they have not
+    been given a single chance yet, and without this they sit at EV=0 under
+    every already-polled source and never enter the sweep cap.
     """
     scored: list[tuple[float, dict[str, str]]] = []
     for s in sources:
         cp = get_checkpoint(s.get("id", ""))
-        age_days = max((time.time() - cp.last_polled) / 86400.0, 0.0)
-        ev = cp.yield_per_poll / max(age_days, 0.5)
+        age_days = max((time.time() - cp.last_polled) / 86400.0, 0.5)
+        ev = cp.yield_per_poll / age_days
+        # Never-polled sources always win the ordering.
+        if cp.last_polled == 0:
+            ev = float("inf")
         scored.append((ev, s))
     scored.sort(key=lambda x: x[0], reverse=True)
     ordered = [s for _, s in scored]

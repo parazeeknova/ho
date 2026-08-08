@@ -35,7 +35,7 @@ services:
       - ./.tor-geoip/geoip6:/usr/share/tor/geoip6:ro
 
   agent-memory-db:
-    image: pgvector/pgvector:0.8.0-pg18
+    image: pgvector/pgvector:pg18
     restart: "no"
     ports:
       - "5433:5432"
@@ -53,7 +53,7 @@ services:
         max-file: "1"
 
   redis:
-    image: redis:8.1-alpine
+    image: redis:alpine
     restart: "no"
     ports:
       - "6379:6379"
