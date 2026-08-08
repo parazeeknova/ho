@@ -53,6 +53,11 @@ LINK_FIELDS = {"linkedin", "github", "website", "twitter"}
 # minutes on a slow/overloaded model just to invent optional questions.
 _DYN_QUESTION_TIMEOUT_S = 90.0
 
+# Auto-prefill sources populated in main() before the grill runs: identity-like
+# facts extracted from the resume and the full resume+portfolio text blob.
+_AUTO_RESUME: dict[str, str] = {}
+_AUTO_RESUME_CTX: str = ""
+
 CORE_QUESTIONS: list[tuple[str, str]] = [
     ("current_location", "Where are you currently based?"),
     (
@@ -157,6 +162,43 @@ def _normalize_answer(value: str, category: str = "") -> str:
     if low in _NA_ALIASES:
         return "N/A"
     return v
+
+
+async def _resume_context() -> str:
+    """Full resume + portfolio context (all sections) for grounding the dynamic
+    question generator and auto-prefilling answers. Returns '' if unavailable."""
+    try:
+        from src.memory.pgvector_store import MemoryStore
+
+        store = await MemoryStore.create()
+        try:
+            if not await store.chunk_count():
+                return ""
+            async with store._pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT section, content FROM resume_embeddings
+                    WHERE section IN ('header', 'skills', 'projects', 'experience', 'portfolio')
+                    ORDER BY id
+                    """
+                )
+            blocks: list[str] = []
+            current: dict[str, list[str]] = {}
+            order = ["header", "skills", "experience", "projects", "portfolio"]
+            for r in rows:
+                sec = str(r.get("section") or "header")
+                txt = str(r.get("content") or "").strip()
+                if txt:
+                    current.setdefault(sec, []).append(txt)
+            for sec in order:
+                if current.get(sec):
+                    blocks.append(f"=== {sec.upper()} ===\n" + "\n".join(current[sec]))
+            return "\n\n".join(blocks)
+        finally:
+            await store.close()
+    except Exception as e:
+        logger.warning("Resume context unavailable", error=str(e))
+        return ""
 
 
 async def _resume_defaults() -> dict[str, str]:
@@ -272,16 +314,16 @@ async def generate_dynamic_questions(
     resume_summary: str,
     existing: list[dict],
     identity: dict,
-    target: int = 8,
+    resume_context: str = "",
+    target: int = 6,
 ) -> list[tuple[str, str]]:
     """Generate candidate-tailored follow-up questions from the LLM.
 
-    Feeds the resume summary + already-answered persona Q&A to the model and
-    asks it to propose short, high-value questions that a recruiter or
-    application form would still want answered — skills depth, project
-    specifics, work style, constraints. Returns (category, question) tuples
-    that merge on top of CORE_QUESTIONS. Returns [] on any failure so callers
-    always have a usable (static) question set.
+    Feeds the full resume + portfolio context, already-answered persona Q&A and
+    identity to the model so it only proposes questions that are genuinely
+    unanswered — it must NOT repeat core questions, already-answered ones, or
+    anything the resume/portfolio already covers. Returns (category, question)
+    tuples merged on top of CORE_QUESTIONS. Returns [] on any failure.
     """
     if ctx is None:
         return []
@@ -293,21 +335,27 @@ async def generate_dynamic_questions(
             known.append(f"- {q}: {ans}")
     known_text = "\n".join(known) if known else "(nothing answered yet)"
     ident_text = ", ".join(f"{k}: {v}" for k, v in (identity or {}).items() if v)
+    core_text = "\n".join(f"- {q}" for _, q in CORE_QUESTIONS)
+    resume_blob = resume_context or resume_summary or ""
     prompt = (
         "You are building a job-application profile for a candidate. "
         "Generate a list of SHORT, high-value screening questions that an "
-        "application form or recruiter would still want answered, given the "
-        "resume and what is already known.\n\n"
+        "application form or recruiter would STILL need answered.\n\n"
         f"KNOWN IDENTITY: {ident_text}\n\n"
         f"ALREADY ANSWERED:\n{known_text}\n\n"
-        f"RESUME SUMMARY:\n{(resume_summary or '(none yet)')[:3000]}\n\n"
+        f"ALREADY ASKED (core questions — DO NOT re-ask or paraphrase these):\n{core_text}\n\n"
+        f"RESUME + PORTFOLIO:\n{(resume_blob or '(none yet)')[:6000]}\n\n"
         "Rules:\n"
         "- Each question must be answerable in one short line.\n"
-        "- Do NOT repeat anything already answered above.\n"
-        "- Do NOT ask for contact info (email/phone/linkedin) — that's handled separately.\n"
-        "- Prefer questions about: skill depth, notable projects or work, "
-        "preferred tech, work/office constraints, salary expectations, "
-        "notice period, visa/relocation nuance.\n"
+        "- ONLY ask about things NOT already in the resume, portfolio, identity, "
+        "already-answered list, or the core questions above. If the resume says "
+        "they know Python/Go, do NOT ask 'what languages do you know?'.\n"
+        "- Do NOT ask for contact info (email/phone/linkedin/website) or anything "
+        "in the identity section.\n"
+        "- Prefer genuinely unknown nuance: exact years of experience, notable "
+        "project details, preferred tools, notice period, salary (if absent), "
+        "work/office constraints, visa nuance (if absent).\n"
+        "- Return at most {target} questions.\n"
         f"- Return exactly {target} questions as JSON with keys category and question; "
         "category should be a short lowercase slug like 'skills' or 'projects'.\n"
     )
@@ -319,6 +367,9 @@ async def generate_dynamic_questions(
         questions = parsed.get("questions") or []
         out: list[tuple[str, str]] = []
         seen: set[str] = set()
+        # Semantic block-list: token overlap against core + known questions so
+        # the LLM's paraphrased duplicates are filtered, not just exact matches.
+        blocked = _question_blocklist(CORE_QUESTIONS, existing)
         for item in questions[:target]:
             category = str(item.get("category") or "general").strip().lower()
             question = re.sub(r"\s+", " ", str(item.get("question") or "").strip()).strip(" ")
@@ -328,6 +379,8 @@ async def generate_dynamic_questions(
             key = question.lower().strip()
             if not question or key in seen:
                 continue
+            if _overlaps_blocklist(question, blocked):
+                continue
             seen.add(key)
             out.append((category, question))
         return out
@@ -336,6 +389,93 @@ async def generate_dynamic_questions(
             "Dynamic question generation failed; using static question set", error=str(e)
         )
         return []
+
+
+def _question_blocklist(
+    core: list[tuple[str, str]], existing: list[dict]
+) -> list[tuple[str, set[str]]]:
+    """(canonical phrase, significant tokens) for every question that must not
+    be re-asked. Used to catch the LLM's paraphrased duplicates."""
+    phrases: list[str] = [q for _, q in core]
+    phrases += [str(a.get("question") or "") for a in existing]
+    out: list[tuple[str, set[str]]] = []
+    for p in phrases:
+        tokens = _significant_tokens(p)
+        if tokens:
+            out.append((p, tokens))
+    return out
+
+
+def _significant_tokens(text: str) -> set[str]:
+    """Lowercased, stopword-filtered, lightly-stemmed tokens for overlap
+    matching ("relocating"/"relocation"/"relocat" all reduce to 'relocat')."""
+    stops = {
+        "what",
+        "is",
+        "are",
+        "do",
+        "you",
+        "your",
+        "the",
+        "a",
+        "an",
+        "of",
+        "for",
+        "to",
+        "in",
+        "on",
+        "at",
+        "or",
+        "and",
+        "does",
+        "would",
+        "not",
+        "how",
+        "much",
+        "many",
+        "any",
+        "when",
+        "where",
+        "if",
+        "currently",
+        "prefer",
+        "preferred",
+        "include",
+        "note",
+        "say",
+        "answer",
+        "with",
+        "from",
+        "this",
+        "that",
+        "have",
+        "has",
+        "had",
+    }
+    tokens = {t for t in re.findall(r"[a-z0-9]+", text.lower()) if len(t) > 2 and t not in stops}
+    # Light suffix stem so grammatical variants collapse to one token.
+    stemmed: set[str] = set()
+    for t in tokens:
+        for suf in ("ing", "ion", "ions", "ation", "s", "es", "ed"):
+            if t.endswith(suf) and len(t) - len(suf) >= 4:
+                t = t[: -len(suf)]
+                break
+        stemmed.add(t)
+    return stemmed
+
+
+def _overlaps_blocklist(question: str, blocked: list[tuple[str, set[str]]]) -> bool:
+    """True when the question shares >=2 significant tokens with a blocked one
+    (catching 'salary expectations in USD' vs 'what are your salary
+    expectations'), unless the question adds a genuinely distinct qualifier."""
+    q_tokens = _significant_tokens(question)
+    if not q_tokens:
+        return False
+    for _, b_tokens in blocked:
+        shared = q_tokens & b_tokens
+        if len(shared) >= 2:
+            return True
+    return False
 
 
 def _report_llm_fallback(ctx: Any, reason: str, detail: str = "") -> None:
@@ -361,6 +501,7 @@ async def build_question_set(
     resume_summary: str,
     existing: list[dict],
     identity: dict,
+    resume_context: str = "",
 ) -> list[tuple[str, str]]:
     """Merge the core application-form questions with LLM-generated ones.
 
@@ -374,7 +515,9 @@ async def build_question_set(
     """
     try:
         dynamic = await asyncio.wait_for(
-            generate_dynamic_questions(ctx, resume_summary, existing, identity),
+            generate_dynamic_questions(
+                ctx, resume_summary, existing, identity, resume_context=resume_context
+            ),
             timeout=_DYN_QUESTION_TIMEOUT_S,
         )
     except TimeoutError:
@@ -470,6 +613,82 @@ def _previous_answer(
     return {}
 
 
+def _extract_resume_fact(key: str, resume_ctx: str) -> str:
+    """Extract a short fact from the resume/portfolio text blob by section."""
+    if not resume_ctx:
+        return ""
+    low = key.lower()
+    if low == "skills":
+        m = re.search(r"=== SKILLS ===\n(.*?)(?:\n=== |\Z)", resume_ctx, re.S)
+        if m:
+            return " ".join(m.group(1).split())[:300]
+    elif low in ("location", "city"):
+        m = re.search(
+            r"([A-Z][A-Za-z ,.-]+(?:India|IN|US|USA|UK|Canada|Germany|Remote)?)",
+            resume_ctx,
+        )
+        if m:
+            return m.group(1)[:80]
+    elif low in ("projects",):
+        m = re.search(r"=== PROJECTS ===\n(.*?)(?:\n=== |\Z)", resume_ctx, re.S)
+        if m:
+            return " ".join(m.group(1).split())[:300]
+    return ""
+
+
+def _auto_answer(question: str, resume: dict[str, str], resume_ctx: str = "") -> str:
+    """Best-effort answer for a grill question derived from resume sections /
+    portfolio text, so the user mostly confirms instead of typing.
+
+    Matches the question's significant tokens against resume/portfolio content
+    and returns the most relevant short extract. Returns '' when nothing maps.
+    """
+    q_tokens = _significant_tokens(question)
+    if not q_tokens:
+        return ""
+
+    # Map the question's topic to the resume section that most likely answers it.
+    low = question.lower()
+    if "location" in low or "based" in low or "relocat" in low:
+        loc = resume.get("location") or resume.get("city") or ""
+        return loc
+    if "salary" in low or "compensation" in low or "comp" in low:
+        return resume.get("expected_compensation") or ""
+    if "visa" in low or "sponsor" in low or "authorized" in low:
+        return resume.get("work_authorization") or ""
+    if "skill" in low or "tech" in low or "stack" in low or "tools" in low:
+        return resume.get("skills") or ""
+    if "hours" in low or "week" in low:
+        return resume.get("hours_per_week") or ""
+    if "start" in low or "notice" in low or "available" in low:
+        return resume.get("availability") or ""
+    if "project" in low or "proud" in low:
+        return resume.get("projects") or ""
+
+    # Fallback: token-overlap against resume_ctx, return the tightest extract.
+    if resume_ctx:
+        best = ""
+        best_score = 0
+        for chunk in _split_ctx_sentences(resume_ctx):
+            lt = chunk.strip()
+            if not lt or len(lt) > 260:
+                continue
+            ltokens = _significant_tokens(lt)
+            shared = q_tokens & ltokens
+            if len(shared) > best_score:
+                best_score = len(shared)
+                best = lt
+        if best_score >= 2:
+            return best[:240]
+    return ""
+
+
+def _split_ctx_sentences(text: str) -> list[str]:
+    """Split resume/portfolio context into sentence-ish chunks for overlap."""
+    parts = re.split(r"(?<=[.!?])\s+|\n+", text)
+    return [p.strip() for p in parts if p.strip()]
+
+
 def grill_answers(data: dict, ask_all: bool = False, questions: list | None = None) -> dict:
     if questions is None:
         questions = CORE_QUESTIONS
@@ -479,7 +698,7 @@ def grill_answers(data: dict, ask_all: bool = False, questions: list | None = No
     for a in stored:
         by_category.setdefault(a["category"], []).append(a)
 
-    ux.section(2, 3, "Personal Q&A", "Free-form answers; dropdowns get closest option")
+    ux.section(2, 3, "Personal Q&A", "Enter keeps the prefilled answer; type to change")
     answers: list[dict] = []
     kept: list[dict] = []
     seen: set[str] = set()
@@ -501,7 +720,9 @@ def grill_answers(data: dict, ask_all: bool = False, questions: list | None = No
                 kept.append(entry)
             continue
         prev = _previous_answer(category, question, by_question, by_category)
-        answer = _ask(question, prev.get("answer", ""))
+        # Auto-prefill from resume/portfolio when there's no stored answer yet.
+        default = prev.get("answer", "") or _auto_answer(question, _AUTO_RESUME, _AUTO_RESUME_CTX)
+        answer = _ask(question, default)
         if not answer:
             continue
         answer = _normalize_answer(answer, category)
@@ -561,6 +782,12 @@ def main() -> None:
     if resume:
         ux.chip("info", f"Prefilling identity defaults from resume ({len(resume)} fields)")
 
+    # Full resume + portfolio context so generated questions are grounded in
+    # what the candidate has already said (avoids dumb repeats).
+    resume_ctx = asyncio.run(_resume_context())
+    if resume_ctx:
+        ux.chip("info", f"Loaded {len(resume_ctx)} chars of resume + portfolio context")
+
     # Dynamic question set: core application-form questions + LLM-generated
     # candidate-specific follow-ups. Falls back to core-only on any LLM issue.
     ctx = None
@@ -576,6 +803,7 @@ def main() -> None:
             str(data.get("resume_summary") or ""),
             data.get("answers", []),
             data.get("identity", {}),
+            resume_context=resume_ctx,
         )
     )
     if len(questions) > len(CORE_QUESTIONS):
@@ -584,6 +812,23 @@ def main() -> None:
             f"Grilling {len(questions)} questions "
             f"({len(questions) - len(CORE_QUESTIONS)} generated from your resume).",
         )
+
+    # Populate auto-prefill sources: identity-ish facts + full resume text so
+    # each question shows a best-guess default (Enter keeps, type to change).
+    global _AUTO_RESUME, _AUTO_RESUME_CTX
+    _AUTO_RESUME = dict(resume)
+    for key in (
+        "skills",
+        "location",
+        "expected_compensation",
+        "work_authorization",
+        "hours_per_week",
+        "availability",
+        "projects",
+        "city",
+    ):
+        _AUTO_RESUME.setdefault(key, _extract_resume_fact(key, resume_ctx))
+    _AUTO_RESUME_CTX = resume_ctx
 
     data = grill_identity(data, resume, ask_all=args.all)
     data = grill_answers(data, ask_all=args.all, questions=questions)

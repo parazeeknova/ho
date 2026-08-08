@@ -5,7 +5,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
-from grill_persona import _normalize_answer  # noqa: E402
+from grill_persona import (  # noqa: E402
+    CORE_QUESTIONS,
+    _auto_answer,
+    _normalize_answer,
+    _overlaps_blocklist,
+    _question_blocklist,
+)
 
 
 def test_ask_strips_trailing_punctuation_from_label():
@@ -34,6 +40,37 @@ def test_normalize_question_punctuation():
     assert norm("proud of?") == "proud of"
     assert norm("proud of") == "proud of"
     assert norm("  proud of.  ") == "proud of"
+
+
+def test_blocklist_catches_repeated_questions():
+    """Paraphrased duplicates of core questions must be filtered (salary,
+    relocation, visa were being asked twice)."""
+    blocked = _question_blocklist(CORE_QUESTIONS, [])
+    assert _overlaps_blocklist("What are your salary expectations (annual base or range)", blocked)
+    assert _overlaps_blocklist("Are you open to relocation for the right opportunity", blocked)
+    assert _overlaps_blocklist("Do you require visa sponsorship now or in the future", blocked)
+    # Genuinely new questions pass.
+    assert not _overlaps_blocklist("What is your strongest technical skill", blocked)
+    assert not _overlaps_blocklist("Where are you currently based", blocked)
+
+
+def test_auto_answer_prefills_from_resume():
+    """Auto-answer pulls skills/projects from resume context so the user just
+    confirms instead of typing."""
+    resume = {
+        "skills": "Python Go TypeScript",
+        "projects": "HO - self-learning job application engine using LightGBM",
+    }
+    ctx = (
+        "=== SKILLS ===\nPython Go TypeScript\n"
+        "=== PROJECTS ===\nHO - self-learning job application engine using LightGBM\n"
+    )
+    assert _auto_answer("What is your preferred tech stack", resume, ctx) == "Python Go TypeScript"
+    assert "HO" in _auto_answer(
+        "Briefly describe a recent project you are most proud of", resume, ctx
+    )
+    # Unanswerable questions return empty.
+    assert _auto_answer("What is your shoe size", resume, ctx) == ""
 
 
 def test_normalize_yes_no_aliases():
