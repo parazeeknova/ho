@@ -274,9 +274,19 @@ async def main() -> None:
             else:
                 ux.chip("info", "Skipping grill; persona.json left as-is.")
         else:
-            ux.bullet("persona.json exists. Rebuild persona memory from it? [Y/n]", style="white")
+            # persona.json is complete. Offer a clear 3-way choice: rebuild
+            # memory from the existing persona (y), run the interactive wizard
+            # to build a NEW persona from scratch (g), or skip (n).
+            ux.bullet(
+                "persona.json exists (complete). "
+                "[Y] rebuild memory / [G] build a new one (wizard) / [N] skip",
+                style="white",
+            )
             answer = input("").strip().lower()
-            if answer in ("", "y", "yes"):
+            if answer in ("g", "grill", "new", "fresh"):
+                ux.chip("info", "Launching interactive wizard to build a new persona...")
+                await run_script("grill_persona.py")
+            elif answer in ("", "y", "yes"):
                 await run_script("build_persona.py")
             else:
                 ux.chip("info", "Skipping persona rebuild.")
