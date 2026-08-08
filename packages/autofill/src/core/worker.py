@@ -638,6 +638,31 @@ class AutofillWorker:
         else:
             logger.warning("End-of-run summary send failed", count=len(rows))
 
+    async def send_sweep_email_summary(
+        self, sweep_label: str = "", epoch_id: str | None = None, since: Any = None
+    ) -> None:
+        """Send ONE email per sweep listing every confirmed submission and the
+        fields that were filled for it (the user's ask: single thread per
+        sweep, not one mail per job). Uses the Gmail app password.
+        """
+        from autofill.src.outcomes.email_summary import send_sweep_summary
+
+        try:
+            subs = await self.db.get_confirmed_submissions_since(since=since, epoch_id=epoch_id)
+        except Exception as e:
+            logger.warning("sweep summary: failed to fetch submissions", error=str(e))
+            return
+        if not subs:
+            logger.info("sweep summary: no confirmed submissions to report")
+            return
+        label = sweep_label or f"run-{_dt.datetime.now().strftime('%Y%m%d-%H%M')}"
+        extra = ""
+        if epoch_id:
+            extra = f"Learning epoch: {epoch_id} — next sweep starts a fresh epoch."
+        ok = await send_sweep_summary(label, subs, epoch_id=epoch_id, extra=extra)
+        if ok:
+            logger.info("sweep email summary sent", sweep=label, count=len(subs))
+
     @staticmethod
     async def _send_chunked(bridge: DiscordQuestionBridge, text: str, max_len: int = 3900) -> bool:
         """Send ``text`` to Telegram, splitting it into <= ``max_len`` chunks on
@@ -1025,8 +1050,12 @@ class AutofillWorker:
                             options = [str(o) for o in (args.get("options") or [])]
 
                             # Never fabricate personal facts: unknown questions
-                            # are answered by the user via Telegram (day) or
-                            # defer the job for the morning digest (overnight).
+                            # are asked on Discord (the bridge channel) and, if
+                            # unanswered within AUTOFILL_QUESTION_TIMEOUT, the
+                            # job is deferred. `overnight` must NOT suppress the
+                            # Discord ask — the user wants to be asked even
+                            # during a long run; the timeout+defer covers
+                            # no-answer.
                             try:
                                 answer, source = await resolve_question(
                                     rag,
@@ -1034,7 +1063,7 @@ class AutofillWorker:
                                     question,
                                     kind=kind,
                                     options=options,
-                                    overnight=overnight,
+                                    overnight=False,
                                     timeout=question_timeout,
                                     job_context=job_context,
                                     required=bool(args.get("required", True)),
@@ -1849,6 +1878,14 @@ async def run_worker() -> None:
             await worker.send_end_of_run_summary()
         except Exception as summary_err:
             logger.warning("End-of-run summary failed", error=str(summary_err))
+        # Send ONE email per sweep listing confirmed submissions + filled
+        # fields (the user's ask). The active epoch scopes the summary.
+        try:
+            active = await db.get_active_epoch()
+            epoch_id = active["epoch_id"] if active else None
+            await worker.send_sweep_email_summary(epoch_id=epoch_id)
+        except Exception as email_err:
+            logger.warning("Sweep email summary failed", error=str(email_err))
         await db.close()
 
 
