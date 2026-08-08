@@ -1820,7 +1820,13 @@ class AutofillWorker:
     def _format_pending(entry: dict[str, Any]) -> str:
         q = AutofillWorker._clean_question(str(entry.get("question") or "?"))
         options = entry.get("options") or []
-        hint = f"  [{', '.join(str(o) for o in options[:6])}]" if options else ""
+        if options:
+            shown = ", ".join(str(o) for o in options[:3])
+            if len(options) > 3:
+                shown += f", +{len(options) - 3} more"
+            hint = f"  [{shown}]"
+        else:
+            hint = ""
         return f"• {q}{hint}"
 
     @staticmethod

@@ -292,9 +292,10 @@ def _job_salary_line(job: dict[str, Any]) -> str:
     if job.get("salary_estimated"):
         src = str(job.get("salary_source") or "").strip()
         tag = f"· est. ({src})" if src else "· est."
-    else:
-        tag = "· confirmed"
-    return f"{sal} {tag}"
+        return f"{sal} {tag}"
+    if sal == "-":
+        return sal
+    return f"{sal} · confirmed"
 
 
 def _funding_line(job: dict[str, Any]) -> str | None:
