@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import autofill.src.core.worker as worker_mod
 from autofill.src.core.worker import (
     _VOICE_SEEDS,
     AutofillWorker,
@@ -147,6 +148,45 @@ def test_per_job_resume_falls_back_to_stem_without_names(
 
 def test_per_job_resume_none_when_no_resume() -> None:
     assert _per_job_resume(None) is None
+
+
+def test_per_job_resume_force_overwrites_existing_copy(
+    tmp_path: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """force=True replaces the per-job copy — the tailored resume must win over
+    the base copy that was made up front under the same filename."""
+    # Isolate the artifacts dir so the test is hermetic (no stale files from
+    # a previous run under a real packages/node/artifacts path).
+    node_dir = tmp_path / "node"
+    monkeypatch.setattr(worker_mod, "_NODE_DIR", node_dir)
+
+    base = tmp_path / "base.pdf"
+    base.write_bytes(b"%PDF-1.4 base")
+    tailored = tmp_path / "tailored.pdf"
+    tailored.write_bytes(b"%PDF-1.4 tailored")
+
+    out = _per_job_resume(
+        str(base), first_name="Aman", last_name="Aziz", job_id="job-force-test"
+    )
+    assert out is not None
+    assert pathlib.Path(out).read_bytes() == b"%PDF-1.4 base"
+
+    # Without force the existing copy wins (idempotent behavior).
+    out2 = _per_job_resume(
+        str(tailored), first_name="Aman", last_name="Aziz", job_id="job-force-test"
+    )
+    assert pathlib.Path(out2).read_bytes() == b"%PDF-1.4 base"
+
+    # With force the tailored resume replaces it.
+    out3 = _per_job_resume(
+        str(tailored),
+        first_name="Aman",
+        last_name="Aziz",
+        job_id="job-force-test",
+        force=True,
+    )
+    assert pathlib.Path(out3).read_bytes() == b"%PDF-1.4 tailored"
 
 
 def test_per_job_resume_missing_source_passthrough(tmp_path: pytest.TempPathFactory) -> None:

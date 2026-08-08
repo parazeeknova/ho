@@ -1,6 +1,7 @@
 """Unit tests for the lightweight JD-tailored LaTeX resume tailorer."""
 
 import hashlib
+import json
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -8,7 +9,10 @@ import pytest
 
 import autofill.src.filling.tailor as tailor_mod
 from autofill.src.filling.tailor import (
+    _apply_bullet_rewrites,
     _extract_keywords,
+    _find_item_spans,
+    _keeps_facts,
     _match_score,
     _mirror,
     _parse_units,
@@ -190,6 +194,24 @@ def test_tailor_tex_preserves_structure() -> None:
             assert _BASE_TEX.count(token) == tailored.count(token), token
 
 
+def test_tectonic_sanitize_comments_pdftex_only_lines() -> None:
+    tex = (
+        "\\usepackage{microtype}\n"
+        "\\DisableLigatures[f]{encoding=*, family=*}\n"
+        "\\input{glyphtounicode}\n"
+        "\\pdfgentounicode=1\n"
+        "\\section{Technical Skills}\n"
+    )
+    out = tailor_mod._tectonic_sanitize(tex)
+    # The pdfTeX-only directives are neutralized (kept as comments), and the
+    # rest of the document is untouched.
+    assert "% \\DisableLigatures[f]{encoding=*, family=*}" in out
+    assert "% \\input{glyphtounicode}" in out
+    assert "% \\pdfgentounicode=1" in out
+    assert "\\section{Technical Skills}" in out
+    assert "\\usepackage{microtype}" in out
+
+
 def test_tailor_tex_falls_back_on_parse_error() -> None:
     broken = "\\section{Technical Skills}\n\\resumeSubheading\nunterminated"
     assert tailor_tex(broken, ["Node.js"]) == broken
@@ -337,3 +359,87 @@ async def test_tailor_resume_for_job_compiles_and_caches(
     assert pdf is not None
     assert Path(pdf).exists()
     exec_mock.assert_awaited_once()
+
+
+# ── bullet rewriting ─────────────────────────────────────────────────────────
+
+
+def test_find_item_spans_finds_all_bullets() -> None:
+    body = "\\resumeItem{Alpha}\n\\resumeItem{Beta {with} braces}\nstatic"
+    spans = _find_item_spans(body)
+    assert [s[2] for s in spans] == ["Alpha", "Beta {with} braces"]
+
+
+def test_apply_bullet_rewrites_replaces_exact_matches_only() -> None:
+    body = "\\resumeItem{Built React dashboards}\n\\resumeItem{Built Node APIs}"
+    out = _apply_bullet_rewrites(body, {"Built React dashboards": "Built React.js dashboards"})
+    assert "Built React.js dashboards" in out
+    assert "Built Node APIs" in out
+
+
+def test_keeps_facts_rejects_dropped_numbers() -> None:
+    # Dropping "$1.22" is a dropped fact -> rejected.
+    assert not _keeps_facts(
+        "Cut latency by 40\\% and $1.22 per meeting", "Cut latency by 40\\%"
+    )
+    assert not _keeps_facts("Cut latency by 40\\%", "Cut latency by 99\\%")
+    assert not _keeps_facts("1.22 per meeting", "something else entirely")
+    # Same facts, keyword woven in -> accepted.
+    assert _keeps_facts("Cut latency by 40\\%", "Cut latency by 40\\% with PostgreSQL")
+    # Tex-structure smuggling / unbalanced braces -> rejected.
+    assert not _keeps_facts("Built X", "Built X\\resumeItem{injected}")
+    assert not _keeps_facts("Built X", "Built X with {unbalanced")
+    assert not _keeps_facts("Built X", "Built X with }unbalanced")
+
+
+@pytest.mark.asyncio
+async def test_rewrite_bullets_applies_llm_rewrites() -> None:
+    cm = AsyncMock()
+    original = "Built a four-tier contradiction detection pipeline with pgvector retrieval"
+    rewritten = (
+        "Built a four-tier contradiction detection pipeline "
+        "with PostgreSQL pgvector retrieval"
+    )
+    payload = {"rewrites": [{"original": original, "rewritten": rewritten}]}
+    cm.chat = AsyncMock(return_value=json.dumps(payload))
+    tex = f"\\resumeItem{{{original}}}"
+    out = await tailor_mod._rewrite_bullets(tex, ["PostgreSQL", "pgvector"], _jd("postgres"), cm)
+    assert "PostgreSQL pgvector retrieval" in out
+    assert "four-tier contradiction detection" in out
+    # The conservative guardrail prompt must actually reach the model.
+    call = cm.chat.await_args
+    assert call is not None
+    assert call.kwargs.get("system_prompt") == tailor_mod.BULLET_REWRITE_SYSTEM_PROMPT
+    assert call.kwargs.get("schema") is not None
+
+
+@pytest.mark.asyncio
+async def test_rewrite_bullets_keeps_tex_verbatim_on_llm_failure() -> None:
+    cm = AsyncMock()
+    cm.chat = AsyncMock(return_value="not json at all")
+    tex = "\\resumeItem{Built React dashboards}"
+    out = await tailor_mod._rewrite_bullets(tex, ["React.js"], _jd("react"), cm)
+    assert out == tex
+
+
+@pytest.mark.asyncio
+async def test_rewrite_bullets_ignores_unknown_or_fact_dropping_rewrites() -> None:
+    cm = AsyncMock()
+    cm.chat = AsyncMock(
+        return_value=json.dumps(
+            {
+                "rewrites": [
+                    {"original": "Built X with 40\\% gain",
+                        "rewritten": "Built X with 40\\% gain and PostgreSQL"},
+                    {"original": "Built Y with 10\\% gain",
+                        "rewritten": "Built Y completely differently"},
+                    {"original": "NOT_A_BULLET", "rewritten": "hacked"},
+                ]
+            }
+        )
+    )
+    tex = "\\resumeItem{Built X with 40\\% gain}\n\\resumeItem{Built Y with 10\\% gain}"
+    out = await tailor_mod._rewrite_bullets(tex, ["PostgreSQL"], _jd("postgres"), cm)
+    assert "40\\% gain and PostgreSQL" in out
+    assert "completely differently" not in out
+    assert "hacked" not in out
