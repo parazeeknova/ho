@@ -106,4 +106,11 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt, asyncio.CancelledError:
+        # Ctrl+C during a download/embed: exit cleanly, never a traceback.
+        print(
+            "\n[ho] Exiting resume indexer. Nothing was committed unless it finished.", flush=True
+        )
+        raise SystemExit(0) from None

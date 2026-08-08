@@ -117,7 +117,12 @@ async def index_resume(resume_url: str | None, resume_path: str | None) -> None:
         cmd += ["--url", resume_url]
     if resume_path:
         cmd += ["--path", resume_path]
-    result = subprocess.run(cmd, cwd=ROOT)
+    try:
+        result = subprocess.run(cmd, cwd=ROOT)
+    except KeyboardInterrupt:
+        # Ctrl+C during the resume download/index: abort init-memory cleanly
+        # instead of the child printing a traceback and us "continuing".
+        raise SystemExit(_INPUT_ABORT) from None
     if result.returncode != 0:
         ux.chip(
             "warn",
