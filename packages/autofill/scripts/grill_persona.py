@@ -49,6 +49,10 @@ LINK_FIELDS = {"linkedin", "github", "website", "twitter"}
 # Core application-form questions every candidate must answer. The dynamic
 # generator (generate_dynamic_questions) appends candidate-specific ones on
 # top of these.
+# Best-effort LLM follow-up questions: the interactive grill must never block
+# minutes on a slow/overloaded model just to invent optional questions.
+_DYN_QUESTION_TIMEOUT_S = 45.0
+
 CORE_QUESTIONS: list[tuple[str, str]] = [
     ("current_location", "Where are you currently based?"),
     (
@@ -345,8 +349,21 @@ async def build_question_set(
     Dynamic questions whose category duplicates a core one are skipped, and
     anything the candidate already answered stays the wizard's job to skip —
     so this never shrinks the existing answer list.
+
+    The LLM call is best-effort and BOUNDED: the interactive grill must never
+    block minutes on a slow/overloaded model just to invent optional follow-up
+    questions — on any timeout/error it falls back to the static core set.
     """
-    dynamic = await generate_dynamic_questions(ctx, resume_summary, existing, identity)
+    try:
+        dynamic = await asyncio.wait_for(
+            generate_dynamic_questions(ctx, resume_summary, existing, identity),
+            timeout=_DYN_QUESTION_TIMEOUT_S,
+        )
+    except TimeoutError:
+        logger.warning("Dynamic question generation timed out; using static set")
+        dynamic = []
+    except Exception:
+        dynamic = []
     core_cats = {c for c, _ in CORE_QUESTIONS}
     merged = list(CORE_QUESTIONS)
     seen_questions = {q for _, q in merged}
