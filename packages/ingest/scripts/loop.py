@@ -36,9 +36,10 @@ import time
 from pathlib import Path
 from typing import Any
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "autofill"))
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "ml"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # packages/ingest (src.*)
+sys.path.insert(
+    0, str(Path(__file__).resolve().parent.parent.parent)
+)  # packages/ (autofill.*, ml.*)
 
 from dotenv import load_dotenv
 
