@@ -204,6 +204,7 @@ async def main() -> None:
 
         persona = json.loads(PERSONA_JSON.read_text())
         persona["resume_summary"] = resume
+        PERSONA_JSON.parent.mkdir(parents=True, exist_ok=True)
         tmp = PERSONA_JSON.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(persona, indent=2) + "\n")
         os.replace(tmp, PERSONA_JSON)

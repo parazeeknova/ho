@@ -51,7 +51,7 @@ LINK_FIELDS = {"linkedin", "github", "website", "twitter"}
 # top of these.
 # Best-effort LLM follow-up questions: the interactive grill must never block
 # minutes on a slow/overloaded model just to invent optional questions.
-_DYN_QUESTION_TIMEOUT_S = 45.0
+_DYN_QUESTION_TIMEOUT_S = 90.0
 
 CORE_QUESTIONS: list[tuple[str, str]] = [
     ("current_location", "Where are you currently based?"),
@@ -534,6 +534,7 @@ def grill_answers(data: dict, ask_all: bool = False, questions: list | None = No
 
 def save_persona(data: dict) -> None:
     data["version"] = int(data.get("version", 1)) + 1
+    PERSONA_JSON.parent.mkdir(parents=True, exist_ok=True)
     tmp = PERSONA_JSON.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(data, indent=2) + "\n")
     os.replace(tmp, PERSONA_JSON)
