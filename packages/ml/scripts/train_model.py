@@ -25,13 +25,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from ml.config import get_ml_config
-from ml.dataset import (
+from ml.src.config import get_ml_config
+from ml.src.ranking.dataset import (
     build_dataset,
     fetch_all_job_events,
     fetch_impressions,
 )
-from ml.model_registry import dataset_hash_for_rows, register_model
+from ml.src.ranking.model_registry import dataset_hash_for_rows, register_model
 
 
 def _persist_model(model: Any, path: Path) -> None:
@@ -69,7 +69,7 @@ async def main() -> None:
     args = ap.parse_args()
 
     from ml import FEATURE_VERSION
-    from ml.ltr import train_classifiers, train_ranker
+    from ml.src.ranking.ltr import train_classifiers, train_ranker
 
     try:
         from src.memory.pgvector_store import MemoryStore

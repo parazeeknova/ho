@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One-command end-to-end loop: radar pipeline + autofill bridge + autofill worker.
+"""One-command end-to-end loop: radar pipeline + autofill bridge + autofill.src.core.worker.
 
 Runs the whole hiring loop from a single invocation:
 
@@ -8,7 +8,7 @@ Runs the whole hiring loop from a single invocation:
   2. every ``--bridge-interval`` seconds drains the accepted candidates into
      the autofill queue (see src/radar/engine/autofill_bridge.py) and prints
      the queue state;
-  3. runs the autofill worker (OVERNIGHT_LOOP=true -> autosubmit) which claims
+  3. runs the autofill.src.core.worker (OVERNIGHT_LOOP=true -> autosubmit) which claims
      those jobs and fills/submits them via the browser, marking each job
      applied (applied_at), failed (error_count/last_error) or deferred.
 
@@ -44,7 +44,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from autofill.db import AutofillDB  # noqa: E402
+from autofill.src.core.db import AutofillDB  # noqa: E402
 from src.radar.engine.autofill_bridge import drain_once, print_summary, queue_balance  # noqa: E402
 
 PROJECT = Path(__file__).resolve().parent.parent  # packages/ingest
@@ -68,7 +68,11 @@ def _base_env() -> dict[str, str]:
     env = os.environ.copy()
     env.setdefault("OVERNIGHT_LOOP", "true")
     env.setdefault("PYTHONUNBUFFERED", "1")
-    _paths = [str(PROJECT), str(REPO / "packages" / "autofill"), str(REPO / "packages" / "ml")]
+    # packages/ml and packages/autofill are now src-layout: the importable
+    # roots are packages/ml and packages/autofill, so the packages/ parent dir
+    # is on the path. PROJECT (= packages/ingest) stays so ingest's src.*
+    # namespace resolves.
+    _paths = [str(PROJECT), str(REPO / "packages")]
     if env.get("PYTHONPATH"):
         _paths.append(env["PYTHONPATH"])
     env["PYTHONPATH"] = os.pathsep.join(_paths)
@@ -173,8 +177,8 @@ async def _spawn_worker(children: list[Child]) -> None:
     env = _base_env()
     env.setdefault("AUTOFILL_WORKER_ID", "loop")
     child = Child(
-        "autofill-worker",
-        [sys.executable, "-m", "autofill.worker"],
+        "autofill.src.core.worker",
+        [sys.executable, "-m", "autofill.src.core.worker"],
         env,
     )
     await child.start()
@@ -190,7 +194,7 @@ async def _spawn_email_listener(children: list[Child]) -> None:
     env = _base_env()
     child = Child(
         "email-listener",
-        [sys.executable, "-m", "ml.gmail_push"],
+        [sys.executable, "-m", "ml.src.outcomes.gmail_push"],
         env,
     )
     await child.start()
@@ -200,7 +204,9 @@ async def _spawn_email_listener(children: list[Child]) -> None:
 async def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--no-radar", action="store_true", help="Do not start the radar pipeline")
-    parser.add_argument("--no-fill", action="store_true", help="Do not start the autofill worker")
+    parser.add_argument(
+        "--no-fill", action="store_true", help="Do not start the autofill.src.core.worker"
+    )
     parser.add_argument("--radar-workers", type=int, default=2, help="Extra radar worker procs")
     parser.add_argument(
         "--bridge-interval", type=int, default=120, help="Seconds between bridge drains"
@@ -242,7 +248,7 @@ async def main() -> None:
                 if not child.is_alive():
                     # Exit code 42 = the radar finished its bounded batch
                     # (stop_after_gated reached). Stop ONLY the radar — the
-                    # autofill worker + email listener keep draining the queue
+                    # autofill.src.core.worker + email listener keep draining the queue
                     # and capturing outcomes.
                     if (
                         child.name == "radar-master"

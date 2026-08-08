@@ -25,7 +25,7 @@ from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent  # packages/autofill
 REPO = ROOT.parent.parent  # repo root
-for _p in (REPO, REPO / "packages" / "ingest", ROOT):
+for _p in (REPO, REPO / "packages" / "ingest", REPO / "packages"):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 

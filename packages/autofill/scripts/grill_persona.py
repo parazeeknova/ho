@@ -29,7 +29,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent  # packages/autofill
 REPO = ROOT.parent.parent  # repo root
-for _p in (REPO, REPO / "packages" / "ingest", ROOT):
+for _p in (REPO, REPO / "packages" / "ingest", REPO / "packages"):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
@@ -154,7 +154,7 @@ def _normalize_answer(value: str, category: str = "") -> str:
 async def _resume_defaults() -> dict[str, str]:
     """Extract identity defaults from the indexed resume header, if any."""
     try:
-        from autofill.profile import _regex_extract
+        from autofill.src.screener.profile import _regex_extract
         from src.memory.pgvector_store import MemoryStore
 
         store = await MemoryStore.create()

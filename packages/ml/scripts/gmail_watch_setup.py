@@ -163,13 +163,13 @@ async def authorize() -> None:
 
 
 async def arm() -> None:
-    from ml.config import get_ml_config
+    from ml.src.config import get_ml_config
 
     cfg = get_ml_config().gmail_push
     if not cfg.enabled:
         print("Set GMAIL_PUSH=1 and GOOGLE_CLIENT_ID/SECRET/REFRESH_TOKEN")
         sys.exit(1)
-    from ml.gmail_push import _get_gmail_service, arm_watch
+    from ml.src.outcomes.gmail_push import _get_gmail_service, arm_watch
 
     try:
         from src.memory.pgvector_store import MemoryStore

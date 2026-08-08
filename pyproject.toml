@@ -67,11 +67,11 @@ known-first-party = ["ho"]
 "packages/ingest/src/memory/pgvector_store.py" = ["E501"]
 # ML ingest daemon: defensive error handling is intentional (must never crash
 # mid-poll). Blind Exception catches are graceful-degradation on purpose.
-"packages/ml/ml/gmail_push.py" = ["BLE001", "S110"]
-"packages/ml/ml/outcome_resolver.py" = ["BLE001", "S110"]
-"packages/ml/ml/events.py" = ["BLE001", "S110"]
-"packages/ml/ml/features.py" = ["BLE001", "S110"]
-"packages/ml/ml/ltr.py" = ["BLE001"]
+"packages/ml/src/outcomes/gmail_push.py" = ["BLE001", "S110"]
+"packages/ml/src/outcomes/outcome_resolver.py" = ["BLE001", "S110"]
+"packages/ml/src/outcomes/events.py" = ["BLE001", "S110"]
+"packages/ml/src/ranking/features.py" = ["BLE001", "S110"]
+"packages/ml/src/ranking/ltr.py" = ["BLE001"]
 
 [dependency-groups]
 dev = [
@@ -84,8 +84,8 @@ dev = [
 
 [tool.mypy]
 python_version = "3.14"
-mypy_path = ["packages/ingest", "packages/autofill", "packages/ml"]
-files = ["packages/ingest/src", "packages/ingest/scripts", "packages/autofill", "packages/ml/ml"]
+mypy_path = ["packages/ingest", "packages"]
+files = ["packages/ingest/src", "packages/ingest/scripts", "packages/autofill", "packages/ml"]
 exclude = ["test_.*\\.py$", "conftest\\.py$", "/tests/"]
 
 # Optional cloud deps (azure-storage-blob not installed locally) and
@@ -110,7 +110,7 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-pythonpath = [".", "packages/ingest", "packages/autofill", "packages/ml"]
+pythonpath = [".", "packages/ingest", "packages"]
 # Tests live alongside their source files. Same-basename test modules
 # (test_queue.py, test_overnight.py) exist in more than one package, so
 # importlib mode loads each by file path and they never collide.

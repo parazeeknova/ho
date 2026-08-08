@@ -3,7 +3,7 @@
 
 The ingest pipeline scores jobs and persists the accepted ones in
 ``radar_candidates`` (eligibility = 'accepted', with a direct apply URL) but
-nothing fed the autofill worker — jobs only entered ``autofill_queue`` via the
+nothing fed the autofill.src.core.worker — jobs only entered ``autofill_queue`` via the
 CLI. This bridge closes that gap: accepted candidates are enqueued unless the
 link is already known to the queue (any status), so the stored corpus is
 consumed exactly once per link. Idempotent, safe to call from the radar sweep
@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from autofill.db import AutofillDB
+from autofill.src.core.db import AutofillDB
 
 from src.logging import get_logger
 

@@ -153,7 +153,7 @@ class _MemoryWizardSession:
 async def autofill_queue_lines() -> list[str]:
     """Autofill queue status lines (applied / remaining / review / failed)."""
     try:
-        from autofill.db import AutofillDB
+        from autofill.src.core.db import AutofillDB
 
         db = await AutofillDB.create()
         try:
@@ -709,7 +709,7 @@ class DiscordAgent:
         except Exception:
             pass
         try:
-            from autofill.db import AutofillDB
+            from autofill.src.core.db import AutofillDB
 
             db = await AutofillDB.create()
             try:
@@ -743,7 +743,7 @@ class DiscordAgent:
     async def _queue_summary_map(self) -> dict[str, int]:
         """Autofill queue summary counts (empty on error)."""
         try:
-            from autofill.db import AutofillDB
+            from autofill.src.core.db import AutofillDB
 
             db = await AutofillDB.create()
             try:
@@ -872,7 +872,7 @@ class DiscordAgent:
                 # process) can send deferred/captcha/queue notifications into
                 # this thread instead of the main channel.
                 with contextlib.suppress(Exception):
-                    from autofill.db import AutofillDB
+                    from autofill.src.core.db import AutofillDB
 
                     db = await AutofillDB.create()
                     try:
@@ -923,9 +923,7 @@ class DiscordAgent:
                     outcomes = await conn.fetchval(
                         "SELECT COUNT(*) FROM decision_events WHERE reward IS NOT NULL"
                     )
-                    unattributed = await conn.fetchval(
-                        "SELECT COUNT(*) FROM unattributed_outcomes"
-                    )
+                    unattributed = await conn.fetchval("SELECT COUNT(*) FROM unattributed_outcomes")
                     model = await conn.fetchrow(
                         "SELECT version, model_type FROM model_registry "
                         "WHERE status='active' ORDER BY created_at DESC LIMIT 1"
@@ -988,7 +986,7 @@ class DiscordAgent:
             summary = await self._queue_summary_map()
             unapplied_stats = {}
             try:
-                from autofill.db import AutofillDB
+                from autofill.src.core.db import AutofillDB
 
                 db = await AutofillDB.create()
                 try:
@@ -1398,7 +1396,7 @@ class DiscordAgent:
 
     async def _question_mailbox_db(self) -> Any:
         if self._mailbox_db is None:
-            from autofill.db import AutofillDB
+            from autofill.src.core.db import AutofillDB
 
             self._mailbox_db = await AutofillDB.create()
         return self._mailbox_db

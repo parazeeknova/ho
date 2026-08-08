@@ -1067,7 +1067,7 @@ def _build_feature_vector(
     decision_ts: float | None = None,
 ) -> dict[str, Any]:
     try:
-        from ml.features import extract_features
+        from ml.src.ranking.features import extract_features
 
         cand_dict = {
             "skills": candidate.matching_skills,
@@ -1115,7 +1115,7 @@ async def _emit_ranking_impression(
         return
     try:
         from ml import FEATURE_VERSION, POLICY_VERSION, RANKER_VERSION
-        from ml.events import (
+        from ml.src.outcomes.events import (
             DecisionEvent,
             emit_events,
             make_impression_id,
@@ -1398,7 +1398,7 @@ async def _bridge_accepted_to_autofill(matched: list[JobCandidate]) -> int:
     take down the radar pipeline.
     """
     try:
-        from autofill.db import AutofillDB
+        from autofill.src.core.db import AutofillDB
 
         db = await AutofillDB.create()
         try:

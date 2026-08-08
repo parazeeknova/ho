@@ -24,8 +24,8 @@ import json
 from typing import Any
 
 from ml import FEATURE_VERSION
-from ml.config import get_ml_config
-from ml.dataset import (
+from ml.src.config import get_ml_config
+from ml.src.ranking.dataset import (
     build_dataset,
     fetch_all_job_events,
     fetch_impressions,
@@ -33,7 +33,7 @@ from ml.dataset import (
     temporal_split,
     uncensored,
 )
-from ml.evaluation import (
+from ml.src.ranking.evaluation import (
     evaluate_ranking,
     promotion_decision,
 )
@@ -94,7 +94,7 @@ async def main() -> None:
         report["current"]["label_positive"] = sum(1 for r in current_rel if r > 0)
 
         # LTR shadow: train on train rows (ordinal labels), score test rows.
-        from ml.ltr import _check_lgb, train_lambdamart
+        from ml.src.ranking.ltr import _check_lgb, train_lambdamart
 
         try:
             if not _check_lgb():

@@ -18,7 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "autofill"))
 
-from autofill.db import AutofillDB
+from autofill.src.core.db import AutofillDB
 from src.radar.engine.autofill_bridge import drain_once, print_summary, queue_balance
 
 
