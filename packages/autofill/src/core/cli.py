@@ -224,6 +224,19 @@ async def _stream_runner(
                             print(f"[Python CLI] Resume tailoring failed: {tailor_err}")
                         if not pdf_path:
                             pdf_path = base_resume_path
+                        if pdf_path:
+                            # Same name-based per-job copy the worker applies, so
+                            # the attached resume is <First>_<Last>_Resume.pdf —
+                            # never the raw tailored_<job>-<hash>.pdf artifact
+                            # name. force=True: the tailored resume must overwrite
+                            # the base copy made up front under the same name.
+                            pdf_path = _per_job_resume(
+                                pdf_path,
+                                first_name=rag.profile.firstName,
+                                last_name=rag.profile.lastName,
+                                job_id=job_id,
+                                force=True,
+                            )
                         if process.stdin:
                             rpc_resp = json.dumps(
                                 {
