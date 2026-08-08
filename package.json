@@ -8,11 +8,9 @@
   ],
   "packageManager": "bun@1.3.13",
   "scripts": {
-    "ho": "PYTHONPATH=.:packages/ingest:packages uv run python packages/ingest/scripts/ho_cli.py",
     "run": "PYTHONPATH=.:packages/ingest:packages uv run python packages/ingest/scripts/run_all.py",
     "status": "PYTHONPATH=.:packages/ingest:packages uv run python packages/ingest/scripts/run_all.py --status",
     "initm": "PYTHONPATH=.:packages/ingest:packages uv run python packages/autofill/scripts/init_memory.py",
-    "init-memory": "bun run initm",
     "intel": "PYTHONPATH=.:packages/ingest:packages uv run python packages/ingest/scripts/intel/radar_intel.py",
     "health": "uv run python packages/ingest/scripts/tools/health.py",
     "backup": "uv run python packages/ingest/scripts/backup/checkpoint_backup.py",
