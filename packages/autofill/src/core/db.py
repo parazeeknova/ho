@@ -89,6 +89,7 @@ ALTER TABLE autofill_queue ADD COLUMN IF NOT EXISTS source TEXT DEFAULT '';
 -- the ATS's reply email (confirmation/rejection/screening/otp). Soft evidence
 -- surfaced in reports/Discord, never a hard gate.
 ALTER TABLE autofill_queue ADD COLUMN IF NOT EXISTS email_status JSONB DEFAULT '{}'::jsonb;
+ALTER TABLE autofill_queue ADD COLUMN IF NOT EXISTS spam_retries INTEGER DEFAULT 0;
 
 -- Per-job Q&A audit trail: every screener question the autofill answered for
 -- a posting, so we can always reconstruct what was filled and from where.
@@ -351,7 +352,7 @@ class AutofillDB:
             WHERE job_id NOT IN (SELECT job_id FROM exhausted)
         )
         RETURNING job_id, apply_link, role, company, ats_platform, apply_mode,
-                  status, retries, filled_payload, screenshot_path;
+                  status, retries, spam_retries, filled_payload, screenshot_path;
         """
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(query, lease_seconds, max_retries)
@@ -998,6 +999,33 @@ class AutofillDB:
         if updated:
             logger.info("Jobs included in morning digest", count=updated, job_ids=job_ids)
         return updated
+
+    async def bump_spam_retry(self, job_id: str) -> int:
+        """Record one ATS spam-flag retry and re-queue the job.
+
+        Increments ``spam_retries`` (a budget SEPARATE from the fill-retry
+        budget) and resets ``retries`` to 0 so a fresh-session retry does not
+        consume the normal claim budget. Returns the new spam_retries count.
+        """
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE autofill_queue
+                SET spam_retries = COALESCE(spam_retries, 0) + 1,
+                    retries = 0,
+                    status = 'pending',
+                    lease_expires = NOW(),
+                    last_error = NULL,
+                    error = NULL,
+                    updated_at = NOW()
+                WHERE job_id = $1
+                """,
+                job_id,
+            )
+            row = await conn.fetchrow(
+                "SELECT spam_retries FROM autofill_queue WHERE job_id = $1", job_id
+            )
+            return int(row["spam_retries"]) if row else 0
 
     async def purge_expired_fills(self) -> int:
         """Delete autofill_fills rows older than their 2-day TTL.

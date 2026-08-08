@@ -713,15 +713,10 @@ async function main() {
       //   Only a CONFIRMATION state (success-page redirect, or the submit form
       //   gone with a success phrase) yields `submitted`.
       const MAX_SUBMIT_ATTEMPTS = 3;
-      // Ashby flags a submission as possible spam and offers "submit again". A
-      // human clicks the posting's Overview, returns to the application form
-      // (fields preserved), and submits again. `retryAfterSpamFlag` does that
-      // navigation; up to MAX_SPAM_RETRIES such round-trips are attempted
-      // before giving up. The normal field-recheck path is only for client-side
-      // validation failures (submit button still visible), not spam flags.
+      // ATS server-side spam flag (Ashby "flagged as possible spam"). We do NOT
+      // resubmit from the same session (it is sticky to IP+fingerprint); the
+      // worker re-queues for a fresh-session relaunch instead.
       const SPAM_FLAG_RE = /flagged as possible spam|possible spam|submitted.*spam|spam/i;
-      const MAX_SPAM_RETRIES = 2;
-      let spamRetries = 0;
       let lastError: string | undefined;
       let rechecked = false;
       for (let attempt = 1; attempt <= MAX_SUBMIT_ATTEMPTS; attempt++) {
@@ -768,31 +763,28 @@ async function main() {
         // Not confirmed.
         lastError = outcome?.error;
 
-        // Spam flag: navigate Overview -> back to the form -> resubmit without
-        // touching any field. Takes priority over the field-recheck path.
-        if (lastError && SPAM_FLAG_RE.test(lastError) && spamRetries < MAX_SPAM_RETRIES) {
-          spamRetries += 1;
+        // Spam flag: do NOT do the Overview->back->resubmit dance. Ashby's
+        // flag is server-side and sticky to the session (IP + device
+        // fingerprint); resubmitting from the same flagged session fails every
+        // time and just wastes minutes. Surface the spam error so the worker
+        // re-queues the job for a FRESH session (new residential IP + new
+        // fingerprint seed) — that is what actually clears the flag.
+        if (lastError && SPAM_FLAG_RE.test(lastError)) {
+          clearInterval(captchaTimer);
           console.warn(
-            `[Runner] Ashby flagged the submit as possible spam (attempt ${attempt}); ` +
-              "navigating to Overview and back, then resubmitting...",
+            `[Runner] ATS flagged submit as possible spam (attempt ${attempt}). ` +
+              "Not resubmitting from the same session; worker will relaunch with a fresh IP.",
           );
-          try {
-            const back = await adapter.retryAfterSpamFlag();
-            if (!back) {
-              console.warn("[Runner] Could not return to the application form after spam flag.");
-            }
-          } catch (spamErr: any) {
-            console.warn(
-              "[Runner] Spam-flag retry navigation failed:",
-              spamErr?.message || spamErr,
-            );
-          }
-          // Resubmit on the next loop iteration, even past the normal attempt cap
-          // (spam retries are a distinct budget).
-          if (attempt >= MAX_SUBMIT_ATTEMPTS && spamRetries < MAX_SPAM_RETRIES) {
-            attempt = MAX_SUBMIT_ATTEMPTS - 1;
-          }
-          continue;
+          emitStatus({
+            jobId: payload.jobId,
+            status: "failed",
+            screenshotPath: screenshotPath,
+            error: `Submit not confirmed: ${lastError}`,
+          });
+          watchdog?.stop();
+          rl.close();
+          await stagehand.close();
+          process.exit(1);
         }
 
         // Normal retryable failure (validation): recheck missing fields once.

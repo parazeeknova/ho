@@ -1797,6 +1797,38 @@ export class GenericAdapter extends ATSAdapter {
     }
     await randomSleep(1500, 2500);
 
+    // Multi-step boards (Microsoft Careers, Workday, Deloitte, ...) show a
+    // REVIEW screen after the first submit click: the final "Submit" /
+    // "Confirm" button appears only after the form's validation round-trip.
+    // Click it too when present — and log progress so the runner's activity
+    // watchdog never sees 5 minutes of silence and kills a healthy submit.
+    for (let confirmPass = 0; confirmPass < 2; confirmPass++) {
+      console.log(`[Generic] Submit confirm pass ${confirmPass + 1}: waiting for review/final button...`);
+      await randomSleep(1500, 2500);
+      const finalBtn = page
+        .locator(
+          "button:has-text('Submit Application'), button:has-text('Submit'), " +
+            "button[type='submit'], [data-automation-id*='submit' i], " +
+            "button:has-text('Confirm'), button:has-text('Confirm Submission'), " +
+            "button:has-text('Submit Application')",
+        )
+        .first();
+      const visible = await finalBtn.isVisible().catch(() => false);
+      // Only click if the page has actually changed state (a review screen) —
+      // clicking the SAME submit button again on a still-processing page just
+      // double-submits. Check the page isn't the identical pre-click state.
+      if (visible && confirmPass === 0) {
+        console.log("[Generic] Review/final Submit button present; clicking it.");
+        await this.controls.humanClick(
+          finalBtn,
+          "button[type='submit'], button:has-text('Submit Application'), [data-automation-id*='submit' i], button:has-text('Confirm')",
+        );
+        await randomSleep(1200, 2000);
+      } else if (visible) {
+        break;
+      }
+    }
+
     const submitResponse = async (): Promise<{ ok: boolean; status?: number } | undefined> =>
       lastSubmitResp;
 

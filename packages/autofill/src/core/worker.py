@@ -36,6 +36,14 @@ from autofill.src.screener.resolve import (
     resolve_question,
 )
 
+# ATS server-side spam rejection (Ashby "flagged as possible spam", etc.).
+# The submit POST succeeded technically but the ATS refused the application.
+_SPAM_FLAG_RE = re.compile(
+    r"flagged as possible spam|possible spam|submission.*(?:was )?flagged|"
+    r"we couldn'?t submit your application|one per (?:applicant|candidate|email|role)",
+    re.I,
+)
+
 if TYPE_CHECKING:
     from autofill.src.filling.proxyrelay import ProxyRelay
 
@@ -1007,9 +1015,12 @@ class AutofillWorker:
                 # AUTOFILL_ACTIVITY_TIMEOUT_MS instead of holding a worker slot
                 # until the hour-long DB lease. Any runner/status/RPC activity
                 # resets the idle timer, so a healthy run is never cut off.
-                # TEMP (batch-run 2026-08-02): 5-minute absolute life for the
-                # 100-job trial. REVERT to "360000" after the batch run.
-                process_env["AUTOFILL_ACTIVITY_TIMEOUT_MS"] = "300000"
+                # Multi-step boards (Microsoft Careers, Workday) can spend
+                # several minutes on the final submit round-trip with long
+                # between-step XHR pauses, so the cap is 8 minutes.
+                process_env["AUTOFILL_ACTIVITY_TIMEOUT_MS"] = os.getenv(
+                    "AUTOFILL_ACTIVITY_TIMEOUT_MS", "480000"
+                )
             else:
                 # Day mode (no auto-submit): the filled form stays open for
                 # human review, bounded by AUTOFILL_REVIEW_HOLD_MS (default 2
@@ -1588,6 +1599,47 @@ class AutofillWorker:
                                     "Runner aborted for deferred job",
                                     job_id=job_id,
                                 )
+                            elif _SPAM_FLAG_RE.search(error_msg):
+                                # Ashby (and peers) server-side-flag the submit
+                                # as possible spam. The form filled fine; the
+                                # ATS rejected the POST. A fresh browser session
+                                # with a NEW residential IP + device fingerprint
+                                # is the only thing that actually clears this —
+                                # the runner's Overview->back->resubmit dance
+                                # reuses the same flagged session and fails.
+                                # Re-queue so the NEXT claim builds a fresh
+                                # session (new {SID} IP + new fingerprint seed).
+                                spam_tries = job.get("spam_retries") or 0
+                                if spam_tries < int(os.getenv("AUTOFILL_SPAM_RETRIES", "2")):
+                                    logger.warning(
+                                        "Ashby/ATS flagged submit as spam; "
+                                        "re-queuing for a fresh-session retry",
+                                        job_id=job_id,
+                                        company=job.get("company"),
+                                        tries=spam_tries,
+                                    )
+                                    await self.db.bump_spam_retry(job_id)
+                                    await self._record_outcome(
+                                        store, job, "spam_flagged", error="ats_spam_flag"
+                                    )
+                                    terminal_seen = True
+                                else:
+                                    terminal_seen = True
+                                    await self.db.update_status(
+                                        job_id, status="failed", error=error_msg
+                                    )
+                                    if domain:
+                                        with contextlib.suppress(Exception):
+                                            await self.db.record_site_failure(domain, error_msg)
+                                    await self._debug_finalize(debug_rec, "failed", error=error_msg)
+                                    await self._notify_failed(
+                                        bridge,
+                                        job_id,
+                                        apply_link,
+                                        error_msg,
+                                        role=job.get("role"),
+                                        company=job.get("company"),
+                                    )
                             else:
                                 terminal_seen = True
                                 await self.db.update_status(

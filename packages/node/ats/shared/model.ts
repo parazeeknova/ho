@@ -243,14 +243,18 @@ export function isCoverLetterField(f: { label: string; kind?: string }): boolean
     return false;
   }
   const label = normalizeBlankLabel(f.label);
-  // "Additional Information" / "Anything else" boxes are conditional companions
-  // to the sourcing select — leave them blank. The real cover letter is the
-  // file upload / "Cover Letter" textarea; filling the full signed letter
-  // ("Sincerely, Harsh") into Additional Information is wrong.
-  if (/^additional information$/.test(label) || /anything else you|more about you|tell us about yourself|anything you would like/.test(label)) {
+  // Bare "Additional Information" is a conditional companion to a sourcing
+  // select ("If Other, please specify"), NOT a cover-letter prompt — filling
+  // it with the signed letter ("Sincerely, Harsh") is wrong. But "Anything
+  // else you would like us to know?" / "Tell us about yourself" ARE open
+  // prompts that should get the letter text.
+  if (/^additional information$/.test(label)) {
     return false;
   }
-  return /cover letter|cover_letter/.test(label);
+  return (
+    /cover letter|cover_letter/.test(label) ||
+    /anything else you|more about you|tell us about yourself|anything you would like/.test(label)
+  );
 }
 
 function normalizeBlankLabel(label: string): string {

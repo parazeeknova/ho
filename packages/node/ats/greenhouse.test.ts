@@ -459,9 +459,14 @@ describe("isCoverLetterField", () => {
   it("marks cover-letter prompts and open blurb textareas", () => {
     assert.equal(isCoverLetterField(mk("Cover Letter")), true);
     assert.equal(isCoverLetterField(mk("Please add your cover letter below")), true);
+    // "Anything else" / "Tell us about yourself" prompts ARE cover-letter
+    // holders — they ask for open prose about the candidate.
     assert.equal(isCoverLetterField(mk("Anything else you would like us to know?")), true);
     assert.equal(isCoverLetterField(mk("Tell us about yourself")), true);
-    assert.equal(isCoverLetterField(mk("Additional Information")), true);
+    // Bare "Additional Information" is a conditional companion to a sourcing
+    // select, not a cover-letter field: it must stay blank (the walk never
+    // fills it with a signed letter), so it is NOT a cover-letter field.
+    assert.equal(isCoverLetterField(mk("Additional Information")), false);
   });
 
   it("never marks structured questions (selects, radios, checkboxes)", () => {
