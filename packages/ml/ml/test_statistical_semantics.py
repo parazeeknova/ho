@@ -148,3 +148,37 @@ def test_build_dataset_marks_censored():
     by_job = {r.job_id: r for r in ds.rows}
     assert by_job["old"].censored is False  # 300 days old -> mature
     assert by_job["recent"].censored is True  # only 10 days old < 30d window
+
+
+def test_hierarchical_discovery_policy_propensity_is_product():
+    """Two-level choice: propensity must be the product of family and source
+    pi so IPS/SNIPS stay valid for the hierarchical decision."""
+    from ml.policies import DISCOVERY_HIERARCHY, DiscoveryPolicy
+
+    p = DiscoveryPolicy(hierarchy=DISCOVERY_HIERARCHY)
+    # No exploration (eps=0) -> greedy family + greedy source. With fresh
+    # Beta(1,1) priors MC-P is near-uniform, so pi ~ (1/|families|)*(1/|sources|).
+    source, mu = p.choose(exploration=0.0)
+    assert source in {s for fam in DISCOVERY_HIERARCHY.values() for s in fam}
+    assert 0.0 < mu <= 1.0
+    # A reward to a source routes to both its family and the source.
+    p.update("greenhouse", 1.0)
+    source2, mu2 = p.choose(exploration=0.0)
+    assert source2 in {s for fam in DISCOVERY_HIERARCHY.values() for s in fam}
+    assert 0.0 < mu2 <= 1.0
+
+
+def test_discovery_hierarchy_covers_all_ats_families():
+    from ml.policies import DISCOVERY_HIERARCHY
+
+    ats = DISCOVERY_HIERARCHY["ats"]
+    assert "greenhouse" in ats
+    assert "ashby" in ats
+    assert "lever" in ats
+    assert "workable" in ats
+    assert "workday" in ats
+    assert "smartrecruiters" in ats
+    assert "rippling" in ats
+    assert len(ats) >= 10
+    # Families present.
+    assert set(DISCOVERY_HIERARCHY) >= {"ats", "search", "community", "aggregator"}
