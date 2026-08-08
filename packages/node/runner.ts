@@ -46,6 +46,13 @@ interface AdapterRegistration {
 
 const adapterRegistry: AdapterRegistration[] = [
   { pattern: /greenhouse\.io/, factory: (s) => new GreenhouseAdapter(s) },
+  // Greenhouse custom domains: companies host their greenhouse board on their
+  // own domain (careers.airbnb.com, mongodb.com/careers?gh_jid=, abnormal.ai/
+  // careers/jobs/...?gh_jid=). The gh_jid query param is the greenhouse
+  // posting id — the form is the greenhouse form and needs the greenhouse
+  // adapter (consent checkboxes, OTP handling, submit verification). Without
+  // this they fell to the GenericAdapter and failed submit verification.
+  { pattern: /[?&]gh_jid=\d+/, factory: (s) => new GreenhouseAdapter(s) },
   { pattern: /jobs\.ashbyhq\.com/, factory: (s) => new AshbyAdapter(s) },
   { pattern: /jobs\.lever\.co/, factory: (s) => new LeverAdapter(s) },
   { pattern: /myworkdayjobs\.com/, factory: (s) => new WorkdayAdapter(s) },
@@ -458,27 +465,27 @@ async function main() {
     await activePage.screenshot({ path: screenshotPath, fullPage: true });
     console.log(`[Runner] Screenshot saved to ${screenshotPath}`);
 
-    // Expired/removed posting detection: if the page never presented a form
-    // (the fill found nothing to fill) AND the page says the posting is gone,
-    // mark the job `expired` — a terminal, non-retryable state the worker
-    // records so the queue stops retrying a dead listing.
+    // Expired/removed posting detection: if the page says the posting is gone
+    // (page-not-found, position-filled, etc.), mark the job `expired` — a
+    // terminal, non-retryable state the worker records so the queue stops
+    // retrying a dead listing. This runs BEFORE the deferred/blank gate: a
+    // dead page shows no form, so every field reads "blank" and the fill
+    // would otherwise fail as "no form" instead of "expired posting".
     try {
-      if (getDeferredFieldCount() === 0 && getBlankedRequiredCount() === 0) {
-        const expiredReason = await adapter.detectExpired();
-        if (expiredReason) {
-          console.log(`[Runner] Posting appears expired: ${expiredReason}`);
-          emitStatus({
-            jobId: payload.jobId,
-            status: "expired",
-            screenshotPath: screenshotPath,
-            error: expiredReason,
-          });
-          watchdog?.stop();
-          clearInterval(captchaTimer);
-          rl.close();
-          await stagehand.close();
-          process.exit(0);
-        }
+      const expiredReason = await adapter.detectExpired();
+      if (expiredReason) {
+        console.log(`[Runner] Posting appears expired: ${expiredReason}`);
+        emitStatus({
+          jobId: payload.jobId,
+          status: "expired",
+          screenshotPath: screenshotPath,
+          error: expiredReason,
+        });
+        watchdog?.stop();
+        clearInterval(captchaTimer);
+        rl.close();
+        await stagehand.close();
+        process.exit(0);
       }
     } catch (expErr: any) {
       console.warn(`[Runner] Expired-posting check failed: ${expErr?.message || expErr}`);

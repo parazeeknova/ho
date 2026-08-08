@@ -668,3 +668,52 @@ class TestRunGates:
         result, rejections = await run_gates(obs, set(), {})
         if result is not None:
             assert result.eligibility != EligibilityState.REJECTED
+
+    @pytest.mark.asyncio
+    async def test_gate_rejects_us_onsite(self) -> None:
+        obs = JobObservation(
+            url="https://boards.greenhouse.io/acme/1",
+            source="greenhouse",
+            title="Software Engineer",
+            raw_markdown=(
+                "This is an onsite role based in San Francisco, CA. 5+ years of experience."
+            ),
+        )
+        result, rejections = await run_gates(obs, set(), {})
+        assert result is None
+        assert any(r[1].value == "us_onsite" for r in rejections), rejections
+
+    @pytest.mark.asyncio
+    async def test_gate_allows_remote_us(self) -> None:
+        obs = JobObservation(
+            url="https://boards.greenhouse.io/acme/2",
+            source="greenhouse",
+            title="Software Engineer",
+            raw_markdown="Remote - US. Distributed team across timezones.",
+        )
+        result, rejections = await run_gates(obs, set(), {})
+        assert result is not None and result.eligibility != EligibilityState.REJECTED
+
+    @pytest.mark.asyncio
+    async def test_gate_rejects_masters_required(self) -> None:
+        obs = JobObservation(
+            url="https://boards.greenhouse.io/acme/3",
+            source="greenhouse",
+            title="ML Engineer",
+            raw_markdown="A Master's degree or PhD in CS is required for this role.",
+        )
+        result, rejections = await run_gates(obs, set(), {})
+        assert result is None
+        assert any(r[1].value == "experience_phd" for r in rejections), rejections
+
+    @pytest.mark.asyncio
+    async def test_gate_rejects_foreign_onsite(self) -> None:
+        obs = JobObservation(
+            url="https://jobs.ashbyhq.com/acme/4",
+            source="ashby",
+            title="Backend Engineer",
+            raw_markdown="Onsite role based in London, UK. Hybrid 3 days a week.",
+        )
+        result, rejections = await run_gates(obs, set(), {})
+        assert result is None
+        assert any(r[1].value == "us_onsite" for r in rejections), rejections

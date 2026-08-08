@@ -41,6 +41,7 @@ _GATE_ORDER: list[str] = [
     "salary",
     "explicit_experience",
     "explicit_ineligibility",
+    "work_location",
     "source_freshness",
 ]
 
@@ -507,6 +508,12 @@ _EXPLICIT_EXPERIENCE_PATTERNS = [
     (re.compile(r"\bph\.?d\b", re.IGNORECASE), "phd"),
     (re.compile(r"\bdoctorate\b", re.IGNORECASE), "doctorate"),
     (re.compile(r"\bpostdoc\b", re.IGNORECASE), "postdoc"),
+    # Masters/graduate-degree requirements: the candidate holds a bachelor's,
+    # so a JD that REQUIRES a master's degree must be rejected (the user's
+    # 'why is it filling Masters/PhD jobs' complaint).
+    (re.compile(r"\bmaster'?s?\s+(degree|degree required|or ph\.?d)\b", re.IGNORECASE), "masters"),
+    (re.compile(r"\b(master'?s?|graduate)\s+degree\s+required\b", re.IGNORECASE), "masters"),
+    (re.compile(r"\brequires?\s+a\s+(master'?s?|graduate)\s+degree\b", re.IGNORECASE), "masters"),
     (re.compile(r"\bclearance\b", re.IGNORECASE), "clearance"),
     (re.compile(r"\bcitizenship\s*required\b", re.IGNORECASE), "citizenship"),
 ]
@@ -530,7 +537,7 @@ def gate_explicit_experience(
 
     for pat, label in _EXPLICIT_EXPERIENCE_PATTERNS:
         if pat.search(text):
-            if label in ("phd", "doctorate", "postdoc"):
+            if label in ("phd", "doctorate", "postdoc", "masters"):
                 return RejectionReason.EXPERIENCE_PHD
             if label in ("clearance", "citizenship"):
                 return RejectionReason.CLEARANCE_REQUIRED
@@ -561,6 +568,47 @@ def gate_explicit_ineligibility(
         if re.search(pat, text):
             return RejectionReason.NO_SPONSORSHIP
 
+    return None
+
+
+# Location detection for the work-location gate. The candidate (India, per the
+# persona) may work remote anywhere and onsite in India only; any ONSITE role
+# in a foreign country (esp. US, which needs an H-1B) must be rejected before
+# the browser ever opens. This was the 'why is it filling onsite-USA jobs'
+# complaint: US_ONSITE existed as a rejection reason but no gate produced it.
+_US_ONSITE_PATTERNS = [
+    r"\b(?:san francisco|new york|nyc|seattle|austin|boston|chicago|remote\s*-\s*us)\b",
+    r"\b(?:us|u\.s\.|united states|usa)\b.{0,40}\bonsite\b",
+    r"\bonsite\b.{0,40}\b(?:us|u\.s\.|united states|usa)\b",
+]
+_FOREIGN_ONSITE_PATTERNS = [
+    r"\bonsite\b.{0,60}\b(?:london|berlin|paris|amsterdam|singapore|toronto|dubai|sydney|"
+    r"stockholm|zurich|munich|warsaw|tel aviv|barcelona|madrid|milan|oslo|helsinki|copenhagen)\b",
+]
+
+
+def gate_work_location(
+    obs: JobObservation,
+    candidate: JobCandidate,
+    known_hashes: set[str],
+    last_seen: dict[str, float],
+) -> RejectionReason | None:
+    """Reject ONSITE roles in countries the candidate cannot work in.
+
+    Policy: the candidate may work REMOTE anywhere and ONSITE in India only.
+    An onsite role explicitly in the US (or a foreign country) needs a work
+    visa the candidate doesn't hold — reject before filling.
+    """
+    text = f"{obs.title} {obs.snippet} {obs.raw_markdown[:4000]}".lower()
+    # Remote-everywhere roles are fine even when a city is named.
+    if re.search(r"\bremote\b", text) and not re.search(r"\bonsite\b", text):
+        return None
+    for pat in _US_ONSITE_PATTERNS:
+        if re.search(pat, text):
+            return RejectionReason.US_ONSITE
+    for pat in _FOREIGN_ONSITE_PATTERNS:
+        if re.search(pat, text):
+            return RejectionReason.US_ONSITE  # foreign onsite = needs visa
     return None
 
 
@@ -686,6 +734,7 @@ _GATE_HANDLERS: dict[str, Any] = {
     "salary": gate_salary_check,
     "explicit_experience": gate_explicit_experience,
     "explicit_ineligibility": gate_explicit_ineligibility,
+    "work_location": gate_work_location,
     "source_freshness": gate_source_freshness,
 }
 

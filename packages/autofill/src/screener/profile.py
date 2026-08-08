@@ -54,6 +54,9 @@ class Profile(BaseModel):
     university: str | None = Field(default=None, alias="university")
     resumePath: str | None = Field(default=None, alias="resume_path")
     customAnswers: dict[str, str] = Field(default_factory=dict, alias="custom_answers")
+    # Structured education facts (school, degree, program, major, enrollment,
+    # start/grad years) — personal facts the LLM must never fabricate.
+    education: dict[str, Any] = Field(default_factory=dict, alias="education")
 
     model_config = {"populate_by_name": True, "serialize_by_alias": False}
 
@@ -260,6 +263,20 @@ async def build_profile(store: Any = None) -> Profile:
             if re.search(r"school|university|college|education|institute", _q, re.I) and _a.strip():
                 profile.school = _a.strip()
                 break
+
+    # Structured education block (identity.education in persona.json) — the
+    # source of truth for school/degree/major/enrollment/years. The LLM must
+    # never fabricate these.
+    edu = identity_json.get("education")
+    if isinstance(edu, dict) and edu:
+        profile.education = {str(k): v for k, v in edu.items() if v is not None}
+    if not profile.education:
+        # Fall back to the customAnswers-derived school for the school slot.
+        for _q, _a in profile.customAnswers.items():
+            if re.search(r"degree|major|field of study|specialization", _q, re.I) and _a.strip():
+                profile.education.setdefault("degree_program", _a.strip())
+        if getattr(profile, "school", None):
+            profile.education.setdefault("school", profile.school)
 
     still_defaults = [f for f in _IDENTITY_FIELDS if f not in resolved]
     if still_defaults:

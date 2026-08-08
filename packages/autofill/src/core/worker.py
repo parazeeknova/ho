@@ -394,6 +394,7 @@ class AutofillWorker:
         self._running = False
         self._running_tasks: set[asyncio.Task] = set()
         self._summary_task: asyncio.Task[None] | None = None
+        self._email_task: asyncio.Task[None] | None = None
         # Count of jobs this worker has STARTED processing; used to skip the
         # inter-job spacing delay before the very first job of a batch.
         self._jobs_started = 0
@@ -508,6 +509,7 @@ class AutofillWorker:
         self._running = True
         logger.info("AutofillWorker started polling loop...")
         self._summary_task = asyncio.create_task(self._daily_summary_loop())
+        self._email_task = asyncio.create_task(self._submission_email_loop())
         try:
             while self._running:
                 # The slot is acquired BEFORE claiming and only released when
@@ -570,6 +572,9 @@ class AutofillWorker:
         if self._summary_task:
             self._summary_task.cancel()
             self._summary_task = None
+        if self._email_task is not None:
+            self._email_task.cancel()
+            self._email_task = None
         for task in list(self._running_tasks):
             if not task.done():
                 task.cancel()
@@ -594,6 +599,56 @@ class AutofillWorker:
                 return
             except Exception as e:
                 logger.warning("Morning digest loop error", error=str(e))
+                await asyncio.sleep(60)
+
+    async def _submission_email_loop(self) -> None:
+        """Send ONE summary email per BATCH (not per job, not on a timer).
+
+        The user asked for a single email covering everything submitted in a
+        run. This loop waits until the batch has DRAINED — no pending/filling
+        jobs remain — then sends one email listing every confirmed submission
+        since the last email. A batch can run hours; the email fires once at
+        the end, never every few minutes. Falls back to the worker-shutdown
+        path (run_worker finally) as well.
+        """
+        last_sent_ts = 0.0
+        idle_cycles = 0
+        while self._running:
+            try:
+                await asyncio.sleep(30)
+                if not self._running:
+                    return
+                q = await self.db.queue_summary()
+                open_jobs = (
+                    (q.get("pending") or 0)
+                    + (q.get("filling") or 0)
+                    + (q.get("awaiting_review") or 0)
+                )
+                subs = await self.db.get_confirmed_submissions_since(since=last_sent_ts or None)
+                if open_jobs > 0:
+                    # Batch still running — keep waiting for the batch to drain.
+                    idle_cycles = 0
+                    continue
+                if not subs:
+                    continue
+                # Batch drained AND there are un-emailed submissions: send ONE
+                # email for the whole batch, then watermark.
+                idle_cycles += 1
+                if idle_cycles < 2:
+                    # Give the last in-flight runner a moment to write its fills.
+                    continue
+                label = f"sweep-{_dt.datetime.now().strftime('%Y%m%d-%H%M')}"
+                ok = await self.send_sweep_email_summary(
+                    sweep_label=label, epoch_id=None, since=last_sent_ts or None
+                )
+                if ok:
+                    last_sent_ts = _dt.datetime.now().timestamp()
+                    idle_cycles = 0
+                    logger.info("batch email sent", count=len(subs), sweep=label)
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                logger.warning("submission email loop error", error=str(e))
                 await asyncio.sleep(60)
 
     async def _send_daily_digest(self, bridge: DiscordQuestionBridge) -> None:
@@ -640,21 +695,23 @@ class AutofillWorker:
 
     async def send_sweep_email_summary(
         self, sweep_label: str = "", epoch_id: str | None = None, since: Any = None
-    ) -> None:
+    ) -> bool:
         """Send ONE email per sweep listing every confirmed submission and the
         fields that were filled for it (the user's ask: single thread per
         sweep, not one mail per job). Uses the Gmail app password.
-        """
+
+        Returns True when an email was actually sent (callers use this to
+        advance their 'last emailed' watermark)."""
         from autofill.src.outcomes.email_summary import send_sweep_summary
 
         try:
             subs = await self.db.get_confirmed_submissions_since(since=since, epoch_id=epoch_id)
         except Exception as e:
             logger.warning("sweep summary: failed to fetch submissions", error=str(e))
-            return
+            return False
         if not subs:
             logger.info("sweep summary: no confirmed submissions to report")
-            return
+            return False
         label = sweep_label or f"run-{_dt.datetime.now().strftime('%Y%m%d-%H%M')}"
         extra = ""
         if epoch_id:
@@ -662,6 +719,7 @@ class AutofillWorker:
         ok = await send_sweep_summary(label, subs, epoch_id=epoch_id, extra=extra)
         if ok:
             logger.info("sweep email summary sent", sweep=label, count=len(subs))
+        return ok
 
     @staticmethod
     async def _send_chunked(bridge: DiscordQuestionBridge, text: str, max_len: int = 3900) -> bool:
@@ -1462,6 +1520,16 @@ class AutofillWorker:
 
                     except json.JSONDecodeError:
                         logger.error("Failed to parse status event JSON", raw=event_raw)
+                else:
+                    # Forward the Node runner's own console output (adapter
+                    # logs: submit responses, consent checks, verification
+                    # outcomes). Dropped lines make submit failures impossible
+                    # to debug — the adapter's reasoning never reaches the log.
+                    if line_str and not line_str.startswith("RPC_REQUEST:"):
+                        logger.info(
+                            f"[runner] {line_str[:500]}",
+                            job_id=job_id,
+                        )
 
             await process.wait()
             stderr_task.cancel()
