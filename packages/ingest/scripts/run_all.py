@@ -478,26 +478,96 @@ async def _system_stats() -> tuple[str, str, str, str, str]:
 
 def main() -> int:
     # Single-instance lock: only one `bun run run` may own the pipeline at a
-    # time. If another instance is already running, exit with a clear message
-    # instead of spawning a second radar + worker + embed that fight over the
-    # same DB, ports, and job queue.
+    # time. If another instance is already running, STOP it (kill its whole
+    # tree) and take over — running `bun run run` again should always start a
+    # fresh pipeline, never just complain about a stale one.
     import os as _os
+    import signal as _signal
 
     lock_path = PROJECT / "logs" / "ho_run.lock"
     log_dir = PROJECT / "logs"
     log_dir.mkdir(exist_ok=True)
+
+    def _stop_pipeline_tree(old_pid: int) -> None:
+        """Gracefully stop a running pipeline: the run_all + its loop, radar
+        master/workers, and autofill worker. SIGINT first so in-flight jobs
+        wrap up cleanly; SIGKILL only stragglers. Kills by pattern too so
+        orphans (children of a died run_all) are reaped, while never
+        signalling our own pid."""
+        import subprocess as _sp
+
+        def _pk(sig: str) -> None:
+            patterns = (
+                "scripts/loop.py",
+                "scripts/run_all.py",
+                "radar.engine.orchestrator",
+                "autofill.src.core.worker",
+            )
+            own_pgid = _os.getpgid(_os.getpid())
+            for pat in patterns:
+                with contextlib.suppress(Exception):
+                    r = _sp.run(["pgrep", "-f", pat], capture_output=True, text=True, timeout=5)
+                    for pid in r.stdout.split():
+                        try:
+                            pid_i = int(pid)
+                            # Skip our own tree (incl. the `uv run` wrapper,
+                            # which has a different PID but shares our PGID and
+                            # would forward SIGINT back to us).
+                            if pid_i == _os.getpid() or _os.getpgid(pid_i) == own_pgid:
+                                continue
+                            _os.kill(pid_i, getattr(_signal, "SIG" + sig))
+                        except ValueError, ProcessLookupError:
+                            pass
+
+        with contextlib.suppress(Exception):
+            _os.kill(old_pid, _signal.SIGINT)
+        _pk("INT")
+        # Grace period for graceful shutdown, then hard-kill survivors.
+        for _ in range(20):
+            try:
+                _os.kill(old_pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.5)
+        else:
+            _pk("KILL")
+            with contextlib.suppress(Exception):
+                _os.kill(old_pid, _signal.SIGKILL)
+            time.sleep(1)
+
     if lock_path.exists():
         try:
             old_pid = int(lock_path.read_text().strip())
-            _os.kill(old_pid, 0)
-            print(
-                f"[ho] another run is already active (pid {old_pid}). "
-                "Stop it first or run `bun run run` in that terminal.",
-                flush=True,
-            )
-            return 1
+            _os.kill(old_pid, 0)  # raises ProcessLookupError if dead
+            print(f"[ho] stopping previous run (pid {old_pid})...", flush=True)
+            _stop_pipeline_tree(old_pid)
+            time.sleep(2)
+            lock_path.unlink(missing_ok=True)
         except ProcessLookupError, ValueError:
             lock_path.unlink(missing_ok=True)
+    else:
+        # No lock file, but a pipeline may still be running (e.g. a run started
+        # before the lock existed). Reap any lingering loop/radar/worker procs
+        # so `bun run run` always starts one clean pipeline.
+        with contextlib.suppress(Exception):
+            import subprocess as _sp
+
+            own_pgid = _os.getpgid(_os.getpid())
+            for pat in (
+                "scripts/loop.py",
+                "radar.engine.orchestrator",
+                "autofill.src.core.worker",
+            ):
+                r = _sp.run(["pgrep", "-f", pat], capture_output=True, text=True, timeout=5)
+                for pid in r.stdout.split():
+                    try:
+                        pid_i = int(pid)
+                        if pid_i == _os.getpid() or _os.getpgid(pid_i) == own_pgid:
+                            continue
+                        _os.kill(pid_i, _signal.SIGINT)
+                    except ValueError, ProcessLookupError:
+                        pass
+            time.sleep(1)
     lock_path.write_text(str(_os.getpid()))
 
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
