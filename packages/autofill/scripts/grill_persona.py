@@ -104,6 +104,10 @@ def load_existing() -> dict:
 
 
 def _ask(label: str, default: str = "") -> str:
+    # LLM-generated questions sometimes end in '.', '?' or '!' — strip trailing
+    # sentence punctuation so "proud of." + the appended ": " never renders as
+    # "proud of.: ". Static labels never end in punctuation, so this is safe.
+    label = re.sub(r"[.!?]+\s*$", "", label).strip()
     try:
         value = Prompt.ask(f"  {label}", default=default) if default else Prompt.ask(f"  {label}")
     except EOFError, KeyboardInterrupt:
@@ -313,7 +317,10 @@ async def generate_dynamic_questions(
         seen: set[str] = set()
         for item in questions[:target]:
             category = str(item.get("category") or "general").strip().lower()
-            question = str(item.get("question") or "").strip()
+            question = re.sub(r"\s+", " ", str(item.get("question") or "").strip()).strip(" ")
+            # Normalize trailing sentence punctuation so "proud of." and
+            # "proud of" dedupe and match cleanly on re-grill.
+            question = re.sub(r"[.!?]+\s*$", "", question)
             key = question.lower().strip()
             if not question or key in seen:
                 continue

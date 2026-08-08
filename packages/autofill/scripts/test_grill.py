@@ -8,6 +8,34 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 from grill_persona import _normalize_answer  # noqa: E402
 
 
+def test_ask_strips_trailing_punctuation_from_label():
+    """LLM-generated questions ending in '.'/'?' must not render '. :'."""
+    import re
+
+    def strip_label(label):
+        return re.sub(r"[.!?]+\s*$", "", label).strip()
+
+    assert strip_label("What's a project you're most proud of.") == (
+        "What's a project you're most proud of"
+    )
+    assert strip_label("How did you grow it?") == "How did you grow it"
+    assert strip_label("proud of!") == "proud of"
+    assert strip_label("no trailing punctuation") == "no trailing punctuation"
+
+
+def test_normalize_question_punctuation():
+    """Trailing sentence punctuation is stripped for clean dedupe."""
+    import re
+
+    def norm(q):
+        return re.sub(r"[.!?]+\s*$", "", q).strip()
+
+    assert norm("proud of.") == "proud of"
+    assert norm("proud of?") == "proud of"
+    assert norm("proud of") == "proud of"
+    assert norm("  proud of.  ") == "proud of"
+
+
 def test_normalize_yes_no_aliases():
     assert _normalize_answer("yes") == "Yes"
     assert _normalize_answer(" yep ") == "Yes"
