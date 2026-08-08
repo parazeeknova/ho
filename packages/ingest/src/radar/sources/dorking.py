@@ -18,33 +18,40 @@ logger = get_logger("dorking_engine")
 
 _TIME_SYNTAX = ""
 
-_DORK_QUERIES = [
-    (
-        "site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR"
-        ' site:apply.workable.com intitle:"intern" OR intitle:"new grad" OR'
-        f' intitle:"junior" "software" "2026"{_TIME_SYNTAX}'
-    ),
-    (
-        'site:boards.greenhouse.io "Junior" OR "Entry Level" OR "Associate" OR'
-        f' "Graduate"{_TIME_SYNTAX}'
-    ),
-    (
-        'site:jobs.ashbyhq.com "Junior" OR "Entry Level" OR "Early Career" OR'
-        f' "University"{_TIME_SYNTAX}'
-    ),
-    (f'site:jobs.lever.co "Junior" OR "Entry Level" OR "Graduate" OR "Associate"{_TIME_SYNTAX}'),
-    f'site:apply.workable.com "Junior" OR "Entry Level" OR "Associate"{_TIME_SYNTAX}',
-    f'site:boards.greenhouse.io "New Grad" OR "2026" OR "Intern" OR "Internship"{_TIME_SYNTAX}',
-    f'site:jobs.ashbyhq.com "New Grad" OR "2026" OR "Intern" OR "Internship"{_TIME_SYNTAX}',
-    f'site:jobs.lever.co "New Grad" OR "2026" OR "Intern" OR "Internship"{_TIME_SYNTAX}',
-    f'site:apply.workable.com "New Grad" OR "2026" OR "Intern" OR "Internship"{_TIME_SYNTAX}',
-    (
-        'site:boards.greenhouse.io ("Junior Developer" OR'
-        f' "Associate Software Engineer"){_TIME_SYNTAX}'
-    ),
-    (f'site:jobs.ashbyhq.com ("Junior Software Engineer" OR "Entry Level Engineer"){_TIME_SYNTAX}'),
-    (f'site:jobs.lever.co ("Junior Software Engineer" OR "Associate Engineer"){_TIME_SYNTAX}'),
+_ATS_SITES = [
+    "site:boards.greenhouse.io",
+    "site:jobs.lever.co",
+    "site:jobs.ashbyhq.com",
+    "site:apply.workable.com",
+    "site:jobs.smartrecruiters.com",
+    "site:myworkdayjobs.com",
+    "site:app.rippling.com",
+    "site:jobs.teamtailor.com",
+    "site:jobs.recruitee.com",
+    "site:jobs.comeet.com",
+    "site:jobs.jobscore.com",
+    "site:jobs.jazzhr.com",
 ]
+
+_DORK_TERMS = [
+    '"Junior" OR "Entry Level" OR "Associate" OR "Graduate"',
+    '"New Grad" OR "2026" OR "Intern" OR "Internship"',
+    '"Junior Software Engineer" OR "Entry Level Engineer"',
+]
+
+_DORK_QUERIES = [f"{site} {terms}{_TIME_SYNTAX}" for site in _ATS_SITES for terms in _DORK_TERMS]
+
+# Second discovery lane: arbitrary company career pages (companies with neither
+# Greenhouse nor Ashby). These queries surface /careers, /jobs, /openings
+# across the open web — the review's "scan more of the internet" ask.
+_WEB_LANE_QUERIES = [
+    'intitle:"careers" "software engineer" (jobs OR openings)',
+    'intitle:"jobs" "we are hiring" software',
+    '"/careers" "software engineer" "apply" -site:linkedin.com',
+    '"career opportunities" software engineer',
+]
+
+_DORK_QUERIES += [f"{q}{_TIME_SYNTAX}" for q in _WEB_LANE_QUERIES]
 
 
 class DorkingEngine:
@@ -131,4 +138,20 @@ class DorkingEngine:
         if "apply.workable.com/" in low:
             parts = low.split("apply.workable.com/")[-1].split("/")
             return parts[0] if parts else "unknown"
-        return "searxng-discovered"
+        if "jobs.smartrecruiters.com/" in low:
+            parts = low.split("jobs.smartrecruiters.com/")[-1].split("/")
+            return parts[0] if parts else "unknown"
+        if "jobs.teamtailor.com/" in low:
+            parts = low.split("jobs.teamtailor.com/")[-1].split("/")
+            return parts[0] if parts else "unknown"
+        if "jobs.recruitee.com/" in low:
+            parts = low.split("jobs.recruitee.com/")[-1].split("/")
+            return parts[0] if parts else "unknown"
+        if "myworkdayjobs.com/" in low:
+            parts = low.split("myworkdayjobs.com/")[-1].split("/")
+            return parts[0] if parts else "unknown"
+        # Generic career pages: extract the hostname as the company guess.
+        from urllib.parse import urlparse
+
+        host = urlparse(url).netloc or ""
+        return host.replace("www.", "").split(".")[0] if host else "searxng-discovered"

@@ -54,6 +54,60 @@ _FRESHNESS = [
     "new role",
 ]
 
+# The full ATS family set (the review's "expand discovery beyond ATS-heavy"
+# ask): every site: lane below sends results straight into the ATS interceptor
+# which fingerprints the board. Previously only greenhouse/ashby/lever/workable
+# were dorked, so search naturally concentrated on those two-three ATSs.
+_ATS_SITE_QUERIES = [
+    "site:boards.greenhouse.io",
+    "site:jobs.lever.co",
+    "site:jobs.ashbyhq.com",
+    "site:apply.workable.com",
+    "site:jobs.smartrecruiters.com",
+    "site:myworkdayjobs.com",
+    "site:app.rippling.com",
+    "site:jobs.teamtailor.com",
+    "site:jobs.recruitee.com",
+    "site:jobs.comeet.com",
+    "site:jobs.jobscore.com",
+    "site:jobs.jazzhr.com",
+]
+
+# Second lane (the review's "arbitrary company career pages" ask): many
+# companies use neither Greenhouse nor Ashby — they run their own careers page.
+# These queries surface /careers, /jobs, /careers.html etc. across the open web.
+_CAREER_PAGE_QUERIES = [
+    'intitle:"careers" "software engineer" (jobs OR careers OR openings)',
+    'intitle:"jobs" "we are hiring" software',
+    '"/careers" "software engineer" "apply" -site:linkedin.com',
+    '"/jobs" "{role}" "open positions"',
+    '"career opportunities" software engineer',
+    '"{role}" careers page job openings',
+]
+
+
+# site:* queries per ATS family, expanded from the original two-three.
+def _build_ats_dorks() -> list[str]:
+    terms = [
+        '"Junior" OR "Entry Level"',
+        '"New Grad" OR "2026" OR "Intern"',
+        '"Associate Engineer" OR "Junior Developer"',
+    ]
+    out: list[str] = []
+    for site in _ATS_SITE_QUERIES:
+        for t in terms[:2]:
+            out.append(f"{site} {t}")
+    return out
+
+
+def _build_web_lane_queries() -> list[str]:
+    """Career-page lane: arbitrary company careers/jobs pages across the web."""
+    out: list[str] = []
+    for cq in _CAREER_PAGE_QUERIES:
+        for role in _ROLE_FAMILIES[:6]:
+            out.append(cq.replace("{role}", role))
+    return out
+
 
 def _build_query_templates() -> list[str]:
     """Generate bing-compatible search queries — plain words, OR operators."""
@@ -69,6 +123,10 @@ def _build_query_templates() -> list[str]:
         templates.append(f"{r1} OR {r2} {e1}")
     for role in _ROLE_FAMILIES[:4]:
         templates.append(f"{role} remote hiring 2026")
+    # Web-discovery lane: explicit site:* coverage across all ATS families +
+    # arbitrary career-page queries (the review's "scan more of the internet").
+    templates.extend(_build_ats_dorks())
+    templates.extend(_build_web_lane_queries())
     return templates
 
 

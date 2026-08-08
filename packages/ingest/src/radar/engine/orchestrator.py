@@ -51,6 +51,7 @@ from src.radar.sources.agents import (
     founder_social_agent,
 )
 from src.radar.sources.board_registry import REGISTERED_BOARDS
+from src.radar.sources.common_crawl import discover_from_common_crawl
 from src.radar.sources.discovery import (
     _extract_domain as _discovery_domain,
 )
@@ -263,6 +264,9 @@ async def _discover_new_companies() -> list[dict[str, Any]]:
         return results
 
     adapters = [
+        # The review's primary discovery architecture: Common Crawl harvests
+        # ATS board slugs across ALL families (no curated company list needed).
+        ("common_crawl", discover_from_common_crawl, 1500),
         ("dealroom", discover_from_dealroom, 50),
         ("yc", discover_from_yc, 30),
         ("vc", discover_from_vc_portfolios, 40),
