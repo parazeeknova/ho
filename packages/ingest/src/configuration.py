@@ -361,8 +361,15 @@ class RadarConfig:
     # Stop-after: when the gate has passed at least this many candidates in a
     # sweep, the master loop ends (overnight runs usually want a bounded batch
     # — e.g. 20 gated jobs — not an endless loop). 0 = no early stop.
-    stop_after_gated: int = field(
-        default_factory=lambda: _env_int("RADAR_STOP_AFTER_GATED", 20)
+    stop_after_gated: int = field(default_factory=lambda: _env_int("RADAR_STOP_AFTER_GATED", 0))
+    # Work-session epoch target (the review's pivot #3): the radar keeps
+    # discovering/ranking into the application reservoir, but a SESSION completes
+    # when at least this many applications are CONFIRMED SUBMITTED (applied_at
+    # set — NOT attempts, deferred, captcha, or duplicates). On completion the
+    # loop finalizes the session (learning update + re-rank of the remaining
+    # reservoir). 0 = disable (bounded by stop_after_gated instead).
+    session_application_target: int = field(
+        default_factory=lambda: _env_int("RADAR_SESSION_APPLICATION_TARGET", 20)
     )
     urgent_window_hours: int = field(
         default_factory=lambda: _env_int("RADAR_URGENT_WINDOW_HOURS", 48)

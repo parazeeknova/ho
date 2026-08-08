@@ -93,7 +93,7 @@ async def discover_from_common_crawl(
     """
     client = await get_client("commoncrawl", timeout=30.0)
     target_indexes = indexes or _INDEXES
-    found: dict[str, str] = {}  # key: (marker,slug) -> board_url
+    found: dict[tuple[str, str], dict[str, str]] = {}  # (marker,slug) -> record
     for idx in target_indexes:
         for marker in _ATS_BOARD_MARKERS:
             if len(found) >= limit:

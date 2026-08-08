@@ -2336,13 +2336,33 @@ async def _run_radar_pipeline() -> None:
             candidates, gate_stats = await _fetch_postings_and_gate(all_obs, store)
             set_pipeline_state(scraped=len(all_obs), gated=len(candidates))
             logger.info(f"Gating: {len(candidates)} passed, {gate_stats['rejected']} rejected")
-            # Bounded-batch mode: once the gate has passed the target count,
-            # finish this sweep (rank + match + notify) and then stop instead
-            # of looping forever. Set RADAR_STOP_AFTER_GATED=0 to disable.
-            reached_target = (
-                not is_worker
-                and cfg.radar.stop_after_gated > 0
-                and len(candidates) >= cfg.radar.stop_after_gated
+            # Work-session epoch boundary (the review's pivot #3): the session
+            # completes when `session_application_target` applications are
+            # CONFIRMED SUBMITTED (applied_at set — attempts, deferred,
+            # captcha, and duplicates do NOT count). The radar keeps feeding the
+            # application reservoir; the session boundary is throughput, not
+            # discovery count. Falls back to the gated-count stop when the
+            # submission target is 0.
+            session_target = getattr(cfg.radar, "session_application_target", 0)
+            confirmed = 0
+            if not is_worker and session_target > 0:
+                try:
+                    async with store._pool.acquire() as conn:
+                        confirmed = (
+                            await conn.fetchval(
+                                "SELECT COUNT(*) FROM autofill_queue WHERE applied_at IS NOT NULL"
+                            )
+                            or 0
+                        )
+                except Exception:
+                    confirmed = 0
+            reached_target = not is_worker and (
+                (session_target > 0 and confirmed >= session_target)
+                or (
+                    session_target <= 0
+                    and cfg.radar.stop_after_gated > 0
+                    and len(candidates) >= cfg.radar.stop_after_gated
+                )
             )
             gs = gate_stats.get("gate_stats", {})
             if gs:
@@ -2449,10 +2469,17 @@ async def _run_radar_pipeline() -> None:
             if os.environ.get("OVERNIGHT_LOOP", "true").lower() != "true":
                 break
             if reached_target:
-                logger.info(
-                    f"Sweep {sweep}: reached {len(candidates)} gated candidates "
-                    f"(>= {cfg.radar.stop_after_gated} target) — stopping loop."
-                )
+                session_target = getattr(cfg.radar, "session_application_target", 0)
+                if session_target > 0:
+                    logger.info(
+                        f"Sweep {sweep}: reached {confirmed} confirmed submissions "
+                        f"(>= {session_target} session target) — stopping loop."
+                    )
+                else:
+                    logger.info(
+                        f"Sweep {sweep}: reached {len(candidates)} gated candidates "
+                        f"(>= {cfg.radar.stop_after_gated} target) — stopping loop."
+                    )
                 break
             interval = cfg.pipeline.sweep_interval
             logger.info(f"Sweep {sweep}: sleeping for {interval}s before next sweep")
