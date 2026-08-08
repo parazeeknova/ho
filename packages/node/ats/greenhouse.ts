@@ -1046,13 +1046,21 @@ export class GreenhouseAdapter extends ATSAdapter {
     let lastSubmitResp: { ok: boolean; status?: number } | undefined;
     let respListener: ((r: any) => void) | null = (r: any) => {
       const u = String(r?.url?.() || r?.url || "");
-      if (!/applications?|submission|apply|submission_id|candidate/i.test(u)) return;
+      // Greenhouse posts the application to an /applications (or similar)
+      // endpoint. Custom-domain boards (careers.airbnb.com, mongodb.com,
+      // abnormal.ai) use their own host but the same path shape. Match the
+      // path rather than the host: /applications, /apply, submission etc.
+      // Also accept any POST to the same origin (the submit is a form POST
+      // and no other POST happens at that moment).
+      if (!/\/applications?(\/|$|\?)|\/apply|submission|submissions?(\/|$|\?)|job_application|create_application/i.test(u)) {
+        return;
+      }
       try {
         const ok = typeof r.ok === "function" ? r.ok() : false;
         const status = typeof r.status === "function" ? r.status() : undefined;
         lastSubmitResp = { ok, status };
         console.log(
-          `[Greenhouse] Submit response: ${status ?? "?"} ${u.slice(0, 100)}` +
+          `[Greenhouse] Submit response: ${status ?? "?"} ${u.slice(0, 120)}` +
             ` (${ok ? "ok" : "FAILED"})`,
         );
       } catch {
