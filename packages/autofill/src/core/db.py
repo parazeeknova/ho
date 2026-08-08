@@ -914,7 +914,8 @@ class AutofillDB:
                 FROM autofill_queue q
                 WHERE {" AND ".join(where)}
                 ORDER BY q.applied_at DESC
-                """
+                """,
+                *params,
             )
             return [dict(r) for r in rows]
 
