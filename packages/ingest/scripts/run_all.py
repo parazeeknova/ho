@@ -79,7 +79,7 @@ def _port_open(host: str, port: int, timeout: float = 2.0) -> bool:
 
 
 async def _wait_for(name: str, timeout: float) -> bool:
-    print(f"[run_all] waiting for {name}...", flush=True)
+    print(f"[ho] waiting for {name}...", flush=True)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if name == "searxng" and _http_ok("http://localhost:8080/"):
@@ -108,10 +108,10 @@ def _docker(args: list[str]) -> tuple[int, str]:
 
 
 def _compose_up() -> bool:
-    print("[run_all] starting docker services...", flush=True)
+    print("[ho] starting docker services...", flush=True)
     code, out = _docker(["up", "-d", *DOCKER_SERVICES])
     if code != 0:
-        print(f"[run_all] docker compose up failed: {out}", flush=True)
+        print(f"[ho] docker compose up failed: {out}", flush=True)
         return False
     return True
 
@@ -121,7 +121,7 @@ def _preflight_backup() -> None:
     import subprocess as _sp
 
     try:
-        print("[run_all] pre-run backup (checkpoint)...", flush=True)
+        print("[ho] pre-run backup (checkpoint)...", flush=True)
         r = _sp.run(
             ["uv", "run", "python", "scripts/backup/auto_backup.py"],
             cwd=str(PROJECT),
@@ -129,9 +129,9 @@ def _preflight_backup() -> None:
             text=True,
             timeout=90,
         )
-        print(f"[run_all] backup: {r.stdout.strip()[-200:] if r.stdout else 'ok'}", flush=True)
+        print(f"[ho] backup: {r.stdout.strip()[-200:] if r.stdout else 'ok'}", flush=True)
     except Exception as e:
-        print(f"[run_all] backup skipped: {e}", flush=True)
+        print(f"[ho] backup skipped: {e}", flush=True)
 
 
 async def _ensure_infra() -> bool:
@@ -143,10 +143,10 @@ async def _ensure_infra() -> bool:
         if name == "embed" and not _http_ok("http://localhost:8900/health"):
             continue
         if not await _wait_for(name, HOST_PROBES.get(name, (0, 15))[1]):
-            print(f"[run_all] WARNING: {name} not ready", flush=True)
+            print(f"[ho] WARNING: {name} not ready", flush=True)
             ok = False
         else:
-            print(f"[run_all] ✓ {name} ready", flush=True)
+            print(f"[ho] ✓ {name} ready", flush=True)
     # Pre-run backup once infra is confirmed
     _preflight_backup()
     return ok
@@ -154,9 +154,9 @@ async def _ensure_infra() -> bool:
 
 def _ensure_embed_server() -> None:
     if _http_ok("http://localhost:8900/health"):
-        print("[run_all] embedding server already up", flush=True)
+        print("[ho] embedding server already up", flush=True)
         return
-    print("[run_all] starting embedding server...", flush=True)
+    print("[ho] starting embedding server...", flush=True)
     log = PROJECT / "logs"
     log.mkdir(exist_ok=True)
     with (log / "embed_server.log").open("ab") as out:
@@ -237,7 +237,7 @@ def _persona_missing(persona_path: Path) -> list[str]:
 def _ensure_memory() -> None:
     persona = REPO / "data" / "persona.json"
     if not persona.exists():
-        print("[run_all] persona.json missing — seeding memory non-interactively...", flush=True)
+        print("[ho] persona.json missing — seeding memory non-interactively...", flush=True)
         try:
             env = dict(os.environ)
             env["NON_INTERACTIVE"] = "1"
@@ -251,19 +251,19 @@ def _ensure_memory() -> None:
                 timeout=600,
             )
         except Exception as e:
-            print(f"[run_all] memory seed skipped ({e}); pipeline will use defaults", flush=True)
+            print(f"[ho] memory seed skipped ({e}); pipeline will use defaults", flush=True)
         return
     # Present but possibly stale: report it so the user knows to re-run
     # init-memory after a resume update instead of silently matching on old
     # grounding.
-    print(f"[run_all] memory: {_memory_status()}", flush=True)
+    print(f"[ho] memory: {_memory_status()}", flush=True)
     # Completeness: if critical persona items are missing, ask the user to run
     # the interactive grill so the matcher never scores against a half-built
     # persona.
     missing = _persona_missing(persona)
     if missing:
         print(
-            f"[run_all] persona is INCOMPLETE — missing: {', '.join(missing[:6])}",
+            f"[ho] persona is INCOMPLETE — missing: {', '.join(missing[:6])}",
             flush=True,
         )
         try:
@@ -271,12 +271,10 @@ def _ensure_memory() -> None:
 
             if _sys.stdin and _sys.stdin.isatty():
                 answer = (
-                    input("[run_all] Run the interactive persona wizard now? [Y/n] ")
-                    .strip()
-                    .lower()
+                    input("[ho] Run the interactive persona wizard now? [Y/n] ").strip().lower()
                 )
                 if answer in ("", "y", "yes"):
-                    print("[run_all] Launching persona wizard...", flush=True)
+                    print("[ho] Launching persona wizard...", flush=True)
                     subprocess.run(
                         [
                             sys.executable,
@@ -286,7 +284,7 @@ def _ensure_memory() -> None:
                         timeout=1800,
                     )
         except Exception as e:
-            print(f"[run_all] persona wizard prompt skipped ({e})", flush=True)
+            print(f"[ho] persona wizard prompt skipped ({e})", flush=True)
 
 
 async def _run_loop(args: argparse.Namespace) -> int:
@@ -316,7 +314,7 @@ async def _run_loop(args: argparse.Namespace) -> int:
         cmd.append("--no-fill")
     if args.max_minutes:
         cmd += ["--max-minutes", str(args.max_minutes)]
-    print(f"[run_all] launching loop: {' '.join(cmd)}", flush=True)
+    print(f"[ho] launching loop: {' '.join(cmd)}", flush=True)
     log_dir = PROJECT / "logs"
     log_dir.mkdir(exist_ok=True)
     # Stream the loop's output to a file, never a pipe we don't drain — a pipe
@@ -336,7 +334,7 @@ def _handle_sig(signum: int, frame) -> None:  # noqa: ANN001
     import contextlib
 
     with contextlib.suppress(Exception):
-        print(f"\n[run_all] signal {signum}; shutting down...", flush=True)
+        print(f"\n[ho] signal {signum}; shutting down...", flush=True)
     raise KeyboardInterrupt
 
 
@@ -355,33 +353,33 @@ def main() -> int:
 
     async def _run() -> int:
         if not await _ensure_infra():
-            print("[run_all] infra failed; aborting", flush=True)
+            print("[ho] infra failed; aborting", flush=True)
             return 1
         # Autoheal: if containers exist but are Exited, restart before embed
         _autoheal_containers()
         _ensure_embed_server()
         await asyncio.sleep(8)
         if not await _wait_for("embed", HOST_PROBES["embed"][1]):
-            print("[run_all] embedding server not ready; continuing anyway", flush=True)
+            print("[ho] embedding server not ready; continuing anyway", flush=True)
         else:
-            print("[run_all] embed server ✓ (:8900)", flush=True)
+            print("[ho] embed server ✓ (:8900)", flush=True)
         _ensure_memory()
         _gmail_check()
         # One-line sweep intent so the user knows what this run will do
         print(  # noqa: E501
-            f"[run_all] sweep config: workers={args.radar_workers}"
+            f"[ho] sweep config: workers={args.radar_workers}"
             f" bridge={args.bridge_interval}s target=20 confirmed (per-epoch)",
             flush=True,
         )
         if args.dry_run:
-            print("[run_all] dry-run complete; infra is up", flush=True)
+            print("[ho] dry-run complete; infra is up", flush=True)
             return 0
         return await _run_loop(args)
 
     try:
         return asyncio.run(_run())
     except KeyboardInterrupt:
-        print("[run_all] stopped.", flush=True)
+        print("[ho] stopped.", flush=True)
         return 0
 
 
@@ -390,7 +388,7 @@ def _gmail_check() -> None:
 
     if _os.getenv("GMAIL_PUSH", "").strip() != "1":
         print(  # noqa: E501
-            "[run_all] Gmail listener: disabled (GMAIL_PUSH != 1) — "
+            "[ho] Gmail listener: disabled (GMAIL_PUSH != 1) — "
             "set GMAIL_PUSH=1 to capture outcome emails",
             flush=True,
         )
@@ -407,7 +405,7 @@ def _gmail_check() -> None:
     ]
     if missing:
         print(  # noqa: E501
-            f"[run_all] Gmail listener: GMAIL_PUSH=1 but missing {missing!r}"
+            f"[ho] Gmail listener: GMAIL_PUSH=1 but missing {missing!r}"
             " — outcome emails will not be captured",
             flush=True,
         )
@@ -431,8 +429,7 @@ def _gmail_check() -> None:
         "daemon running" if push_alive else "daemon NOT running (loop will start it)"
     )
     print(  # noqa: E501
-        f"[run_all] Gmail listener: configured (project="
-        f"{_os.getenv('GCP_PUBSUB_PROJECT')}) · {state}",
+        f"[ho] Gmail listener: configured (project={_os.getenv('GCP_PUBSUB_PROJECT')}) · {state}",
         flush=True,
     )
 
@@ -450,10 +447,10 @@ def _autoheal_containers() -> None:
             )
             status = (r.stdout or "").strip().split()[0] if r.stdout else "missing"
             if status == "Exited":
-                print(f"[run_all] autoheal: restarting {name} (was Exited)", flush=True)
+                print(f"[ho] autoheal: restarting {name} (was Exited)", flush=True)
                 _sp.run(["podman", "start", name], capture_output=True, timeout=15)
             elif status == "missing":
-                print(f"[run_all] autoheal: {name} missing — compose up", flush=True)
+                print(f"[ho] autoheal: {name} missing — compose up", flush=True)
                 svc = name.replace("ho_", "").replace("_1", "")
                 _sp.run(
                     ["docker", "compose", "-f", str(COMPOSE), "up", "-d", svc],
