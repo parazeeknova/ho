@@ -112,29 +112,60 @@ async def scrape_portfolio(url: str) -> str:
 
     Some portfolios are SPAs whose raw HTML is mostly nav/shell (e.g.
     przknv.cc renders "raw/blogs/Toggle theme" first); the meaningful profile
-    content sits further down. We keep up to 6000 chars and skip nothing up
-    front so project bullets (stacks, revenue, descriptions) survive.
+    content sits further down. We render JS shells via the shared renderer so
+    the portfolio text is the REAL content, then keep up to 6000 chars. Best-
+    effort: returns '' when the fetch or render fails.
     """
     try:
-        client = await get_client("github_linkedin_loader", timeout=10.0)
-        resp = await client.get(
-            url,
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
-        )
-        if resp.status_code == 200 and len(resp.text) > 200:
-            soup = BeautifulSoup(resp.text, "html.parser")
-            for el in soup(["script", "style", "meta", "noscript", "svg"]):
-                el.decompose()
-            clean_text = soup.get_text("\n", strip=True)
-            if len(clean_text) > 100:
-                return clean_text[:6000]
+        # render_html fetches statically and falls back to a Playwright render
+        # for JS-only pages — a plain GET on przknv.cc returns a shell, which
+        # is why old chunks were useless.
+        from src.render import render_html
+
+        html = await render_html(url, timeout=25.0)
+        if not html or len(html) < 200:
+            return ""
+        soup = BeautifulSoup(html, "html.parser")
+        for el in soup(["script", "style", "meta", "noscript", "svg"]):
+            el.decompose()
+        clean_text = soup.get_text("\n", strip=True)
+        # Drop obvious shell-only noise so a JS-render artifact doesn't pollute.
+        if len(clean_text) < 100:
+            return ""
+        # Strip recurring nav/chrome lines that every page render repeats and
+        # that carry no profile signal ("Toggle theme", "raw", "blogs", ...).
+        noise = {
+            "toggle theme",
+            "raw",
+            "blogs",
+            "menu",
+            "home",
+            "about",
+            "contact",
+            "more",
+            "open menu",
+            "close menu",
+            "light",
+            "dark",
+            "system",
+            "parazeeknova",
+        }
+        lines = [
+            ln.strip()
+            for ln in clean_text.split("\n")
+            if ln.strip().lower() not in noise and ln.strip()
+        ]
+        clean_text = "\n".join(lines)
+        if len(clean_text) < 100:
+            return ""
+        return clean_text[:6000]
     except Exception as e:
         logger.warning(
             "Portfolio scrape failed",
             source=url,
             exception=str(e),
         )
-    return ""
+        return ""
 
 
 async def enrich_candidate_chunks(chunks: dict[str, str], resume_text: str = "") -> dict[str, str]:
