@@ -1,6 +1,7 @@
 """Unit tests for the anti-fraud worker helpers (proxy template / resume copy)."""
 
 import pathlib
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -82,7 +83,7 @@ def test_voice_seed_from_pool() -> None:
 
 
 def test_profile_pool_never_reallocates_same_dir_concurrently(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: pytest.TempPathFactory
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     import asyncio
     from unittest.mock import MagicMock
@@ -108,7 +109,7 @@ def test_profile_pool_never_reallocates_same_dir_concurrently(
     asyncio.run(run())
 
 
-def test_per_job_resume_copies_to_name_named_file(tmp_path: pytest.TempPathFactory) -> None:
+def test_per_job_resume_copies_to_name_named_file(tmp_path: Path) -> None:
     resume = tmp_path / "resume.pdf"
     resume.write_bytes(b"%PDF-1.4 fake")
     out = _per_job_resume(str(resume), first_name="Aman", last_name="Aziz", job_id="job-abc12345")
@@ -124,7 +125,7 @@ def test_per_job_resume_copies_to_name_named_file(tmp_path: pytest.TempPathFacto
     )
 
 
-def test_per_job_resume_basename_constant_across_jobs(tmp_path: pytest.TempPathFactory) -> None:
+def test_per_job_resume_basename_constant_across_jobs(tmp_path: Path) -> None:
     """The uploaded basename is <First>_<Last>_Resume.pdf for every job; the
     per-job subdirectory (not the basename) isolates concurrent jobs."""
     resume = tmp_path / "resume.pdf"
@@ -137,7 +138,7 @@ def test_per_job_resume_basename_constant_across_jobs(tmp_path: pytest.TempPathF
 
 
 def test_per_job_resume_falls_back_to_stem_without_names(
-    tmp_path: pytest.TempPathFactory,
+    tmp_path: Path,
 ) -> None:
     resume = tmp_path / "cv.pdf"
     resume.write_bytes(b"%PDF-1.4 fake")
@@ -151,7 +152,7 @@ def test_per_job_resume_none_when_no_resume() -> None:
 
 
 def test_per_job_resume_force_overwrites_existing_copy(
-    tmp_path: pytest.TempPathFactory,
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """force=True replaces the per-job copy — the tailored resume must win over
@@ -166,9 +167,7 @@ def test_per_job_resume_force_overwrites_existing_copy(
     tailored = tmp_path / "tailored.pdf"
     tailored.write_bytes(b"%PDF-1.4 tailored")
 
-    out = _per_job_resume(
-        str(base), first_name="Aman", last_name="Aziz", job_id="job-force-test"
-    )
+    out = _per_job_resume(str(base), first_name="Aman", last_name="Aziz", job_id="job-force-test")
     assert out is not None
     assert pathlib.Path(out).read_bytes() == b"%PDF-1.4 base"
 
@@ -176,6 +175,7 @@ def test_per_job_resume_force_overwrites_existing_copy(
     out2 = _per_job_resume(
         str(tailored), first_name="Aman", last_name="Aziz", job_id="job-force-test"
     )
+    assert out2 is not None
     assert pathlib.Path(out2).read_bytes() == b"%PDF-1.4 base"
 
     # With force the tailored resume replaces it.
@@ -186,10 +186,11 @@ def test_per_job_resume_force_overwrites_existing_copy(
         job_id="job-force-test",
         force=True,
     )
+    assert out3 is not None
     assert pathlib.Path(out3).read_bytes() == b"%PDF-1.4 tailored"
 
 
-def test_per_job_resume_missing_source_passthrough(tmp_path: pytest.TempPathFactory) -> None:
+def test_per_job_resume_missing_source_passthrough(tmp_path: Path) -> None:
     missing = str(tmp_path / "nope.pdf")
     assert _per_job_resume(missing) == missing
 
