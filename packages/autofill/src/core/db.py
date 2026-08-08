@@ -561,14 +561,26 @@ class AutofillDB:
                 "UPDATE autofill_queue SET epoch_id=$2 WHERE job_id=$1", job_id, epoch_id
             )
 
-    async def complete_epoch(self, epoch_id: str) -> None:
+    async def complete_epoch(self, epoch_id: str, final_status: str = "completed") -> None:
         async with self._pool.acquire() as conn:
             await conn.execute(
-                "UPDATE learning_epochs SET status='completed', completed_at=NOW(), "
+                "UPDATE learning_epochs SET status=$2, completed_at=NOW(), "
                 "completed_submissions=(SELECT COUNT(*) FROM autofill_queue "
                 "WHERE epoch_id=$1 AND applied_at IS NOT NULL) WHERE epoch_id=$1",
                 epoch_id,
+                final_status,
             )
+
+    async def mark_epoch_target_reached(self, epoch_id: str, pending_learning: bool = True) -> None:
+        """Record that an epoch has reached its application target but is NOT
+        fully learned yet — outcomes (interviews/offers) may arrive weeks
+        later. The epoch becomes 'target_reached' (or the appropriate P1
+        follow-through state) rather than 'completed' so new epochs can start
+        while outcome collection continues for the prior one. The review's
+        '20 submitted != all outcomes known' fix."""
+        await self.complete_epoch(
+            epoch_id, final_status="target_reached" if pending_learning else "completed"
+        )
 
     async def attach_active_epoch(self, job_id: str) -> str | None:
         """Stamp a job with the currently-active learning epoch.

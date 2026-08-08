@@ -2518,7 +2518,7 @@ async def _run_radar_pipeline() -> None:
 
             _db = await AutofillDB.create()
             try:
-                await _db.complete_epoch(active_epoch_id)
+                await _db.mark_epoch_target_reached(active_epoch_id)
             finally:
                 await _db.close()
         except Exception as exc:
