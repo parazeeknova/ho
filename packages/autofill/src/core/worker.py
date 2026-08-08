@@ -631,11 +631,12 @@ class AutofillWorker:
                 if not subs:
                     continue
                 now_ts = _dt.datetime.now().timestamp()
-                active = await self.db.get_active_epoch()
-                epoch_id = active["epoch_id"] if active else None
                 label = f"sweep-{_dt.datetime.now().strftime('%Y%m%d-%H%M')}"
+                # Scope by TIME since the last email, NOT the active epoch: a
+                # submission in a just-completed epoch must still be emailed to
+                # the user (epochs roll on every pipeline restart).
                 ok = await self.send_sweep_email_summary(
-                    sweep_label=label, epoch_id=epoch_id, since=last_sent_ts or None
+                    sweep_label=label, epoch_id=None, since=last_sent_ts or None
                 )
                 if ok:
                     last_sent_ts = now_ts
