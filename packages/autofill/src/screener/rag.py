@@ -442,6 +442,24 @@ _PERSONAL_RULES: list[tuple[re.Pattern, str]] = [
         ),
         "expected_graduation",
     ),
+    # Education facts: school/university, degree, field of study, enrollment.
+    # These are PERSONAL FACTS — the LLM has fabricated a university ("Arizona
+    # State University") and guessed "No" for enrollment. They must resolve
+    # only from the persona's exact answers / profile education, never the LLM.
+    (
+        re.compile(
+            r"school|university|college|institution|degree (program|title|type)|"
+            r"field of (study|specialization|major)|major|specialization|"
+            r"enrolled (in|at)|currently (enrolled|attending|pursuing)|"
+            r"highest (level of )?education|education (level|background)|"
+            r"what (degree|school|university|college)|"
+            r"where did you (study|attend|graduate|complete)|"
+            r"graduat(ed|ing) (from|at)|undergraduate|bachelor|expect(ed)? to (graduate|finish)|"
+            r"when (do|will) you (graduate|finish)",
+            re.I,
+        ),
+        "education",
+    ),
 ]
 
 # Personal-fact categories that resolve from configured data (no guessing, no prompting).
@@ -2568,6 +2586,56 @@ class ScreenerRAG:
         # INR answer / persona min-salary applies unchanged.
         return None
 
+    def _education_answer(self, question: str, q_lower: str) -> str | None:
+        """Deterministic education answers from the profile's education block.
+
+        School/university, degree, field of study, and enrollment are PERSONAL
+        FACTS — the LLM fabricated "Arizona State University" and guessed "No"
+        for enrollment. Only configured data may answer: the persona answers
+        (exact tier) already ran before this; this adds the identity.education
+        block as a structured fallback.
+        """
+        edu = getattr(self.profile, "education", None) or {}
+        if not isinstance(edu, dict):
+            return None
+        school = str(edu.get("school") or "").strip()
+        degree = str(edu.get("degree") or "").strip()
+        program = str(edu.get("degree_program") or "").strip()
+        major = str(edu.get("major") or "").strip()
+        enrolled = bool(edu.get("enrolled"))
+        start = str(edu.get("start_year") or "").strip()
+        grad = str(edu.get("grad_year") or "").strip()
+
+        # YEAR questions must be checked FIRST — "what year did you start
+        # college" contains "college" and would otherwise match the school
+        # branch and return the school name. "undergraduate"/"bachelor" must
+        # NOT match the grad-year branch (they contain "graduat").
+        if re.search(
+            r"graduation year|expected (to )?graduat|year of (graduation|completion)|"
+            r"when.*(graduate|finish)|graduat(ed|ing) (in|year)",
+            q_lower,
+        ):
+            return grad or None
+        if re.search(r"start.*(year|college|university)|year did you (start|begin)", q_lower):
+            return start or None
+        if re.search(r"enrolled|currently (enrolled|attending|pursuing)", q_lower):
+            return "Yes" if enrolled else "No"
+        if re.search(
+            r"degree (program|title|type)|field of (study|specialization|major)|"
+            r"major|specialization|what degree",
+            q_lower,
+        ):
+            return program or major or degree or None
+        if school and re.search(
+            r"school|university|college|institution|where did you (study|attend|graduate|complete)|"
+            r"undergraduate degree",
+            q_lower,
+        ):
+            return school
+        if re.search(r"highest (level of )?education|education (level|background)", q_lower):
+            return program or degree or None
+        return None
+
     def _compensation_by_currency(self) -> dict[str, dict[str, str]]:
         """Cached per-currency compensation table (parsed once per instance)."""
         if self._comp_table is None:
@@ -3006,6 +3074,19 @@ class ScreenerRAG:
         persona_ans = await self._lookup_persona(q, q_lower)
         if persona_ans is not None:
             return _normalize_start_date(persona_ans) if key in _START_DATE_KEYS else persona_ans
+
+        # Education facts resolve ONLY from configured data (exact answers /
+        # persona above, or the profile's education block). The LLM has
+        # fabricated a university and guessed enrollment — never let it answer
+        # an education question. Unresolved -> return None so the caller asks
+        # on Discord / defers, never fabricates. expected_graduation routes
+        # here too ("when do you expect to graduate?" matches the
+        # expected_graduation rule BEFORE education).
+        if key in ("education", "expected_graduation"):
+            edu = self._education_answer(q, q_lower)
+            if edu is not None:
+                return edu
+            return None
 
         cfg = get_config()
         min_salary = getattr(cfg.candidate, "min_salary", "Flexible / Open to discussion")
