@@ -138,21 +138,30 @@ def _jd_text(jd: dict[str, Any] | None) -> str:
 
 
 def _extract_keywords(tex: str) -> list[str]:
-    """All technology tokens named in the resume's Technical Skills section."""
+    """All technology tokens named in the resume's Technical Skills section.
+
+    Supports both layouts: `\textbf{Languages}{: ...} \\` group lines and a
+    single `\resumeItem{TypeScript, Rust, Go, ...}` skills line (the style this
+    project's own resume.tex uses)."""
     found: list[str] = []
     for line in tex.splitlines():
+        token_srcs: list[str] = []
         m = _GROUP_LINE_RE.search(line)
-        if not m:
-            continue
-        for token in re.split(r"[,/]+", m.group(2)):
-            token = token.strip()
-            if not token:
-                continue
-            low = token.lower()
-            if low in _RESUME_SKILLS or any(
-                low.startswith(s) or s in low for s in _RESUME_SKILLS
-            ):
-                found.append(token)
+        if m:
+            token_srcs.append(m.group(2))
+        im = _ITEM_RE.search(line)
+        if im:
+            token_srcs.append(im.group(1))
+        for src in token_srcs:
+            for token in re.split(r"[,/]+", src):
+                token = token.strip()
+                if not token:
+                    continue
+                low = token.lower()
+                if low in _RESUME_SKILLS or any(
+                    low.startswith(s) or s in low for s in _RESUME_SKILLS
+                ):
+                    found.append(token)
     return found
 
 
@@ -441,7 +450,7 @@ def _parse_units(body: str) -> list[dict[str, Any]]:
     units: list[dict[str, Any]] = []
     for i in range(len(starts)):
         start_idx = starts[i]
-        end_idx = starts[i+1] if i + 1 < len(starts) else len(body)
+        end_idx = starts[i + 1] if i + 1 < len(starts) else len(body)
         unit_str = body[start_idx:end_idx]
 
         chunks = []
@@ -464,16 +473,16 @@ def _parse_units(body: str) -> list[dict[str, Any]]:
             brace_count = 1
             curr = content_start
             while curr < len(unit_str) and brace_count > 0:
-                if unit_str[curr] == '{':
+                if unit_str[curr] == "{":
                     brace_count += 1
-                elif unit_str[curr] == '}':
+                elif unit_str[curr] == "}":
                     brace_count -= 1
                 curr += 1
 
             if brace_count == 0:
                 end_match = curr
                 raw = unit_str[start_match:end_match]
-                inner = unit_str[content_start:end_match - 1]
+                inner = unit_str[content_start : end_match - 1]
                 chunk = {"type": "item", "raw": raw, "inner": inner}
                 chunks.append(chunk)
                 items.append(chunk)
@@ -489,6 +498,7 @@ def _parse_units(body: str) -> list[dict[str, Any]]:
 def _reorder_units(units: list[dict[str, Any]], keywords: list[str]) -> list[dict[str, Any]]:
     """Sort units so the most JD-relevant lead; within each unit, sort bullets
     so the strongest match leads (stable: preserves original order on ties)."""
+
     def key_unit(u: dict[str, Any]) -> int:
         heading_text = "".join(c["text"] for c in u["chunks"] if c["type"] == "static")
         items_text = " ".join(c["inner"] for c in u["items"])
@@ -540,7 +550,9 @@ def _tailor_tex_inner(base_tex: str, keywords: list[str]) -> str:
         line = lines[i]
 
         # ---- Technical Skills -------------------------------------------------
-        if line.strip() == "\\section{Technical Skills}" and i + 1 < len(lines):
+        if line.strip() in ("\\section{Technical Skills}", "\\section{Tech Stack}") and i + 1 < len(
+            lines
+        ):
             out.append(line)
             i += 1
             # Collect the section body until the next \section.
@@ -572,6 +584,29 @@ def _tailor_tex_inner(base_tex: str, keywords: list[str]) -> str:
     return "\n".join(out) + "\n"
 
 
+def _reorder_resumeitem_skills(line: str, keywords: list[str]) -> str:
+    """Reorder the tokens inside a single `\resumeItem{...}` skills line so
+    JD-matching technologies lead. Returns the line unchanged when it does not
+    look like a skills line (no comma-separated token list)."""
+    m = _ITEM_RE.search(line)
+    if not m:
+        return line
+    inner = m.group(1)
+    if "," not in inner:
+        return line
+    tokens = [x.strip() for x in inner.split(",") if x.strip()]
+    if len(tokens) < 3:
+        return line
+
+    def score(tok: str) -> int:
+        return _match_score(tok, keywords)
+
+    ordered = sorted(tokens, key=score, reverse=True)
+    if ordered == tokens:
+        return line
+    return line[: m.start(1)] + ", ".join(ordered) + line[m.end(1) :]
+
+
 def _tailor_skills_body(body: list[str], keywords: list[str]) -> list[str]:
     """Reorder the Technical Skills section: JD-matching groups first, and
     within each group JD-matching skills first."""
@@ -592,6 +627,11 @@ def _tailor_skills_body(body: list[str], keywords: list[str]) -> list[str]:
 
     def token_key(t: str) -> int:
         return _match_score(t, keywords)
+
+    # Single-\resumeItem layout: no \textbf group lines; reorder the tokens
+    # inside each item instead.
+    if not any(_GROUP_LINE_RE.search(ln) for ln in body):
+        return [_reorder_resumeitem_skills(ln, keywords) for ln in body]
 
     reordered: list[str] = []
     scored: list[dict[str, Any]] = [g for g in groups if g["tokens"] is not None]
@@ -724,9 +764,7 @@ def _tectonic_sanitize(tex: str) -> str:
     return _TECTONIC_INCOMPAT_RE.sub(lambda m: "% " + m.group(0).strip() + "\n", tex)
 
 
-async def compile_tailored(
-    tex: str, job_id: str, jd: dict[str, Any] | None
-) -> Path | None:
+async def compile_tailored(tex: str, job_id: str, jd: dict[str, Any] | None) -> Path | None:
     """Write the tailored .tex and compile it with tectonic into a per-job PDF.
 
     Returns the PDF path, or None on any compile failure (caller falls back to
