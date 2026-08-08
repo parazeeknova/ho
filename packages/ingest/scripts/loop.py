@@ -41,6 +41,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # packages/inge
 sys.path.insert(
     0, str(Path(__file__).resolve().parent.parent.parent)
 )  # packages/ (autofill.*, ml.*)
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # scripts/ (ml_trainer)
 
 from dotenv import load_dotenv
 
@@ -385,6 +386,15 @@ async def main() -> None:
                 flush=True,
             )
             print(await _status_dashboard(db), flush=True)
+
+            # Periodic offline ML training: trains + registers the ranker and
+            # funnel classifiers once enough outcome signal has accumulated.
+            with contextlib.suppress(Exception):
+                from ml_trainer import run_maybe_train
+
+                train_note = await run_maybe_train(db)
+                if train_note and not train_note.startswith("skipped"):
+                    print(f"[loop] ml: {train_note}", flush=True)
 
             # Once the radar reached its target, we only wait for the autofill
             # queue to drain (open = pending/filling/awaiting_review) before
