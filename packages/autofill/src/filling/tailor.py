@@ -1,19 +1,21 @@
-"""Lightweight JD-tailored LaTeX resume generation for the autofill runner.
+"""JD-tailored LaTeX resume generation for the autofill runner.
 
 The base resume (``resume.tex`` at the repo root, or ``RESUME_TEX_PATH`` /
-``RESUME_TEX_URL``) is tailored per job with LIGHTWEIGHT edits only — no prose
-rewriting and nothing fabricated:
+``RESUME_TEX_URL``) is tailored per job with conservative edits:
 
 - JD keyword extraction (one LLM call) isolates the technologies/terms the
   posting cares about.
 - Deterministic reordering applies it: JD-matching skills lead each group and
   their groups lead the skills section; JD-relevant experience/project units
   move up and their bullets reorder so the strongest match leads.
+- A conservative LLM rewrite pass surfaces the JD keywords inside real
+  project/experience bullets — same facts, same numbers, same meaning, no
+  fabricated scope, never AI-slop phrasing.
 - Exact-phrase mirroring is limited to real resume items (e.g. JD says
   "React.js", resume says "React" -> "React.js"); no skill is ever added that
   the resume's Technical Skills section does not already contain.
 
-The reorder is applied to a parsed view of the template and the rest of the
+The edits are applied to a parsed view of the template and the rest of the
 file (preamble, comments, macros, achievements/education/certifications) is
 re-emitted verbatim, so the .tex always stays valid. The tailored document is
 compiled with ``tectonic`` into a per-job PDF under
@@ -195,6 +197,149 @@ async def _llm_extract_keywords(
         return []
 
 
+# System prompt for the conservative bullet rewriter. The bullets must keep
+# their exact facts/numbers/meaning; the rewrite may only surface JD-relevant
+# keywords the resume ALREADY claims, phrased naturally — never invent scope,
+# and never read like AI-generated copy.
+BULLET_REWRITE_SYSTEM_PROMPT = """\
+You are a careful resume editor. Rewrite the candidate's project/experience
+bullet points so the job description's keywords surface naturally. Rules:
+
+- PRESERVE EVERY FACT: numbers, percentages, latency, costs, user counts,
+  dates, company names, project names, and technologies must stay EXACTLY as
+  written (including LaTeX escapes like \\%, \\$, \\&, \\to).
+- Only weave in keywords from the provided list when they genuinely describe
+  the same technology the bullet already mentions (e.g. "pgvector" may become
+  "pgvector (PostgreSQL vector search)" — the underlying fact is unchanged).
+- Never claim a technology, metric, scale, or outcome that is not already in
+  the bullet. Never add leadership, team size, or responsibility the bullet
+  does not state.
+- Keep the same meaning, same length class (do not expand a 1-line bullet into
+  3 lines), and the same first-person active voice.
+- Write like a competent engineer, not a marketer. Ban: "passionate",
+  "excited", "seamless", "cutting-edge", "game-changer", "leverage", "utilize",
+  "elevate", "unlock", "foster", "harness", "synergy", "robust and scalable",
+  "in today's fast-paced world". Never use em dashes or exclamation points.
+- If a bullet needs no change, return it exactly as-is.
+
+Return valid JSON in this exact shape, one entry per bullet you received:
+{"rewrites": [{"original": "<original bullet verbatim>", "rewritten":
+"<rewritten bullet>"}]}. Copy the "original" text byte-for-byte from the list
+you were given. Do not include entries for bullets you did not receive. No
+preamble, no markdown fences, no extra fields.
+"""
+
+
+async def _rewrite_bullets(
+    base_tex: str,
+    keywords: list[str],
+    jd: dict[str, Any] | None,
+    cm: Any,
+) -> str:
+    """Conservatively rewrite ``\\resumeItem`` bullets to surface JD keywords.
+
+    One LLM call for all bullets in Experience/Projects. Returns the tex with
+    accepted rewrites applied; on any failure (LLM error, bad JSON, or a
+    rewrite that changed too much) the bullet is kept verbatim. Never touches
+    anything outside the bullet bodies.
+    """
+    if not keywords:
+        return base_tex
+    spans = _find_item_spans(base_tex)
+    if not spans:
+        return base_tex
+    bullets = [inner for _, _, inner in spans]
+    text = _jd_text(jd)
+    prompt = (
+        "Rewrite these resume bullet points so the job description's keywords "
+        "surface naturally, without inventing facts or changing meaning.\n"
+        f"Allowed keywords (only weave these in, and only where the bullet "
+        f"already implies them): {', '.join(keywords)}\n"
+        f"<job_description>\n{text or '(no description)'}\n</job_description>\n"
+        "Bullets (copy the original text EXACTLY, then your rewrite):\n"
+        + "\n".join(f"- {b}" for b in bullets)
+    )
+    # A {original, rewritten} pair list is more robust than a dict keyed by
+    # bullet text (long LaTeX-escaped keys get mangled by the model).
+    schema = {
+        "type": "object",
+        "properties": {
+            "rewrites": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "original": {"type": "string"},
+                        "rewritten": {"type": "string"},
+                    },
+                    "required": ["original", "rewritten"],
+                },
+            }
+        },
+        "required": ["rewrites"],
+    }
+    try:
+        raw = (
+            await cm.chat(
+                prompt,
+                schema=schema,
+                system_prompt=BULLET_REWRITE_SYSTEM_PROMPT,
+                max_tokens=3000,
+                interactive=True,
+            )
+        ).strip()
+        match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", raw, re.DOTALL)
+        if match:
+            raw = match.group(1).strip()
+        parsed = json.loads(raw)
+        pairs = parsed.get("rewrites") if isinstance(parsed, dict) else None
+        if not isinstance(pairs, list):
+            return base_tex
+        rewrites: dict[str, str] = {}
+        for pair in pairs:
+            original = str(pair.get("original") or "").strip()
+            rewritten = str(pair.get("rewritten") or "").strip()
+            if not original or not rewritten:
+                continue
+            if original not in bullets:
+                continue
+            # Conservative guard: reject rewrites that dropped the core facts.
+            if _keeps_facts(original, rewritten):
+                rewrites[original] = rewritten
+        if not rewrites:
+            return base_tex
+        return _apply_bullet_rewrites(base_tex, rewrites)
+    except Exception as e:
+        logger.warning("Bullet rewrite failed; keeping bullets verbatim", error=str(e))
+        return base_tex
+
+
+def _keeps_facts(original: str, rewritten: str) -> bool:
+    """True when the rewrite preserved the bullet's numeric facts.
+
+    A conservative gate against hallucinated rewrites: every number in the
+    original must survive, the rewrite must not pad beyond ~1.6x, and it must
+    never smuggle tex structure (nested item macros, unbalanced braces). Fact
+    and technology preservation is additionally enforced by the system prompt
+    that drives the rewrite.
+    """
+    # Never accept a rewrite that smuggles tex structure (a nested
+    # \resumeItem{, stray braces, or unbalanced backslash-macros) — the bullet
+    # body must stay plain text.
+    if "\\resumeItem" in rewritten or "\\item" in rewritten:
+        return False
+    if rewritten.count("{") != rewritten.count("}"):
+        return False
+    num_re = re.compile(r"\d+(?:\.\d+)?%?|\$[\d.]+|\d+(?:\.\d+)?\s*(?:ms|s|GB|MB|KB|FPS|hr|min)")
+    orig_tokens = set(num_re.findall(original.lower()))
+    new_tokens = set(num_re.findall(rewritten.lower()))
+    # All numeric facts in the original must still be present.
+    if not orig_tokens <= new_tokens:
+        return False
+    # A rewrite must not grow beyond ~1.6x the original (no padding).
+    return len(rewritten) <= int(len(original) * 1.6) + 20
+
+
 def _match_score(text: str, keywords: list[str]) -> int:
     """Count keyword occurrences in a piece of resume text (case-insensitive)."""
     low = text.lower()
@@ -226,6 +371,62 @@ def _mirror(item: str, keywords: list[str]) -> str:
     return out
 
 
+def _find_item_spans(body: str) -> list[tuple[int, int, str]]:
+    """Find every ``\\resumeItem{...}`` block in a body of tex.
+
+    Brace-matching handles bullets that wrap across lines or contain nested
+    braces. Returns ``(start, end, inner)`` for each item.
+    """
+    spans: list[tuple[int, int, str]] = []
+    idx = 0
+    while True:
+        m = re.search(r"\\resumeItem\s*\{", body[idx:])
+        if not m:
+            break
+        start_match = idx + m.start()
+        content_start = idx + m.end()
+        brace_count = 1
+        curr = content_start
+        while curr < len(body) and brace_count > 0:
+            if body[curr] == "{":
+                brace_count += 1
+            elif body[curr] == "}":
+                brace_count -= 1
+            curr += 1
+        if brace_count != 0:
+            break
+        end_match = curr
+        spans.append((start_match, end_match, body[content_start : end_match - 1]))
+        idx = end_match
+    return spans
+
+
+def _apply_bullet_rewrites(body: str, rewrites: dict[str, str]) -> str:
+    """Replace bullet text in-place per a {original: rewritten} map.
+
+    Only exact inner-text matches are replaced; every other byte is preserved
+    verbatim so the surrounding tex structure can never be damaged. Span
+    offsets are computed ONCE against the original body and applied by
+    rebuilding the string from slices (never mutating in place), so later
+    replacements can never land at stale offsets.
+    """
+    spans = _find_item_spans(body)
+    if not spans:
+        return body
+    pieces: list[str] = []
+    last = 0
+    for start, end, inner in spans:
+        pieces.append(body[last:start])
+        rewritten = rewrites.get(inner)
+        if rewritten and rewritten != inner:
+            pieces.append(f"\\resumeItem{{{rewritten}}}")
+        else:
+            pieces.append(body[start:end])
+        last = end
+    pieces.append(body[last:])
+    return "".join(pieces)
+
+
 def _parse_units(body: str) -> list[dict[str, Any]]:
     """Split an Experience/Projects section body into ordered units.
 
@@ -236,16 +437,16 @@ def _parse_units(body: str) -> list[dict[str, Any]]:
     starts = [m.start() for m in _UNIT_START_RE.finditer(body)]
     if not starts:
         return []
-    
+
     units: list[dict[str, Any]] = []
     for i in range(len(starts)):
         start_idx = starts[i]
         end_idx = starts[i+1] if i + 1 < len(starts) else len(body)
         unit_str = body[start_idx:end_idx]
-        
+
         chunks = []
         items = []
-        
+
         idx = 0
         while True:
             m = re.search(r"\\resumeItem\s*\{", unit_str[idx:])
@@ -253,13 +454,13 @@ def _parse_units(body: str) -> list[dict[str, Any]]:
                 if idx < len(unit_str):
                     chunks.append({"type": "static", "text": unit_str[idx:]})
                 break
-            
+
             start_match = idx + m.start()
             content_start = idx + m.end()
-            
+
             if start_match > idx:
                 chunks.append({"type": "static", "text": unit_str[idx:start_match]})
-            
+
             brace_count = 1
             curr = content_start
             while curr < len(unit_str) and brace_count > 0:
@@ -268,7 +469,7 @@ def _parse_units(body: str) -> list[dict[str, Any]]:
                 elif unit_str[curr] == '}':
                     brace_count -= 1
                 curr += 1
-            
+
             if brace_count == 0:
                 end_match = curr
                 raw = unit_str[start_match:end_match]
@@ -280,7 +481,7 @@ def _parse_units(body: str) -> list[dict[str, Any]]:
             else:
                 chunks.append({"type": "static", "text": unit_str[idx:]})
                 break
-        
+
         units.append({"chunks": chunks, "items": items})
     return units
 
@@ -505,6 +706,24 @@ def _cache_key(job_id: str, jd: dict[str, Any] | None) -> str:
     return f"{job_id}-{hashlib.sha1(_jd_text(jd).encode()).hexdigest()[:12]}"
 
 
+# Preamble directives that are pdfTeX-only. The base resume.tex targets
+# pdfTeX (DisableLigatures needs pdfTeX 1.30+; glyphtounicode defines
+# \pdfgentounicode, a pdfTeX primitive), but the tailorer compiles with
+# tectonic, whose bundled engine halts on them. These lines are cosmetic
+# (ligature/unicode metadata) — comment them out for the tectonic build so the
+# tailored resume actually compiles. The user's source resume.tex is untouched.
+_TECTONIC_INCOMPAT_RE = re.compile(
+    r"^[ \t]*\\(?:DisableLigatures|pdfgentounicode)[^\n]*\n?"
+    r"|^[ \t]*\\input\{glyphtounicode\}[^\n]*\n?",
+    re.MULTILINE,
+)
+
+
+def _tectonic_sanitize(tex: str) -> str:
+    """Comment out pdfTeX-only preamble lines so tectonic can compile the tex."""
+    return _TECTONIC_INCOMPAT_RE.sub(lambda m: "% " + m.group(0).strip() + "\n", tex)
+
+
 async def compile_tailored(
     tex: str, job_id: str, jd: dict[str, Any] | None
 ) -> Path | None:
@@ -520,7 +739,7 @@ async def compile_tailored(
     out_dir = _ARTIFACTS_ROOT / _safe_segment(job_id)
     out_dir.mkdir(parents=True, exist_ok=True)
     tex_path = out_dir / f"tailored_{_cache_key(job_id, jd)}.tex"
-    tex_path.write_text(tex)
+    tex_path.write_text(_tectonic_sanitize(tex))
     pdf_path = tex_path.with_suffix(".pdf")
     if pdf_path.exists():
         return pdf_path
@@ -564,7 +783,7 @@ async def tailor_resume_for_job(
     cm: Any,
     extractor: Callable[[dict[str, Any] | None, Any, list[str]], Any] = _llm_extract_keywords,
 ) -> str | None:
-    """Full pipeline: extract keywords, tailor, compile, cache.
+    """Full pipeline: extract keywords, tailor, rewrite bullets, compile, cache.
 
     Returns the tailored PDF path, or None when tailoring cannot/should not
     run (the caller then falls back to the static resume).
@@ -586,6 +805,11 @@ async def tailor_resume_for_job(
         return None
 
     tailored = tailor_tex(base_tex, keywords)
+    # Conservative LLM pass: surface the JD keywords inside real project/
+    # experience bullets without changing facts or meaning.
+    rewritten = await _rewrite_bullets(tailored, keywords, jd, cm)
+    if rewritten != tailored:
+        tailored = rewritten
     if tailored == base_tex:
         return None
     pdf = await compile_tailored(tailored, job_id, jd)
