@@ -799,21 +799,46 @@ def main() -> int:
                         except ValueError, ProcessLookupError:
                             pass
 
+        def _pk_alive() -> bool:
+            """True if any pipeline pattern process (outside our group) lives."""
+            patterns = (
+                "scripts/loop.py",
+                "radar.engine.orchestrator",
+                "autofill.src.core.worker",
+            )
+            own_pgid = _os.getpgid(_os.getpid())
+            for pat in patterns:
+                try:
+                    r = _sp.run(["pgrep", "-f", pat], capture_output=True, text=True, timeout=5)
+                    for pid in r.stdout.split():
+                        try:
+                            pid_i = int(pid)
+                            if pid_i == _os.getpid() or _os.getpgid(pid_i) == own_pgid:
+                                continue
+                            return True
+                        except ValueError, ProcessLookupError:
+                            pass
+                except Exception:
+                    pass
+            return False
+
         with contextlib.suppress(Exception):
             _os.kill(old_pid, _signal.SIGINT)
         _pk("INT")
-        # Grace period for graceful shutdown, then hard-kill survivors.
+        # Grace period for graceful shutdown. Watch old_pid AND the pattern
+        # matches: when run_all exits on SIGINT the loop would otherwise break
+        # immediately, stranding stuck children (a hung orchestrator ignores
+        # SIGINT) as orphans.
         for _ in range(20):
-            try:
+            with contextlib.suppress(ProcessLookupError):
                 _os.kill(old_pid, 0)
-            except ProcessLookupError:
+            if not _pk_alive():
                 break
             time.sleep(0.5)
-        else:
-            _pk("KILL")
-            with contextlib.suppress(Exception):
-                _os.kill(old_pid, _signal.SIGKILL)
-            time.sleep(1)
+        _pk("KILL")
+        with contextlib.suppress(Exception):
+            _os.kill(old_pid, _signal.SIGKILL)
+        time.sleep(1)
 
     if lock_path.exists():
         try:

@@ -79,7 +79,10 @@ class DorkingEngine:
         observations: list[JobObservation] = []
 
         client = await get_client("dorking", timeout=12.0)
-        for q in target_queries:
+        for qi, q in enumerate(target_queries, start=1):
+            # Heartbeat every query so the loop's hang-watchdog sees liveness
+            # during a long SearXNG run (it kills masters with no output).
+            logger.info(f"Dorking query {qi}/{len(target_queries)}: {q[:60]}")
             try:
                 resp = await client.get(
                     f"{self.searxng_url}/search",
