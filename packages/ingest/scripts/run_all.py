@@ -363,7 +363,13 @@ def _status_report() -> int:
     whether anything is currently running. No side effects: does not touch
     containers, the lock, or the embed server."""
     import asyncio as _asyncio
+    import os as _os
     from typing import Any
+
+    # Quiet the pipeline loggers (MemoryStore/AutofillDB emit INFO on open/close).
+    # Status is a clean snapshot by design, so INFO is suppressed regardless of
+    # any LOG_LEVEL in the caller's environment.
+    _os.environ["LOG_LEVEL"] = "WARNING"
 
     async def _pg_section() -> dict[str, Any]:
         from src.memory.pgvector_store import MemoryStore
@@ -512,8 +518,31 @@ def _status_report() -> int:
         finally:
             await store.close()
 
-    def _fmt(key: str, value: Any) -> str:
-        return f"  {key:<22} {value}"
+    def _table(title: str) -> Any:
+        from rich import box
+        from rich.table import Table
+
+        t = Table(
+            title=title,
+            title_style="bold",
+            header_style="dim",
+            box=box.SIMPLE,
+            show_header=False,
+            show_edge=False,
+            padding=(0, 2),
+            expand=False,
+            min_width=len(title) + 4,
+        )
+        t.add_column("key", style="dim", no_wrap=True)
+        t.add_column("value", style="bold")
+        return t
+
+    def _print_table(t: Any) -> None:
+        from rich.console import Console
+
+        console = Console()
+        console.print("")
+        console.print(t)
 
     async def _all() -> int:
         pg = await _pg_section()
@@ -528,37 +557,49 @@ def _status_report() -> int:
         status = f"RUNNING (pid {running})" if running else "not running"
         print(f"\n[ho] STATUS  ·  {time.strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"[ho] pipeline: {status}")
-        print("\n[ho] POSTGRES (agent-memory)")
+
+        t = _table("POSTGRES · agent-memory")
         for k, v in pg.items():
-            print(_fmt(k, v))
-        print("\n[ho] RADAR CANDIDATES by eligibility")
+            t.add_row(k, str(v))
+        _print_table(t)
+
+        t = _table("CANDIDATES · eligibility")
         for k, v in sorted(elig.items(), key=lambda kv: (-kv[1], kv[0])):
-            print(_fmt(k, v))
-        print("\n[ho] TOP SOURCES (radar_candidates)")
+            t.add_row(k, str(v))
+        _print_table(t)
+
+        t = _table("TOP SOURCES · radar_candidates")
         for src, n in top:
-            print(_fmt(src, n))
-        print("\n[ho] AUTOFILL QUEUE")
+            t.add_row(src, str(n))
+        _print_table(t)
+
+        t = _table("AUTOFILL QUEUE")
         for k, v in sorted(queue.items(), key=lambda kv: (-kv[1], kv[0])):
-            print(_fmt(k, v))
-        print("\n[ho] LEARNING EPOCHS")
+            t.add_row(k, str(v))
+        _print_table(t)
+
+        t = _table("LEARNING EPOCHS")
         if epoch["active"]:
             a = epoch["active"]
-            print(_fmt("active", f"{a['epoch_id']} started {a['started_at']}"))
-            print(
-                _fmt(
-                    "progress",
-                    f"{a['completed_submissions']}/{a['target_submissions']} submitted",
-                )
+            t.add_row("active", a["epoch_id"])
+            t.add_row(
+                "progress",
+                f"{a['completed_submissions']}/{a['target_submissions']} submitted",
             )
         else:
-            print(_fmt("active", "none"))
-        print(_fmt("total", epoch["total"]))
-        print(_fmt("completed", epoch["done"]))
-        print("\n[ho] RAG / MEMORY")
+            t.add_row("active", "none")
+        t.add_row("total", str(epoch["total"]))
+        t.add_row("completed", str(epoch["done"]))
+        _print_table(t)
+
+        t = _table("RAG / MEMORY")
         for k, v in rag.items():
-            print(_fmt(k, v))
-        print("\n[ho] GRAPH (neo4j)")
-        print(_fmt("counts", graph))
+            t.add_row(k, str(v))
+        _print_table(t)
+
+        t = _table("GRAPH · neo4j")
+        t.add_row("counts", graph)
+        _print_table(t)
         print(flush=True)
         return 0
 
