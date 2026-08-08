@@ -341,7 +341,11 @@ async def _process_history(store: Any, service: Any, history_id: str) -> None:
         from .events import DecisionEvent
         from .reward import reward_for
 
-        originating = await _latest_impression_for_job(store, job_id) or {}
+        # Use the email's send time as the reward timestamp so attribution
+        # prefers the impression that surfaced the job (closest in time before
+        # the outcome), not blindly the latest impression.
+        reward_ts = msg.get("internalDate")
+        originating = await _latest_impression_for_job(store, job_id, reward_ts=reward_ts) or {}
         event = DecisionEvent(
             job_id=job_id,
             event_type=kind,
@@ -368,15 +372,24 @@ async def _process_history(store: Any, service: Any, history_id: str) -> None:
         await emit_event(store, event)
 
 
-async def _latest_impression_for_job(store: Any, job_id: str) -> dict[str, Any] | None:
-    """The most recent job_ranked event for a job — the impression/decision
-    that originally surfaced it. Used to attach delayed email rewards to the
-    originating ranking decision (not a bare job_id).
+async def _latest_impression_for_job(
+    store: Any, job_id: str, reward_ts: Any = None
+) -> dict[str, Any] | None:
+    """The job_ranked impression that (most likely) caused the action on a job.
+
+    Used to attach delayed email rewards to the ORIGINATING ranking decision.
+
+    Attribution semantics (the review's P1 concern): when the same job appears
+    across several impressions (Monday rank 40, Wednesday rank 5, Friday rank 2
+    -> applied), the reward must credit the DECISION that generated the action,
+    not indiscriminately the latest impression. We prefer the impression
+    closest in time to (just before) the reward/application, falling back to
+    the latest when no timestamp is available.
 
     The reward carries the AUTOFILL job_id (job-xxxx) while the ranked event
     carries the RADAR canonical_id (a url hash). Bridge the two via the apply
     URL: autofill_queue.apply_link == radar_candidates.direct_apply_url == the
-    ranked event's job_id source. Falls back to a direct job_id match.
+    ranked event's meta url. Falls back to a direct job_id match.
     """
     try:
         async with store._pool.acquire() as conn:
@@ -390,9 +403,8 @@ async def _latest_impression_for_job(store: Any, job_id: str) -> dict[str, Any] 
                     apply_url = row["apply_link"]
             except Exception:
                 apply_url = None
-            # 2. Find the ranked event: by apply URL (canonical match, radar
-            #    candidate table, or the URL we now store in the event meta),
-            #    then by job_id.
+            # 2. All ranked events for this job (by URL bridge or job_id),
+            #    ordered oldest -> newest.
             query = """
                 SELECT impression_id, candidate_snapshot_id, job_snapshot_id,
                        model_version, policy, feature_version, source, created_at
@@ -405,27 +417,53 @@ async def _latest_impression_for_job(store: Any, job_id: str) -> dict[str, Any] 
                         WHERE direct_apply_url = $2 AND $2 IS NOT NULL)
                     OR meta->>'url' = $2 AND $2 IS NOT NULL
                   )
-                ORDER BY created_at DESC
-                LIMIT 1
+                ORDER BY created_at ASC
             """
-            row = await conn.fetchrow(query, job_id, apply_url)
-            if row:
-                return dict(row)
-            # 3. Fallback: any reward/outcome already on this job with an impression.
-            row = await conn.fetchrow(
-                """
-                SELECT impression_id, candidate_snapshot_id, job_snapshot_id,
-                       model_version, policy, feature_version, source, created_at
-                FROM decision_events
-                WHERE job_id = $1 AND impression_id IS NOT NULL
-                ORDER BY created_at DESC
-                LIMIT 1
-                """,
-                job_id,
-            )
-            return dict(row) if row else None
+            rows = await conn.fetch(query, job_id, apply_url)
+            if not rows:
+                # 3. Fallback: any reward/outcome already on this job with an impression.
+                row = await conn.fetchrow(
+                    """
+                    SELECT impression_id, candidate_snapshot_id, job_snapshot_id,
+                           model_version, policy, feature_version, source, created_at
+                    FROM decision_events
+                    WHERE job_id = $1 AND impression_id IS NOT NULL
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    job_id,
+                )
+                return dict(row) if row else None
+            # Prefer the impression closest to (before) the reward: that is the
+            # decision that surfaced the job the candidate acted on. This
+            # credits the ACTION to its causing impression, not the latest one.
+            if reward_ts is not None:
+                best = None
+                best_gap = None
+                for r in rows:
+                    ct = r.get("created_at")
+                    gap = abs(_ts_of(ct) - _ts_of(reward_ts)) if ct is not None else None
+                    if gap is None:
+                        continue
+                    if best_gap is None or gap < best_gap:
+                        best_gap = gap
+                        best = r
+                if best is not None:
+                    return dict(best)
+            return dict(rows[-1])
     except Exception:
         return None
+
+
+def _ts_of(v: Any) -> float:
+    if isinstance(v, (int, float)):
+        return float(v)
+    if hasattr(v, "timestamp"):
+        try:
+            return v.timestamp()
+        except Exception:
+            return 0.0
+    return 0.0
 
 
 def extract_role(subject: str) -> str | None:

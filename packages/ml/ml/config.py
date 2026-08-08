@@ -79,6 +79,13 @@ class TrainingConfig:
     min_positive_samples: int = field(
         default_factory=lambda: _env_int("ML_MIN_POSITIVE_SAMPLES", 20)
     )
+    # Outcome maturity window (P0 censoring fix): impressions younger than this
+    # many days are CENSORED — no outcome has had time to mature, so they are
+    # excluded from supervised label training instead of being labeled as
+    # negatives merely because no interview/offer has appeared yet.
+    label_maturity_days: float = field(
+        default_factory=lambda: _env_float("ML_LABEL_MATURITY_DAYS", 7.0)
+    )
 
 
 @dataclass

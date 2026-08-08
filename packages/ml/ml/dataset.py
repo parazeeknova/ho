@@ -50,6 +50,24 @@ _POSITIVE_REWARD_STAGES = {
     "job_clicked": 0.10,
 }
 
+# Ordinal relevance grades (the reviewer's P2 ask): LambdaMART learns ordering,
+# so give it an ordinal target rather than pretending the reward scale itself
+# is meaningful. 0 = no outcome, 1 = clicked, 2 = saved, 3 = applied,
+# 4 = screened, 5 = interviewed, 6 = offer. The classifier/EV layer owns the
+# actual probabilities and utilities.
+_ORDINAL_STAGE = {
+    "job_clicked": 1,
+    "job_saved": 2,
+    "job_applied": 3,
+    "application_submitted": 3,
+    "application_confirmed": 3,
+    "confirmation_email": 3,
+    "screening": 4,
+    "screening_email": 4,
+    "interview": 5,
+    "offer": 6,
+}
+
 
 def reward_to_relevance(reward: float | None) -> float:
     """Map a raw reward to a 0..1 LambdaMART relevance grade."""
@@ -62,6 +80,16 @@ def reward_to_relevance(reward: float | None) -> float:
     return min(1.0, reward / 100.0)
 
 
+def events_to_ordinal(events: list[dict[str, Any]]) -> int:
+    """Highest ordinal stage reached across a job's outcome events (0..6)."""
+    best = 0
+    for ev in events:
+        stage = _ORDINAL_STAGE.get(ev.get("event_type", ""))
+        if stage is not None and stage > best:
+            best = stage
+    return best
+
+
 @dataclass
 class RankedRow:
     """One job within an impression, ready for LambdaMART or classifier."""
@@ -72,6 +100,9 @@ class RankedRow:
     raw_features: dict[str, Any]
     # Ranking label (0..1 relevance)
     relevance: float
+    # Ordinal ranking label (0..6): 0 none, 1 clicked, 2 saved, 3 applied,
+    # 4 screened, 5 interviewed, 6 offer. LambdaMART learns ordering on this.
+    ordinal_relevance: int
     # Funnel-stage labels (1 if the outcome was at/above that stage)
     applied: int
     screening: int
@@ -79,6 +110,11 @@ class RankedRow:
     offer: int
     reward: float | None = None
     ts: float = 0.0
+    # Outcome censoring: True when the impression is younger than
+    # label_maturity_days, so no outcome has had time to mature. Censored rows
+    # must be EXCLUDED from supervised label training — labeling a 2-day-old
+    # application as a negative because no interview has appeared is bias.
+    censored: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -86,12 +122,14 @@ class RankedRow:
             "impression_id": self.impression_id,
             "features": self.features,
             "relevance": self.relevance,
+            "ordinal_relevance": self.ordinal_relevance,
             "applied": self.applied,
             "screening": self.screening,
             "interview": self.interview,
             "offer": self.offer,
             "reward": self.reward,
             "ts": self.ts,
+            "censored": self.censored,
         }
 
 
@@ -116,22 +154,26 @@ class Dataset:
         data["job_id"] = []
         data["impression_id"] = []
         data["relevance"] = []
+        data["ordinal_relevance"] = []
         data["applied"] = []
         data["screening"] = []
         data["interview"] = []
         data["offer"] = []
         data["ts"] = []
+        data["censored"] = []
         for r in self.rows:
             for i, fname in enumerate(NUMERIC_FEATURES):
                 data[fname].append(r.features[i] if i < len(r.features) else 0.0)
             data["job_id"].append(r.job_id)
             data["impression_id"].append(r.impression_id)
             data["relevance"].append(r.relevance)
+            data["ordinal_relevance"].append(r.ordinal_relevance)
             data["applied"].append(r.applied)
             data["screening"].append(r.screening)
             data["interview"].append(r.interview)
             data["offer"].append(r.offer)
             data["ts"].append(r.ts)
+            data["censored"].append(1 if r.censored else 0)
         table = pa.table(data)
         pq.write_table(table, path)
 
@@ -274,14 +316,22 @@ def _leakage_ok(features: dict[str, Any], decision_ts: float) -> bool:
 def build_dataset(
     impressions: list[dict[str, Any]],
     job_events: dict[str, list[dict[str, Any]]],
+    label_maturity_days: float = 0.0,
+    now: float | None = None,
 ) -> Dataset:
     """Assemble RankedRows from impression rows + per-job outcome events.
 
     - Groups are impressions (LambdaMART ranking unit).
     - relevance = max positive reward stage reached.
+    - ordinal_relevance = highest ordinal stage reached (0..6) — the LambdaMART
+      label, since LambdaMART learns ordering.
     - Funnel flags applied/screening/interview/offer for classifiers.
     - Feature vector via features_to_vector (stable NUMERIC_FEATURES order).
+    - Censoring: when label_maturity_days > 0, rows younger than that window
+      are marked censored (no outcome has had time to mature). Censored rows
+      must be excluded from supervised label training.
     """
+    now_ts = now if now is not None else time.time()
     ds = Dataset()
     for imp in impressions:
         job_id = imp.get("job_id") or ""
@@ -302,6 +352,8 @@ def build_dataset(
         events = job_events.get(job_id, [])
         applied, screening, interview, offer = _stage_flags(events)
         relevance = _max_relevance(events)
+        ordinal = events_to_ordinal(events)
+        censored = label_maturity_days > 0 and (now_ts - decision_ts) < label_maturity_days * 86400
         # Reward for the row = the outcome reward (for policy record), or the
         # original ranked row's reward if it had one (it won't).
         row = RankedRow(
@@ -310,12 +362,14 @@ def build_dataset(
             features=features_to_vector(raw_feats),
             raw_features=raw_feats,
             relevance=relevance,
+            ordinal_relevance=ordinal,
             applied=applied,
             screening=screening,
             interview=interview,
             offer=offer,
             reward=events[-1].get("reward") if events else None,
             ts=decision_ts,
+            censored=censored,
         )
         ds.rows.append(row)
     return ds
@@ -335,24 +389,79 @@ def temporal_split(
     train_frac: float = 0.7,
     val_frac: float = 0.15,
 ) -> tuple[list[RankedRow], list[RankedRow], list[RankedRow]]:
-    """Temporal (NOT random) train/val/test split by decision timestamp."""
-    ordered = sorted(rows, key=lambda r: r.ts)
-    n = len(ordered)
-    if n < 3:
-        return ordered, [], []
-    t1 = int(n * train_frac)
-    t2 = int(n * (train_frac + val_frac))
-    return ordered[:t1], ordered[t1:t2], ordered[t2:]
+    """Temporal (NOT random) train/val/test split, at the IMPRESSION level.
+
+    The split unit is the unique impression_id — an impression's entire group
+    of rows goes into exactly one split. Splitting individual rows would let
+    one impression leak across train and validation (rows of the same ranking
+    are not independent). Impressions are ordered by their earliest timestamp
+    and sliced into train/val/test, then expanded back into rows.
+    """
+    if not rows:
+        return [], [], []
+    # Group rows by impression_id, ordered by each impression's oldest ts.
+    by_imp: dict[str, list[RankedRow]] = {}
+    for r in rows:
+        by_imp.setdefault(r.impression_id, []).append(r)
+    ordered_imps = sorted(
+        by_imp.values(),
+        key=lambda grp: min(r.ts for r in grp),
+    )
+    n_imps = len(ordered_imps)
+    if n_imps < 3:
+        return list(rows), [], []
+    t1 = int(n_imps * train_frac)
+    t2 = int(n_imps * (train_frac + val_frac))
+    train_imps = ordered_imps[:t1]
+    val_imps = ordered_imps[t1:t2]
+    test_imps = ordered_imps[t2:]
+    out_train = [r for g in train_imps for r in g]
+    out_val = [r for g in val_imps for r in g]
+    out_test = [r for g in test_imps for r in g]
+    # Preserve each split's internal ordering by ts (stable, deterministic).
+    out_train.sort(key=lambda r: r.ts)
+    out_val.sort(key=lambda r: r.ts)
+    out_test.sort(key=lambda r: r.ts)
+    return out_train, out_val, out_test
 
 
 def lgbm_matrices(
     rows: list[RankedRow],
+    label: str = "ordinal",
 ) -> tuple[list[list[float]], list[float], list[int]]:
-    """X, y, group for LightGBM lambdarank from ranked rows."""
-    X = [r.features for r in rows]
-    y = [r.relevance for r in rows]
-    group = groups_for_lambdamart([r.impression_id for r in rows])
+    """X, y, group for LightGBM lambdarank from ranked rows.
+
+    Rows are FIRST physically sorted by (impression_id, created_at) so that
+    rows of the same impression are CONTIGUOUS — the group array LightGBM
+    receives must line up with the actual row order. Without this invariant a
+    future query change can silently interleave impressions (A1 B1 A2 B2) with
+    group=[2,2] and produce plausible-but-garbage metrics.
+
+    ``label`` selects the target: ``"ordinal"`` (0..6 grade, the reviewer's P2
+    recommendation — LambdaMART learns ordering, not a fake reward scale) or
+    ``"relevance"`` (0..1, backward compatible).
+    """
+    if not rows:
+        return [], [], []
+    ordered = sorted(rows, key=lambda r: (r.impression_id, r.ts))
+    X = [r.features for r in ordered]
+    if label == "relevance":
+        y = [r.relevance for r in ordered]
+    else:
+        y = [float(r.ordinal_relevance) for r in ordered]
+    group = groups_for_lambdamart([r.impression_id for r in ordered])
     return X, y, group
+
+
+def uncensored(rows: list[RankedRow]) -> list[RankedRow]:
+    """Drop rows whose outcome label is still censored (too young to mature).
+
+    Training labels for censored impressions are biased: a 2-day-old job with
+    only an application would be labeled "no interview" even though the
+    interview simply hasn't had time to arrive. Exclude them from supervised
+    label training; keep them only for impression-group bookkeeping.
+    """
+    return [r for r in rows if not r.censored]
 
 
 def classifier_matrices(rows: list[RankedRow], stage: str) -> tuple[list[list[float]], list[int]]:

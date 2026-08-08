@@ -64,6 +64,13 @@ class DecisionEvent:
     embedding_version: str = EMBEDDING_VERSION
     exploration: bool = False
     propensity: float | None = None  # P(action|context) for IPS/SNIPS (#4)
+    # Behavior-policy provenance (P1 fix): the behavior policy name and the
+    # probability the BEHAVIOR policy assigned to this action (μ). Kept
+    # separate from `propensity` (and from any evaluation π(a|x) computed
+    # later) so offline evaluation can compute its own π without overwriting
+    # the logged behavior propensity.
+    behavior_policy: str = ""
+    behavior_propensity: float | None = None
     action: str | None = None
     reward: float | None = None
     # Source attribution (#11)
@@ -96,12 +103,13 @@ async def _write_one(conn: Any, event: DecisionEvent) -> None:
             candidate_snapshot_id, job_snapshot_id,
             features, rank, policy, model_version, feature_version,
             prompt_version, embedding_version,
-            exploration, propensity, action, reward,
+            exploration, propensity, behavior_policy, behavior_propensity,
+            action, reward,
             source, query, primary_discovery_source, secondary_sources,
             meta, created_at
         ) VALUES (
-            $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
-            $18,$19,$20,$21,$22, NOW()
+            $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
+            $19,$20,$21,$22,$23, NOW()
         )
         """,
         event.job_id,
@@ -119,6 +127,8 @@ async def _write_one(conn: Any, event: DecisionEvent) -> None:
         event.embedding_version,
         event.exploration,
         event.propensity,
+        event.behavior_policy,
+        event.behavior_propensity,
         event.action,
         event.reward,
         event.source,

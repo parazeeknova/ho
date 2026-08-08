@@ -532,6 +532,8 @@ CREATE TABLE IF NOT EXISTS decision_events (
     embedding_version       TEXT DEFAULT '',
     exploration             BOOLEAN DEFAULT FALSE,
     propensity              REAL,
+    behavior_policy         TEXT DEFAULT '',
+    behavior_propensity     REAL,
     action                  TEXT,
     reward                  REAL,
     reward_raw              JSONB DEFAULT '{{}}'::jsonb,
@@ -547,6 +549,23 @@ CREATE INDEX IF NOT EXISTS idx_decision_events_impression ON decision_events(imp
 CREATE INDEX IF NOT EXISTS idx_decision_events_type ON decision_events(event_type, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_decision_events_reward ON decision_events(reward) WHERE reward IS NOT NULL;
 
+-- Migrations for existing deployments.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'decision_events' AND column_name = 'behavior_policy'
+    ) THEN
+        ALTER TABLE decision_events ADD COLUMN behavior_policy TEXT DEFAULT '';
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'decision_events' AND column_name = 'behavior_propensity'
+    ) THEN
+        ALTER TABLE decision_events ADD COLUMN behavior_propensity REAL;
+    END IF;
+END $$;
+
 CREATE TABLE IF NOT EXISTS model_registry (
     model_id        TEXT PRIMARY KEY,
     model_type      TEXT NOT NULL,
@@ -557,9 +576,29 @@ CREATE TABLE IF NOT EXISTS model_registry (
     dataset_hash    TEXT DEFAULT '',
     metrics         JSONB DEFAULT '{{}}'::jsonb,
     artifact_path   TEXT DEFAULT '',
-    status          TEXT DEFAULT 'active',
+    calibrator_artifact_path TEXT DEFAULT '',
+    status          TEXT DEFAULT 'candidate',
     created_at      TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
+
+-- Migrations for existing deployments.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'model_registry')
+      AND NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'model_registry' AND column_name = 'calibrator_artifact_path'
+      ) THEN
+        ALTER TABLE model_registry ADD COLUMN calibrator_artifact_path TEXT DEFAULT '';
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'model_registry')
+      AND EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'model_registry' AND column_name = 'status'
+      ) THEN
+        UPDATE model_registry SET status = 'candidate' WHERE status = 'active' AND metrics::text LIKE '%no_data%';
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS dataset_registry (
     dataset_hash TEXT PRIMARY KEY,

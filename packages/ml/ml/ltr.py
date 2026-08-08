@@ -21,6 +21,7 @@ from .dataset import (
     fetch_impressions,
     lgbm_matrices,
     temporal_split,
+    uncensored,
 )
 
 
@@ -74,12 +75,19 @@ def train_binary(X, y, feature_names):
     return lgb.train(params, ds, num_boost_round=200)
 
 
-def calibrate_binary(model, X, y):
+def calibrate_binary(model, X_calib, y_calib):
+    """Fit an isotonic calibrator on CALIBRATION data, never the training set.
+
+    Fitting on the training set makes calibrated probabilities look far more
+    trustworthy than they are (the model has already seen those samples). Use a
+    held-out validation/calibration split so the calibrator learns the
+    raw-score -> true-probability map on samples the model did not train on.
+    """
     from sklearn.isotonic import IsotonicRegression
 
-    scores = model.predict(X)
+    scores = model.predict(X_calib)
     iso = IsotonicRegression(out_of_bounds="clip")
-    iso.fit(scores, y)
+    iso.fit(scores, y_calib)
     return iso
 
 
@@ -96,12 +104,17 @@ async def train_ranker(
     if ds.is_empty():
         return {"model_type": "lgb_ranker", "version": version, "status": "no_data"}
 
-    # Temporal split: train on oldest, hold out newest for honest evaluation.
+    # Impression-level temporal split: train on oldest impressions, hold out
+    # newest for honest evaluation. Censored rows (younger than the maturity
+    # window) are excluded from supervised labels.
     train_rows, val_rows, _ = temporal_split(ds.rows, 0.7, val_fraction)
+    train_rows = uncensored(train_rows)
     if not train_rows:
         return {"model_type": "lgb_ranker", "version": version, "status": "no_data"}
 
-    X, y, group = lgbm_matrices(train_rows)
+    # P2: LambdaMART learns ORDERING, so train on the ordinal grade (0..6) not
+    # a pseudo-reward scale. This is what the reviewer recommended.
+    X, y, group = lgbm_matrices(train_rows, label="ordinal")
     if len(set(y)) < 2:
         return {
             "model_type": "lgb_ranker",
@@ -115,12 +128,12 @@ async def train_ranker(
         # Evaluate on held-out val impressions (nDCG) if any.
         metrics: dict[str, Any] = {"trained_on_rows": len(train_rows)}
         if val_rows:
-            Xv, yv, gv = lgbm_matrices(val_rows)
-            preds = model.predict(Xv)
-
-            # per-impression nDCG@10
-            scores = _grouped_ndcg(yv, preds, gv, 10)
-            metrics["val_ndcg@10"] = round(scores, 4)
+            Xv, yv, gv = lgbm_matrices(uncensored(val_rows), label="ordinal")
+            if yv:
+                preds = model.predict(Xv)
+                # per-impression nDCG@10
+                scores = _grouped_ndcg(yv, preds, gv, 10)
+                metrics["val_ndcg@10"] = round(scores, 4)
         return {
             "model_type": "lgb_ranker",
             "version": version,
@@ -147,7 +160,11 @@ async def train_classifiers(
     if ds.is_empty():
         return {"model_type": "clf", "version": version, "status": "no_data"}
 
+    # Impression-level temporal split, then drop censored (too-young-to-mature)
+    # rows from the SUPERVISED labels — labeling a fresh application as a
+    # negative because no interview has appeared yet is censoring bias.
     train_rows, val_rows, _ = temporal_split(ds.rows, 0.7, val_fraction)
+    train_rows = uncensored(train_rows)
     if not train_rows:
         return {"model_type": "clf", "version": version, "status": "no_data"}
 
@@ -161,20 +178,42 @@ async def train_classifiers(
             continue
         try:
             model = train_binary(X, y, list(NUMERIC_FEATURE_NAMES))
-            calibrator = calibrate_binary(model, X, y)
-            metrics: dict[str, Any] = {"trained_rows": len(train_rows), "positives": sum(y)}
+            # P0: calibrate on VALIDATION predictions, never the training set.
+            # The isotonic calibrator must learn raw-score -> probability on
+            # samples the classifier did not train on.
+            cal_rows = uncensored(val_rows)
+            calibrator = None
+            if cal_rows:
+                Xc, yc = classifier_matrices(cal_rows, stage)
+                if sum(yc) > 0 and sum(yc) < len(yc):
+                    calibrator = calibrate_binary(model, Xc, yc)
+            metrics: dict[str, Any] = {
+                "trained_rows": len(train_rows),
+                "positives": sum(y),
+                "calibrated_on_val": calibrator is not None,
+            }
             if val_rows:
-                Xv, yv = classifier_matrices(val_rows, stage)
+                Xv, yv = classifier_matrices(uncensored(val_rows), stage)
                 preds = model.predict(Xv)
-                cal_preds = calibrator.predict(preds)
                 import contextlib
 
                 from sklearn.metrics import log_loss, roc_auc_score
 
                 with contextlib.suppress(Exception):
                     metrics["val_auc"] = round(roc_auc_score(yv, preds), 4)
-                with contextlib.suppress(Exception):
-                    metrics["val_logloss"] = round(log_loss(yv, cal_preds), 4)
+                if calibrator is not None:
+                    cal_preds = calibrator.predict(preds)
+                    with contextlib.suppress(Exception):
+                        metrics["val_logloss"] = round(log_loss(yv, cal_preds), 4)
+                    # P2 calibration metrics on calibration-untouched val data.
+                    from .evaluation import brier_score, expected_calibration_error
+
+                    with contextlib.suppress(Exception):
+                        metrics["val_brier"] = round(brier_score(list(yv), list(cal_preds)), 4)
+                    with contextlib.suppress(Exception):
+                        metrics["val_ece"] = round(
+                            expected_calibration_error(list(yv), list(cal_preds)), 4
+                        )
             results[stage] = {
                 "status": "trained",
                 "model": model,
