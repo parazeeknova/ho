@@ -52,10 +52,19 @@ def _format_fields(fills: Any) -> str:
             return "  (no field-level fills recorded)"
     if not isinstance(fills, list):
         return "  (no field-level fills recorded)"
-    lines = []
+    # Multiple fill passes record the same question multiple times (often with
+    # different LLM drafts). Show the FINAL answer per question — the value
+    # that was actually on the form at submit — not every retry draft.
+    final: dict[str, dict[str, Any]] = {}
     for f in fills:
         if not isinstance(f, dict):
             continue
+        q = (f.get("question") or "").strip()
+        if not q:
+            continue
+        final[q] = f  # later records win (chronological order preserved)
+    lines = []
+    for f in final.values():
         q = (f.get("question") or "").strip()[:80]
         a = (f.get("answer") or "").strip()
         if not q:
