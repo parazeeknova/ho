@@ -58,9 +58,6 @@ _PROJECT_ROOT = _REPO_ROOT / "packages" / "ingest"
 # Node/TS runner package at the repo root's packages/node.
 _NODE_DIR = _REPO_ROOT / "packages" / "node"
 
-# Sentinel returned by ``readline`` to signal EOF without a real stream.
-_EOF = b""
-
 # Worker-side runner watchdog: if the Node runner produces no stdout for this
 # many seconds, it is dead or hung (its own activity watchdog died with it).
 # Kill and fail the job rather than block forever on a stale pipe.
@@ -1085,10 +1082,10 @@ class AutofillWorker:
             # Monitor stdout for status events and RPC requests
             while True:
                 try:
-                    line = await asyncio.wait_for(
-                        process.stdout.readline() if process.stdout else _EOF,
-                        timeout=_RUNNER_IDLE_TIMEOUT_S,
-                    )
+                    read_coro = process.stdout.readline() if process.stdout else None
+                    if read_coro is None:
+                        break
+                    line = await asyncio.wait_for(read_coro, timeout=_RUNNER_IDLE_TIMEOUT_S)
                 except TimeoutError:
                     # The runner produced nothing for _RUNNER_IDLE_TIMEOUT_S —
                     # it is dead or fully hung even though its stdout pipe is
