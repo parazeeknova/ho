@@ -9,7 +9,7 @@ packages/autofill/scripts). Tests live alongside the scripts in this dir.
 import sys
 from pathlib import Path
 
-_REPO = Path(__file__).resolve().parents[4]
+_REPO = Path(__file__).resolve().parents[3]  # packages/ingest/scripts -> repo root
 for _p in (
     _REPO,
     Path(__file__).resolve().parent.parent,
