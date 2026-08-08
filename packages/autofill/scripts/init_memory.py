@@ -329,4 +329,20 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        # Ctrl+C: confirm before quitting so an accidental press doesn't abort
+        # mid-setup, then exit cleanly (no traceback).
+        import sys as _sys
+
+        try:
+            ans = input("\n[ho] Quit init-memory? (y/N) ").strip().lower()
+        except KeyboardInterrupt, EOFError:
+            ans = "y"
+        if ans in ("y", "yes"):
+            print("[ho] Exiting. Memory unchanged unless a step already completed.", flush=True)
+        else:
+            print("[ho] Continuing setup...", flush=True)
+            asyncio.run(main())
+        _sys.exit(0)

@@ -571,4 +571,19 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        import sys as _sys
+
+        print("\n[ho] Quit persona wizard? (y/N) ", flush=True)
+        try:
+            ans = input().strip().lower()
+        except KeyboardInterrupt, EOFError:
+            ans = "y"
+        if ans in ("y", "yes"):
+            print("[ho] Exiting. No changes saved unless a question was answered.", flush=True)
+        else:
+            print("[ho] Continuing wizard...", flush=True)
+            main()
+        _sys.exit(0)

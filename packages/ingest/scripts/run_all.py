@@ -45,15 +45,15 @@ DOCKER_SERVICES = [
     "searxng",
     "neo4j",
     "agent-memory-db",
+    "redis",
 ]
 
-# Infra readiness probes (host, port). searxng/neo4j/agent-memory-db are the
-# only remaining compose services — Firecrawl (api/playwright/rabbitmq/redis/
-# nuq-postgres) is gone, and the embed server is started below.
+# Infra readiness probes (host, port).
 HOST_PROBES = {
     "searxng": (8080, 15),
     "neo4j": (7687, 15),
     "agent-memory-db": (5433, 20),
+    "redis": (6379, 15),
     "embed": (8900, 60),
 }
 
