@@ -1,4 +1,5 @@
 import { Stagehand } from "@browserbasehq/stagehand";
+import * as fs from "fs";
 
 import { type JobPayload } from "../types";
 import type { SubmitOutcome } from "./shared/audit";
@@ -19,6 +20,25 @@ export abstract class ATSAdapter {
    * Adapters populate this during their pre-submit readback.
    */
   filledValues: Record<string, string> = {};
+
+  /**
+   * Resolve the resume path to attach at the END of the fill (mirrors the
+   * cover-letter flow): asks the worker for the JD-tailored resume PDF, which
+   * is generated in the background while the form walk proceeds. Returns the
+   * path when a file exists on disk, else null (caller keeps whatever resume
+   * was already attached, or attaches none).
+   */
+  async resolveTailoredResume(rpc?: RpcHelper): Promise<string | null> {
+    if (!rpc) return null;
+    try {
+      const res = await rpc("tailored_resume", {});
+      const p = (res && (res.pdf_path as string | undefined)) || "";
+      if (p && fs.existsSync(p)) return p;
+      return null;
+    } catch {
+      return null;
+    }
+  }
 
   /**
    * Re-fill a single field (found by its label) with a corrected value and

@@ -531,6 +531,16 @@ export class LeverAdapter extends ATSAdapter {
       // gate auto-submit on an incomplete form.
       setBlankedRequiredCount(stillBlank.length);
 
+      // JD-tailored resume attaches at the END of the fill. In fully-deferred
+      // mode (profile.resumePath null) no resume was uploaded early, so attach
+      // the tailored PDF here; otherwise the base resume already attached stays.
+      if (!resumeAttached && profile.resumePath == null) {
+        const tailored = await this.resolveTailoredResume(rpc);
+        if (tailored) {
+          resumeAttached = await this.uploadResume(tailored);
+        }
+      }
+
       if (profile.resumePath && !resumeAttached && !(await this.controls.isResumeAttached())) {
         console.warn("[Lever] REVERIFY: resume is NOT attached after the final pass.");
       } else if (profile.resumePath) {

@@ -304,6 +304,15 @@ export class AshbyAdapter extends ATSAdapter {
       // the form; a few boards add a custom file-upload question — attach the
       // generated PDF there when present, else fill the text.
       await this.fillCoverLetter(rpc);
+      // JD-tailored resume attaches at the END of the fill (mirrors cover
+      // letter). Only when no base resume was uploaded early (fully-deferred
+      // mode) — otherwise the already-attached base resume stays.
+      if (!resumeAttached && profile.resumePath == null) {
+        const tailored = await this.resolveTailoredResume(rpc);
+        if (tailored) {
+          resumeAttached = await this.uploadResume(tailored);
+        }
+      }
 
       const finalDom = await this.collectQuestions();
       const requiredBlanks = await auditBlanks({

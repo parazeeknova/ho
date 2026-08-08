@@ -896,6 +896,16 @@ export class GreenhouseAdapter extends ATSAdapter {
         );
       }
 
+      // JD-tailored resume attaches at the END of the fill (mirrors cover
+      // letter). Only when no base resume was uploaded early (fully-deferred
+      // mode) — otherwise the already-attached base resume stays.
+      if (!resumeAttached && profile.resumePath == null) {
+        const tailored = await this.resolveTailoredResume(rpc);
+        if (tailored) {
+          resumeAttached = await this.uploadResume(page, tailored);
+        }
+      }
+
       // Definitive final sweep: rescan the ENTIRE form and fill ANY input still
       // empty (except identity fields + manual skips), iterating to convergence.
       const sweepPasses: string[] = [];
