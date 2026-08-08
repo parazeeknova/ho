@@ -713,17 +713,21 @@ class AutofillWorker:
         fields that were filled for it (the user's ask: single thread per
         sweep, not one mail per job). Uses the Gmail app password.
 
-        Returns True when an email was actually sent (callers use this to
-        advance their 'last emailed' watermark)."""
+        Only UNEMITALLED submissions are included (jobs already covered by a
+        previous summary are skipped), so a restarted worker's in-memory
+        watermark never re-sends the same batch. Returns True when an email
+        was actually sent (callers use this to advance their watermark)."""
         from autofill.src.outcomes.email_summary import send_sweep_summary
 
         try:
-            subs = await self.db.get_confirmed_submissions_since(since=since, epoch_id=epoch_id)
+            subs = await self.db.get_confirmed_submissions_since(
+                since=since, epoch_id=epoch_id, unemailed_only=True
+            )
         except Exception as e:
             logger.warning("sweep summary: failed to fetch submissions", error=str(e))
             return False
         if not subs:
-            logger.info("sweep summary: no confirmed submissions to report")
+            logger.info("sweep summary: no unemailed confirmed submissions to report")
             return False
         label = sweep_label or f"run-{_dt.datetime.now().strftime('%Y%m%d-%H%M')}"
         extra = ""
@@ -732,6 +736,11 @@ class AutofillWorker:
         ok = await send_sweep_summary(label, subs, epoch_id=epoch_id, extra=extra)
         if ok:
             logger.info("sweep email summary sent", sweep=label, count=len(subs))
+            # Persist the watermark: mark these submissions as emailed so a
+            # worker restart (in-memory watermark reset) or the shutdown path
+            # never re-sends them.
+            with contextlib.suppress(Exception):
+                await self.db.mark_summary_sent([s["job_id"] for s in subs])
         return ok
 
     @staticmethod

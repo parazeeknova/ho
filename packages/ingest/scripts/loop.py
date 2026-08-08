@@ -72,6 +72,40 @@ RADAR_ENV_OVERRIDES = {
 HANG_MINUTES = int(os.environ.get("LOOP_HANG_MINUTES", "6"))
 
 
+def _last_log_age(log_path: Path) -> float:
+    """Age in seconds of the last structured line written to a child's log.
+
+    Uses the JSON ``timestamp`` field of the last non-empty line rather than
+    the file's mtime — the stream thread keeps the file handle open and the
+    supervisor can otherwise touch mtime, making a stuck process look alive.
+    Falls back to mtime when the line is not parseable.
+    """
+    try:
+        if not log_path.exists():
+            return 0.0
+        last = ""
+        with open(log_path, errors="replace") as fh:
+            for line in fh:
+                if line.strip():
+                    last = line
+        if last:
+            import json as _json
+            from datetime import UTC, datetime
+
+            ts = _json.loads(last).get("timestamp")
+            if ts:
+                dt = datetime.fromisoformat(ts)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=UTC)
+                return (datetime.now(UTC) - dt).total_seconds()
+        return time.time() - log_path.stat().st_mtime
+    except Exception:
+        try:
+            return time.time() - log_path.stat().st_mtime
+        except OSError:
+            return 0.0
+
+
 def _base_env() -> dict[str, str]:
     env = os.environ.copy()
     env.setdefault("OVERNIGHT_LOOP", "true")
@@ -260,11 +294,7 @@ async def main() -> None:
                 # line for HANG_MINUTES while still running, kill and restart
                 # it so a stall never requires manual intervention.
                 if child.is_alive():
-                    child.log_path.touch(exist_ok=True)
-                    try:
-                        age = time.time() - child.log_path.stat().st_mtime
-                    except OSError:
-                        age = 0.0
+                    age = _last_log_age(child.log_path)
                     if age > HANG_MINUTES * 60 and child.name != "autofill.src.core.worker":
                         print(
                             f"[loop] {child.name} hung (no output {age:.0f}s); restarting",

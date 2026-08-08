@@ -919,13 +919,16 @@ class AutofillDB:
         return result
 
     async def get_confirmed_submissions_since(
-        self, since: Any = None, epoch_id: str | None = None
+        self, since: Any = None, epoch_id: str | None = None, unemailed_only: bool = False
     ) -> list[dict[str, Any]]:
         """Confirmed submissions (applied_at set) with their field-level fills.
 
         Used by the per-sweep summary email. When ``since`` is given only
         submissions applied after it are returned; when ``epoch_id`` is given
-        only submissions belonging to that learning epoch.
+        only submissions belonging to that learning epoch. ``unemailed_only``
+        excludes jobs already included in a previous summary email (prevents
+        a restarted worker's in-memory watermark from re-sending the same
+        submissions).
         """
         where = ["applied_at IS NOT NULL"]
         params: list[Any] = []
@@ -935,6 +938,8 @@ class AutofillDB:
         if epoch_id:
             params.append(epoch_id)
             where.append(f"epoch_id = ${len(params)}")
+        if unemailed_only:
+            where.append("COALESCE(summary_sent, FALSE) = FALSE")
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 f"""
