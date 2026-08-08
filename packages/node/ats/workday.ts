@@ -1019,7 +1019,7 @@ export class WorkdayAdapter extends ATSAdapter {
       .catch(() => []);
     const target = candidates.find(
       (c) =>
-        /cover letter|additional information|anything else you|more about you|tell us about yourself|anything you would like/i.test(
+        /cover letter/i.test(
           c.label,
         ) && !c.filled,
     );

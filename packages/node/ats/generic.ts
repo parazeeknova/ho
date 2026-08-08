@@ -1264,7 +1264,7 @@ export class GenericAdapter extends ATSAdapter {
         });
         const match = out.find(
           (c) =>
-            /cover letter|additional information|anything else you|more about you|tell us about yourself|anything you would like/i.test(
+            /cover letter/i.test(
               c.label,
             ) && !(areas[c.index] as HTMLTextAreaElement).value.trim(),
         );
