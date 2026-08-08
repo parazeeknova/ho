@@ -1203,31 +1203,33 @@ class DiscordAgent:
         deleted_msgs = 0
         deleted_threads = 0
 
-        # Threads (active + archived) whose parent is this channel.
+        # Threads (active + archived) whose parent is this channel. The thread
+        # sweep is best-effort and must NEVER abort the message purge below (a
+        # channel with no threads used to return early, leaving messages
+        # uncleared — "/clear" looked like it did nothing).
         ch = message.channel  # type: ignore[assignment]
-        if not isinstance(ch, discord.abc.GuildChannel):  # type: ignore[union-attr]
-            return
-        if not getattr(ch, "threads", None):  # type: ignore[attr-defined,union-attr]
-            return
-        for arch_fetch, _arch_getter in (  # noqa: B023  # type: ignore[attr-defined,union-attr]
-            (False, lambda: ch.threads),  # type: ignore[attr-defined]
-            (True, lambda: ch.threads),  # type: ignore[attr-defined]
-        ):
-            try:
-                threads = getattr(message.channel, "archived_threads", None)  # type: ignore[attr-defined]
-                if arch_fetch:
-                    if threads is None:
-                        continue
-                    thread_list = [th async for th in threads(limit=200)]  # type: ignore[operator]
-                else:
-                    # active threads is a sync property returning list[Thread]
-                    thread_list = list(getattr(message.channel, "threads", []))  # type: ignore[attr-defined]
-                for th in thread_list or []:
-                    with contextlib.suppress(Exception):
-                        await th.delete()  # type: ignore[operator]
-                        deleted_threads += 1
-            except Exception:
-                continue
+        if isinstance(ch, discord.abc.GuildChannel) and getattr(ch, "threads", None):  # type: ignore[union-attr,attr-defined]
+            for arch_fetch, _arch_getter in (  # noqa: B023  # type: ignore[attr-defined,union-attr]
+                (False, lambda: ch.threads),  # type: ignore[attr-defined]
+                (True, lambda: ch.threads),  # type: ignore[attr-defined]
+            ):
+                try:
+                    threads = getattr(  # type: ignore[attr-defined]
+                        message.channel, "archived_threads", None
+                    )
+                    if arch_fetch:
+                        if threads is None:
+                            continue
+                        thread_list = [th async for th in threads(limit=200)]  # type: ignore[operator]
+                    else:
+                        # active threads is a sync property returning list[Thread]
+                        thread_list = list(getattr(message.channel, "threads", []))  # type: ignore[attr-defined]
+                    for th in thread_list or []:
+                        with contextlib.suppress(Exception):
+                            await th.delete()  # type: ignore[operator]
+                            deleted_threads += 1
+                except Exception:
+                    continue
 
         # Messages (purge respects Discord's 14-day bulk-delete window).
         try:

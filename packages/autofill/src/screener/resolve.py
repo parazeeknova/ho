@@ -221,6 +221,26 @@ async def resolve_question(
         else:
             return (kb.strip(), "kb")
 
+    # Conditional free-text companion of a sourcing select ("If Other, please
+    # specify:", "If specified fill below"). The main select already answered
+    # the sourcing question; this box must stay blank unless the select truly
+    # chose Others — never mirror the selected source or let the LLM invent
+    # text. Deferring an OPTIONAL companion is wrong too: an optional one is
+    # left blank (skip), a required one still defers for the user.
+    ql = q.lower()
+    if (
+        "if" in ql
+        and ("if specified" in ql or ("other" in ql and "please specify" in ql))
+        or ql.strip() in ("others (please specify)", "other (please specify)")
+    ):
+        if required:
+            raise DeferredError(
+                question=q,
+                kind=kind,
+                options=list(options or []),
+            )
+        return ("", "decline")
+
     # Visa-sponsorship deterministic policy: when the persona has no
     # country-scoped answer, decide from the job/home country —
     #   unknown job country        -> Yes / H1-B
