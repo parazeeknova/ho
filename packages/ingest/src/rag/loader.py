@@ -258,6 +258,23 @@ async def index_resume_in_pgvector(
     chunks: dict[str, str],
     store,
 ) -> None:
+    import os
+
+    # Enrich the resume chunks with the candidate's portfolio site (PORTFOLIO_URL)
+    # when set. The portfolio carries richer project data (real stacks, revenue,
+    # detailed descriptions) than the resume PDF, which is what the matcher
+    # should ground on. Best-effort: a scrape failure never fails indexing.
+    portfolio_url = os.environ.get("PORTFOLIO_URL", "").strip()
+    if portfolio_url:
+        try:
+            from src.rag.github_linkedin_loader import scrape_portfolio
+
+            p_text = await scrape_portfolio(portfolio_url)
+            if p_text:
+                chunks = {**chunks, "portfolio": p_text}
+        except Exception:
+            pass
+
     cfg = get_config().embed
     embed_client = await get_client(
         "rag_embedder",

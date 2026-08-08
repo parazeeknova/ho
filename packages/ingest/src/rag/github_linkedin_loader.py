@@ -108,7 +108,13 @@ async def fetch_github_profile(username: str | None = None) -> str:
 
 
 async def scrape_portfolio(url: str) -> str:
-    """Scrape personal portfolio site to extract bio and projects (async)."""
+    """Scrape personal portfolio site to extract bio and projects (async).
+
+    Some portfolios are SPAs whose raw HTML is mostly nav/shell (e.g.
+    przknv.cc renders "raw/blogs/Toggle theme" first); the meaningful profile
+    content sits further down. We keep up to 6000 chars and skip nothing up
+    front so project bullets (stacks, revenue, descriptions) survive.
+    """
     try:
         client = await get_client("github_linkedin_loader", timeout=10.0)
         resp = await client.get(
@@ -121,7 +127,7 @@ async def scrape_portfolio(url: str) -> str:
                 el.decompose()
             clean_text = soup.get_text("\n", strip=True)
             if len(clean_text) > 100:
-                return clean_text[:4000]
+                return clean_text[:6000]
     except Exception as e:
         logger.warning(
             "Portfolio scrape failed",
