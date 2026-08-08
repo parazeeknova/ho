@@ -14,6 +14,7 @@ from src.llm.context import ContextManager
 from src.logging import get_logger
 from src.memory.pgvector_store import MemoryStore
 
+from autofill.evidence_graph import EvidenceGraph
 from autofill.profile import Profile
 
 logger = get_logger("autofill.rag")
@@ -1832,6 +1833,11 @@ class ScreenerRAG:
         self.cm = context_manager or ContextManager()
         self.profile = profile or Profile()
         self.store = store
+        # Candidate Evidence Graph (the review's personalization pivot): when a
+        # store is present, structured project/experience atoms are retrieved
+        # and matched to job requirements instead of relying on generic
+        # persona/resume prose alone.
+        self.evidence = EvidenceGraph()
         # Tier-0 deterministic index of learned answers. Injectable for tests;
         # when None it is loaded from persona.json.
         if exact_answers is not None:
@@ -3026,6 +3032,7 @@ class ScreenerRAG:
             "backend, Python, Node.js, and cloud systems."
         )
         context = await self._gather_context([s["question"] for s in unresolved])
+        evidence_atoms = await self._gather_evidence_for_job(job_context)
 
         prompt = f"""
 Candidate Background & Persona:
@@ -3036,6 +3043,12 @@ Candidate Email: {self.profile.email}
 Candidate LinkedIn: {self.profile.linkedin}
 Candidate GitHub: {self.profile.github}
 Candidate Home Country: {self.home_country() or "unknown"}
+"""
+        if evidence_atoms:
+            prompt += f"""
+Strongest matched candidate evidence for this job (use specific actions and
+measurable outcomes to answer open-ended questions concretely):
+{evidence_atoms}
 """
         if context:
             prompt += f"""
@@ -3124,15 +3137,43 @@ Questions:
 
         return answers
 
+    async def _gather_evidence_for_job(self, job_context: dict[str, Any] | None) -> str:
+        """Retrieve the STRONGEST candidate evidence atoms for this job.
+
+        The review's personalization pivot: instead of dumping generic resume
+        prose, match the job's requirements (title + description) to the
+        structured evidence atoms and return the top matches. The LLM then
+        writes a SPECIFIC connection (claim -> evidence -> requirement) rather
+        than "my experience with A, B, C aligns well".
+        """
+        if self.store is None:
+            return ""
+        req_text = ""
+        jd = job_context or {}
+        if jd.get("title"):
+            req_text += f" {jd['title']}"
+        if jd.get("description"):
+            req_text += f" {jd['description'][:2000]}"
+        if not req_text.strip():
+            return ""
+        try:
+            atoms = await self.evidence.retrieve_for_job(self.store, req_text, limit=6)
+        except Exception as e:
+            logger.warning("evidence retrieve failed", error=str(e))
+            return ""
+        return self.evidence.format_for_prompt(atoms, limit=4)
+
     async def generate_cover_letter(self, job_context: dict[str, Any] | None = None) -> str:
         """Generate a structured, fact-grounded cover letter.
 
         Grounds on the candidate persona, rich resume context (projects,
-        quantified achievements, skills), and the job description including the
-        company's "About us" text. Never invents facts not present in the
-        grounding. Returns the letter text, or "" when nothing grounds it.
+        quantified achievements, skills), matched EVIDENCE ATOMS (the review's
+        personalization pivot), and the job description. Never invents facts
+        not present in the grounding. Returns the letter text, or "" when
+        nothing grounds it.
         """
         resume_context = await self._gather_cover_letter_context()
+        evidence_atoms = await self._gather_evidence_for_job(job_context)
 
         jd = job_context or {}
         role = str(jd.get("title") or "the role").strip()
@@ -3158,7 +3199,16 @@ Website: {self.profile.website}
 Verified facts retrieved from the candidate's resume (use these directly, with
 their specific numbers and technologies):
 {resume_context}
-
+"""
+        if evidence_atoms:
+            prompt += f"""
+STRONGEST MATCHED EVIDENCE for THIS job (the review's personalization pivot):
+use these atoms to make the letter specific — connect each job requirement to
+the concrete project, action, and measurable outcome that proves it:
+{evidence_atoms}
+"""
+        if resume_context:
+            prompt += f"""
 STRICT SKILLS RULE — the complete whitelist of technologies the candidate may
 claim any experience with (from the resume's Technical Skills section):
 {skills}

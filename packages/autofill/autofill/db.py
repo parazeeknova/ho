@@ -171,6 +171,37 @@ CREATE TABLE IF NOT EXISTS site_health (
     cooldown_until  TIMESTAMPTZ,
     updated_at      TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Candidate Evidence Graph (the review's personalization pivot): structured
+-- atoms about the candidate's work — a project/experience, its problem,
+-- actions taken, technologies, architecture, scale, measurable outcomes,
+-- decisions, ownership, roles, industries, seniority signal. Each atom is
+-- keyword-indexed so job requirements can retrieve and rank the strongest
+-- evidence for THIS job. Learned Q&A answers become atoms over time.
+CREATE TABLE IF NOT EXISTS candidate_evidence (
+    atom_id             TEXT PRIMARY KEY,
+    kind                TEXT NOT NULL DEFAULT 'project',  -- project|experience|lesson|question
+    title               TEXT NOT NULL DEFAULT '',
+    problem             TEXT NOT NULL DEFAULT '',
+    actions             JSONB NOT NULL DEFAULT '[]'::jsonb,
+    technologies        JSONB NOT NULL DEFAULT '[]'::jsonb,
+    architecture        JSONB NOT NULL DEFAULT '[]'::jsonb,
+    scale               TEXT NOT NULL DEFAULT '',
+    measurable_outcomes JSONB NOT NULL DEFAULT '[]'::jsonb,
+    decisions           JSONB NOT NULL DEFAULT '[]'::jsonb,
+    failure             TEXT NOT NULL DEFAULT '',
+    lesson              TEXT NOT NULL DEFAULT '',
+    ownership           TEXT NOT NULL DEFAULT '',
+    evidence            TEXT NOT NULL DEFAULT '',
+    roles               JSONB NOT NULL DEFAULT '[]'::jsonb,
+    industries          JSONB NOT NULL DEFAULT '[]'::jsonb,
+    seniority_signal    TEXT NOT NULL DEFAULT '',
+    keywords            JSONB NOT NULL DEFAULT '[]'::jsonb,
+    source              TEXT NOT NULL DEFAULT 'resume',
+    created_at          TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_candidate_evidence_kind ON candidate_evidence(kind);
+CREATE INDEX IF NOT EXISTS idx_candidate_evidence_created ON candidate_evidence(created_at DESC);
 """
 
 
