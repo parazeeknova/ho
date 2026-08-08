@@ -218,7 +218,7 @@ class RenderConfig:
 class EmbedConfig:
     """Embedding server settings."""
 
-    url: str = field(default_factory=lambda: _env_str("EMBED_URL", "http://127.0.0.1:8899/v1"))
+    url: str = field(default_factory=lambda: _env_str("EMBED_URL", "http://127.0.0.1:8900/v1"))
     model: str = field(default_factory=lambda: _env_str("EMBED_MODEL", "Qwen/Qwen3-Embedding-0.6B"))
     timeout: float = field(default_factory=lambda: _env_float("EMBED_TIMEOUT", 4.0))
 

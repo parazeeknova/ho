@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Spawn local embedding llama-server process on :8899.
+"""Spawn local embedding llama-server process on :8900.
 
 Primary LLM completions are offloaded to GeneralCompute Cloud (gemma-4-31B-it).
 The embedding server runs locally on GPU/CPU for pgvector RAG semantic search.
@@ -39,7 +39,7 @@ def _signal_handler(signum: int, frame: object) -> None:
 signal.signal(signal.SIGINT, _signal_handler)
 signal.signal(signal.SIGTERM, _signal_handler)
 
-print(f"Starting Embedding server on :8899 ({EMBED_HF})...")
+print(f"Starting Embedding server on :8900 ({EMBED_HF})...")
 p_embed = subprocess.Popen(
     [
         "llama-server",
@@ -60,7 +60,7 @@ p_embed = subprocess.Popen(
 )
 procs.append(p_embed)
 
-print(f"Embed server PID: {p_embed.pid}  (:8899)\n")
+print(f"Embed server PID: {p_embed.pid}  (:8900)\n")
 
 for p in procs:
     p.wait()

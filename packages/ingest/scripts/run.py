@@ -154,12 +154,12 @@ def deep_stats() -> dict[str, Any]:
     # RabbitMQ is gone with Firecrawl; the ingest no longer uses a queue.
 
     # Embedding model info
-    if check_http("http://localhost:8899/health"):
+    if check_http("http://localhost:8900/health"):
         try:
             import json as _json
             import urllib.request
 
-            r = urllib.request.urlopen("http://localhost:8899/v1/models", timeout=5)
+            r = urllib.request.urlopen("http://localhost:8900/v1/models", timeout=5)
             data = _json.loads(r.read())
             # llama.cpp returns {"data": [...]} or {"models": [...]} depending on version
             models_list = data.get("data", data.get("models", []))
@@ -316,7 +316,7 @@ def main() -> None:
 
     # Define services
     services: list[tuple[str, Any, str]] = [
-        ("llama-server (Embed)", lambda: check_http("http://localhost:8899/health"), ":8899"),
+        ("llama-server (Embed)", lambda: check_http("http://localhost:8900/health"), ":8900"),
         ("searxng", lambda: check_http("http://localhost:8080"), ":8080"),
         ("neo4j", check_neo4j_ready, ":7687"),
         ("agent-memory-db", lambda: check_port("localhost", 5433), ":5433"),

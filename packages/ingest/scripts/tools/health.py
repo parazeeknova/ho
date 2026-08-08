@@ -133,7 +133,7 @@ except Exception as e:
 
 print()
 print("Infra")
-_register("llama-server Embeddings :8899", lambda: http_ok("http://localhost:8899/health"))
+_register("llama-server Embeddings :8900", lambda: http_ok("http://localhost:8900/health"))
 _register("searxng", lambda: container_running("ho_searxng_1"))
 _register("neo4j", lambda: container_running("ho_neo4j_1"))
 _register("agent-memory-db", lambda: container_running("ho_agent-memory-db_1"))

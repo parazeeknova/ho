@@ -5,7 +5,7 @@ Everything ho offers, from a single invocation:
 
   1. docker compose up the ingest stack (searxng, neo4j, agent-memory-db) and
      wait for health;
-  2. start the local embedding server (:8899);
+  2. start the local embedding server (:8900);
   3. if persona.json is missing, seed memory (resume + persona) non-interactively;
   4. run the end-to-end loop: radar pipeline (master + workers) discovers and
      LLM-matches jobs, the bridge drains accepted roles into the autofill
@@ -53,7 +53,7 @@ HOST_PROBES = {
     "searxng": (8080, 15),
     "neo4j": (7687, 15),
     "agent-memory-db": (5433, 20),
-    "embed": (8899, 60),
+    "embed": (8900, 60),
 }
 
 
@@ -84,7 +84,7 @@ async def _wait_for(name: str, timeout: float) -> bool:
     while time.monotonic() < deadline:
         if name == "searxng" and _http_ok("http://localhost:8080/"):
             return True
-        if name == "embed" and _http_ok("http://localhost:8899/health"):
+        if name == "embed" and _http_ok("http://localhost:8900/health"):
             return True
         probe = HOST_PROBES.get(name)
         if probe and _port_open("localhost", probe[0]):
@@ -140,7 +140,7 @@ async def _ensure_infra() -> bool:
     ok = True
     for name in ("agent-memory-db", "neo4j", "searxng", "embed"):
         # embed is started below; if already up, great.
-        if name == "embed" and not _http_ok("http://localhost:8899/health"):
+        if name == "embed" and not _http_ok("http://localhost:8900/health"):
             continue
         if not await _wait_for(name, HOST_PROBES.get(name, (0, 15))[1]):
             print(f"[run_all] WARNING: {name} not ready", flush=True)
@@ -153,7 +153,7 @@ async def _ensure_infra() -> bool:
 
 
 def _ensure_embed_server() -> None:
-    if _http_ok("http://localhost:8899/health"):
+    if _http_ok("http://localhost:8900/health"):
         print("[run_all] embedding server already up", flush=True)
         return
     print("[run_all] starting embedding server...", flush=True)
@@ -231,7 +231,10 @@ async def _run_loop(args: argparse.Namespace) -> int:
 
 
 def _handle_sig(signum: int, frame) -> None:  # noqa: ANN001
-    print(f"\n[run_all] signal {signum}; shutting down...", flush=True)
+    import contextlib
+
+    with contextlib.suppress(Exception):
+        print(f"\n[run_all] signal {signum}; shutting down...", flush=True)
     raise KeyboardInterrupt
 
 
@@ -259,7 +262,7 @@ def main() -> int:
         if not await _wait_for("embed", HOST_PROBES["embed"][1]):
             print("[run_all] embedding server not ready; continuing anyway", flush=True)
         else:
-            print("[run_all] embed server ✓ (:8899)", flush=True)
+            print("[run_all] embed server ✓ (:8900)", flush=True)
         _ensure_memory()
         _gmail_check()
         # One-line sweep intent so the user knows what this run will do

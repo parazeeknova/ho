@@ -19,7 +19,7 @@ class EmbedConfig:
     """Backward-compat wrapper matching the old api."""
 
     base_url: str = field(
-        default_factory=lambda: os.getenv("EMBED_URL", "http://127.0.0.1:8899/v1")
+        default_factory=lambda: os.getenv("EMBED_URL", "http://127.0.0.1:8900/v1")
     )
     model: str = field(
         default_factory=lambda: os.getenv("EMBED_MODEL", "Qwen/Qwen3-Embedding-0.6B")
