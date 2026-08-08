@@ -2693,6 +2693,7 @@ class ScreenerRAG:
         enrolled = bool(edu.get("enrolled"))
         start = str(edu.get("start_year") or "").strip()
         grad = str(edu.get("grad_year") or "").strip()
+        grad_month = str(edu.get("grad_month") or "").strip()
 
         # GoDaddy internship graduation timing: the anticipated-date select has
         # options like "My anticipated graduation date is within the same year as
@@ -2729,6 +2730,15 @@ class ScreenerRAG:
             r"when.*(graduate|finish)|graduat(ed|ing) (in|year)",
             q_lower,
         ):
+            # Graduation is Jan 2027 — return a month-aware date so the runner's
+            # date picker fills Jan, never Dec 31 (bare-year default).
+            if grad and grad_month:
+                try:
+                    mm = int(grad_month)
+                    if 1 <= mm <= 12:
+                        return f"{mm:02d}/{grad}"
+                except TypeError, ValueError:
+                    pass
             return grad or None
         if re.search(
             r"^start year$|^start.*(year|college|university)|year did you (start|begin)", q_lower

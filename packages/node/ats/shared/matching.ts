@@ -188,6 +188,14 @@ export function translateToDate(answer: string): Date | null {
     const yy = md[3].length === 2 ? 2000 + +md[3] : +md[3];
     return new Date(yy, +md[1] - 1, +md[2]);
   }
+  // "MM/YYYY" (e.g. "01/2027") — the month-aware graduation date we now
+  // emit for expected-graduation questions (Jan 2027, never Dec 31).
+  const my = a.match(/^(\d{1,2})[\/-](\d{4})$/);
+  if (my) {
+    const m = +my[1];
+    if (m >= 1 && m <= 12) return new Date(+my[2], m - 1, 1);
+    return null;
+  }
   // A bare year (e.g. "2027") — common for "Expected graduation year"
   // fields. Default to December 31 of that year.
   const yr = a.match(/^(19|20)\d{2}$/);
