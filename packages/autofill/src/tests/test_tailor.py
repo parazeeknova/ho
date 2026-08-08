@@ -123,17 +123,13 @@ def test_tailor_tex_unchanged_without_keywords() -> None:
 def test_tailor_tex_reorders_skills_group_order() -> None:
     # Backend & Cloud heavily emphasized -> its group should lead, and within
     # the group Node.js/PostgreSQL lead.
-    tailored = tailor_tex(
-        _BASE_TEX, ["Node.js", "PostgreSQL", "Redis", "AWS", "Rust", "Python"]
-    )
+    tailored = tailor_tex(_BASE_TEX, ["Node.js", "PostgreSQL", "Redis", "AWS", "Rust", "Python"])
     langs_idx = tailored.find("\\textbf{Languages}")
     backend_idx = tailored.find("\\textbf{Backend")
     frontend_idx = tailored.find("\\textbf{Frontend}")
     assert backend_idx < langs_idx < frontend_idx
     # Within backend group, Node.js and PostgreSQL appear before bun/other.
-    backend_line = next(
-        line for line in tailored.splitlines() if "\\textbf{Backend" in line
-    )
+    backend_line = next(line for line in tailored.splitlines() if "\\textbf{Backend" in line)
     assert backend_line.index("Node.js") < backend_line.index("Redis")
 
 
@@ -151,9 +147,7 @@ def test_tailor_tex_reorders_projects_by_relevance() -> None:
 
 
 def test_tailor_tex_reorders_bullets_within_unit() -> None:
-    tailored = tailor_tex(
-        _BASE_TEX, ["React.js", "dashboard", "500", "customers"]
-    )
+    tailored = tailor_tex(_BASE_TEX, ["React.js", "dashboard", "500", "customers"])
     # Within the Experience unit, the React dashboard bullet should lead.
     exp_unit = tailored[tailored.find("\\section{Experience}") :]
     first_item = exp_unit.find("\\resumeItem{Built payment APIs")
@@ -222,9 +216,7 @@ def test_parse_units() -> None:
     assert any(u["items"] for u in units)
 
 
-def test_tex_source_uses_repo_root_default(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_tex_source_uses_repo_root_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     tex = tmp_path / "resume.tex"
     tex.write_text(_BASE_TEX)
     monkeypatch.setattr(tailor_mod, "_DEFAULT_TEX_PATH", tex)
@@ -233,9 +225,7 @@ def test_tex_source_uses_repo_root_default(
     assert tailor_mod._tex_source() == tex
 
 
-def test_tex_source_uses_env_path(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_tex_source_uses_env_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     tex = tmp_path / "custom.tex"
     tex.write_text(_BASE_TEX)
     monkeypatch.setenv("RESUME_TEX_PATH", str(tex))
@@ -243,9 +233,7 @@ def test_tex_source_uses_env_path(
 
 
 @pytest.mark.asyncio
-async def test_tex_source_downloads_url(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_tex_source_downloads_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import urllib.request
 
     monkeypatch.setenv("RESUME_TEX_URL", "https://example.com/resume.tex")
@@ -268,9 +256,7 @@ async def test_tex_source_downloads_url(
     assert result.read_text() == "\\section{X}"
 
 
-def test_tex_source_url_download_cached(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_tex_source_url_download_cached(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import urllib.request
 
     monkeypatch.setenv("RESUME_TEX_URL", "https://example.com/resume.tex")
@@ -326,6 +312,9 @@ async def test_tailor_resume_for_job_returns_none_when_disabled(
 async def test_tailor_resume_for_job_compiles_and_caches(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Isolate from the developer's .env: this test asserts the FULL pipeline
+    # compiles, so tailoring must be force-enabled regardless of TAILOR_RESUME.
+    monkeypatch.setenv("TAILOR_RESUME", "1")
     _write_base(tmp_path, monkeypatch)
     monkeypatch.setattr(tailor_mod.shutil, "which", lambda _: "/usr/bin/tectonic")
     monkeypatch.setattr(tailor_mod, "_ARTIFACTS_ROOT", tmp_path / "artifacts")
@@ -334,7 +323,7 @@ async def test_tailor_resume_for_job_compiles_and_caches(
         return ["React.js", "Node.js", "PostgreSQL"]
 
     cm = AsyncMock()
-    cm.chat = AsyncMock(return_value="[\"React.js\", \"Node.js\", \"PostgreSQL\"]")
+    cm.chat = AsyncMock(return_value='["React.js", "Node.js", "PostgreSQL"]')
 
     # Stub the actual tectonic subprocess so the test never invokes a compiler;
     # the fake proc writes a PDF next to the .tex that tectonic would produce.
@@ -379,9 +368,7 @@ def test_apply_bullet_rewrites_replaces_exact_matches_only() -> None:
 
 def test_keeps_facts_rejects_dropped_numbers() -> None:
     # Dropping "$1.22" is a dropped fact -> rejected.
-    assert not _keeps_facts(
-        "Cut latency by 40\\% and $1.22 per meeting", "Cut latency by 40\\%"
-    )
+    assert not _keeps_facts("Cut latency by 40\\% and $1.22 per meeting", "Cut latency by 40\\%")
     assert not _keeps_facts("Cut latency by 40\\%", "Cut latency by 99\\%")
     assert not _keeps_facts("1.22 per meeting", "something else entirely")
     # Same facts, keyword woven in -> accepted.
@@ -397,8 +384,7 @@ async def test_rewrite_bullets_applies_llm_rewrites() -> None:
     cm = AsyncMock()
     original = "Built a four-tier contradiction detection pipeline with pgvector retrieval"
     rewritten = (
-        "Built a four-tier contradiction detection pipeline "
-        "with PostgreSQL pgvector retrieval"
+        "Built a four-tier contradiction detection pipeline with PostgreSQL pgvector retrieval"
     )
     payload = {"rewrites": [{"original": original, "rewritten": rewritten}]}
     cm.chat = AsyncMock(return_value=json.dumps(payload))
@@ -429,10 +415,14 @@ async def test_rewrite_bullets_ignores_unknown_or_fact_dropping_rewrites() -> No
         return_value=json.dumps(
             {
                 "rewrites": [
-                    {"original": "Built X with 40\\% gain",
-                        "rewritten": "Built X with 40\\% gain and PostgreSQL"},
-                    {"original": "Built Y with 10\\% gain",
-                        "rewritten": "Built Y completely differently"},
+                    {
+                        "original": "Built X with 40\\% gain",
+                        "rewritten": "Built X with 40\\% gain and PostgreSQL",
+                    },
+                    {
+                        "original": "Built Y with 10\\% gain",
+                        "rewritten": "Built Y completely differently",
+                    },
                     {"original": "NOT_A_BULLET", "rewritten": "hacked"},
                 ]
             }
