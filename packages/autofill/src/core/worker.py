@@ -1918,14 +1918,14 @@ class AutofillWorker:
     def _format_pending(entry: dict[str, Any]) -> str:
         q = AutofillWorker._clean_question(str(entry.get("question") or "?"))
         options = entry.get("options") or []
-        if options:
-            shown = ", ".join(str(o) for o in options[:3])
-            if len(options) > 3:
-                shown += f", +{len(options) - 3} more"
-            hint = f"  [{shown}]"
-        else:
-            hint = ""
-        return f"• {q}{hint}"
+        if not options:
+            return f"• {q}"
+        # School autocomplete dictionaries (Greenhouse school--0) can be 20+ entries — the
+        # full list is noise; the question itself is the signal. Cap at 3 with +N.
+        shown = ", ".join(str(o) for o in options[:3])
+        if len(options) > 3:
+            shown += f", +{len(options) - 3} more"
+        return f"• {q}  [{shown}]"
 
     @staticmethod
     def _clean_question(question: str) -> str:
