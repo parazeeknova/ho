@@ -44,6 +44,19 @@ from src.memory.pgvector_store import MemoryStore  # noqa: E402
 
 logger = get_logger("init_memory")
 
+# Sentinel returned by _input() when the user interrupts / closes stdin
+# (Ctrl+C / Ctrl+D) — callers can treat it as "user aborted, quit cleanly".
+_INPUT_ABORT = object()
+
+
+def _input(prompt: str = "") -> str:
+    """input() that converts Ctrl+C/Ctrl+D into the _INPUT_ABORT sentinel so
+    an interactive prompt can never crash init-memory with a traceback."""
+    try:
+        return input(prompt)
+    except EOFError, KeyboardInterrupt:
+        raise SystemExit(_INPUT_ABORT) from None
+
 
 def _embed_health_url() -> str:
     return get_config().embed.url.rsplit("/v1", 1)[0] + "/health"
@@ -75,7 +88,7 @@ async def ensure_embed_server(auto_start: bool) -> bool:
         ux.bullet("Start it with `uv run python scripts/serve.py` and re-run init_memory.")
         return False
     ux.bullet("Start it now via scripts/serve.py? [Y/n]", style="white")
-    answer = input("").strip().lower()
+    answer = _input("").strip().lower()
     if answer not in ("", "y", "yes"):
         return False
     log = Path("/tmp/opencode") if Path("/tmp/opencode").exists() else Path("/tmp")
@@ -268,7 +281,7 @@ async def main() -> None:
                 + ". Run the interactive grill to answer them? [Y/n]",
                 style="white",
             )
-            answer = input("").strip().lower()
+            answer = _input("").strip().lower()
             if answer in ("", "y", "yes"):
                 await run_script("grill_persona.py")
             else:
@@ -282,7 +295,7 @@ async def main() -> None:
                 "[Y] rebuild memory / [G] build a new one (wizard) / [N] skip",
                 style="white",
             )
-            answer = input("").strip().lower()
+            answer = _input("").strip().lower()
             if answer in ("g", "grill", "new", "fresh"):
                 ux.chip("info", "Launching interactive wizard to build a new persona...")
                 await run_script("grill_persona.py")
@@ -331,14 +344,33 @@ async def main() -> None:
 if __name__ == "__main__":
     try:
         asyncio.run(main())
+    except SystemExit as _se:
+        if getattr(_se, "code", None) is _INPUT_ABORT:
+            # Ctrl+C / Ctrl+D at a prompt: confirm before quitting.
+            import sys as _sys
+
+            try:
+                ans = _input("\n[ho] Quit init-memory? (y/N) ").strip().lower()
+            except SystemExit:
+                ans = "y"
+            if ans in ("y", "yes"):
+                print(
+                    "[ho] Exiting. Memory unchanged unless a step already completed.",
+                    flush=True,
+                )
+            else:
+                print("[ho] Continuing setup...", flush=True)
+                asyncio.run(main())
+            _sys.exit(0)
+        raise
     except KeyboardInterrupt:
         # Ctrl+C: confirm before quitting so an accidental press doesn't abort
         # mid-setup, then exit cleanly (no traceback).
         import sys as _sys
 
         try:
-            ans = input("\n[ho] Quit init-memory? (y/N) ").strip().lower()
-        except KeyboardInterrupt, EOFError:
+            ans = _input("\n[ho] Quit init-memory? (y/N) ").strip().lower()
+        except SystemExit:
             ans = "y"
         if ans in ("y", "yes"):
             print("[ho] Exiting. Memory unchanged unless a step already completed.", flush=True)
