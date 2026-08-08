@@ -42,9 +42,34 @@ def print_summary(summary: dict[str, int]) -> None:
 
 
 async def drain_once(db: AutofillDB, limit: int) -> int:
-    """Enqueue accepted radar candidates not already known to the queue."""
+    """Enqueue accepted radar candidates not already known to the queue.
+
+    Idempotent per link. Also honors a per-company application cap: once a
+    company already has ``AUTOFILL_MAX_PER_COMPANY`` (default 3) submitted or
+    in-flight applications, further accepted candidates from that company are
+    NOT enqueued — applying to a dozen roles at one company looks spammy to
+    the recruiter and trips the ATS's one-application-per-candidate filter.
+    """
     async with db._pool.acquire() as conn:
         rows = await conn.fetch(DRAIN_QUERY, limit)
+    import os as _os
+
+    max_per_company = int(_os.environ.get("AUTOFILL_MAX_PER_COMPANY", "3"))
+    # Count of submitted/in-flight (non-terminal) jobs per company — the number
+    # of applications that would be (or already are) live at that company.
+    active_per_company: dict[str, int] = {}
+    async with db._pool.acquire() as conn:
+        actives = await conn.fetch(
+            """
+            SELECT company, COUNT(*) AS n
+            FROM autofill_queue
+            WHERE status IN ('pending', 'filling', 'awaiting_review', 'submitted')
+              AND company IS NOT NULL
+            GROUP BY company
+            """
+        )
+        for r in actives:
+            active_per_company[str(r["company"] or "").strip().lower()] = r["n"]
     enqueued = 0
     for r in rows:
         url = r["direct_apply_url"]
@@ -52,14 +77,25 @@ async def drain_once(db: AutofillDB, limit: int) -> int:
             continue
         if await db.link_known(url):
             continue
+        company = str(r["normalized_company"] or "").strip()
+        if company and active_per_company.get(company.lower(), 0) >= max_per_company:
+            logger.info(
+                "Skipping enqueue: company at application cap",
+                company=company,
+                active=active_per_company.get(company.lower()),
+                cap=max_per_company,
+            )
+            continue
         await db.enqueue_job(
             apply_link=url,
             role=r["normalized_role"] or None,
-            company=r["normalized_company"] or None,
+            company=company or None,
             apply_mode="auto",
             source="radar",
         )
         enqueued += 1
+        if company:
+            active_per_company[company.lower()] = active_per_company.get(company.lower(), 0) + 1
     if enqueued:
         logger.info("Drained accepted candidates into autofill queue", count=enqueued)
     return enqueued
