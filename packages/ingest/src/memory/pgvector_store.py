@@ -449,6 +449,199 @@ CREATE TABLE IF NOT EXISTS evidence (
 );
 CREATE INDEX IF NOT EXISTS idx_evidence_company_observed
     ON evidence (company_id, observed_at DESC);
+
+-- Application-outcome telemetry: every autofill run's terminal state tagged
+-- back to the decisions that produced it (render path, proxy used, corrections).
+-- This is the feedback signal for the learned per-board routing table.
+CREATE TABLE IF NOT EXISTS application_outcomes (
+    id             BIGSERIAL PRIMARY KEY,
+    job_id         TEXT NOT NULL,
+    board          TEXT DEFAULT '',
+    company        TEXT DEFAULT '',
+    role           TEXT DEFAULT '',
+    outcome        TEXT NOT NULL,
+    ats_platform   TEXT DEFAULT '',
+    render_path    TEXT DEFAULT '',
+    proxy_used     BOOLEAN DEFAULT FALSE,
+    corrections    JSONB DEFAULT '[]'::jsonb,
+    email_kind     TEXT DEFAULT '',
+    error          TEXT DEFAULT '',
+    created_at     TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_app_outcomes_board
+    ON application_outcomes (board, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_app_outcomes_outcome
+    ON application_outcomes (outcome, created_at DESC);
+
+-- Per-board routing stats: cumulative counters a bandit-style router uses to
+-- decide preemptively whether a board needs the proxy / the browser / a
+-- retry. Seeded by the hardcoded _FORCED_PROXY_HOSTS set; refined by real runs.
+CREATE TABLE IF NOT EXISTS board_routing_stats (
+    board                 TEXT PRIMARY KEY,
+    renders               INT DEFAULT 0,
+    render_ok             INT DEFAULT 0,
+    render_fail           INT DEFAULT 0,
+    blocks                INT DEFAULT 0,
+    corrections           INT DEFAULT 0,
+    submissions           INT DEFAULT 0,
+    submissions_ok        INT DEFAULT 0,
+    avg_settle_ms         REAL DEFAULT 0,
+    last_seen             TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    proxy_recommended     BOOLEAN DEFAULT FALSE
+);
+
+-- Unified event stream for the learning system (Phase 0). Every ranking
+-- decision is an impression (group of jobs); downstream outcomes are reward
+-- events linked by job_id + impression_id. Fixes selection bias by
+-- distinguishing never-seen / seen-not-selected / selected-ignored / applied.
+CREATE TABLE IF NOT EXISTS impressions (
+    impression_id   TEXT PRIMARY KEY,
+    policy          TEXT DEFAULT '',
+    model_version   TEXT DEFAULT '',
+    feature_version TEXT DEFAULT '',
+    group_size      INT DEFAULT 0,
+    created_at      TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS candidate_snapshots (
+    snapshot_id TEXT PRIMARY KEY,
+    payload     JSONB NOT NULL,
+    created_at  TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS job_snapshots (
+    snapshot_id TEXT PRIMARY KEY,
+    payload     JSONB NOT NULL,
+    created_at  TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS decision_events (
+    event_id                BIGSERIAL PRIMARY KEY,
+    job_id                  TEXT NOT NULL,
+    event_type              TEXT NOT NULL,
+    impression_id           TEXT,
+    candidate_id            TEXT,
+    candidate_snapshot_id   TEXT,
+    job_snapshot_id         TEXT,
+    features                JSONB DEFAULT '{{}}'::jsonb,
+    rank                    INT,
+    policy                  TEXT DEFAULT '',
+    model_version           TEXT DEFAULT '',
+    feature_version         TEXT DEFAULT '',
+    prompt_version          TEXT DEFAULT '',
+    embedding_version       TEXT DEFAULT '',
+    exploration             BOOLEAN DEFAULT FALSE,
+    propensity              REAL,
+    behavior_policy         TEXT DEFAULT '',
+    behavior_propensity     REAL,
+    action                  TEXT,
+    reward                  REAL,
+    reward_raw              JSONB DEFAULT '{{}}'::jsonb,
+    source                  TEXT DEFAULT '',
+    query                   TEXT DEFAULT '',
+    primary_discovery_source TEXT DEFAULT '',
+    secondary_sources       JSONB DEFAULT '[]'::jsonb,
+    meta                    JSONB DEFAULT '{{}}'::jsonb,
+    created_at              TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_decision_events_job ON decision_events(job_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_decision_events_impression ON decision_events(impression_id);
+CREATE INDEX IF NOT EXISTS idx_decision_events_type ON decision_events(event_type, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_decision_events_reward ON decision_events(reward) WHERE reward IS NOT NULL;
+
+-- Migrations for existing deployments.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'decision_events' AND column_name = 'behavior_policy'
+    ) THEN
+        ALTER TABLE decision_events ADD COLUMN behavior_policy TEXT DEFAULT '';
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'decision_events' AND column_name = 'behavior_propensity'
+    ) THEN
+        ALTER TABLE decision_events ADD COLUMN behavior_propensity REAL;
+    END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS model_registry (
+    model_id        TEXT PRIMARY KEY,
+    model_type      TEXT NOT NULL,
+    version         TEXT NOT NULL,
+    feature_version TEXT DEFAULT '',
+    training_start  TEXT DEFAULT '',
+    training_end    TEXT DEFAULT '',
+    dataset_hash    TEXT DEFAULT '',
+    metrics         JSONB DEFAULT '{{}}'::jsonb,
+    artifact_path   TEXT DEFAULT '',
+    calibrator_artifact_path TEXT DEFAULT '',
+    status          TEXT DEFAULT 'candidate',
+    created_at      TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Migrations for existing deployments.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'model_registry')
+      AND NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'model_registry' AND column_name = 'calibrator_artifact_path'
+      ) THEN
+        ALTER TABLE model_registry ADD COLUMN calibrator_artifact_path TEXT DEFAULT '';
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'model_registry')
+      AND EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'model_registry' AND column_name = 'status'
+      ) THEN
+        UPDATE model_registry SET status = 'candidate' WHERE status = 'active' AND metrics::text LIKE '%no_data%';
+    END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS dataset_registry (
+    dataset_hash TEXT PRIMARY KEY,
+    rows         INT DEFAULT 0,
+    window_start TEXT DEFAULT '',
+    window_end   TEXT DEFAULT '',
+    artifact_path TEXT DEFAULT '',
+    created_at   TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS gmail_push_state (
+    id              INT PRIMARY KEY,
+    history_id      TEXT DEFAULT '',
+    watch_expiry    TEXT DEFAULT '',
+    updated_at      TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS unattributed_outcomes (
+    id          BIGSERIAL PRIMARY KEY,
+    email_kind  TEXT DEFAULT '',
+    company     TEXT DEFAULT '',
+    role        TEXT DEFAULT '',
+    subject     TEXT DEFAULT '',
+    snippet     TEXT DEFAULT '',
+    confidence  REAL DEFAULT 0,
+    created_at  TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_unattributed_company ON unattributed_outcomes(company, created_at DESC);
+
+-- Dead-letter for decision-event writes that could not be persisted. Events
+-- are ground truth for the learning system; a lost `application` next to a
+-- kept `rejection` would corrupt funnel histories, so failed writes land here
+-- (observable + retryable) instead of silently disappearing.
+CREATE TABLE IF NOT EXISTS event_write_errors (
+    id            BIGSERIAL PRIMARY KEY,
+    job_id        TEXT NOT NULL,
+    event_type    TEXT DEFAULT '',
+    impression_id TEXT,
+    payload       JSONB DEFAULT '{{}}'::jsonb,
+    error         TEXT DEFAULT '',
+    created_at    TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_event_write_errors ON event_write_errors(created_at DESC);
 """
 
 
@@ -2211,6 +2404,151 @@ class MemoryStore:
                 scores[tok] = passes.get(tok, 0) / cnt
         ranked = sorted(scores.items(), key=lambda kv: (-kv[1], -counts[kv[0]]))
         return dict(ranked[:top_k])
+
+    # ── application-outcome telemetry ──────────────────────────────────
+
+    async def record_application_outcome(self, row: dict[str, Any]) -> None:
+        """Persist one autofill terminal state tagged with the decisions that
+        produced it (render path, proxy, corrections). The feedback signal for
+        the learned routing table."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO application_outcomes (
+                    job_id, board, company, role, outcome, ats_platform,
+                    render_path, proxy_used, corrections, email_kind, error
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+                """,
+                row.get("job_id", ""),
+                row.get("board", ""),
+                row.get("company", ""),
+                row.get("role", ""),
+                row.get("outcome", ""),
+                row.get("ats_platform", ""),
+                row.get("render_path", ""),
+                bool(row.get("proxy_used")),
+                _jsonb_val(row.get("corrections", []), []),
+                row.get("email_kind", ""),
+                row.get("error", ""),
+            )
+
+    async def get_outcome_rates(self, board: str | None = None) -> list[dict[str, Any]]:
+        async with self._pool.acquire() as conn:
+            if board:
+                rows = await conn.fetch(
+                    """
+                    SELECT outcome, COUNT(*) AS cnt
+                    FROM application_outcomes WHERE board = $1
+                    GROUP BY outcome ORDER BY cnt DESC
+                    """,
+                    board,
+                )
+            else:
+                rows = await conn.fetch(
+                    """
+                    SELECT board, outcome, COUNT(*) AS cnt
+                    FROM application_outcomes GROUP BY board, outcome ORDER BY cnt DESC
+                    """
+                )
+        return [
+            {
+                "board": r.get("board", board),
+                "outcome": r["outcome"],
+                "count": r["cnt"],
+            }
+            for r in rows
+        ]
+
+    # ── per-board routing stats (bandit-lite) ──────────────────────────
+
+    async def record_board_render(self, board: str, ok: bool, settle_ms: float = 0.0) -> None:
+        """Accumulate a render attempt for a board (ok/block/avg settle)."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO board_routing_stats
+                    (board, renders, render_ok, render_fail, avg_settle_ms, last_seen)
+                VALUES ($1, 1, $2::int, $3::int, $4, NOW())
+                ON CONFLICT (board) DO UPDATE SET
+                    renders = board_routing_stats.renders + 1,
+                    render_ok = board_routing_stats.render_ok + $2::int,
+                    render_fail = board_routing_stats.render_fail + $3::int,
+                    avg_settle_ms = (board_routing_stats.avg_settle_ms *
+                                     board_routing_stats.renders + $4) /
+                                    (board_routing_stats.renders + 1),
+                    last_seen = NOW()
+                """,
+                board,
+                int(ok),
+                int(not ok),
+                settle_ms,
+            )
+
+    async def record_board_block(self, board: str) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO board_routing_stats (board, blocks, last_seen)
+                VALUES ($1, 1, NOW())
+                ON CONFLICT (board) DO UPDATE SET
+                    blocks = board_routing_stats.blocks + 1,
+                    last_seen = NOW()
+                """,
+                board,
+            )
+
+    async def record_board_submission(self, board: str, ok: bool, corrections: int = 0) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO board_routing_stats
+                    (board, submissions, submissions_ok, corrections, last_seen)
+                VALUES ($1, 1, $2::int, $3, NOW())
+                ON CONFLICT (board) DO UPDATE SET
+                    submissions = board_routing_stats.submissions + 1,
+                    submissions_ok = board_routing_stats.submissions_ok + $2::int,
+                    corrections = board_routing_stats.corrections + $3,
+                    last_seen = NOW()
+                """,
+                board,
+                int(ok),
+                corrections,
+            )
+
+    async def get_board_routing(self, board: str) -> dict[str, Any] | None:
+        """Per-board routing recommendation from accumulated stats: proxy if the
+        block rate is high, skip-render if render_ok dominates, etc."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT * FROM board_routing_stats WHERE board = $1
+                """,
+                board,
+            )
+        if row is None:
+            return None
+        renders = row["renders"] or 0
+        blocks = row["blocks"] or 0
+        submissions = row["submissions"] or 0
+        submissions_ok = row["submissions_ok"] or 0
+        rec: dict[str, Any] = {
+            "board": board,
+            "renders": renders,
+            "render_ok": row["render_ok"] or 0,
+            "render_fail": row["render_fail"] or 0,
+            "blocks": blocks,
+            "submissions": submissions,
+            "submissions_ok": submissions_ok,
+            "avg_settle_ms": row["avg_settle_ms"] or 0.0,
+            "proxy_recommended": row["proxy_recommended"] or False,
+        }
+        total_attempts = renders + blocks + submissions
+        if total_attempts >= 3:
+            # High block ratio -> recommend proxy. High render-ok -> suggest
+            # direct (no proxy). This is the bandit-lite signal.
+            block_ratio = blocks / total_attempts
+            rec["proxy_recommended"] = block_ratio >= 0.4
+        return rec
 
 
 def _row_to_radar_candidate(row: asyncpg.Record) -> dict[str, Any]:

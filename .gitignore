@@ -52,4 +52,5 @@ intel/
 /data/
 
 # Generated application resumes (PII) - written by the autofill node process
-packages/autofill/node/artifacts/
+packages/node/artifacts/
+artifacts/

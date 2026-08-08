@@ -355,7 +355,6 @@ class CostEstimate:
     llm_calls: float = 0.0
     http_requests: float = 0.0
     searxng_queries: float = 0.0
-    firecrawl_scrapes: float = 0.0
     embedding_calls: float = 0.0
     db_writes: float = 0.0
 
@@ -365,7 +364,6 @@ class CostEstimate:
             self.llm_calls * 5.0
             + self.http_requests * 0.5
             + self.searxng_queries * 0.3
-            + self.firecrawl_scrapes * 2.0
             + self.embedding_calls * 0.1
             + self.db_writes * 0.01
         )
@@ -376,7 +374,7 @@ AGENT_COSTS: dict[str, CostEstimate] = {
     "career_site_detector": CostEstimate(http_requests=1, db_writes=1),
     "founder_social_osint": CostEstimate(searxng_queries=1, llm_calls=1),
     "employee_discovery": CostEstimate(searxng_queries=1, http_requests=1),
-    "ats_crawler": CostEstimate(firecrawl_scrapes=5, db_writes=5),
+    "ats_crawler": CostEstimate(http_requests=5, db_writes=5),
     "funding_agent": CostEstimate(searxng_queries=2, llm_calls=1, db_writes=2),
     "tech_stack_agent": CostEstimate(http_requests=1, llm_calls=1),
     "graph_maintenance": CostEstimate(db_writes=1),

@@ -1,7 +1,7 @@
 """Batch-embed the job corpus into ``obs_embeddings`` via the local embed server.
 
 Usage:
-    uv run --with azure-storage-blob python3 scripts/embed/embed_obs.py [--all] [--limit N]
+    uv run python3 scripts/embed/embed_obs.py [--all] [--limit N]
 
 Checkpointed and resumable: rows that already have an embedding are skipped,
 so re-running just continues from where it stopped. Software-role titles are

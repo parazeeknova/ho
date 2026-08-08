@@ -1,16 +1,16 @@
-"""Firecrawl stack + Neo4j container manager.
+"""Ingest infra + Neo4j container manager.
 
-Consolidates the old Makefile bash: fc-up / fc-down / fc-logs / fc status /
-dev-down / clean-volumes / tor-up / graph-up / graph-stop / graph-reset /
-graph-shell.
+The Firecrawl stack (api / playwright-service / rabbitmq / redis /
+nuq-postgres) was removed — this manages only what the pipeline still needs:
+searxng, torproxy, neo4j, agent-memory-db.
 
 Usage:
-    uv run python scripts/cli/fc.py                            # up (default)
-    uv run python scripts/cli/fc.py down
-    uv run python scripts/cli/fc.py logs
-    uv run python scripts/cli/fc.py status
-    uv run python scripts/cli/fc.py clean
-    uv run python scripts/cli/fc.py dev-down
+    uv run python scripts/cli/fc.py up                        # start infra
+    uv run python scripts/cli/fc.py down                      # stop infra
+    uv run python scripts/cli/fc.py logs                      # tail compose logs
+    uv run python scripts/cli/fc.py status                    # compose ps
+    uv run python scripts/cli/fc.py clean                     # down -v
+    uv run python scripts/cli/fc.py dev-down                  # infra + llama-server
     uv run python scripts/cli/fc.py tor-up
     uv run python scripts/cli/fc.py graph-up|graph-stop|graph-reset|graph-shell
 """
@@ -19,14 +19,11 @@ from __future__ import annotations
 
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 PROJECT = Path(__file__).resolve().parents[2]
 COMPOSE = ["docker", "compose", "-f", str(PROJECT / "docker-compose.yaml")]
-
-RABBITMQ = "firecrawl_rabbitmq_1"
-CORE = ["redis", "playwright-service", "nuq-postgres", "searxng", "neo4j"]
+SERVICES = ["searxng", "torproxy", "neo4j", "agent-memory-db"]
 
 
 def _run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
@@ -34,46 +31,12 @@ def _run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, cwd=PROJECT, check=check)
 
 
-def _podman_rm(name: str) -> None:
-    _run(["podman", "rm", "-f", name], check=False)
-
-
 def up() -> None:
-    _run([*COMPOSE, "up", "-d", *CORE])
-    # RabbitMQ needs a fresh .erlang.cookie to start cleanly.
-    _podman_rm(RABBITMQ)
-    _run(
-        [
-            "podman",
-            "run",
-            "-d",
-            "--name",
-            RABBITMQ,
-            "--network",
-            "firecrawl_default",
-            "--network-alias",
-            "rabbitmq",
-            "--restart",
-            "no",
-            "--entrypoint",
-            "/bin/bash",
-            "rabbitmq:3-management",
-            "-c",
-            "rm -f /var/lib/rabbitmq/.erlang.cookie; exec docker-entrypoint.sh rabbitmq-server",
-        ]
-    )
-    print("Waiting for rabbitmq...")
-    for _ in range(10):
-        ok = _run(["podman", "exec", RABBITMQ, "rabbitmqctl", "await_startup"], check=False)
-        if ok.returncode == 0:
-            break
-        time.sleep(2)
-    _run([*COMPOSE, "up", "-d", "api"])
+    _run([*COMPOSE, "up", "-d", *SERVICES])
 
 
 def down() -> None:
     _run([*COMPOSE, "down"])
-    _podman_rm(RABBITMQ)
 
 
 def logs() -> None:
@@ -86,14 +49,7 @@ def status() -> None:
 
 def clean() -> None:
     _run([*COMPOSE, "down", "-v"])
-    _podman_rm(RABBITMQ)
-    storage = PROJECT / "storage"
-    if storage.exists():
-        import shutil
-
-        shutil.rmtree(storage)
-        print("removed storage/")
-    print("All container volumes and local storage cleared.")
+    print("All container volumes cleared.")
 
 
 def dev_down() -> None:

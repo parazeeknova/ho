@@ -153,7 +153,7 @@ class _MemoryWizardSession:
 async def autofill_queue_lines() -> list[str]:
     """Autofill queue status lines (applied / remaining / review / failed)."""
     try:
-        from autofill.db import AutofillDB
+        from autofill.src.core.db import AutofillDB
 
         db = await AutofillDB.create()
         try:
@@ -249,14 +249,9 @@ def get_system_metrics() -> dict[str, str]:
 async def run_health_checks() -> str:
     checks = [
         ("llama-server (Embed)", _check_http("http://localhost:8900/health")),
-        ("Firecrawl API", _check_port("localhost", 3002)),
         ("SearXNG", _check_http("http://localhost:8080")),
         ("agent-memory-db (pgvector)", _check_port("localhost", 5433)),
         ("Neo4j Graph Store", _check_port("localhost", 7687)),
-        ("Redis", _check_port("localhost", 6379)),
-        ("RabbitMQ", _check_port("localhost", 5672)),
-        ("Playwright Service", _check_port("localhost", 3000)),
-        ("NuQ Postgres", _check_port("localhost", 5432)),
     ]
     results = await asyncio.gather(*[coro for _, coro in checks])
     lines = ["**System Health Check**", ""]
@@ -714,7 +709,7 @@ class DiscordAgent:
         except Exception:
             pass
         try:
-            from autofill.db import AutofillDB
+            from autofill.src.core.db import AutofillDB
 
             db = await AutofillDB.create()
             try:
@@ -748,7 +743,7 @@ class DiscordAgent:
     async def _queue_summary_map(self) -> dict[str, int]:
         """Autofill queue summary counts (empty on error)."""
         try:
-            from autofill.db import AutofillDB
+            from autofill.src.core.db import AutofillDB
 
             db = await AutofillDB.create()
             try:
@@ -845,8 +840,18 @@ class DiscordAgent:
     async def begin_sweep(self, sweep: int) -> None:
         """Create the per-sweep thread before alerts fire, so every message of
         a sweep (alerts + summary) is concentrated in one thread."""
+        if not self.is_configured:
+            return
+        # If the gateway hasn't finished connecting yet, wait a bounded window
+        # so the very first sweep's thread isn't silently dropped.
+        if self._client is not None and not self._client.is_ready():
+            try:
+                await asyncio.wait_for(self._wait_gateway_ready(), timeout=20.0)
+            except Exception:
+                logger.warning("Discord gateway not ready; sweep thread skipped")
         channel = await self._wait_channel()
         if channel is None:
+            logger.warning("Discord channel unavailable; sweep thread skipped")
             return
         try:
             if sweep != self._last_sweep:
@@ -863,6 +868,17 @@ class DiscordAgent:
                     name=f"Sweep #{sweep}",
                     auto_archive_duration=1440,
                 )
+                # Record the thread id so the autofill bridge (a separate
+                # process) can send deferred/captcha/queue notifications into
+                # this thread instead of the main channel.
+                with contextlib.suppress(Exception):
+                    from autofill.src.core.db import AutofillDB
+
+                    db = await AutofillDB.create()
+                    try:
+                        await db.set_active_thread(str(self._sweep_thread.id))
+                    finally:
+                        await db.close()
                 # Second message: an opening summary of the current queue
                 # state, so the thread opens with context before alerts land.
                 try:
@@ -871,12 +887,14 @@ class DiscordAgent:
                     remaining = summary.get("pending", 0) + summary.get("filling", 0)
                     review = summary.get("deferred", 0) + summary.get("awaiting_review", 0)
                     failed = summary.get("failed", 0)
+                    ml_line = await self._ml_status_line()
                     intro = discord.Embed(
                         title=f"📊 Sweep #{sweep} Starting Point",
                         color=0x42A5F5,
                         description=(
                             f"**Queue** — Applied `{applied}` · Remaining `{remaining}` · "
                             f"Review `{review}` · Failed `{failed}`\n"
+                            f"{ml_line}\n"
                             "Watching for new matches — alerts land below as they're found."
                         ),
                     )
@@ -886,6 +904,53 @@ class DiscordAgent:
                 self._last_sweep = sweep
         except Exception as e:
             logger.warning("Sweep thread creation failed", error=str(e))
+
+    async def _wait_gateway_ready(self) -> None:
+        while self._client is not None and not self._client.is_ready():
+            await asyncio.sleep(0.5)
+
+    async def _ml_status_line(self) -> str:
+        """One-line summary of the learning system state (bandits, Gmail push,
+        LTR mode, event volume) pulled from Postgres. Best-effort."""
+        try:
+            from src.memory.pgvector_store import MemoryStore
+
+            store = await MemoryStore.create()
+            try:
+                async with store._pool.acquire() as conn:
+                    events = await conn.fetchval("SELECT COUNT(*) FROM decision_events")
+                    impressions = await conn.fetchval("SELECT COUNT(*) FROM impressions")
+                    outcomes = await conn.fetchval(
+                        "SELECT COUNT(*) FROM decision_events WHERE reward IS NOT NULL"
+                    )
+                    unattributed = await conn.fetchval("SELECT COUNT(*) FROM unattributed_outcomes")
+                    model = await conn.fetchrow(
+                        "SELECT version, model_type FROM model_registry "
+                        "WHERE status='active' ORDER BY created_at DESC LIMIT 1"
+                    )
+                    push = await conn.fetchval(
+                        "SELECT 1 FROM gmail_push_state WHERE history_id != '' LIMIT 1"
+                    )
+                parts = [
+                    f"Events `{events or 0}`",
+                    f"Impressions `{impressions or 0}`",
+                    f"Rewards `{outcomes or 0}`",
+                ]
+                if push:
+                    parts.append("Gmail push `ON`")
+                else:
+                    parts.append("Gmail push `off`")
+                if model:
+                    parts.append(f"Model `{model['version']}` ({model['model_type']})")
+                else:
+                    parts.append("Model `none` (shadow)")
+                if unattributed:
+                    parts.append(f"Unattributed `{unattributed}`")
+                return "🧠 **Learning system** — " + " · ".join(parts)
+            finally:
+                await store.close()
+        except Exception:
+            return "🧠 **Learning system** — unavailable"
 
     async def begin_recovery_thread(self, title: str = "Startup Re-delivery") -> None:
         """Create a thread for the startup re-delivery of previously-accepted
@@ -921,7 +986,7 @@ class DiscordAgent:
             summary = await self._queue_summary_map()
             unapplied_stats = {}
             try:
-                from autofill.db import AutofillDB
+                from autofill.src.core.db import AutofillDB
 
                 db = await AutofillDB.create()
                 try:
@@ -937,12 +1002,14 @@ class DiscordAgent:
             unapplied = unapplied_stats.get("unapplied", 0)
             stale = unapplied_stats.get("stale", 0)
 
+            ml_line = await self._ml_status_line()
             description = (
                 f"**Scraped** `{scraped}` · **Matched** `{matched}` · "
                 f"**Took** `{duration:.1f}s`\n"
                 f"**Queue** — Applied `{applied}` · Remaining `{remaining}` · "
                 f"Review `{review}` · Failed `{failed}`\n"
-                f"**Unapplied** — `{unapplied}` (`{stale}` stale > 48h)"
+                f"**Unapplied** — `{unapplied}` (`{stale}` stale > 48h)\n"
+                f"{ml_line}"
             )
             embed = discord.Embed(
                 title=f"✅ Sweep #{sweep} Complete", color=0x66BB6A, description=description
@@ -1010,6 +1077,8 @@ class DiscordAgent:
         ]
         if s.get("last_error"):
             lines.append(f"Last error: {s.get('last_error')}")
+        ml_line = await self._ml_status_line()
+        lines.append(ml_line)
         await self._reply(message, "\n".join(lines))
 
     async def _handle_health(self, message: discord.Message) -> None:
@@ -1327,7 +1396,7 @@ class DiscordAgent:
 
     async def _question_mailbox_db(self) -> Any:
         if self._mailbox_db is None:
-            from autofill.db import AutofillDB
+            from autofill.src.core.db import AutofillDB
 
             self._mailbox_db = await AutofillDB.create()
         return self._mailbox_db

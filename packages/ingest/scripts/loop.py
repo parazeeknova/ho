@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One-command end-to-end loop: radar pipeline + autofill bridge + autofill worker.
+"""One-command end-to-end loop: radar pipeline + autofill bridge + autofill.src.core.worker.
 
 Runs the whole hiring loop from a single invocation:
 
@@ -8,7 +8,7 @@ Runs the whole hiring loop from a single invocation:
   2. every ``--bridge-interval`` seconds drains the accepted candidates into
      the autofill queue (see src/radar/engine/autofill_bridge.py) and prints
      the queue state;
-  3. runs the autofill worker (OVERNIGHT_LOOP=true -> autosubmit) which claims
+  3. runs the autofill.src.core.worker (OVERNIGHT_LOOP=true -> autosubmit) which claims
      those jobs and fills/submits them via the browser, marking each job
      applied (applied_at), failed (error_count/last_error) or deferred.
 
@@ -31,26 +31,37 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
+from typing import Any
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "autofill"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # packages/ingest (src.*)
+sys.path.insert(
+    0, str(Path(__file__).resolve().parent.parent.parent)
+)  # packages/ (autofill.*, ml.*)
 
-from autofill.db import AutofillDB
-from src.radar.engine.autofill_bridge import drain_once, print_summary, queue_balance
+from dotenv import load_dotenv
 
-PROJECT = Path(__file__).resolve().parent.parent
-REPO = PROJECT.parent
+load_dotenv()
+
+from autofill.src.core.db import AutofillDB  # noqa: E402
+from src.radar.engine.autofill_bridge import drain_once, print_summary, queue_balance  # noqa: E402
+
+PROJECT = Path(__file__).resolve().parent.parent  # packages/ingest
+REPO = PROJECT.parent.parent  # repo root
 LOG_DIR = PROJECT / "logs"
 
 # Same LLM throttle overrides run.py forces so workers blast through the corpus.
 RADAR_ENV_OVERRIDES = {
-    "LLM_QUEUE_RPM": "240",
-    "LLM_QUEUE_MAX_IN_FLIGHT": "30",
-    "LLM_QUEUE_TPM": "400000",
-    "LLM_BUDGET_RADAR_RPM": "240",
-    "LLM_BUDGET_RADAR_TPM": "400000",
+    # Stay under the provider's real cap (GeneralCompute: 100 RPM / 200K TPM).
+    # 240 RPM tripped 429s and stalled autofill on a 30-40s cooldown per
+    # question. These are setdefaults so a user's .env can raise them.
+    "LLM_QUEUE_RPM": "90",
+    "LLM_QUEUE_MAX_IN_FLIGHT": "10",
+    "LLM_QUEUE_TPM": "180000",
+    "LLM_BUDGET_RADAR_RPM": "60",
+    "LLM_BUDGET_RADAR_TPM": "120000",
 }
 
 
@@ -58,7 +69,11 @@ def _base_env() -> dict[str, str]:
     env = os.environ.copy()
     env.setdefault("OVERNIGHT_LOOP", "true")
     env.setdefault("PYTHONUNBUFFERED", "1")
-    _paths = [str(PROJECT), str(REPO / "packages" / "autofill")]
+    # packages/ml and packages/autofill are now src-layout: the importable
+    # roots are packages/ml and packages/autofill, so the packages/ parent dir
+    # is on the path. PROJECT (= packages/ingest) stays so ingest's src.*
+    # namespace resolves.
+    _paths = [str(PROJECT), str(REPO / "packages")]
     if env.get("PYTHONPATH"):
         _paths.append(env["PYTHONPATH"])
     env["PYTHONPATH"] = os.pathsep.join(_paths)
@@ -79,6 +94,7 @@ class Child:
         self.env = env
         self.proc: subprocess.Popen[str] | None = None
         self.restarts = 0
+        self._stream_thread: Any | None = None
 
     async def start(self) -> None:
         LOG_DIR.mkdir(exist_ok=True)
@@ -93,7 +109,12 @@ class Child:
         )
         print(f"[loop] started {self.name} (pid {self.proc.pid})", flush=True)
 
-        async def _stream() -> None:
+        # Stream the child's stdout in a DEDICATED THREAD. A synchronous
+        # `for line in proc.stdout` inside a coroutine blocks the whole event
+        # loop (radar-master floods stdout during board polling), which starves
+        # the bridge/restart cycle. A thread lets the async loop keep running
+        # while output is drained.
+        def _stream_blocking() -> None:
             assert self.proc is not None and self.proc.stdout is not None
             with (
                 open(LOG_DIR / f"{self.name}.log", "ab") as log_file,
@@ -107,7 +128,9 @@ class Child:
                     loop_log.write(line.encode())
                     loop_log.flush()
 
-        asyncio.get_running_loop().create_task(_stream())
+        thread = threading.Thread(target=_stream_blocking, daemon=True)
+        thread.start()
+        self._stream_thread = thread
 
     def is_alive(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
@@ -155,8 +178,24 @@ async def _spawn_worker(children: list[Child]) -> None:
     env = _base_env()
     env.setdefault("AUTOFILL_WORKER_ID", "loop")
     child = Child(
-        "autofill-worker",
-        [sys.executable, "-m", "autofill.worker"],
+        "autofill.src.core.worker",
+        [sys.executable, "-m", "autofill.src.core.worker"],
+        env,
+    )
+    await child.start()
+    children.append(child)
+
+
+async def _spawn_email_listener(children: list[Child]) -> None:
+    """3rd child: Gmail push daemon (instant outcome emails → ML events).
+
+    Only starts when GMAIL_PUSH=1; otherwise it exits immediately. Crashed
+    children are restarted by the loop's supervisor.
+    """
+    env = _base_env()
+    child = Child(
+        "email-listener",
+        [sys.executable, "-m", "ml.src.outcomes.gmail_push"],
         env,
     )
     await child.start()
@@ -166,7 +205,9 @@ async def _spawn_worker(children: list[Child]) -> None:
 async def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--no-radar", action="store_true", help="Do not start the radar pipeline")
-    parser.add_argument("--no-fill", action="store_true", help="Do not start the autofill worker")
+    parser.add_argument(
+        "--no-fill", action="store_true", help="Do not start the autofill.src.core.worker"
+    )
     parser.add_argument("--radar-workers", type=int, default=2, help="Extra radar worker procs")
     parser.add_argument(
         "--bridge-interval", type=int, default=120, help="Seconds between bridge drains"
@@ -185,6 +226,9 @@ async def main() -> None:
             await _spawn_radar(children, args.radar_workers)
         if not args.no_fill:
             await _spawn_worker(children)
+        # Gmail push daemon (only if GMAIL_PUSH=1; exits immediately otherwise)
+        if not args.no_fill and os.getenv("GMAIL_PUSH", "").strip() == "1":
+            await _spawn_email_listener(children)
         if not children:
             print("[loop] nothing to run (--no-radar and --no-fill both given)")
             return
@@ -196,12 +240,30 @@ async def main() -> None:
 
     db = await AutofillDB.create()
     idle_cycles = 0
+    radar_done = False
     try:
         while True:
             await asyncio.sleep(args.bridge_interval)
 
             for child in children:
                 if not child.is_alive():
+                    # Exit code 42 = the radar finished its bounded batch
+                    # (stop_after_gated reached). Stop ONLY the radar — the
+                    # autofill.src.core.worker + email listener keep draining the queue
+                    # and capturing outcomes.
+                    if (
+                        child.name == "radar-master"
+                        and child.proc is not None
+                        and child.proc.returncode == 42
+                    ):
+                        print(
+                            "[loop] radar-master reached its target batch; "
+                            "stopping radar, keeping autofill+email.",
+                            flush=True,
+                        )
+                        child.stop()
+                        radar_done = True
+                        continue
                     if child.restarts >= 5:
                         print(f"[loop] {child.name} crashed and exceeded restarts", flush=True)
                         continue
@@ -219,13 +281,20 @@ async def main() -> None:
                 flush=True,
             )
 
-            if enqueued == 0 and balance["open"] == 0:
-                idle_cycles += 1
-                if idle_cycles >= args.idle_cycles:
-                    print(f"[loop] queue idle for {idle_cycles} cycles; finishing", flush=True)
-                    break
-            else:
-                idle_cycles = 0
+            # Once the radar reached its target, we only wait for the autofill
+            # queue to drain (open = pending/filling/awaiting_review) before
+            # exiting. While radar is still sweeping, the usual idle rule.
+            if radar_done and balance["open"] == 0:
+                print("[loop] radar done and autofill queue drained; finishing", flush=True)
+                break
+            if not radar_done:
+                if enqueued == 0 and balance["open"] == 0:
+                    idle_cycles += 1
+                    if idle_cycles >= args.idle_cycles:
+                        print(f"[loop] queue idle for {idle_cycles} cycles; finishing", flush=True)
+                        break
+                else:
+                    idle_cycles = 0
 
             if args.max_minutes and (time.monotonic() - started_at) / 60 >= args.max_minutes:
                 print("[loop] --max-minutes reached; finishing", flush=True)

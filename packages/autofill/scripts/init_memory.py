@@ -30,7 +30,7 @@ from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent  # packages/autofill
 REPO = ROOT.parent.parent  # repo root
-for _p in (REPO, REPO / "packages" / "ingest", ROOT):
+for _p in (REPO, REPO / "packages" / "ingest", REPO / "packages"):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
@@ -120,8 +120,7 @@ async def _start_postgres() -> bool:
     """Auto-start the agent-memory Postgres container and wait for it.
 
     The app database is the ``agent-memory-db`` service (host port 5433,
-    pgvector image, persistent volume) — not ``nuq-postgres``, which only
-    serves the firecrawl network internally.
+    pgvector image, persistent volume).
     """
     import shutil
 
@@ -313,7 +312,7 @@ async def main() -> None:
 
     ux.next_steps(
         [
-            "uv run python -m autofill.cli apply <greenhouse-url>",
+            "uv run python -m autofill.src.core.cli apply <greenhouse-url>",
             "uv run python -m src.radar.engine.orchestrator",
         ]
     )

@@ -59,12 +59,11 @@ async def main() -> None:
     while True:
         try:
             orch = count_of(r"radar[.]engine[.]orchestrator")
-            ingest = count_of(r"scripts/azure/ingest[.]py")
             embed = count_of(r"scripts/embed/embed_obs")
             wd = count_of(r"scripts/tools/watchdog")
             stats = await check_once(store)
             line = (
-                f"orch={orch} ingest={ingest} embed={embed} watchdog={wd} "
+                f"orch={orch} embed={embed} watchdog={wd} "
                 f"accepted={stats['accepted']} near_miss={stats['near_miss']} "
                 f"queue={stats['queue_pending']} embedded={stats['embedded']} "
                 f"obs={stats['obs']}"

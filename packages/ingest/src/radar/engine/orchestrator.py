@@ -13,7 +13,6 @@ from datetime import date, datetime
 from typing import Any
 
 from dotenv import load_dotenv
-from firecrawl import FirecrawlApp
 from rich.console import Console
 
 from src.agent.discord_agent import DiscordAgent, set_pipeline_state
@@ -35,7 +34,6 @@ from src.graph.frontier import CrawlFrontier
 from src.graph.graph_store import GraphStore
 from src.http_cache import set_http_cache_store
 from src.http_client import close_all as _close_http_clients
-from src.http_client import get_client
 from src.llm.context import ContextManager
 from src.logging import get_logger
 from src.memory.pgvector_store import MemoryStore
@@ -53,6 +51,7 @@ from src.radar.sources.agents import (
     founder_social_agent,
 )
 from src.radar.sources.board_registry import REGISTERED_BOARDS
+from src.radar.sources.common_crawl import discover_from_common_crawl
 from src.radar.sources.discovery import (
     _extract_domain as _discovery_domain,
 )
@@ -265,6 +264,9 @@ async def _discover_new_companies() -> list[dict[str, Any]]:
         return results
 
     adapters = [
+        # The review's primary discovery architecture: Common Crawl harvests
+        # ATS board slugs across ALL families (no curated company list needed).
+        ("common_crawl", discover_from_common_crawl, 1500),
         ("dealroom", discover_from_dealroom, 50),
         ("yc", discover_from_yc, 30),
         ("vc", discover_from_vc_portfolios, 40),
@@ -414,7 +416,7 @@ async def _scrape_indexes() -> list[JobObservation]:
 
 
 async def _poll_board(
-    board: dict[str, str], app: FirecrawlApp, store: MemoryStore | None = None
+    board: dict[str, str], store: MemoryStore | None = None
 ) -> list[JobObservation]:
     source_id = board["id"]
     board_url = board["url"]
@@ -456,21 +458,15 @@ async def _poll_board(
 
     direct_urls: list[str] = []
     try:
-        resp = await asyncio.wait_for(
-            asyncio.to_thread(app.map_url, board_url),
+        from src.render import extract_links
+
+        fc_cfg = get_config().render
+        direct_urls = await asyncio.wait_for(
+            extract_links(board_url, job_only=True, limit=fc_cfg.map_limit),
             timeout=120.0,
         )
-        if isinstance(resp, list):
-            for item in resp:
-                url = item if isinstance(item, str) else item.get("url", "")
-                if url and url.startswith("http"):
-                    direct_urls.append(url)
-        elif isinstance(resp, dict):
-            for link in resp.get("links", []) or []:
-                if isinstance(link, str) and link.startswith("http"):
-                    direct_urls.append(link)
     except Exception as exc:
-        logger.warning(f"Firecrawl map_url failed for {board_url}: {exc}")
+        logger.warning(f"Board map failed for {board_url}: {exc}")
         record_failure(source_id)
         return []
 
@@ -802,10 +798,11 @@ async def _record_ats_no_openings(store: MemoryStore, board_url: str) -> None:
 
 
 async def _poll_board_safe(
-    board: dict[str, str], sem: asyncio.Semaphore, app: FirecrawlApp, store: MemoryStore
+    board: dict[str, str], sem: asyncio.Semaphore, store: MemoryStore
 ) -> list[JobObservation]:
+    """Wrap _poll_board with a semaphore and fault isolation."""
     async with sem:
-        return await _poll_board(board, app, store)
+        return await _poll_board(board, store)
 
 
 async def _fetch_postings_and_gate(
@@ -814,7 +811,7 @@ async def _fetch_postings_and_gate(
 ) -> tuple[list[JobCandidate], dict[str, Any]]:
     import time as _time
 
-    cfg = get_config().firecrawl
+    cfg = get_config().render
     passed: list[JobCandidate] = []
     rejected_count = 0
     gate_stats: dict[str, int] = {}
@@ -866,7 +863,7 @@ async def _fetch_postings_and_gate(
 
                 if not obs.raw_markdown or len(obs.raw_markdown) < 100:
                     if scrape_used >= scrape_budget:
-                        # Per-sweep scrape cap (FIRECRAWL_SCRAPE_LIMIT):
+                        # Per-sweep scrape cap (render budget):
                         # never-gated postings without content drain one
                         # bounded batch per sweep instead of re-scraping the
                         # whole corpus every time. Persist the observation so
@@ -876,15 +873,9 @@ async def _fetch_postings_and_gate(
                         processed_count += 1
                         return
                     scrape_used += 1
-                    client = await get_client("orchestrator", timeout=cfg.scrape_timeout)
-                    resp = await client.post(
-                        f"{cfg.url}/v1/scrape",
-                        json={"url": obs.url, "formats": ["markdown"], "onlyMainContent": True},
-                    )
-                    if resp.status_code != 200:
-                        _PIPELINE_METRICS["failed_fetches"] += 1
-                        return
-                    md = (resp.json().get("data") or {}).get("markdown", "") or ""
+                    from src.render import markdownify
+
+                    md = await markdownify(obs.url, timeout=cfg.scrape_timeout)
                     if not md or len(md) < 100:
                         _PIPELINE_METRICS["dropped_postings"] += 1
                         return
@@ -1032,6 +1023,206 @@ def _group_key(c: JobCandidate) -> str:
     from src.radar.core.models import make_canonical_id
 
     return make_canonical_id(c.normalized_company, c.normalized_role, c.normalized_location)
+
+
+async def _enrich_graph_features(
+    candidates: list[JobCandidate], graph: GraphStore | None
+) -> dict[str, dict[str, Any]]:
+    if not graph or not candidates:
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for c in candidates:
+        try:
+            company_id = make_company_id(c.normalized_company)
+            node = await graph.get_node(company_id)
+            if not node:
+                continue
+            metrics = await graph.get_graph_metrics_for_node(company_id)
+            hiring = await graph.predict_hiring_likelihood(company_id)
+            techs: set[str] = set()
+            try:
+                local = await graph.get_local_graph(company_id, radius=1)
+                for n in local.get("nodes", []):
+                    if n.get("node_type") == "technology":
+                        techs.add(n.get("data", {}).get("name", "").lower())
+            except Exception:
+                pass
+            out[c.canonical_id] = {
+                "pagerank": float(metrics.get("pagerank", 0.0)),
+                "betweenness": float(metrics.get("betweenness", 0.0)),
+                "hiring_likelihood": float(hiring.get("score", 0.5)),
+                "hiring_signal": bool(hiring.get("score", 0) > 0.6),
+                "company_techs": list(techs)[:20],
+                "funding_recency_days": 9999,
+                "observed_at": time.time(),
+            }
+        except Exception:
+            continue
+    return out
+
+
+def _build_feature_vector(
+    candidate: JobCandidate,
+    graph_signals: dict[str, Any] | None = None,
+    decision_ts: float | None = None,
+) -> dict[str, Any]:
+    try:
+        from ml.src.ranking.features import extract_features
+
+        cand_dict = {
+            "skills": candidate.matching_skills,
+            "experience_years": candidate.extra.get("experience_years"),
+            "role_family": candidate.role_family.value
+            if hasattr(candidate.role_family, "value")
+            else str(candidate.role_family),
+            "location": candidate.normalized_location,
+            "salary_floor": 60000,
+            "is_remote": candidate.is_remote,
+            "version": candidate.extra.get("version"),
+        }
+        job_dict = {
+            "matching_skills": candidate.matching_skills,
+            "missing_skills": candidate.missing_skills,
+            "match_percent": candidate.match_percent,
+            "role_family": str(candidate.role_family),
+            "salary_amount": candidate.salary_annual_usd,
+            "normalized_location": candidate.normalized_location,
+            "source": candidate.source,
+            "funding_stage": candidate.funding_stage,
+            "is_remote": candidate.is_remote,
+            "sponsors_visa": candidate.sponsors_visa,
+            "underdog_score": candidate.underdog_score,
+            "source_confidence": candidate.source_confidence,
+            "freshness_lane": candidate.freshness_lane.name
+            if hasattr(candidate.freshness_lane, "name")
+            else str(candidate.freshness_lane),
+            "osint_signals": candidate.osint_signals,
+        }
+        return extract_features(
+            cand_dict, job_dict, graph_signals=graph_signals, decision_ts=decision_ts
+        )
+    except Exception:
+        return {}
+
+
+async def _emit_ranking_impression(
+    ranked: list[JobCandidate],
+    store: MemoryStore,
+    graph: GraphStore | None,
+    sweep: int,
+) -> None:
+    if not ranked or not store:
+        return
+    try:
+        from ml import FEATURE_VERSION, POLICY_VERSION, RANKER_VERSION
+        from ml.src.outcomes.events import (
+            DecisionEvent,
+            emit_events,
+            make_impression_id,
+            snapshot_candidate,
+            snapshot_job,
+        )
+    except Exception:
+        return
+    try:
+        impression_id = make_impression_id()
+        graph_signals_map = await _enrich_graph_features(ranked, graph)
+        now = time.time()
+        events: list[DecisionEvent] = []
+        # Impression event (the ranking group itself)
+        events.append(
+            DecisionEvent(
+                job_id=f"impression_{impression_id}",
+                event_type="impression",
+                impression_id=impression_id,
+                rank=None,
+                policy=POLICY_VERSION,
+                model_version=RANKER_VERSION,
+                feature_version=FEATURE_VERSION,
+                action="rank",
+                meta={"sweep": sweep, "group_size": len(ranked)},
+                timestamp=now,
+            )
+        )
+        for idx, c in enumerate(ranked):
+            gs = graph_signals_map.get(c.canonical_id, {})
+            feats = _build_feature_vector(c, graph_signals=gs, decision_ts=now)
+            cand_snap_id, _ = snapshot_candidate(
+                {
+                    "skills": c.matching_skills,
+                    "role_family": str(c.role_family),
+                    "location": c.normalized_location,
+                }
+            )
+            job_snap_id, _ = snapshot_job(
+                {
+                    "role_family": str(c.role_family),
+                    "matching_skills": c.matching_skills,
+                    "missing_skills": c.missing_skills,
+                    "salary_amount": c.salary_annual_usd,
+                    "source": c.source,
+                    "funding_stage": c.funding_stage,
+                    "company": c.normalized_company,
+                }
+            )
+            # Persist snapshots best-effort
+            with contextlib.suppress(Exception):
+                async with store._pool.acquire() as conn:
+                    await conn.execute(
+                        "INSERT INTO candidate_snapshots (snapshot_id, payload) VALUES ($1,$2::jsonb) ON CONFLICT DO NOTHING",  # noqa: E501
+                        cand_snap_id,
+                        {"skills": c.matching_skills, "role_family": str(c.role_family)},
+                    )
+                    await conn.execute(
+                        "INSERT INTO job_snapshots (snapshot_id, payload) VALUES ($1,$2::jsonb) ON CONFLICT DO NOTHING",  # noqa: E501
+                        job_snap_id,
+                        {"role": c.normalized_role, "company": c.normalized_company},
+                    )
+                    await conn.execute(
+                        "INSERT INTO impressions (impression_id, policy, "  # noqa: E501
+                        "model_version, feature_version, group_size) VALUES "
+                        "($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING",  # noqa: E501
+                        impression_id,
+                        POLICY_VERSION,
+                        RANKER_VERSION,
+                        FEATURE_VERSION,
+                        len(ranked),
+                    )
+            events.append(
+                DecisionEvent(
+                    job_id=c.canonical_id,
+                    event_type="job_ranked",
+                    impression_id=impression_id,
+                    candidate_snapshot_id=cand_snap_id,
+                    job_snapshot_id=job_snap_id,
+                    features=feats,
+                    rank=idx + 1,
+                    policy=POLICY_VERSION,
+                    model_version=RANKER_VERSION,
+                    feature_version=FEATURE_VERSION,
+                    propensity=1.0 / len(ranked) if c.extra.get("exploration") else None,
+                    exploration=bool(c.extra.get("exploration")),
+                    source=c.source,
+                    meta={"sweep": sweep, "url": c.direct_apply_url or ""},
+                    timestamp=now,
+                )
+            )
+            # Also emit job_exposed for the top-N that will be shown/applied
+            if idx < 25:
+                events.append(
+                    DecisionEvent(
+                        job_id=c.canonical_id,
+                        event_type="job_exposed",
+                        impression_id=impression_id,
+                        rank=idx + 1,
+                        policy=POLICY_VERSION,
+                        timestamp=now,
+                    )
+                )
+        await emit_events(store, events)
+    except Exception as e:
+        with contextlib.suppress(Exception):
+            logger.warning("Failed to emit ranking impression", error=str(e))
 
 
 # Post-LLM enrichment
@@ -1207,7 +1398,7 @@ async def _bridge_accepted_to_autofill(matched: list[JobCandidate]) -> int:
     take down the radar pipeline.
     """
     try:
-        from autofill.db import AutofillDB
+        from autofill.src.core.db import AutofillDB
 
         db = await AutofillDB.create()
         try:
@@ -1590,17 +1781,10 @@ async def _job_processor(entry: FrontierEntry) -> list[FrontierEntry]:
         _PIPELINE_METRICS["dropped_postings"] += 1
         return []
 
-    cfg = get_config().firecrawl
     try:
-        client = await get_client("orchestrator", timeout=20.0)
-        resp = await client.post(
-            f"{cfg.url}/v1/scrape",
-            json={"url": url, "formats": ["markdown"], "onlyMainContent": True},
-        )
-        if resp.status_code != 200:
-            _PIPELINE_METRICS["job_processor_failures"] += 1
-            return []
-        md = (resp.json().get("data") or {}).get("markdown", "") or ""
+        from src.render import markdownify
+
+        md = await markdownify(url, timeout=20.0)
         if not md or len(md) < 100:
             _PIPELINE_METRICS["dropped_postings"] += 1
             return []
@@ -1689,7 +1873,6 @@ async def _run_radar_pipeline() -> None:
     signal.signal(signal.SIGTERM, _cleanup)
 
     await ctx.flush()
-    app = FirecrawlApp(api_key="sk-no-auth", api_url=cfg.firecrawl.url)
     if not os.getenv("HO_WORKER_ONLY"):
         await ta.start_polling()
 
@@ -2006,6 +2189,27 @@ async def _run_radar_pipeline() -> None:
                 logger.warning(f"Worker post-processing failed: {exc}")
         return
 
+    # The review's P0: the 20-submission boundary must be PER-EPOCH, not a
+    # lifetime count. Open a fresh learning epoch at run begin; every
+    # submission attributed to it counts toward ITS target only.
+    epoch_target = getattr(cfg.radar, "session_application_target", 0) or 0
+    active_epoch_id: str | None = None
+    try:
+        from autofill.src.core.db import AutofillDB
+        from ml import POLICY_VERSION, RANKER_VERSION
+
+        _db = await AutofillDB.create()
+        active_epoch_id = await _db.start_epoch(
+            target_submissions=epoch_target,
+            model_version=str(RANKER_VERSION or ""),
+            policy_version=str(POLICY_VERSION or ""),
+        )
+        logger.info(f"Learning epoch started: {active_epoch_id}")
+        await _db.close()
+    except Exception as exc:
+        logger.warning(f"Failed to start learning epoch: {exc}")
+
+    reached_target = False
     while True:
         if shutdown_requested.is_set():
             break
@@ -2080,13 +2284,26 @@ async def _run_radar_pipeline() -> None:
             # quiet sources still get polled (should_poll gates frequency).
             active_sources = select_sources_for_sweep(active_sources)
 
-            # Parallel source polling across all registered seed boards
+            # Per-sweep cap: with thousands of discovered sources, polling ALL
+            # of them (many need slow browser renders) makes a single sweep
+            # take tens of minutes and never reach the ranking/event phase.
+            # Poll the EV-ranked top-N each sweep so the loop completes a full
+            # pass (poll -> gate -> rank -> emit events) in bounded time;
+            # low-yield sources rotate back in on later sweeps.
+            sweep_source_cap = int(os.environ.get("SWEEP_SOURCE_CAP", "250"))
+            if len(active_sources) > sweep_source_cap:
+                logger.info(
+                    f"Sweep {sweep}: capping source poll from {len(active_sources)} "
+                    f"to {sweep_source_cap} (EV-ranked)"
+                )
+                active_sources = active_sources[:sweep_source_cap]
+
+            # Parallel source polling across the capped EV-ranked set
             poll_sem = asyncio.Semaphore(12)
             board_results: list[list[JobObservation]] = []
 
             tasks = [
-                asyncio.create_task(_poll_board_safe(b, poll_sem, app, store))
-                for b in active_sources
+                asyncio.create_task(_poll_board_safe(b, poll_sem, store)) for b in active_sources
             ]
             for _board_done, task in enumerate(asyncio.as_completed(tasks), start=1):
                 try:
@@ -2139,6 +2356,33 @@ async def _run_radar_pipeline() -> None:
             candidates, gate_stats = await _fetch_postings_and_gate(all_obs, store)
             set_pipeline_state(scraped=len(all_obs), gated=len(candidates))
             logger.info(f"Gating: {len(candidates)} passed, {gate_stats['rejected']} rejected")
+            # Work-session epoch boundary (the review's P0 fix): the session
+            # completes when THIS EPOCH's applications are CONFIRMED SUBMITTED
+            # (applied_at set — attempts, deferred, captcha, and duplicates do
+            # NOT count). The count is PER-EPOCH (autofill_queue.epoch_id), so
+            # a fresh run never inherits the lifetime application total. Falls
+            # back to the gated-count stop when the submission target is 0.
+            session_target = getattr(cfg.radar, "session_application_target", 0)
+            confirmed = 0
+            if not is_worker and session_target > 0 and active_epoch_id:
+                try:
+                    from autofill.src.core.db import AutofillDB
+
+                    _db = await AutofillDB.create()
+                    try:
+                        confirmed = await _db.epoch_completed_submissions(active_epoch_id)
+                    finally:
+                        await _db.close()
+                except Exception:
+                    confirmed = 0
+            reached_target = not is_worker and (
+                (session_target > 0 and confirmed >= session_target)
+                or (
+                    session_target <= 0
+                    and cfg.radar.stop_after_gated > 0
+                    and len(candidates) >= cfg.radar.stop_after_gated
+                )
+            )
             gs = gate_stats.get("gate_stats", {})
             if gs:
                 logger.info(f"Gate rejection breakdown: {gs}")
@@ -2155,6 +2399,9 @@ async def _run_radar_pipeline() -> None:
             resume_ctx = full_text[:3000] if full_text else candidate_persona
 
             ranked = _rank_for_queue(candidates)
+            # --- learning system: emit impression + per-job ranked events (Phase 0/1) ---
+            with contextlib.suppress(Exception):
+                await _emit_ranking_impression(ranked, store, graph, sweep)
             logger.info(f"Sweep {sweep}: enqueuing {len(ranked)} candidates for LLM matching...")
             for c in ranked:
                 sal = c.salary_annual_usd or 0
@@ -2240,6 +2487,20 @@ async def _run_radar_pipeline() -> None:
             gc.collect()
             if os.environ.get("OVERNIGHT_LOOP", "true").lower() != "true":
                 break
+            if reached_target:
+                session_target = getattr(cfg.radar, "session_application_target", 0)
+                if session_target > 0:
+                    logger.info(
+                        f"Sweep {sweep}: epoch {active_epoch_id} reached {confirmed} "
+                        f"confirmed submissions (>= {session_target} session target) "
+                        f"— stopping loop."
+                    )
+                else:
+                    logger.info(
+                        f"Sweep {sweep}: reached {len(candidates)} gated candidates "
+                        f"(>= {cfg.radar.stop_after_gated} target) — stopping loop."
+                    )
+                break
             interval = cfg.pipeline.sweep_interval
             logger.info(f"Sweep {sweep}: sleeping for {interval}s before next sweep")
             await asyncio.sleep(interval)
@@ -2250,6 +2511,19 @@ async def _run_radar_pipeline() -> None:
             set_pipeline_state(last_error=str(e), phase="crashed")
             await asyncio.sleep(cfg.pipeline.sweep_interval)
 
+    # Mark the learning epoch complete (records its final submission count).
+    if active_epoch_id:
+        try:
+            from autofill.src.core.db import AutofillDB
+
+            _db = await AutofillDB.create()
+            try:
+                await _db.complete_epoch(active_epoch_id)
+            finally:
+                await _db.close()
+        except Exception as exc:
+            logger.warning(f"Failed to complete learning epoch {active_epoch_id}: {exc}")
+
     await engine.shutdown(drain=False)
     await ta.stop_polling()
     set_pipeline_state(running=False, phase="shutdown")
@@ -2258,6 +2532,11 @@ async def _run_radar_pipeline() -> None:
     await _close_http_clients()
     await graph.close()
     await store.close()
+    # Distinct exit code so the supervisor knows the loop finished its bounded
+    # batch (stop_after_gated reached) instead of crashing. loop.py treats this
+    # as "done — do not restart".
+    if reached_target:
+        raise SystemExit(42)
 
 
 def run() -> None:

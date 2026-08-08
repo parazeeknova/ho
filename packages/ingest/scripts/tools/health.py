@@ -132,20 +132,10 @@ except Exception as e:
     fails += 1
 
 print()
-print("LLM")
-_register("GeneralCompute Cloud", lambda: True)
+print("Infra")
 _register("llama-server Embeddings :8900", lambda: http_ok("http://localhost:8900/health"))
-
-print()
-print("Firecrawl")
-_register("api              :3002", lambda: http_ok("http://localhost:3002"))
-_register("redis", lambda: container_running("firecrawl-redis-1"))
-_register("rabbitmq", lambda: container_running("firecrawl_rabbitmq_1"))
-_register("playwright", lambda: container_running("firecrawl-playwright-service-1"))
-_register("nuq-postgres", lambda: container_running("firecrawl-nuq-postgres-1"))
-
-print()
-print("Agent Memory")
+_register("searxng", lambda: container_running("firecrawl-searxng-1"))
+_register("neo4j", lambda: container_running("firecrawl-neo4j-1"))
 _register("agent-memory-db", lambda: container_running("firecrawl-agent-memory-db-1"))
 pgvector_ok = _register("pgvector :5433", lambda: check_port("localhost", 5433))
 
