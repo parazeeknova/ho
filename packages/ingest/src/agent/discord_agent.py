@@ -1198,7 +1198,10 @@ class DiscordAgent:
         if len(parts) > 1 and parts[1].isdigit():
             n = max(1, min(200, int(parts[1])))
         with contextlib.suppress(Exception):
-            await message.channel.send(f"🧹 Clearing last {n} messages + threads…")  # type: ignore[attr-defined]
+            _confirm_msg = await message.channel.send(  # type: ignore[attr-defined]
+                f"🧹 Clearing last {n} messages + threads…"
+            )
+        _confirmation_id = getattr(_confirm_msg, "id", None)  # noqa: F821
 
         deleted_msgs = 0
         deleted_threads = 0
@@ -1232,9 +1235,14 @@ class DiscordAgent:
                     continue
 
         # Messages (purge respects Discord's 14-day bulk-delete window).
+        # Delete EVERY message in range — including the bot's own pipeline
+        # notifications, which dominate this channel. The old check skipped
+        # non-🧹 bot messages, so "/clear 100" scanned 100 but only deleted
+        # the few human messages, leaving the bot spam behind.
         try:
             deleted = await ch.purge(  # type: ignore[attr-defined]
-                limit=n, check=lambda m: not m.author.bot or m.content.startswith("🧹")
+                limit=n,
+                check=lambda m: m.id != _confirmation_id,
             )
             deleted_msgs = len(deleted) if deleted else 0
         except Exception as e:
