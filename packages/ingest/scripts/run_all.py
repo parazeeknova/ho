@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import os
 import signal
 import subprocess
@@ -356,7 +357,149 @@ def _handle_sig(signum: int, frame) -> None:  # noqa: ANN001
     raise KeyboardInterrupt
 
 
+async def _system_stats() -> tuple[str, str, str, str, str]:
+    """Startup snapshot of DB, graph, RAG, ML, and Discord status.
+
+    Returns (pg, graph, rag, ml, discord) human-readable status strings.
+    """
+    import asyncio as _asyncio
+
+    async def _pg() -> str:
+        try:
+            from src.memory.pgvector_store import MemoryStore
+
+            store = await MemoryStore.create()
+            try:
+                async with store._pool.acquire() as c:
+                    obs = await c.fetchval("SELECT COUNT(*) FROM job_observations")
+                    cand = await c.fetchval("SELECT COUNT(*) FROM radar_candidates")
+                    acc = await c.fetchval(
+                        "SELECT COUNT(*) FROM radar_candidates WHERE eligibility='accepted'"
+                    )
+                    events = await c.fetchval("SELECT COUNT(*) FROM decision_events")
+                    rewards = await c.fetchval(
+                        "SELECT COUNT(*) FROM decision_events WHERE reward IS NOT NULL"
+                    )
+                    model = await c.fetchrow(
+                        "SELECT version, status FROM model_registry "
+                        "WHERE status='active' ORDER BY created_at DESC LIMIT 1"
+                    )
+                bits = [f"obs={obs}", f"cand={cand}", f"accepted={acc}"]
+                bits.append(f"events={events}")
+                bits.append(f"rewards={rewards}")
+                if model:
+                    bits.append(f"model={model['version']}({model['status']})")
+                return " | ".join(bits)
+            finally:
+                await store.close()
+        except Exception:
+            return "pg unavailable"
+
+    async def _graph() -> str:
+        try:
+            from src.graph.graph_store import GraphStore
+
+            g = await GraphStore.create()
+            try:
+                nodes = await g.node_count()
+                rels = await g.relationship_count()
+            finally:
+                await g.close()
+            return f"nodes={nodes} rels={rels}"
+        except Exception:
+            return "graph unavailable"
+
+    async def _rag() -> str:
+        try:
+            from src.memory.pgvector_store import MemoryStore
+
+            store = await MemoryStore.create()
+            try:
+                resume = await store.chunk_count()
+                persona = await store.persona_chunk_count()
+            finally:
+                await store.close()
+            return f"resume_chunks={resume} persona_chunks={persona}"
+        except Exception:
+            return "rag unavailable"
+
+    async def _ml() -> str:
+        try:
+            from src.memory.pgvector_store import MemoryStore
+
+            store = await MemoryStore.create()
+            try:
+                async with store._pool.acquire() as c:
+                    imp = await c.fetchval("SELECT COUNT(*) FROM impressions")
+                    outcomes = await c.fetchval("SELECT COUNT(*) FROM unattributed_outcomes")
+                    push = await c.fetchval(
+                        "SELECT 1 FROM gmail_push_state WHERE history_id != '' LIMIT 1"
+                    )
+            finally:
+                await store.close()
+            bits = [f"impressions={imp}"]
+            if outcomes:
+                bits.append(f"outcomes={outcomes}")
+            bits.append("gmail_push ON" if push else "gmail_push off")
+            return " | ".join(bits)
+        except Exception:
+            return "ml unavailable"
+
+    async def _discord() -> str:
+        import os as _os
+
+        token = (_os.getenv("DISCORD_BOT_TOKEN") or "").strip()
+        channel = (_os.getenv("DISCORD_CHANNEL_ID") or "").strip()
+        if not token or not channel:
+            return "NOT CONFIGURED"
+        # The Discord gateway runs inside the radar orchestrator process
+        # (loop.py spawns it). Check for that process, not "discord_agent".
+        try:
+            import subprocess as _sp
+
+            r = _sp.run(
+                ["pgrep", "-f", "radar.engine.orchestrator"],
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+            alive = bool((r.stdout or "").strip())
+        except Exception:
+            alive = False
+        return (  # noqa: E501
+            "configured · " + ("gateway in orchestrator" if alive else "no orchestrator running")
+        )
+
+    async def _all() -> tuple[str, str, str, str, str]:
+        return await _asyncio.gather(_pg(), _graph(), _rag(), _ml(), _discord())
+
+    return await _all()
+
+
 def main() -> int:
+    # Single-instance lock: only one `bun run run` may own the pipeline at a
+    # time. If another instance is already running, exit with a clear message
+    # instead of spawning a second radar + worker + embed that fight over the
+    # same DB, ports, and job queue.
+    import os as _os
+
+    lock_path = PROJECT / "logs" / "ho_run.lock"
+    log_dir = PROJECT / "logs"
+    log_dir.mkdir(exist_ok=True)
+    if lock_path.exists():
+        try:
+            old_pid = int(lock_path.read_text().strip())
+            _os.kill(old_pid, 0)
+            print(
+                f"[ho] another run is already active (pid {old_pid}). "
+                "Stop it first or run `bun run run` in that terminal.",
+                flush=True,
+            )
+            return 1
+        except ProcessLookupError, ValueError:
+            lock_path.unlink(missing_ok=True)
+    lock_path.write_text(str(_os.getpid()))
+
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--dry-run", action="store_true", help="Start infra only, then stop")
     ap.add_argument("--no-fill", action="store_true", help="Skip the autofill worker")
@@ -383,6 +526,13 @@ def main() -> int:
             print("[ho] embed server ✓ (:8900)", flush=True)
         _ensure_memory()
         _gmail_check()
+        # Startup snapshot: DB / graph / RAG / ML / Discord.
+        pg, graph, rag, ml, disc = await _system_stats()
+        print(f"[ho] db: {pg}", flush=True)
+        print(f"[ho] graph: {graph}", flush=True)
+        print(f"[ho] rag: {rag}", flush=True)
+        print(f"[ho] ml: {ml}", flush=True)
+        print(f"[ho] discord: {disc}", flush=True)
         # One-line sweep intent so the user knows what this run will do
         print(  # noqa: E501
             f"[ho] sweep config: workers={args.radar_workers}"
@@ -395,10 +545,16 @@ def main() -> int:
         return await _run_loop(args)
 
     try:
-        return asyncio.run(_run())
+        rc = asyncio.run(_run())
+        return rc
     except KeyboardInterrupt:
         print("[ho] stopped.", flush=True)
         return 0
+    finally:
+        # Release the single-instance lock so the next `bun run run` can start.
+        with contextlib.suppress(Exception):
+            if lock_path.exists() and lock_path.read_text().strip() == str(_os.getpid()):
+                lock_path.unlink()
 
 
 def _gmail_check() -> None:
