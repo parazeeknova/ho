@@ -568,6 +568,13 @@ class AutofillWorker:
                 if domain:
                     try:
                         if await self.db.domain_quarantined(domain):
+                            # The job was already CLAIMED (status=filling, lease
+                            # set) by the claim above. Release it back to
+                            # 'pending' so it is re-claimed after the domain's
+                            # cooldown — otherwise it stays 'filling' forever
+                            # and blocks the queue (the pre-fix deadlock).
+                            with contextlib.suppress(Exception):
+                                await self.db.reset_to_pending(job["job_id"])
                             self.semaphore.release()
                             logger.warning(
                                 "Skipping job: domain in circuit-breaker cooldown",

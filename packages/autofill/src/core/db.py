@@ -1000,6 +1000,24 @@ class AutofillDB:
             logger.info("Jobs included in morning digest", count=updated, job_ids=job_ids)
         return updated
 
+    async def reset_to_pending(self, job_id: str) -> None:
+        """Return a claimed job to 'pending' so it is re-claimed later.
+
+        Used when a job is claimed but immediately skipped (e.g. its domain is
+        in circuit-breaker cooldown): leaving it 'filling' would block the
+        queue until the lease. 'pending' lets a later claim pick it up after
+        the cooldown expires.
+        """
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE autofill_queue
+                SET status = 'pending', lease_expires = NOW(), updated_at = NOW()
+                WHERE job_id = $1 AND status = 'filling'
+                """,
+                job_id,
+            )
+
     async def bump_spam_retry(self, job_id: str) -> int:
         """Record one ATS spam-flag retry and re-queue the job.
 
