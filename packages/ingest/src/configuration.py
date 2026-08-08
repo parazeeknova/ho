@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -42,6 +43,14 @@ def _env_bool(key: str, default: bool) -> bool:
 
 def _env_str(key: str, default: str) -> str:
     return os.environ.get(key, default)
+
+
+def _env_list(key: str, default: list[str]) -> list[str]:
+    """Parse a comma/pipe-separated env var into a list, filtering empties."""
+    raw = os.environ.get(key, "")
+    if not raw.strip():
+        return default
+    return [item.strip() for item in re.split(r"[,\|]", raw) if item.strip()]
 
 
 # Configuration
@@ -229,6 +238,11 @@ class LLMConfig:
 
     api_key: str = field(default_factory=lambda: _env_str("GENERALCOMPUTE_API_KEY", ""))
     model: str = field(default_factory=lambda: _env_str("GENERALCOMPUTE_MODEL", "deepseek-v3.2"))
+    # Fallback chain tried in order when the primary model is overloaded,
+    # rate-limited, or errors out. Comma/pipe-separated in LLM_FALLBACK_MODELS.
+    fallback_models: list[str] = field(
+        default_factory=lambda: _env_list("LLM_FALLBACK_MODELS", ["deepseek-v3.1", "minimax-m2.7"])
+    )
     context_length: int = field(default_factory=lambda: _env_int("LLM_CONTEXT_LENGTH", 32768))
     token_rate: float = field(default_factory=lambda: _env_float("LLM_TOKEN_RATE", 1.4))
     token_max: int = field(default_factory=lambda: _env_int("LLM_TOKEN_MAX", 30))

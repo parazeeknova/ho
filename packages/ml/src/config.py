@@ -51,6 +51,11 @@ class GmailPushConfig:
         default_factory=lambda: _env_int("GMAIL_PUSH_POLL_INTERVAL_S", 180)
     )
     watch_ttl_days: int = field(default_factory=lambda: _env_int("GMAIL_WATCH_TTL_DAYS", 6))
+    # Streaming pull needs Google Application Default Credentials (ADC) for the
+    # Pub/Sub client. Without them (OAuth2-only Gmail access), streaming fails
+    # every loop and just spams warnings — history polling still works, so
+    # GMAIL_STREAMING=0 turns streaming off and relies on the poll fallback.
+    streaming: bool = field(default_factory=lambda: _env_bool("GMAIL_STREAMING", True))
 
 
 @dataclass

@@ -388,9 +388,29 @@ async def run_gmail_push_loop(store: Any) -> None:
 
                     logging.getLogger("gmail_push").warning(f"Gmail watch renewal failed: {e}")
 
-    task_stream = asyncio.create_task(_streaming_pull_loop(store))  # type: ignore[arg-type]
+    if cfg.streaming:
+        task_stream = asyncio.create_task(_streaming_pull_loop(store))  # type: ignore[arg-type]
+    else:
+        # OAuth2-only: no Pub/Sub ADC, so poll the Gmail history API directly.
+        task_stream = asyncio.create_task(_history_poll_loop(store, service))
     task_renewal = asyncio.create_task(_watch_renewal_hb())
     await asyncio.gather(task_stream, task_renewal)
+
+
+async def _history_poll_loop(store: Any, service: Any) -> None:
+    """Poll Gmail history on an interval using the OAuth2 service (no Pub/Sub
+    ADC needed). Runs when GMAIL_STREAMING=0."""
+    cfg = get_ml_config().gmail_push
+    while True:
+        try:
+            await _poll_cycle(store, service)
+        except Exception:
+            import logging
+
+            logging.getLogger("gmail_push").warning(
+                "Gmail history poll failed, will retry", exc_info=True
+            )
+        await asyncio.sleep(cfg.poll_interval_s)
 
 
 async def _streaming_pull_loop(store: Any) -> None:

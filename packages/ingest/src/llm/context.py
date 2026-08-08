@@ -43,6 +43,7 @@ class ContextManager:
         self.verbose = verbose
         cfg = config or get_config().llm
         self.model = cfg.model
+        self._fallback_models = [m for m in (cfg.fallback_models or []) if m and m != self.model]
         self._max_retries = cfg.max_retries
         self._retry_delay = cfg.retry_delay
         self._max_tokens = cfg.max_tokens
@@ -75,13 +76,16 @@ class ContextManager:
         _mt = max_tokens if max_tokens is not None else self._max_tokens
         est_tokens = len(current_prompt) // 3 + _mt
 
-        def _call_llm() -> str:
+        if self._client is None:
+            raise RuntimeError("LLM client not initialized: missing API key")
+
+        def _call_llm(model: str) -> str:
             messages: list[dict[str, str]] = []
             if system_prompt:
                 messages.append({"role": "system", "content": system_prompt})
             messages.append({"role": "user", "content": current_prompt})
             kwargs: dict[str, Any] = {
-                "model": self.model,
+                "model": model,
                 "messages": messages,
                 "max_tokens": _mt,
             }
@@ -91,44 +95,56 @@ class ContextManager:
             msg = resp.choices[0].message
             return msg.content or ""
 
-        if self._client is None:
-            raise RuntimeError("LLM client not initialized: missing API key")
-
+        # Try each model in the chain: primary first, then fallbacks. A model
+        # that is overloaded (429) or times out exhausts its retries, then we
+        # move to the next model instead of failing the whole request.
+        chain = [self.model, *self._fallback_models]
         last_error: Exception | None = None
-        backoff = self._retry_delay
-        for attempt in range(1, self._max_retries + 1):
-            await acquire_budget(est_tokens, interactive=interactive)
-            try:
-                output = await asyncio.to_thread(_call_llm)
-                release_budget()
-                return output
-            except asyncio.CancelledError:
-                release_budget()
-                raise
-            except Exception as e:
-                release_budget()
-                last_error = e
-                # 429 means the provider itself is throttled: the governor's
-                # shared cooldown already paces the whole fleet, so retrying
-                # here just multiplies sends against a closed door. Surface it
-                # to the caller (the queue requeues such candidates once).
-                if _is_429(str(e)):
-                    await handle_429()
+        for model in chain:
+            backoff = self._retry_delay
+            for attempt in range(1, self._max_retries + 1):
+                await acquire_budget(est_tokens, interactive=interactive)
+                try:
+                    output = await asyncio.to_thread(_call_llm, model)
+                    release_budget()
+                    return output
+                except asyncio.CancelledError:
+                    release_budget()
                     raise
-                wait = max(5.0, backoff * 3) if _is_transient(e) else backoff
-                logger.warning(
-                    f"LLM retry {attempt}/{self._max_retries}",
-                    retry_count=attempt,
-                    exception=str(e),
-                )
-            if attempt < self._max_retries:
-                await asyncio.sleep(wait)
-                backoff *= 2
+                except Exception as e:
+                    release_budget()
+                    last_error = e
+                    # 429 = provider throttled. Don't hammer the same model;
+                    # move to the next one in the chain immediately.
+                    if _is_429(str(e)):
+                        logger.warning(
+                            f"LLM model {model} rate-limited (429); switching fallback",
+                            model=model,
+                        )
+                        await handle_429()
+                        break
+                    wait = max(5.0, backoff * 3) if _is_transient(e) else backoff
+                    logger.warning(
+                        f"LLM retry {attempt}/{self._max_retries} on {model}",
+                        retry_count=attempt,
+                        model=model,
+                        exception=str(e),
+                    )
+                    if attempt < self._max_retries:
+                        await asyncio.sleep(wait)
+                        backoff *= 2
+            else:
+                # Model exhausted its retries; log and try next fallback.
+                continue
+            # broke out on 429 -> try next model.
+            continue
+
         logger.error(
-            f"LLM failed after {self._max_retries} retries",
+            "LLM failed on all models",
+            models=", ".join(chain),
             exception=str(last_error),
         )
-        raise RuntimeError(f"LLM failed after {self._max_retries} retries: {last_error}")
+        raise RuntimeError(f"LLM failed on all models [{', '.join(chain)}]: {last_error}")
 
     async def maybe_flush(self) -> None:
         pass
