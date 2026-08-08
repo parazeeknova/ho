@@ -10,7 +10,6 @@
   "scripts": {
     "run": "PYTHONPATH=.:packages/ingest:packages uv run python packages/ingest/scripts/run_all.py",
     "initm": "PYTHONPATH=.:packages/ingest:packages uv run python packages/autofill/scripts/init_memory.py",
-    "grill": "PYTHONPATH=.:packages/ingest:packages uv run python packages/autofill/scripts/grill_persona.py",
     "intel": "PYTHONPATH=.:packages/ingest:packages uv run python packages/ingest/scripts/intel/radar_intel.py",
     "health": "uv run python packages/ingest/scripts/tools/health.py",
     "backup": "uv run python packages/ingest/scripts/backup/checkpoint_backup.py",
