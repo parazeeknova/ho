@@ -317,17 +317,35 @@ async def _run_loop(args: argparse.Namespace) -> int:
     print(f"[ho] launching loop: {' '.join(cmd)}", flush=True)
     log_dir = PROJECT / "logs"
     log_dir.mkdir(exist_ok=True)
-    # Stream the loop's output to a file, never a pipe we don't drain — a pipe
-    # fills up (the radar children flood stdout) and the loop deadlocks.
-    with (log_dir / "run_all.log").open("ab") as out:
+    # Stream the loop's output to BOTH the console (so the user sees live
+    # sweep/status progress) AND run_all.log (for tailing). A bare pipe to
+    # stdout would deadlock if un-drained, so we drain it here.
+    log_path = log_dir / "run_all.log"
+    with (log_path).open("ab") as out:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=str(PROJECT),
             env=env,
-            stdout=out,
-            stderr=subprocess.STDOUT,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
         )
-        return await proc.wait()
+
+        async def _tee() -> None:
+            assert proc.stdout is not None
+            while True:
+                chunk = await proc.stdout.readline()
+                if not chunk:
+                    break
+                line = chunk.decode(errors="replace")
+                out.write(chunk)
+                out.flush()
+                sys.stdout.write(line)
+                sys.stdout.flush()
+
+        tee_task = asyncio.create_task(_tee())
+        rc = await proc.wait()
+        await tee_task
+        return rc
 
 
 def _handle_sig(signum: int, frame) -> None:  # noqa: ANN001
