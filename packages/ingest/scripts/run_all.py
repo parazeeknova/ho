@@ -169,22 +169,63 @@ def _ensure_embed_server() -> None:
         )
 
 
+def _memory_status() -> str:
+    """Human-readable memory status: persona present, resume indexed, summary
+    freshness vs the current resume source. Returns a status string."""
+    import json as _json
+
+    persona = REPO / "data" / "persona.json"
+    if not persona.exists():
+        return "NO persona.json — run `bun run init-memory` first"
+    try:
+        data = _json.loads(persona.read_text())
+    except Exception:
+        return "persona.json unreadable"
+    answers = len(data.get("answers", []))
+    summary = str(data.get("resume_summary") or "")
+    # Freshness probe: if the summary lacks the projects this repo's resume.tex
+    # carries, it was built before the latest resume and the matcher grounding
+    # is stale. (Only advisory — the resume may legitimately differ.)
+    fresh = True
+    for marker in ("Asocialmedia", "Verso", "Chorus", "Lumen", "asocialmedia"):
+        if marker in summary:
+            break
+    else:
+        if summary and "Singularity" not in summary:
+            fresh = False
+    parts = [f"persona: {answers} answers"]
+    if summary:
+        parts.append(f"resume_summary: {len(summary)} chars")
+    else:
+        parts.append("resume_summary: MISSING")
+    if not fresh:
+        parts.append("⚠ resume_summary may be STALE (missing latest projects)")
+    return "; ".join(parts)
+
+
 def _ensure_memory() -> None:
     persona = REPO / "data" / "persona.json"
-    if persona.exists():
+    if not persona.exists():
+        print("[run_all] persona.json missing — seeding memory non-interactively...", flush=True)
+        try:
+            env = dict(os.environ)
+            env["NON_INTERACTIVE"] = "1"
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(REPO / "packages" / "autofill" / "scripts" / "init_memory.py"),
+                ],
+                cwd=str(REPO),
+                env=env,
+                timeout=600,
+            )
+        except Exception as e:
+            print(f"[run_all] memory seed skipped ({e}); pipeline will use defaults", flush=True)
         return
-    print("[run_all] persona.json missing — seeding memory non-interactively...", flush=True)
-    try:
-        env = dict(os.environ)
-        env["NON_INTERACTIVE"] = "1"
-        subprocess.run(
-            [sys.executable, str(REPO / "packages" / "autofill" / "scripts" / "init_memory.py")],
-            cwd=str(REPO),
-            env=env,
-            timeout=600,
-        )
-    except Exception as e:
-        print(f"[run_all] memory seed skipped ({e}); pipeline will use defaults", flush=True)
+    # Present but possibly stale: report it so the user knows to re-run
+    # init-memory after a resume update instead of silently matching on old
+    # grounding.
+    print(f"[run_all] memory: {_memory_status()}", flush=True)
 
 
 async def _run_loop(args: argparse.Namespace) -> int:
@@ -287,7 +328,11 @@ def _gmail_check() -> None:
     import os as _os
 
     if _os.getenv("GMAIL_PUSH", "").strip() != "1":
-        print("[run_all] Gmail listener: disabled (GMAIL_PUSH != 1)", flush=True)
+        print(  # noqa: E501
+            "[run_all] Gmail listener: disabled (GMAIL_PUSH != 1) — "
+            "set GMAIL_PUSH=1 to capture outcome emails",
+            flush=True,
+        )
         return
     missing = [
         k
@@ -305,11 +350,30 @@ def _gmail_check() -> None:
             " — outcome emails will not be captured",
             flush=True,
         )
-    else:
-        print(  # noqa: E501
-            f"[run_all] Gmail listener: armed (project={_os.getenv('GCP_PUBSUB_PROJECT')})",
-            flush=True,
+        return
+    # The push daemon is a loop.py child (gmail_push). Verify it is actually
+    # running, not just configured.
+    push_alive = False
+    try:
+        import subprocess as _sp
+
+        out = _sp.run(
+            ["pgrep", "-f", "ml.src.outcomes.gmail_push"],
+            capture_output=True,
+            text=True,
+            timeout=3,
         )
+        push_alive = bool((out.stdout or "").strip())
+    except Exception:
+        push_alive = False
+    state = (  # noqa: E501
+        "daemon running" if push_alive else "daemon NOT running (loop will start it)"
+    )
+    print(  # noqa: E501
+        f"[run_all] Gmail listener: configured (project="
+        f"{_os.getenv('GCP_PUBSUB_PROJECT')}) · {state}",
+        flush=True,
+    )
 
 
 def _autoheal_containers() -> None:

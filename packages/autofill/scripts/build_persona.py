@@ -41,7 +41,11 @@ logger = get_logger("build_persona")
 PERSONA_JSON = REPO / "data" / "persona.json"  # repo root
 
 # Resume sections to fold into the persona.json resume_summary field.
-_RESUME_SECTIONS = ("header", "skills", "experience", "education", "achievements")
+# NOTE: "projects" is critical — the resume PDF's biggest section. It was
+# missing here, so every project bullet (Asocialmedia, Verso, Lumen, Chorus)
+# was silently dropped from the matcher grounding, leaving the LLM scoring
+# against a summary that described none of the candidate's actual work.
+_RESUME_SECTIONS = ("header", "skills", "experience", "projects", "education", "achievements")
 
 
 def load_persona(path: Path = PERSONA_JSON) -> list[dict[str, str]]:
@@ -107,36 +111,53 @@ def _clean(text: str) -> str:
 
 
 async def resume_summary(store: MemoryStore) -> str:
-    """Fetch resume_embeddings and produce a compact, de-duplicated summary."""
+    """Fetch resume_embeddings and produce a compact, de-duplicated summary.
+
+    Retrieves chunks by SECTION rather than one semantic query, so every
+    project/experience bullet is captured — a single "resume summary" query
+    only surfaces chunks semantically close to that phrase (the heading and
+    intro), silently dropping the specific project bullets the matcher needs.
+    """
     cfg = get_config().embed
     parts: list[str] = []
-    async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0)) as client:
-        resp = await client.post(
-            f"{cfg.url}/embeddings",
-            json={"model": cfg.model, "input": ["resume summary"]},
-        )
-        resp.raise_for_status()
-        emb = resp.json()["data"][0]["embedding"]
     seen: set[str] = set()
-    for r in await store.search_similar_chunks(emb, top_k=40):
-        sec = r["section"]
-        if sec not in _RESUME_SECTIONS:
-            continue
-        cleaned = _clean(r["content"])
-        if not cleaned or cleaned in seen:
-            continue
-        seen.add(cleaned)
-        if sec == "skills":
-            parts.append(f"- Skills: {cleaned}")
-        elif sec == "experience":
-            parts.append(f"- Experience: {cleaned}")
-        elif sec == "education":
-            parts.append(f"- Education: {cleaned}")
-        elif sec == "achievements":
-            parts.append(f"- Achievements: {cleaned}")
-        else:
-            parts.append(f"- {cleaned}")
-    return "\n".join(parts[:40])
+    # Query per section so the retrieval covers all of them, not just the
+    # chunks closest to "resume summary".
+    section_queries = {
+        "header": "candidate contact information name",
+        "skills": "candidate technical skills technologies",
+        "experience": "candidate work experience roles employers",
+        "projects": "candidate projects built products",
+        "education": "candidate education university degree",
+        "achievements": "candidate achievements awards publications hackathons",
+    }
+    async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0)) as client:
+        for sec, query in section_queries.items():
+            resp = await client.post(
+                f"{cfg.url}/embeddings",
+                json={"model": cfg.model, "input": [query]},
+            )
+            resp.raise_for_status()
+            emb = resp.json()["data"][0]["embedding"]
+            for r in await store.search_similar_chunks(emb, top_k=20):
+                rsec = r["section"]
+                if rsec != sec or rsec not in _RESUME_SECTIONS:
+                    continue
+                cleaned = _clean(r["content"])
+                if not cleaned or cleaned in seen:
+                    continue
+                seen.add(cleaned)
+                if rsec == "skills":
+                    parts.append(f"- Skills: {cleaned}")
+                elif rsec == "experience":
+                    parts.append(f"- Experience: {cleaned}")
+                elif rsec == "education":
+                    parts.append(f"- Education: {cleaned}")
+                elif rsec == "achievements":
+                    parts.append(f"- Achievements: {cleaned}")
+                else:
+                    parts.append(f"- {cleaned}")
+    return "\n".join(parts[:60])
 
 
 async def embed_chunks(

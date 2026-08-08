@@ -106,6 +106,44 @@ def _last_log_age(log_path: Path) -> float:
             return 0.0
 
 
+async def _status_dashboard(db: Any) -> str:
+    """One-line live pipeline status from the DB: discovery, dork, YC, outreach,
+    ML learning, and the autofill queue. Best-effort — a failed read yields a
+    short line, never a crash."""
+    try:
+        async with db._pool.acquire() as c:
+            obs = await c.fetchval("SELECT COUNT(*) FROM job_observations")
+            cand = await c.fetchval("SELECT COUNT(*) FROM radar_candidates")
+            accepted = await c.fetchval(
+                "SELECT COUNT(*) FROM radar_candidates WHERE eligibility='accepted'"
+            )
+            sources = await c.fetchval("SELECT COUNT(*) FROM discovered_sources")
+            events = await c.fetchval("SELECT COUNT(*) FROM decision_events")
+            rewards = await c.fetchval(
+                "SELECT COUNT(*) FROM decision_events WHERE reward IS NOT NULL"
+            )
+            outcomes = await c.fetchval("SELECT COUNT(*) FROM unattributed_outcomes")
+            model = await c.fetchrow(
+                "SELECT version, status FROM model_registry "
+                "WHERE status='active' ORDER BY created_at DESC LIMIT 1"
+            )
+    except Exception:
+        return "[status] pipeline state unavailable"
+    parts = [
+        f"scrape={obs}",
+        f"cand={cand}",
+        f"accepted={accepted}",
+        f"sources={sources}",
+        f"events={events}",
+        f"rewards={rewards}",
+    ]
+    if outcomes:
+        parts.append(f"outcomes={outcomes}")
+    if model:
+        parts.append(f"model={model['version']}({model['status']})")
+    return "[status] " + " | ".join(parts)
+
+
 def _base_env() -> dict[str, str]:
     env = os.environ.copy()
     env.setdefault("OVERNIGHT_LOOP", "true")
@@ -346,6 +384,7 @@ async def main() -> None:
                 f"errored {balance['errored']}",
                 flush=True,
             )
+            print(await _status_dashboard(db), flush=True)
 
             # Once the radar reached its target, we only wait for the autofill
             # queue to drain (open = pending/filling/awaiting_review) before
