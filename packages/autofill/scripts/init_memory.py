@@ -172,7 +172,7 @@ def _missing_persona_items(persona_json: Path) -> set[str]:
     from the old file.
     """
     try:
-        from grill_persona import CONTACT_FIELDS, CORE_QUESTIONS
+        from grill_persona import CONTACT_FIELDS, CORE_QUESTIONS  # type: ignore[import-not-found]
 
         data = json.loads(persona_json.read_text())
     except Exception:

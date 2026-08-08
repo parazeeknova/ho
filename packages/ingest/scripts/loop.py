@@ -415,8 +415,9 @@ async def main() -> None:
                 # Epoch target reached: the run's goal is met. Mark the radar
                 # done so we only drain whatever remains, then exit.
                 if epoch_open >= epoch_target:
+                    _eid = str((active or {}).get("epoch_id") or "")[:16]
                     print(
-                        f"[loop] epoch {active.get('epoch_id')[:16]} reached "
+                        f"[loop] epoch {_eid} reached "
                         f"{epoch_open}/{epoch_target} applications; finishing",
                         flush=True,
                     )
