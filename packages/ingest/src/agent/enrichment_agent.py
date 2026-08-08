@@ -109,7 +109,8 @@ class EnrichmentAgent:
                 # derive it as match_percent*0.85 — that fake is removed. Preserve
                 # any LLM-set value in shadow mode; the calibrated value will
                 # overwrite it when the model is live (Phase 4).
-                job.setdefault("shortlist_probability", job["match_percent"])
+                if job.get("shortlist_probability") is None:
+                    job["shortlist_probability"] = None  # calibrated only — not LLM heuristic
 
         return job
 

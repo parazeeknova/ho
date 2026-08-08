@@ -1507,10 +1507,10 @@ class MemoryStore:
                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,
                         $15::jsonb,$16,$17::jsonb,$18::jsonb,$19,$20::jsonb,$21,$22::jsonb)
                 ON CONFLICT (dedup_key) DO UPDATE SET
-                    match_percent = GREATEST(jobs_ledger.match_percent, EXCLUDED.match_percent),
-                    shortlist_probability = GREATEST(
-                        jobs_ledger.shortlist_probability,
-                        EXCLUDED.shortlist_probability
+                    match_percent = EXCLUDED.match_percent,
+                    shortlist_probability = COALESCE(
+                        NULLIF(EXCLUDED.shortlist_probability, 0),
+                        jobs_ledger.shortlist_probability
                     ),
                     company_description = COALESCE(
                         NULLIF(jobs_ledger.company_description, ''),
@@ -1906,12 +1906,10 @@ class MemoryStore:
                     first_seen = LEAST(
                         radar_candidates.first_seen, EXCLUDED.first_seen
                     ),
-                    match_percent = GREATEST(
-                        radar_candidates.match_percent, EXCLUDED.match_percent
-                    ),
-                    shortlist_probability = GREATEST(
-                        radar_candidates.shortlist_probability,
-                        EXCLUDED.shortlist_probability
+                    match_percent = EXCLUDED.match_percent,
+                    shortlist_probability = COALESCE(
+                        NULLIF(EXCLUDED.shortlist_probability, 0),
+                        radar_candidates.shortlist_probability
                     ),
                     eligibility = EXCLUDED.eligibility,
                     rejection_reason = COALESCE(

@@ -32,9 +32,9 @@ PIPELINE_COOLDOWN = 300  # run.py can take >3min to come up; avoid double relaun
 
 EMBED_HEALTH = "http://127.0.0.1:8900/health"
 CONTAINERS = [
-    "firecrawl_searxng_1",
-    "firecrawl_neo4j_1",
-    "firecrawl_agent-memory-db_1",
+    "ho_searxng_1",
+    "ho_neo4j_1",
+    "ho_agent-memory-db_1",
 ]
 
 
@@ -121,7 +121,7 @@ class Watchdog:
                     log(f"restarted container {name}: rc={rc} {err[:80]}")
                 else:
                     log(f"container {name} missing, running compose up")
-                    svc = name.replace("firecrawl_", "")
+                    svc = name.replace("ho_", "")
                     sh(f"docker compose -f {PROJECT / 'docker-compose.yaml'} up -d {svc}")
         return statuses
 
@@ -227,10 +227,10 @@ class Watchdog:
         try:
             # Postgres is the ingest's dependency; keep it running.
             code, out = sh("podman ps --format '{{.Names}}'")
-            pg_down = code == 0 and "firecrawl_agent-memory-db_1" not in out
+            pg_down = code == 0 and "ho_agent-memory-db_1" not in out
             if pg_down and self.due("pg"):
                 log("postgres container down, starting it")
-                sh("podman start firecrawl_agent-memory-db_1")
+                sh("podman start ho_agent-memory-db_1")
             self.heal_embed_backfill()
             self.heal_intel_loop()
             self.heal_smart_intel()

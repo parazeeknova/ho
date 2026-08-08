@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import re
 from typing import Any
@@ -140,6 +141,33 @@ async def arm_watch(service: Any, store: Any) -> dict[str, Any]:
     return result
 
 
+async def advance_history_state(store: Any, new_history_id: str) -> None:
+    """Atomically advance the stored history_id after a successful process cycle.
+
+    Only updates when the new value is (lexicographically) greater — Gmail
+    historyIds are monotonically increasing, so this is safe even if an older
+    notification's ack is processed late. This prevents the old bug where
+    every notification reprocessed the same H1->H2 window (e.g. H1->H3, then
+    H1->H4) instead of moving forward (H3, then H4).
+    """
+    try:
+        async with store._pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE gmail_push_state
+                SET history_id = CASE
+                    WHEN GREATEST(history_id, $2) = $2 THEN $2
+                    ELSE history_id END,
+                    updated_at = NOW()
+                WHERE id = 1
+                """,
+                1,
+                str(new_history_id),
+            )
+    except Exception:
+        pass
+
+
 async def fetch_new_messages(service: Any, start_history_id: str) -> list[dict[str, Any]]:
     """Gmail history.list → new message metas since start_history_id."""
     try:
@@ -151,7 +179,12 @@ async def fetch_new_messages(service: Any, start_history_id: str) -> list[dict[s
                 .execute()
             )
         )
-    except Exception:
+    except Exception as e:
+        # HistoryId expired (stale / too old): callers should fall back to a
+        # full INBOX sync rather than swallowing the error as "no messages".
+        err = str(e)
+        if "historyid" in err.lower() or "invalid" in err.lower():
+            raise RuntimeError(f"historyId expired: {start_history_id}") from e
         return []
     messages: list[dict[str, Any]] = []
     for h in resp.get("history", []) or []:
@@ -160,6 +193,98 @@ async def fetch_new_messages(service: Any, start_history_id: str) -> list[dict[s
             if msg.get("id"):
                 messages.append(msg)
     return messages
+
+
+async def full_inbox_sync(store: Any, service: Any) -> None:
+    """Fallback when historyId is stale: list the last INBOX messages directly.
+
+    Uses users.messages.list instead of history.list, then processes them
+    through the normal dedup/classify/outcome path. The latest historyId is
+    captured and advanced from the subsequent arm_watch.
+    """
+    try:
+        resp = await asyncio.to_thread(
+            lambda: (
+                service.users()
+                .messages()
+                .list(userId="me", labelIds=["INBOX"], maxResults=30, q="")
+                .execute()
+            )
+        )
+        messages = resp.get("messages", []) or []
+        for meta in messages[:30]:
+            msg_id = meta.get("id")
+            if not msg_id:
+                continue
+            try:
+                async with store._pool.acquire() as conn:
+                    exists = await conn.fetchval(
+                        "SELECT 1 FROM decision_events WHERE meta->>'gmail_message_id' = $1 LIMIT 1",
+                        msg_id,
+                    )
+                    if exists:
+                        continue
+            except Exception:
+                pass
+            msg = await get_message(service, msg_id)
+            if not msg:
+                continue
+            subject, sender, body = extract_text_from_message(msg)
+            kind = classify_email(subject, body)
+            if kind in ("otp", "other"):
+                continue
+            from .outcome_resolver import resolve_outcome
+
+            resolution = await resolve_outcome(
+                store, {"subject": subject, "from": sender, "snippet": body[:500]}
+            )
+            job_id = resolution.get("job_id")
+            confidence = resolution.get("confidence", 0.0)
+            if job_id is None or confidence < 0.35:
+                try:
+                    async with store._pool.acquire() as conn:
+                        await conn.execute(
+                            """
+                            INSERT INTO unattributed_outcomes (email_kind, company, role, subject, snippet, confidence, created_at)
+                            VALUES ($1,$2,$3,$4,$5,$6,NOW())
+                            """,
+                            kind,
+                            sender,
+                            extract_role(subject) or "",
+                            subject[:300],
+                            body[:500],
+                            confidence,
+                        )
+                except Exception:
+                    pass
+                continue
+            # Emit reward event to the originating impression (time-proximate).
+            from .events import DecisionEvent, emit_event
+
+            reward_ts = msg.get("internalDate")
+            originating = await _latest_impression_for_job(store, job_id, reward_ts=reward_ts) or {}
+            from .reward import reward_for
+
+            event = DecisionEvent(
+                job_id=job_id,
+                event_type=kind,
+                reward=reward_for(kind),
+                impression_id=originating.get("impression_id"),
+                candidate_snapshot_id=originating.get("candidate_snapshot_id"),
+                job_snapshot_id=originating.get("job_snapshot_id"),
+                model_version=str(originating.get("model_version") or ""),
+                policy=str(originating.get("policy") or ""),
+                feature_version=str(originating.get("feature_version") or ""),
+                source=str(originating.get("source") or ""),
+                meta={
+                    "gmail_message_id": msg_id,
+                    "subject": subject[:200],
+                    "confidence": confidence,
+                },
+            )
+            await emit_event(store, event)
+    except Exception:
+        pass
 
 
 async def get_message(service: Any, msg_id: str) -> dict[str, Any] | None:
@@ -201,17 +326,45 @@ def extract_text_from_message(msg: dict[str, Any]) -> tuple[str, str, str]:
 # Pub/Sub streaming pull loop
 
 
-async def run_gmail_push_loop(store: Any) -> None:
-    """Main loop: streaming pull on Pub/Sub, process history, emit reward events.
+_WATCH_RENEW_DAYS = 1  # re-arm the watch every 24h (expiry is 7d)
 
-    Designed to run as a daemon (loop.py 3rd child). Falls back to history
-    polling every poll_interval_s if Pub/Sub is unreachable.
+
+async def _is_watch_stale(store: Any, watch_ttl_days: int | None = None) -> bool:
+    """True when the stored watch_expiry is within one day of expiry (or absent)."""
+    try:
+        async with store._pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT watch_expiry FROM gmail_push_state WHERE id=1")
+            if not row or not row["watch_expiry"]:
+                return True
+            import time
+
+            exp_ms = int(row["watch_expiry"] or "0")
+            if exp_ms <= 0:
+                return True
+            # Gmail `expiration` is epoch-ms. Renew when it is less than a day
+            # away (the P0 'silent expiry' fix) rather than waiting for the
+            # watch to be dead and notifications to have already been lost.
+            return exp_ms - int(time.time() * 1000) < 86400000
+    except Exception:
+        return False
+
+
+async def run_gmail_push_loop(store: Any) -> None:
+    """Long-lived Gmail outcome daemon.
+
+    Runs TWO concurrent coroutines: a streaming Pub/Sub subscriber (instant
+    notifications) and a watch-renewal/history-poll heartbeat. The daemon is
+    independent of any application epoch — it must never die when a bounded
+    run drains (the review's P0 'daemon dies when the run ends' fix is in
+    loop.py, which excludes this child from bounded-run termination).
+
+    HistoryIds are advanced atomically via advance_history_state after each
+    successful _process_history, so recovery never replays the same window.
     """
     cfg = get_ml_config().gmail_push
     if not cfg.enabled:
         return
 
-    # Try to arm watch on startup
     try:
         service = await _get_gmail_service()
         await arm_watch(service, store)
@@ -221,17 +374,93 @@ async def run_gmail_push_loop(store: Any) -> None:
         logging.getLogger("gmail_push").warning(f"Gmail watch arm failed, will retry: {e}")
         service = None  # type: ignore[assignment]
 
+    async def _watch_renewal_hb() -> None:
+        while True:
+            await asyncio.sleep(24 * 3600)
+            if await _is_watch_stale(store, cfg.watch_ttl_days):
+                try:
+                    await arm_watch(service, store)  # type: ignore[arg-type]
+                    import logging
+
+                    logging.getLogger("gmail_push").info("Gmail watch renewed (24h heartbeat)")
+                except Exception as e:
+                    import logging
+
+                    logging.getLogger("gmail_push").warning(f"Gmail watch renewal failed: {e}")
+
+    task_stream = asyncio.create_task(_streaming_pull_loop(store))  # type: ignore[arg-type]
+    task_renewal = asyncio.create_task(_watch_renewal_hb())
+    await asyncio.gather(task_stream, task_renewal)
+
+
+async def _streaming_pull_loop(store: Any) -> None:
+    """Long-lived streaming subscriber: Pub/Sub streaming_pull (instant).
+
+    Creates one SubscriberClient and opens a streaming_pull. Pub/Sub delivers
+    messages within seconds of the INBOX label change — no polling delay.
+    The fallback _history_poll_hb runs alongside for recovery gaps.
+    """
+    cfg = get_ml_config().gmail_push
     while True:
         try:
-            await _poll_cycle(store, service)
+            from google.cloud import pubsub_v1
+
+            subscriber = pubsub_v1.SubscriberClient()
+            subscription_path = subscriber.subscription_path(cfg.project_id, cfg.subscription)
+
+            # StreamingFuture: open a long-lived streaming_pull; messages are
+            # delivered via the callback on the I/O thread, forwarded to asyncio
+            # via the queue (message.ack() is called directly on the I/O thread
+            # via the callback, which is safe for the Pub/Sub client).
+            queue: asyncio.Queue[str | None] = asyncio.Queue()
+
+            def _callback(message: Any, _q: asyncio.Queue[str | None] = queue) -> None:
+                try:
+                    data = json.loads(message.data.decode()) if message.data else {}
+                    queue.put_nowait(  # noqa: B023
+                        str(data.get("historyId", "") or "")
+                    )
+                except Exception:
+                    pass
+                with contextlib.suppress(Exception):
+                    message.ack()  # type: ignore[attr-defined]
+
+            streaming_future = subscriber.subscribe(subscription_path, callback=_callback)
+            try:
+                while True:
+                    history_id = await asyncio.wait_for(queue.get(), timeout=5)
+                    if history_id:
+                        try:
+                            await _process_history(store, None, history_id)
+                            await advance_history_state(store, history_id)
+                        except RuntimeError as e:
+                            # Stale historyId — recover with a full INBOX sync,
+                            # then re-arm and advance from the fresh watch.
+                            if "historyId expired" in str(e):
+                                try:
+                                    service = await _get_gmail_service()
+                                    await full_inbox_sync(store, service)
+                                    await arm_watch(service, store)  # type: ignore[arg-type]
+                                except Exception:
+                                    pass
+                            else:
+                                raise
+                    queue.task_done()
+            finally:
+                with contextlib.suppress(Exception):
+                    streaming_future.cancel()
+                with contextlib.suppress(Exception):
+                    subscriber.close()
         except Exception as e:
             import logging
 
-            logging.getLogger("gmail_push").warning(f"Gmail push cycle failed: {e}")
-        await asyncio.sleep(cfg.poll_interval_s)
+            logging.getLogger("gmail_push").warning(
+                f"streaming_pull error, falling back to history poll: {e}"
+            )
+            await asyncio.sleep(30)
 
 
-async def _poll_cycle(store: Any, service: Any) -> None:
+async def _poll_cycle(store: Any, service: Any) -> None:  # kept for history-poll fallback callers
     """One poll: try Pub/Sub streaming pull, fall back to history polling."""
     cfg = get_ml_config().gmail_push
     # Try Pub/Sub streaming pull with a short deadline (non-blocking attempt)

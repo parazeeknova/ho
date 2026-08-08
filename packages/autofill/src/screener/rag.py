@@ -372,6 +372,85 @@ def _select_answer_matches(answer: str, options: list[str]) -> str | None:
         for o in options:
             if o.lower() == clause.lower():
                 return o
+    # Education enrollment: Yes/No doesn't match long options like
+    # "I have already graduated" / "further in the future" — try enrolled semantics.
+    if low in ("yes", "no"):
+        # Map Yes (enrolled) -> the non-graduated / currently-enrolled option
+        # Map No (already graduated) -> graduated option — only when the option
+        # set is clearly about graduation status (contains graduated/enrolled wording).
+        joined = " ".join(options).lower()
+        if "graduat" in joined or "enrolled" in joined or "further" in joined:
+            if low == "yes":
+                # Enrolled: pick the currently-enrolled / not-yet-graduated option
+                for o in options:
+                    ol = o.lower()
+                    if (
+                        "currently enrolled" in ol
+                        or "enrolled" in ol
+                        or "have not" in ol
+                        or "have yet" in ol
+                    ):
+                        return o
+                    if "further" in ol or "anticipated" in ol:
+                        # GoDaddy-style: "My anticipated graduation date is further..."
+                        # means not yet graduated -> correct for enrolled.
+                        return o
+                # Fallback: the non-grad option (without "already graduated")
+                non_graduated = [
+                    o
+                    for o in options
+                    if "already graduated" not in o.lower() and "have already" not in o.lower()
+                ]
+                if len(non_graduated) == 1:
+                    return non_graduated[0]
+            else:  # No -> already graduated
+                for o in options:
+                    if "already graduated" in o.lower() or "have already" in o.lower():  # noqa: E501
+                        return o
+    # "Others (please specify)" without detail would invent data — prefer
+    # a concrete source. When kb is Other(s)/Others and options include
+    # a covered source (LinkedIn/Referral/Job board/Company site/GitHub),
+    # pick the covered source that matches the actual discovery source.
+    if low in ("others", "other", "other (please specify)", "others (please specify)"):
+        # Prefer a concrete source over Others-please-specify
+        for o in options:
+            ol = o.lower()
+            if any(
+                k in ol
+                for k in (
+                    "job board",
+                    "company website",
+                    "career",
+                    "greenhouse",
+                    "github",
+                    "referral",
+                )
+            ):
+                return o
+        for o in options:
+            ol = o.lower()
+            if any(k in ol for k in ("linkedin", "indeed", "angel", "wellfound")):
+                return o
+    # "Others (please specify)" without detail would invent data — prefer a concrete source.
+    if low in ("others", "other", "other (please specify)", "others (please specify)"):
+        for o in options:
+            ol = o.lower()
+            if any(
+                k in ol
+                for k in (
+                    "job board",
+                    "company website",
+                    "career",
+                    "greenhouse",
+                    "github",
+                    "referral",
+                )
+            ):
+                return o
+        for o in options:
+            ol = o.lower()
+            if any(k in ol for k in ("linkedin", "indeed", "wellfound")):
+                return o
     subs = [o for o in options if low and low in o.lower()]
     if len(subs) == 1:
         return subs[0]
@@ -1395,6 +1474,15 @@ _NEGATED_SPONSOR_RE = re.compile(
 # previously worked for one of our sister brand companies?" with "Agoda"/"KAYAK"
 # — companies the candidate never worked at), so these must be resolved
 # deterministically to the negative/decline stance.
+
+# Referrer-name free-text that follows a referral gate (e.g. "Name of referrer",
+# "Who referred you?"). When the gate was answered No (employee_relation=No,
+# no referrer), the name field must stay blank/N/A — never invent a name.
+_REFERRAL_NAME_RE = re.compile(
+    r"(?:name|email|contact).*(?:referr|related|employee)|referr.*(?:name|email)|"
+    r"who (?:referred|recommended) you|referral (?:name|contact|email)",
+    re.I,
+)
 
 # Explicitly an EMPLOYMENT/RELATIONSHIP/REFERRAL question, not a skill question
 # ("have you worked with Python?") — anchored on the candidate's own status.
@@ -2606,6 +2694,32 @@ class ScreenerRAG:
         start = str(edu.get("start_year") or "").strip()
         grad = str(edu.get("grad_year") or "").strip()
 
+        # GoDaddy internship graduation timing: the anticipated-date select has
+        # options like "My anticipated graduation date is within the same year as
+        # this internship" / "in the spring or summer of the year after" /
+        # "further in the future...". Grad year 2027 + internship Summer 2027
+        # -> "within the same year as this internship" (exact year-aligned answer).
+        # This must run before the generic grad-year branch so the year maps to
+        # the right semester-relative option rather than a bare "2027".
+        if re.search(
+            r"anticipated graduation date.*in correlation with this internship",
+            q_lower,
+        ):
+            # Internship year is embedded in the question's internship label
+            # ("Summer 2027 Internships") handled upstream; here we rely on the
+            # grad year and return the answer text that SELECTS the right option
+            # via substring match in _select_answer_matches.
+            if grad:
+                # Return grad year so it matches "further in the future" vs dated options
+                # via the enrolled Yes/No handler above; for dated semesters the
+                # form expects a year-explicit option, for GoDaddy the options are
+                # relative ("within same year") so return the dated phrasing.
+                if "2027" in grad:
+                    return (
+                        "My anticipated graduation date is within the same year as this internship."
+                    )
+                return grad
+            return None
         # YEAR questions must be checked FIRST — "what year did you start
         # college" contains "college" and would otherwise match the school
         # branch and return the school name. "undergraduate"/"bachelor" must
@@ -2616,12 +2730,14 @@ class ScreenerRAG:
             q_lower,
         ):
             return grad or None
-        if re.search(r"start.*(year|college|university)|year did you (start|begin)", q_lower):
+        if re.search(
+            r"^start year$|^start.*(year|college|university)|year did you (start|begin)", q_lower
+        ):
             return start or None
         if re.search(r"enrolled|currently (enrolled|attending|pursuing)", q_lower):
             return "Yes" if enrolled else "No"
         if re.search(
-            r"degree (program|title|type)|field of (study|specialization|major)|"
+            r"^degree$|degree (program|title|type)|field of (study|specialization|major)|"
             r"major|specialization|what degree",
             q_lower,
         ):
@@ -3075,6 +3191,30 @@ class ScreenerRAG:
         if persona_ans is not None:
             return _normalize_start_date(persona_ans) if key in _START_DATE_KEYS else persona_ans
 
+        # Conditional free-text sibling of a sourcing select
+        # "If specified fill below" / "If Other please specify"). The main
+        # sourcing select already handled `Others`; this conditional box must
+        # stay blank when a concrete source was chosen — filling it with
+        # "LinkedIn" again is wrong (the user saw it repeat for ElevenLabs).
+        if "if" in q_lower and (
+            "if specified" in q_lower
+            or "if other" in q_lower
+            or ("other" in q_lower and "please specify" in q_lower)
+        ):
+            return None
+        # Defer "Others (please specify)" sourcing selects even harder at the
+        # conditional-free-text sibling: blank text fields would otherwise
+        # reach the LLM which mirrors the select's "LinkedIn" into the box.
+        if q_lower.strip() in (
+            "others",
+            "others (please specify)",
+            "other (please specify)",
+            "other",
+        ):
+            # This label (no surrounding question) is the conditional companion
+            # box itself — never fill it. The main sourcing select's answer
+            # decides whether Others was actually chosen.
+            return None
         # Education facts resolve ONLY from configured data (exact answers /
         # persona above, or the profile's education block). The LLM has
         # fabricated a university and guessed enrollment — never let it answer
@@ -3082,11 +3222,26 @@ class ScreenerRAG:
         # on Discord / defers, never fabricates. expected_graduation routes
         # here too ("when do you expect to graduate?" matches the
         # expected_graduation rule BEFORE education).
+        # A bare `Degree` / `Start year` label from Greenhouse's discipline
+        # mapping is an education question even though personal_rules doesn't
+        # capture it as "degree (program|title|type)" — try _education_answer
+        # as a fallback so the label never reaches the LLM or blank-defer path.
         if key in ("education", "expected_graduation"):
             edu = self._education_answer(q, q_lower)
             if edu is not None:
                 return edu
             return None
+        if q_lower.strip() in (
+            "degree",
+            "start year",
+            "start date",
+            "discipline",
+            "major",
+            "field of study",
+        ):
+            edu = self._education_answer(q, q_lower)
+            if edu is not None:
+                return edu
 
         cfg = get_config()
         min_salary = getattr(cfg.candidate, "min_salary", "Flexible / Open to discussion")
@@ -3186,6 +3341,14 @@ class ScreenerRAG:
             # through to the LLM: the deterministic policies above resolve the
             # common cases, and the grounded LLM is a better backstop than
             # deferring a clearly-answerable form.
+            # Conditional sourcing free-text companion (e.g. the "If Other please
+            # specify" box after "How did you hear about us?"). Leave blank unless
+            # the main sourcing select actually chose Others — never mirror LinkedIn.
+            ql = q.lower()
+            if "if" in ql and ("if specified" in ql or ("other" in ql and "please specify" in ql)):
+                continue
+            if ql.strip() in ("others (please specify)", "other (please specify)"):
+                continue
             if _SENSITIVE_QUESTION_RE.search(q.lower()):
                 answers[q] = ASK_USER
                 continue

@@ -116,6 +116,24 @@ def _compose_up() -> bool:
     return True
 
 
+def _preflight_backup() -> None:
+    """Checkpoint volumes before the sweep starts (fire-and-forget, 90s cap)."""
+    import subprocess as _sp
+
+    try:
+        print("[run_all] pre-run backup (checkpoint)...", flush=True)
+        r = _sp.run(
+            ["uv", "run", "python", "scripts/backup/auto_backup.py"],
+            cwd=str(PROJECT),
+            capture_output=True,
+            text=True,
+            timeout=90,
+        )
+        print(f"[run_all] backup: {r.stdout.strip()[-200:] if r.stdout else 'ok'}", flush=True)
+    except Exception as e:
+        print(f"[run_all] backup skipped: {e}", flush=True)
+
+
 async def _ensure_infra() -> bool:
     if not _compose_up():
         return False
@@ -127,6 +145,10 @@ async def _ensure_infra() -> bool:
         if not await _wait_for(name, HOST_PROBES.get(name, (0, 15))[1]):
             print(f"[run_all] WARNING: {name} not ready", flush=True)
             ok = False
+        else:
+            print(f"[run_all] ✓ {name} ready", flush=True)
+    # Pre-run backup once infra is confirmed
+    _preflight_backup()
     return ok
 
 
@@ -209,7 +231,10 @@ async def _run_loop(args: argparse.Namespace) -> int:
 
 
 def _handle_sig(signum: int, frame) -> None:  # noqa: ANN001
-    print(f"\n[run_all] signal {signum}; shutting down...", flush=True)
+    import contextlib
+
+    with contextlib.suppress(Exception):
+        print(f"\n[run_all] signal {signum}; shutting down...", flush=True)
     raise KeyboardInterrupt
 
 
@@ -230,11 +255,22 @@ def main() -> int:
         if not await _ensure_infra():
             print("[run_all] infra failed; aborting", flush=True)
             return 1
+        # Autoheal: if containers exist but are Exited, restart before embed
+        _autoheal_containers()
         _ensure_embed_server()
         await asyncio.sleep(8)
         if not await _wait_for("embed", HOST_PROBES["embed"][1]):
             print("[run_all] embedding server not ready; continuing anyway", flush=True)
+        else:
+            print("[run_all] embed server ✓ (:8900)", flush=True)
         _ensure_memory()
+        _gmail_check()
+        # One-line sweep intent so the user knows what this run will do
+        print(  # noqa: E501
+            f"[run_all] sweep config: workers={args.radar_workers}"
+            f" bridge={args.bridge_interval}s target=20 confirmed (per-epoch)",
+            flush=True,
+        )
         if args.dry_run:
             print("[run_all] dry-run complete; infra is up", flush=True)
             return 0
@@ -245,6 +281,62 @@ def main() -> int:
     except KeyboardInterrupt:
         print("[run_all] stopped.", flush=True)
         return 0
+
+
+def _gmail_check() -> None:
+    import os as _os
+
+    if _os.getenv("GMAIL_PUSH", "").strip() != "1":
+        print("[run_all] Gmail listener: disabled (GMAIL_PUSH != 1)", flush=True)
+        return
+    missing = [
+        k
+        for k in (
+            "GMAIL_REFRESH_TOKEN",
+            "GOOGLE_CLIENT_ID",
+            "GOOGLE_CLIENT_SECRET",
+            "GCP_PUBSUB_PROJECT",
+        )
+        if not _os.getenv(k)
+    ]
+    if missing:
+        print(  # noqa: E501
+            f"[run_all] Gmail listener: GMAIL_PUSH=1 but missing {missing!r}"
+            " — outcome emails will not be captured",
+            flush=True,
+        )
+    else:
+        print(  # noqa: E501
+            f"[run_all] Gmail listener: armed (project={_os.getenv('GCP_PUBSUB_PROJECT')})",
+            flush=True,
+        )
+
+
+def _autoheal_containers() -> None:
+    import subprocess as _sp
+
+    for name in ("ho_searxng_1", "ho_agent-memory-db_1", "ho_neo4j_1"):
+        try:
+            r = _sp.run(
+                ["podman", "ps", "-a", "--filter", f"name={name}", "--format", "{{.Status}}"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            status = (r.stdout or "").strip().split()[0] if r.stdout else "missing"
+            if status == "Exited":
+                print(f"[run_all] autoheal: restarting {name} (was Exited)", flush=True)
+                _sp.run(["podman", "start", name], capture_output=True, timeout=15)
+            elif status == "missing":
+                print(f"[run_all] autoheal: {name} missing — compose up", flush=True)
+                svc = name.replace("ho_", "").replace("_1", "")
+                _sp.run(
+                    ["docker", "compose", "-f", str(COMPOSE), "up", "-d", svc],
+                    capture_output=True,
+                    timeout=60,
+                )
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

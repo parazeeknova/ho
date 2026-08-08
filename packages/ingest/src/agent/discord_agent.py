@@ -292,9 +292,10 @@ def _job_salary_line(job: dict[str, Any]) -> str:
     if job.get("salary_estimated"):
         src = str(job.get("salary_source") or "").strip()
         tag = f"· est. ({src})" if src else "· est."
-    else:
-        tag = "· confirmed"
-    return f"{sal} {tag}"
+        return f"{sal} {tag}"
+    if sal == "-":
+        return sal
+    return f"{sal} · confirmed"
 
 
 def _funding_line(job: dict[str, Any]) -> str | None:
@@ -579,6 +580,8 @@ class DiscordAgent:
                 await self._handle_analytics(message)
             elif cmd == "/resend":
                 await self._handle_resend(message)
+            elif cmd == "/clear":
+                await self._handle_clear(message)
             elif cmd == "/help":
                 await self._handle_help(message)
 
@@ -1181,13 +1184,74 @@ class DiscordAgent:
         except Exception as e:
             await self._reply(message, f"Resend failed: {e}")
 
+    async def _handle_clear(self, message: discord.Message) -> None:  # type: ignore[union-attr]  # noqa: B023
+        """`/clear [n]` — bulk-clear recent messages + threads in the channel.
+
+        `n` is clamped to 1..200. Threads owned/archived in this channel are
+        deleted alongside plain messages so the channel returns to a clean slate
+        (the user's "filled with mess" case).
+        """  # type: ignore[union-attr]
+        if self.is_configured and message.channel.id != int(self.channel_id):  # type: ignore[union-attr,arg-type]
+            return
+        parts = (message.content or "").split()
+        n = 25
+        if len(parts) > 1 and parts[1].isdigit():
+            n = max(1, min(200, int(parts[1])))
+        with contextlib.suppress(Exception):
+            await message.channel.send(f"🧹 Clearing last {n} messages + threads…")  # type: ignore[attr-defined]
+
+        deleted_msgs = 0
+        deleted_threads = 0
+
+        # Threads (active + archived) whose parent is this channel.
+        ch = message.channel  # type: ignore[assignment]
+        if not isinstance(ch, discord.abc.GuildChannel):  # type: ignore[union-attr]
+            return
+        if not getattr(ch, "threads", None):  # type: ignore[attr-defined,union-attr]
+            return
+        for arch_fetch, _arch_getter in (  # noqa: B023  # type: ignore[attr-defined,union-attr]
+            (False, lambda: ch.threads),  # type: ignore[attr-defined]
+            (True, lambda: ch.threads),  # type: ignore[attr-defined]
+        ):
+            try:
+                threads = getattr(message.channel, "archived_threads", None)  # type: ignore[attr-defined]
+                if arch_fetch:
+                    if threads is None:
+                        continue
+                    thread_list = [th async for th in threads(limit=200)]  # type: ignore[operator]
+                else:
+                    # active threads is a sync property returning list[Thread]
+                    thread_list = list(getattr(message.channel, "threads", []))  # type: ignore[attr-defined]
+                for th in thread_list or []:
+                    with contextlib.suppress(Exception):
+                        await th.delete()  # type: ignore[operator]
+                        deleted_threads += 1
+            except Exception:
+                continue
+
+        # Messages (purge respects Discord's 14-day bulk-delete window).
+        try:
+            deleted = await ch.purge(  # type: ignore[attr-defined]
+                limit=n, check=lambda m: not m.author.bot or m.content.startswith("🧹")
+            )
+            deleted_msgs = len(deleted) if deleted else 0
+        except Exception as e:
+            logger.warning("/clear purge failed", error=str(e))
+
+        with contextlib.suppress(Exception):
+            await self._reply(
+                message,
+                f"✅ Cleared — {deleted_msgs} message(s) + {deleted_threads} thread(s).",
+            )
+
     async def _handle_help(self, message: discord.Message) -> None:
         await self._reply(
             message,
             "**Commands**\n/memory – update resume + persona (Q&A runs in a thread)\n"
             "/persona – view stored persona\n/status – pipeline state\n"
             "/health – service health\n/analytics – market report\n"
-            "/resend – resend matches\n/help – this message",
+            "/resend – resend matches\n/clear [n] – clear this channel + its threads\n"
+            "/help – this message",
         )
 
     # ── memory wizard ─────────────────────────────────────────────────
@@ -1337,6 +1401,14 @@ class DiscordAgent:
             ) -> None:
                 content = f"/resend{' --dry' if dry else ''} {limit}"
                 await self._slash_bridge(interaction, content, self._handle_resend)
+
+            @tree.command(name="clear", description="Clear messages + threads in this channel")
+            async def _clear(
+                interaction: discord.Interaction,
+                count: int = 25,  # type: ignore[assignment]
+            ) -> None:
+                count = max(1, min(200, int(count)))
+                await self._slash_bridge(interaction, f"/clear {count}", self._handle_clear)
 
             @tree.command(name="help", description="List all available commands")
             async def _help(interaction: discord.Interaction) -> None:

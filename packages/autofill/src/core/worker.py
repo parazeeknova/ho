@@ -1525,6 +1525,14 @@ class AutofillWorker:
                                 "submitted",
                                 email_kind=(email_status or {}).get("kind", ""),
                             )
+                            with contextlib.suppress(Exception):
+                                await self._notify_applied(
+                                    bridge,
+                                    job_id,
+                                    apply_link,
+                                    role=job.get("role"),
+                                    company=job.get("company"),
+                                )
                             await self._debug_finalize(debug_rec, "submitted")
                         elif status == "skipped":
                             terminal_seen = True
@@ -1592,6 +1600,16 @@ class AutofillWorker:
                                         role=job.get("role"),
                                         company=job.get("company"),
                                     )
+                                else:
+                                    with contextlib.suppress(Exception):
+                                        await self._notify_failed(
+                                            bridge,
+                                            job_id,
+                                            apply_link,
+                                            error_msg,
+                                            role=job.get("role"),
+                                            company=job.get("company"),
+                                        )
 
                     except json.JSONDecodeError:
                         logger.error("Failed to parse status event JSON", raw=event_raw)
@@ -1654,6 +1672,16 @@ class AutofillWorker:
                 if domain and not infra:
                     with contextlib.suppress(Exception):
                         await self.db.record_site_failure(domain, error)
+                if not infra:
+                    with contextlib.suppress(Exception):
+                        await self._notify_failed(
+                            bridge,
+                            job_id,
+                            apply_link,
+                            error,
+                            role=job.get("role"),
+                            company=job.get("company"),
+                        )
                 await self._debug_finalize(debug_rec, "failed", error=error)
             elif not terminal_seen:
                 # A normal runner exit WITHOUT a terminal status event and
@@ -1677,6 +1705,15 @@ class AutofillWorker:
                 await self._debug_finalize(debug_rec, "deferred", error=str(e))
             else:
                 await self.db.update_status(job_id, status="failed", error=str(e))
+                with contextlib.suppress(Exception):
+                    await self._notify_failed(
+                        bridge,
+                        job_id,
+                        apply_link,
+                        str(e),
+                        role=job.get("role"),
+                        company=job.get("company"),
+                    )
                 await self._debug_finalize(debug_rec, "failed", error=str(e))
         finally:
             if rag is not None:
@@ -1748,6 +1785,67 @@ class AutofillWorker:
             logger.info("Captcha-blocked notification sent", job_id=job_id)
         else:
             logger.warning("Captcha-blocked notification send failed", job_id=job_id)
+
+    async def _notify_applied(
+        self,
+        bridge: DiscordQuestionBridge,
+        job_id: str,
+        apply_link: str,
+        role: Any = None,
+        company: Any = None,
+    ) -> None:
+        """Reply in the job's thread that the application was submitted.
+
+        Mirrors _defer_job / _notify_captcha: routes through the sweep's
+        active thread so the update lands with the original job embed, not
+        the main channel. Best-effort — Discord downtime never fails the job.
+        """
+        if not bridge.is_configured:
+            return
+        role_str = str(role or "Position")
+        company_str = str(company or "Company")
+        text = (
+            f"\u2705 **Applied**: {company_str} \u2014 {role_str}\n"
+            f"[Open posting \u2192]({apply_link})\n"
+            f"Status: submitted (`{job_id}`)"
+        )
+        with contextlib.suppress(Exception):
+            ok = await bridge.send(text)
+            if ok:
+                logger.info("Applied notification sent", job_id=job_id)
+            else:
+                logger.warning("Applied notification send failed", job_id=job_id)
+
+    async def _notify_failed(
+        self,
+        bridge: DiscordQuestionBridge,
+        job_id: str,
+        apply_link: str,
+        error_msg: str,
+        role: Any = None,
+        company: Any = None,
+    ) -> None:
+        """Reply in the job's thread that the application failed.
+
+        Routes through the sweep's active thread so the failure lands with the
+        original embed. Short error snippet for readability.
+        """
+        if not bridge.is_configured:
+            return
+        role_str = str(role or "Position")
+        company_str = str(company or "Company")
+        snippet = (error_msg or "unknown error").strip().splitlines()[-1][:260]
+        text = (
+            f"\u274c **Failed**: {company_str} \u2014 {role_str}\n"
+            f"[Open posting \u2192]({apply_link})\n"
+            f"`{job_id}` — {snippet}"
+        )
+        with contextlib.suppress(Exception):
+            ok = await bridge.send(text)
+            if ok:
+                logger.info("Failed notification sent", job_id=job_id)
+            else:
+                logger.warning("Failed notification send failed", job_id=job_id)
 
     async def _surface_email_feedback(
         self,
@@ -1897,8 +1995,14 @@ class AutofillWorker:
     def _format_pending(entry: dict[str, Any]) -> str:
         q = AutofillWorker._clean_question(str(entry.get("question") or "?"))
         options = entry.get("options") or []
-        hint = f"  [{', '.join(str(o) for o in options[:6])}]" if options else ""
-        return f"• {q}{hint}"
+        if not options:
+            return f"• {q}"
+        # School autocomplete dictionaries (Greenhouse school--0) can be 20+ entries — the
+        # full list is noise; the question itself is the signal. Cap at 3 with +N.
+        shown = ", ".join(str(o) for o in options[:3])
+        if len(options) > 3:
+            shown += f", +{len(options) - 3} more"
+        return f"• {q}  [{shown}]"
 
     @staticmethod
     def _clean_question(question: str) -> str:
