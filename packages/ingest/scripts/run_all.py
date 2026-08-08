@@ -203,6 +203,37 @@ def _memory_status() -> str:
     return "; ".join(parts)
 
 
+def _persona_missing(persona_path: Path) -> list[str]:
+    """Critical persona items that are missing/blank: core answer categories
+    and identity contact fields. Empty list = complete."""
+    import json as _json
+
+    try:
+        data = _json.loads(persona_path.read_text())
+    except Exception:
+        return ["persona.json unreadable"]
+    missing: list[str] = []
+    answered = {(a.get("category") or "").strip() for a in data.get("answers", [])}
+    core = {
+        "current_location",
+        "work_model",
+        "relocation",
+        "nationality",
+        "work_authorization",
+        "visa_sponsorship",
+        "expected_compensation",
+        "education",
+    }
+    for cat in core:
+        if cat not in answered:
+            missing.append(f"answer: {cat}")
+    identity = data.get("identity") or {}
+    for field in ("firstName", "lastName", "email", "phone", "linkedin", "github"):
+        if not (identity.get(field) or "").strip():
+            missing.append(f"identity: {field}")
+    return missing
+
+
 def _ensure_memory() -> None:
     persona = REPO / "data" / "persona.json"
     if not persona.exists():
@@ -226,6 +257,36 @@ def _ensure_memory() -> None:
     # init-memory after a resume update instead of silently matching on old
     # grounding.
     print(f"[run_all] memory: {_memory_status()}", flush=True)
+    # Completeness: if critical persona items are missing, ask the user to run
+    # the interactive grill so the matcher never scores against a half-built
+    # persona.
+    missing = _persona_missing(persona)
+    if missing:
+        print(
+            f"[run_all] persona is INCOMPLETE — missing: {', '.join(missing[:6])}",
+            flush=True,
+        )
+        try:
+            import sys as _sys
+
+            if _sys.stdin and _sys.stdin.isatty():
+                answer = (
+                    input("[run_all] Run the interactive persona wizard now? [Y/n] ")
+                    .strip()
+                    .lower()
+                )
+                if answer in ("", "y", "yes"):
+                    print("[run_all] Launching persona wizard...", flush=True)
+                    subprocess.run(
+                        [
+                            sys.executable,
+                            str(REPO / "packages" / "autofill" / "scripts" / "grill_persona.py"),
+                        ],
+                        cwd=str(REPO),
+                        timeout=1800,
+                    )
+        except Exception as e:
+            print(f"[run_all] persona wizard prompt skipped ({e})", flush=True)
 
 
 async def _run_loop(args: argparse.Namespace) -> int:
