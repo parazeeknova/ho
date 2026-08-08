@@ -1213,8 +1213,8 @@ class DiscordAgent:
         ch = message.channel  # type: ignore[assignment]
         if isinstance(ch, discord.abc.GuildChannel) and getattr(ch, "threads", None):  # type: ignore[union-attr,attr-defined]
             for arch_fetch, _arch_getter in (  # noqa: B023  # type: ignore[attr-defined,union-attr]
-                (False, lambda: ch.threads),  # type: ignore[attr-defined]
-                (True, lambda: ch.threads),  # type: ignore[attr-defined]
+                (False, lambda: ch.threads),  # type: ignore[union-attr]
+                (True, lambda: ch.threads),  # type: ignore[union-attr]
             ):
                 try:
                     threads = getattr(  # type: ignore[attr-defined]
@@ -1240,7 +1240,7 @@ class DiscordAgent:
         # non-🧹 bot messages, so "/clear 100" scanned 100 but only deleted
         # the few human messages, leaving the bot spam behind.
         try:
-            deleted = await ch.purge(  # type: ignore[attr-defined]
+            deleted = await ch.purge(  # type: ignore[union-attr]
                 limit=n,
                 check=lambda m: m.id != _confirmation_id,
             )

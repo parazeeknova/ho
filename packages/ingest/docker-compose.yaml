@@ -17,33 +17,25 @@ services:
       - SETUID
     volumes:
       - ./searxng-settings.yml:/etc/searxng/settings.yml:ro
+      - searxng_data:/etc/searxng
     logging:
       driver: "json-file"
       options:
         max-size: "5m"
         max-file: "1"
 
-  # Self-hosted SOCKS5 proxy rotating IPs via the Tor network, so SearXNG
-  # can bypass CAPTCHA blocks from datacenter IPs.
   torproxy:
     image: dperson/torproxy
     restart: "no"
     network_mode: "host"
     environment:
-      # Exit only from the persona's country (IN) so the application's geo-IP
-      # matches the stated location instead of a random exit that trips the
-      # ATS location-mismatch fraud signal.
       LOCATION: "${TOR_EXIT_COUNTRY:-IN}"
     volumes:
-      # Fresh Tor geoip databases (mounted read-only) replace the image's
-      # stale 2020 geoip, whose country data misclassifies real-world exits
-      # (e.g. a Turkish exit labelled IN). Refresh with:
-      #   scripts/refresh-tor-geoip.sh
       - ./.tor-geoip/geoip:/usr/share/tor/geoip:ro
       - ./.tor-geoip/geoip6:/usr/share/tor/geoip6:ro
 
   agent-memory-db:
-    image: pgvector/pgvector:pg18
+    image: pgvector/pgvector:0.8.0-pg18
     restart: "no"
     ports:
       - "5433:5432"
@@ -60,17 +52,14 @@ services:
         max-size: "5m"
         max-file: "1"
 
-  # Shared LLM-budget store: the radar master + workers + autofill all call
-  # the provider (100 RPM / 200K TPM). Redis makes the budget atomically SHARED
-  # across those processes so their combined rate stays under the cap — without
-  # it each process has its own limit and the total can trip 429s (which
-  # stalled fills with long cooldowns). Graceful-degraded: the governor falls
-  # back to local-only limiting if this is down.
   redis:
-    image: redis:7-alpine
+    image: redis:8.1-alpine
     restart: "no"
     ports:
       - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
     logging:
       driver: "json-file"
       options:
@@ -100,3 +89,5 @@ volumes:
   agent_memory_data:
   neo4j_data:
   neo4j_logs:
+  searxng_data:
+  redis_data:
