@@ -2,7 +2,7 @@
 """Self-healing watchdog for the ho pipeline.
 
 Runs every CHECK_INTERVAL seconds and repairs any component that died:
-  * llama-server embedding service (:8900)          -> relaunch scripts/serve.py
+  * llama-server embedding service (:8899)          -> relaunch scripts/serve.py
   * infra containers (searxng, neo4j, agent-memory) -> podman start / compose up
   * pipeline supervisor (scripts/run.py)            -> full relaunch if dead
 
@@ -30,7 +30,7 @@ CHECK_INTERVAL = 60
 COOLDOWN = 180  # per-component minimum seconds between heal attempts
 PIPELINE_COOLDOWN = 300  # run.py can take >3min to come up; avoid double relaunch
 
-EMBED_HEALTH = "http://127.0.0.1:8900/health"
+EMBED_HEALTH = "http://127.0.0.1:8899/health"
 CONTAINERS = [
     "firecrawl_searxng_1",
     "firecrawl_neo4j_1",
