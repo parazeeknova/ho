@@ -1551,6 +1551,15 @@ export class GenericAdapter extends ATSAdapter {
           resumeAttached = await this.uploadResumeIfVisible(profile.resumePath ?? "");
         }
         await this.fillCoverLetter(rpc, filled, blanked);
+        // JD-tailored resume (background-generated) attaches at the END of the
+        // fill, mirroring the cover letter. When the worker resolved none
+        // (tailoring disabled / failed), the base resume uploaded above stays.
+        if (!resumeAttached && profile.resumePath == null) {
+          const tailored = await this.resolveTailoredResume(rpc);
+          if (tailored) {
+            resumeAttached = await this.uploadResumeIfVisible(tailored);
+          }
+        }
 
         // Zero-blank audit for the visible step.
         const stepFields = await this.collectQuestions();

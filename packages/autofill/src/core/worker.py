@@ -246,6 +246,7 @@ def _per_job_resume(
     first_name: str = "",
     last_name: str = "",
     job_id: str = "",
+    force: bool = False,
 ) -> str | None:
     """Point this job's resume at a name-based temp copy.
 
@@ -255,6 +256,10 @@ def _per_job_resume(
     subdirectory so concurrent jobs for the same person never clobber each
     other) varies the uploaded filename without touching the resume content.
     Returns the new path, or the original when nothing needs copying.
+
+    ``force=True`` overwrites an existing per-job copy (used when the JD-
+    tailored resume replaces the base copy that was created up front under the
+    same name).
     """
     if not resume_path:
         return None
@@ -267,7 +272,7 @@ def _per_job_resume(
     dest_dir = _NODE_DIR / "artifacts" / "resumes" / _safe_segment(job_id)
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / f"{name_slug}_Resume{src.suffix}"
-    if not dest.exists():
+    if force or not dest.exists():
         # Atomic: write to a temp file first so a concurrent reader (or a
         # parallel worker process) never observes a half-written resume.
         tmp = dest.with_suffix(dest.suffix + ".tmp")
@@ -414,6 +419,14 @@ class AutofillWorker:
         self._profile_lock = asyncio.Lock()
         self._profile_pool = self._build_profile_pool(max_concurrent)
         self._profile_in_use: set[str] = set()
+        # Background JD-tailored resume tasks, keyed by job_id. Launched when
+        # the job_context RPC arrives (the JD is known then) so the LLM tailors
+        # the LaTeX resume while the form walk proceeds; the adapter fetches
+        # the result via the tailored_resume RPC just before submitting.
+        self._tailor_tasks: dict[str, asyncio.Task] = {}
+        # Base (untailored) resume path per job — the fallback for the
+        # tailored_resume RPC when tailoring is disabled or fails.
+        self._base_resume_paths: dict[str, str | None] = {}
 
     @staticmethod
     def _build_profile_pool(min_size: int = 4) -> list[str]:
@@ -813,12 +826,32 @@ class AutofillWorker:
                 )
                 store = None
             profile = await build_profile(store=store)
-            profile.resumePath = _per_job_resume(
-                await resolve_resume_path(),
-                first_name=profile.firstName,
-                last_name=profile.lastName,
-                job_id=job_id,
-            )
+            # Fully-deferred resume upload: when LaTeX tailoring is enabled, do
+            # NOT point the payload at the base resume (the adapters would
+            # upload it early). Instead the base path is kept only as the
+            # fallback for the tailored_resume RPC; the tailored PDF (or the
+            # base, on failure) is attached at the very end of the fill.
+            from autofill.src.filling.tailor import tailor_enabled
+
+            _base_resume = await resolve_resume_path()
+            _tailoring = tailor_enabled()
+            if _tailoring:
+                profile.resumePath = None
+                # Base resume is still resolved/cached so the tailored_resume
+                # RPC can fall back to it when tailoring cannot run.
+                self._base_resume_paths[job_id] = _per_job_resume(
+                    _base_resume,
+                    first_name=profile.firstName,
+                    last_name=profile.lastName,
+                    job_id=job_id,
+                )
+            else:
+                profile.resumePath = _per_job_resume(
+                    _base_resume,
+                    first_name=profile.firstName,
+                    last_name=profile.lastName,
+                    job_id=job_id,
+                )
             rag = ScreenerRAG(profile=profile, store=store)
             bridge = DiscordQuestionBridge()
             question_timeout = float(os.getenv("AUTOFILL_QUESTION_TIMEOUT", "60"))
@@ -1051,6 +1084,26 @@ class AutofillWorker:
                             )
                             if debug_rec is not None:
                                 debug_rec["job_context"] = job_context
+                            # Kick off background LaTeX resume tailoring now
+                            # that the JD is known: the LLM tailors while the
+                            # form walk proceeds, and the adapter picks up the
+                            # result via tailored_resume before submitting.
+                            try:
+                                from autofill.src.filling.tailor import tailor_resume_for_job
+
+                                if (
+                                    self._tailor_tasks.get(job_id) is None
+                                    and job_context.get("description")
+                                ):
+                                    self._tailor_tasks[job_id] = asyncio.create_task(
+                                        tailor_resume_for_job(job_id, job_context, rag.cm)
+                                    )
+                            except Exception as tailor_err:
+                                logger.warning(
+                                    "Could not start resume tailoring",
+                                    job_id=job_id,
+                                    error=str(tailor_err),
+                                )
                             if process.stdin and not process.stdin.is_closing():
                                 rpc_resp = json.dumps(
                                     {"type": "RPC_RESPONSE", "id": req_id, "result": {"ok": True}}
@@ -1096,6 +1149,28 @@ class AutofillWorker:
                                             "source": source,
                                             "pdf_path": pdf_path,
                                         },
+                                    }
+                                )
+                                process.stdin.write(f"{rpc_resp}\n".encode())
+                                await process.stdin.drain()
+                            continue
+
+                        if method == "tailored_resume":
+                            # Resume to attach, resolved at the END of the fill
+                            # (like the cover letter): the background tailoring
+                            # task is awaited (bounded) and its PDF returned; on
+                            # any failure the base resume path is the fallback.
+                            pdf_path = await self._resolve_tailored_resume(
+                                job_id,
+                                first_name=profile.firstName if profile else "",
+                                last_name=profile.lastName if profile else "",
+                            )
+                            if process.stdin and not process.stdin.is_closing():
+                                rpc_resp = json.dumps(
+                                    {
+                                        "type": "RPC_RESPONSE",
+                                        "id": req_id,
+                                        "result": {"pdf_path": pdf_path},
                                     }
                                 )
                                 process.stdin.write(f"{rpc_resp}\n".encode())
@@ -1644,6 +1719,8 @@ class AutofillWorker:
             if rag is not None:
                 await rag.close()
             self._release_profile(profile_dir)
+            with contextlib.suppress(Exception):
+                await self._cancel_tailoring(job_id)
             if proxy_relay is not None:
                 with contextlib.suppress(Exception):
                     await proxy_relay.stop()
@@ -1976,6 +2053,62 @@ class AutofillWorker:
             logger.warning(
                 "Fill record not persisted", job_id=job_id, question=question, error=str(e)
             )
+
+    async def _resolve_tailored_resume(
+        self,
+        job_id: str,
+        first_name: str = "",
+        last_name: str = "",
+    ) -> str | None:
+        """Resolve the resume path to attach for a job at fill-end.
+
+        Awaits (bounded) the background tailoring task launched when the
+        job_context RPC arrived and returns its PDF path. On failure, timeout,
+        or when no tailoring ran, falls back to the base resume path stored
+        per job. Returns None only when no resume source exists at all.
+
+        The task is only removed once it has COMPLETED (with a result or an
+        error): an adapter may call this RPC more than once as it walks the
+        form, and a timed-out-but-still-running task must remain resolvable so
+        a later step can still pick up the tailored PDF.
+        """
+        task = self._tailor_tasks.get(job_id)
+        if task is not None:
+            try:
+                pdf_path = await asyncio.wait_for(asyncio.shield(task), timeout=90)
+                if pdf_path:
+                    logger.info(
+                        "Tailored resume ready", job_id=job_id, path=str(pdf_path)
+                    )
+                    named_path = _per_job_resume(
+                        pdf_path,
+                        first_name=first_name,
+                        last_name=last_name,
+                        job_id=job_id,
+                        # Overwrite the base copy made up front under the same
+                        # name: the tailored resume must win the attachment.
+                        force=True,
+                    )
+                    return str(named_path or pdf_path)
+            except TimeoutError:
+                logger.warning("Tailored resume timed out; using base resume", job_id=job_id)
+            except Exception as e:
+                logger.warning(
+                    "Tailored resume failed; using base resume", job_id=job_id, error=str(e)
+                )
+            if task.done():
+                # Completed (success or error): no point re-awaiting it later.
+                self._tailor_tasks.pop(job_id, None)
+        return self._base_resume_paths.get(job_id)
+
+    async def _cancel_tailoring(self, job_id: str) -> None:
+        """Cancel a still-running background tailoring task for a job."""
+        task = self._tailor_tasks.pop(job_id, None)
+        if task is not None and not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        self._base_resume_paths.pop(job_id, None)
 
     async def _wait_for_human_decision(self, job_id: str, poll_interval: float = 2.0) -> str:
         """Poll the database until job status moves to 'approved' or 'skipped'."""

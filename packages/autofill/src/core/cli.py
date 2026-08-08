@@ -38,6 +38,7 @@ async def _stream_runner(
     question_timeout: float,
     overnight: bool,
     job_id: str,
+    base_resume_path: str | None = None,
 ) -> dict[str, Any] | None:
     """Spawn the Node runner, stream status events, handle RPC answers and
     review decisions. Returns the final status event (submitted/failed/skipped).
@@ -209,6 +210,45 @@ async def _stream_runner(
                             await process.stdin.drain()
                         continue
 
+                    if method == "tailored_resume":
+                        # Resume to attach at fill-end, mirroring the worker:
+                        # the CLI generates a tailored LaTeX resume for the job
+                        # (best-effort) and returns the PDF path, falling back
+                        # to the base resume.
+                        pdf_path = None
+                        try:
+                            from autofill.src.filling.tailor import tailor_resume_for_job
+
+                            pdf_path = await tailor_resume_for_job(job_id, job_context, rag.cm)
+                        except Exception as tailor_err:
+                            print(f"[Python CLI] Resume tailoring failed: {tailor_err}")
+                        if not pdf_path:
+                            pdf_path = base_resume_path
+                        if pdf_path:
+                            # Same name-based per-job copy the worker applies, so
+                            # the attached resume is <First>_<Last>_Resume.pdf —
+                            # never the raw tailored_<job>-<hash>.pdf artifact
+                            # name. force=True: the tailored resume must overwrite
+                            # the base copy made up front under the same name.
+                            pdf_path = _per_job_resume(
+                                pdf_path,
+                                first_name=rag.profile.firstName,
+                                last_name=rag.profile.lastName,
+                                job_id=job_id,
+                                force=True,
+                            )
+                        if process.stdin:
+                            rpc_resp = json.dumps(
+                                {
+                                    "type": "RPC_RESPONSE",
+                                    "id": req_id,
+                                    "result": {"pdf_path": pdf_path},
+                                }
+                            )
+                            process.stdin.write(f"{rpc_resp}\n".encode())
+                            await process.stdin.drain()
+                        continue
+
                     if method == "answer_question":
                         question = str(args.get("question", "")).strip()
                         kind = str(args.get("kind", "text"))
@@ -350,12 +390,22 @@ async def run_apply(url: str, mode: str = "review"):
         store = None
     profile = await build_profile(store=store)
     job_id = f"job-{uuid.uuid4().hex[:8]}"
-    profile.resumePath = _per_job_resume(
+    from autofill.src.filling.tailor import tailor_enabled
+
+    # Always resolve the base resume: it is either uploaded early (tailoring
+    # off) or kept as the fallback for the tailored_resume RPC (tailoring on).
+    base_resume = _per_job_resume(
         await resolve_resume_path(),
         first_name=profile.firstName,
         last_name=profile.lastName,
         job_id=job_id,
     )
+    if tailor_enabled():
+        # Fully-deferred resume: leave resumePath None so the adapter does not
+        # upload early; the tailored_resume RPC attaches it at fill-end.
+        profile.resumePath = None
+    else:
+        profile.resumePath = base_resume
     if not profile.resumePath:
         print(
             "[Python CLI] WARNING: No resume available to upload "
@@ -382,7 +432,15 @@ async def run_apply(url: str, mode: str = "review"):
     }
 
     try:
-        await _stream_runner(payload, rag, bridge, question_timeout, overnight, job_id)
+        await _stream_runner(
+            payload,
+            rag,
+            bridge,
+            question_timeout,
+            overnight,
+            job_id,
+            base_resume_path=base_resume,
+        )
     finally:
         await rag.close()
 
