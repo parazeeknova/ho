@@ -1005,14 +1005,39 @@ export class GreenhouseAdapter extends ATSAdapter {
           return terms
             .filter((cb) => {
               if (cb.checked) return false;
-              const label = (
-                (cb.closest("label")?.textContent ?? "") +
+              // Gather label text from every reasonable source: the enclosing
+              // <label>, a <label for=...> referencing this checkbox, its
+              // aria-label / aria-describedby, title, placeholder, or a
+              // sibling text node. Greenhouse renders some consent boxes with
+              // the label detached from the input, so closest("label") alone
+              // misses them.
+              let label = "";
+              const closest = cb.closest("label")?.textContent ?? "";
+              label += " " + closest;
+              if (cb.id) {
+                label +=
+                  " " +
+                  (document.querySelector(`label[for="${CSS.escape(cb.id)}"]`)?.textContent ??
+                    "");
+              }
+              label +=
                 " " +
                 (cb.getAttribute("aria-label") ?? "") +
                 " " +
-                (cb.getAttribute("name") ?? "")
-              ).toLowerCase();
-              return /term|agree|consent|privacy|acknowledge|accept/.test(label);
+                (cb.getAttribute("aria-describedby") ?? "") +
+                " " +
+                (cb.getAttribute("title") ?? "") +
+                " " +
+                (cb.getAttribute("placeholder") ?? "") +
+                " " +
+                (cb.getAttribute("name") ?? "");
+              // Also grab nearby sibling text (the label often sits after the
+              // input inside a div/span rather than a <label>).
+              let sib = cb.parentElement?.textContent ?? "";
+              if (sib.trim().length > 160) sib = sib.trim().slice(0, 160);
+              label += " " + sib;
+              return /term|agree|consent|privacy|acknowledge|accept|signature|notice/
+                .test(label.toLowerCase());
             })
             .map((cb) => {
               const label =
