@@ -721,6 +721,13 @@ async def _render_with_playwright(url: str, use_proxy: bool = False) -> str:
             await page.goto(url, wait_until="domcontentloaded", timeout=20_000)
             # Let client-side render settle.
             await page.wait_for_timeout(_cache_config()["settle_ms"])
+            # Scroll through the page so lazy-loaded sections (infinite-scroll
+            # portfolios, virtualized lists) actually render before capture.
+            # Without this, below-the-fold content is missing from the HTML.
+            with contextlib.suppress(Exception):
+                for _ in range(12):
+                    await page.mouse.wheel(0, 1200)
+                    await page.wait_for_timeout(180)
             html = await page.content()
             await page.close()
             settle = (time.monotonic() - started) * 1000
@@ -759,6 +766,11 @@ async def _render_proxied(url: str) -> str:
             page = await browser.new_page(user_agent=_PAGE_UA)
             await page.goto(url, wait_until="domcontentloaded", timeout=25_000)
             await page.wait_for_timeout(_cache_config()["proxied_settle_ms"])
+            # Scroll to force lazy-loaded sections below the fold to render.
+            with contextlib.suppress(Exception):
+                for _ in range(12):
+                    await page.mouse.wheel(0, 1200)
+                    await page.wait_for_timeout(180)
             html = await page.content()
             await browser.close()
             if _is_js_shell(html):
