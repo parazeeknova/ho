@@ -455,8 +455,8 @@ class TestGatesExplicitExperience:
             raw_markdown=raw,
         )
 
-    def test_5_years_passes(self) -> None:
-        """5+ years should no longer be a hard reject (threshold is 7+)."""
+    def test_5_years_rejected(self) -> None:
+        """5+ years is a hard reject for the early-career candidate."""
         result = gate_explicit_experience(
             self.make_obs("Requires 5+ years of experience"),
             JobCandidate(
@@ -470,7 +470,7 @@ class TestGatesExplicitExperience:
             set(),
             {},
         )
-        assert result is None
+        assert result == RejectionReason.EXPERIENCE_HIGH
 
     def test_10_years(self) -> None:
         result = gate_explicit_experience(
@@ -675,9 +675,7 @@ class TestRunGates:
             url="https://boards.greenhouse.io/acme/1",
             source="greenhouse",
             title="Software Engineer",
-            raw_markdown=(
-                "This is an onsite role based in San Francisco, CA. 5+ years of experience."
-            ),
+            raw_markdown="This is an onsite role based in San Francisco, CA.",
         )
         result, rejections = await run_gates(obs, set(), {})
         assert result is None
