@@ -1085,12 +1085,19 @@ export class GreenhouseAdapter extends ATSAdapter {
       // endpoint. Custom-domain boards (careers.airbnb.com, mongodb.com,
       // abnormal.ai) use their own host but the same path shape. Match the
       // path rather than the host: /applications, /apply, submission etc.
-      // Also accept any POST to the same origin (the submit is a form POST
-      // and no other POST happens at that moment).
-      if (!/\/applications?(\/|$|\?)|\/apply|submission|submissions?(\/|$|\?)|job_application|create_application/i.test(u)) {
-        return;
-      }
+      // ALSO accept any POST to the same origin — the submit is a form POST
+      // and no other POST happens at that moment, so a same-origin POST is a
+      // safe signal even when the path differs (e.g. a board posts to a
+      // custom path that misses the /applications|/apply regex and would
+      // otherwise be a false "Submit not confirmed").
       try {
+        const method = typeof r.request === "function" ? r.request()?.method?.() : "";
+        if (method !== "POST") return;
+        if (!/\/applications?(\/|$|\?)|\/apply|submission|submissions?(\/|$|\?)|\/submit|job_application|create_application/i.test(u)) {
+          const originOk =
+            typeof r.request === "function" && r.request()?.url?.().startsWith(page.url().split("/").slice(0, 3).join("/"));
+          if (!originOk) return;
+        }
         const ok = typeof r.ok === "function" ? r.ok() : false;
         const status = typeof r.status === "function" ? r.status() : undefined;
         lastSubmitResp = { ok, status };
