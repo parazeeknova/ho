@@ -2690,6 +2690,7 @@ class ScreenerRAG:
         degree = str(edu.get("degree") or "").strip()
         program = str(edu.get("degree_program") or "").strip()
         major = str(edu.get("major") or "").strip()
+        discipline = str(edu.get("discipline") or "").strip()
         enrolled = bool(edu.get("enrolled"))
         start = str(edu.get("start_year") or "").strip()
         grad = str(edu.get("grad_year") or "").strip()
@@ -2747,11 +2748,20 @@ class ScreenerRAG:
         if re.search(r"enrolled|currently (enrolled|attending|pursuing)", q_lower):
             return "Yes" if enrolled else "No"
         if re.search(
-            r"^degree$|degree (program|title|type)|field of (study|specialization|major)|"
-            r"major|specialization|what degree",
+            r"^degree$|degree (program|title|type)|what degree",
             q_lower,
         ):
-            return program or major or degree or None
+            return program or degree or None
+        # Field of study / major / specialization vs discipline: a form asking
+        # for the broad DISCIPLINE gets "Computer Science and Engineering"; one
+        # asking for the major/specialization gets the specific "AI & ML".
+        if re.search(r"discipline", q_lower):
+            return discipline or major or None
+        if re.search(
+            r"field of (study|specialization|major)|major|specialization",
+            q_lower,
+        ):
+            return major or discipline or None
         if school and re.search(
             r"school|university|college|institution|where did you (study|attend|graduate|complete)|"
             r"undergraduate degree",

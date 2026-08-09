@@ -258,10 +258,22 @@ async def build_profile(store: Any = None) -> Profile:
                 break
 
     # Education/school from the persona's education answer, if present.
+    # Match the SCHOOL question specifically — "highest level of education
+    # (degree + field)" is the DEGREE, not the school. Using a broad regex
+    # ("education") matched that first and set school="BTech CSE in AI & ML".
     if not getattr(profile, "school", None) and not getattr(profile, "university", None):
         for _q, _a in profile.customAnswers.items():
-            if re.search(r"school|university|college|education|institute", _q, re.I) and _a.strip():
+            if (
+                re.search(
+                    r"university|college|institute|school (name|attended)|"
+                    r"which (school|university|college)|where did you (study|attend)",
+                    _q,
+                    re.I,
+                )
+                and _a.strip()
+            ):
                 profile.school = _a.strip()
+                profile.university = _a.strip()
                 break
 
     # Structured education block (identity.education in persona.json) — the
@@ -275,8 +287,36 @@ async def build_profile(store: Any = None) -> Profile:
         for _q, _a in profile.customAnswers.items():
             if re.search(r"degree|major|field of study|specialization", _q, re.I) and _a.strip():
                 profile.education.setdefault("degree_program", _a.strip())
+                _parse_degree_into_education(_a.strip(), profile.education)
         if getattr(profile, "school", None):
             profile.education.setdefault("school", profile.school)
+            profile.education.setdefault("university", profile.university or profile.school)
+
+    # Start/graduation years from persona answers if present (e.g. a grill
+    # answer like "Vellore Institute of Technology (2023 - 2027)").
+    if not profile.education.get("start_year"):
+        for _q, _a in profile.customAnswers.items():
+            years = re.findall(r"\b(?:19|20)\d{2}\b", _a)
+            if len(years) >= 1 and not profile.education.get("start_year"):
+                profile.education.setdefault("start_year", years[0])
+            if len(years) >= 2 and not profile.education.get("grad_year"):
+                profile.education.setdefault("grad_year", years[-1])
+
+    # Clean the school name: strip parenthetical years ("VIT (2023 - 2027)"
+    # -> "VIT") so a school-name question gets the name, not the years.
+    if profile.education.get("school"):
+        school_clean = re.sub(r"\s*\([^)]*\)\s*$", "", profile.education["school"]).strip()
+        if school_clean:
+            profile.education["school"] = school_clean
+    if profile.education.get("university"):
+        uni_clean = re.sub(r"\s*\([^)]*\)\s*$", "", profile.education["university"]).strip()
+        if uni_clean:
+            profile.education["university"] = uni_clean
+    # Keep profile.school/university in sync with the cleaned values.
+    if profile.education.get("school"):
+        profile.school = profile.education["school"]
+    if profile.education.get("university"):
+        profile.university = profile.education["university"]
 
     still_defaults = [f for f in _IDENTITY_FIELDS if f not in resolved]
     if still_defaults:
@@ -287,3 +327,62 @@ async def build_profile(store: Any = None) -> Profile:
         )
 
     return profile
+
+
+def _parse_degree_into_education(degree_text: str, edu: dict) -> None:
+    """Parse a persona degree answer like "BTech CSE in AI & ML" into the
+    structured education fields: degree (BTech), discipline/major (Computer
+    Science and Engineering), and specialization (AI & ML).
+
+    CSE is the common shorthand for "Computer Science and Engineering" —
+    a form asking for the discipline/major must get the expanded name, not
+    the abbreviation.
+    """
+    text = re.sub(r"\s+", " ", degree_text.strip())
+    if not text:
+        return
+
+    # Degree type: leading BTech/B.E./B.Sc./M.Tech/PhD/BS/MS etc.
+    degree = ""
+    m = re.match(
+        r"^\s*((?:B\.?Tech|B\.?E|B\.?Sc|B\.?A|M\.?Tech|M\.?S|M\.?Sc|M\.?A"
+        r"|PhD|B\.?Com|B\.?BA|D\.?Tech)[A-Za-z .]*?)(?=\s|$)",
+        text,
+        re.I,
+    )
+    if m:
+        degree = m.group(1).strip().rstrip(".")
+        edu.setdefault("degree", degree)
+
+    # Discipline/major + specialization. "BTech CSE in AI & ML":
+    #   discipline = "Computer Science and Engineering" (CSE expanded)
+    #   specialization = "AI & ML"
+    rest = text
+    if degree:
+        rest = text[len(m.group(0)) :].strip()
+    # Split on " in " / " with specialization in " / " - ".
+    parts = re.split(r"\s+(?:in|with speciali[sz]ation in|majoring in|-\s*)\s+", rest, maxsplit=1)
+    discipline = parts[0].strip().strip(".,")
+    spec = parts[1].strip() if len(parts) > 1 else ""
+    if discipline:
+        edu.setdefault("discipline", _expand_discipline(discipline))
+    if spec:
+        edu.setdefault("major", spec)
+
+    # Common "CSE" shorthand -> full discipline name.
+    if discipline and not spec and re.fullmatch(r"CSE|Comp\s*Sci|CS", discipline, re.I):
+        edu.setdefault("major", "Computer Science and Engineering")
+
+
+def _expand_discipline(discipline: str) -> str:
+    """Expand discipline abbreviations a form would not accept as-is."""
+    d = re.sub(r"\s+", " ", discipline.strip())
+    if re.fullmatch(r"CSE", d, re.I):
+        return "Computer Science and Engineering"
+    if re.fullmatch(r"CS", d, re.I):
+        return "Computer Science"
+    if re.fullmatch(r"ECE", d, re.I):
+        return "Electronics and Communication Engineering"
+    if re.fullmatch(r"IT", d, re.I):
+        return "Information Technology"
+    return d
