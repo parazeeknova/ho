@@ -356,6 +356,51 @@ def _norm_question_specs(questions: list[Any]) -> list[dict[str, Any]]:
     return [s for s in out if s["question"]]
 
 
+def _dei_alias_candidates(answer: str) -> list[str]:
+    """DEI answer alias candidates (gender / ethnicity / veteran) so persona
+    answers bridge the option labels ATS forms use: "South Asian" -> "Asian",
+    "No" (veteran) -> "I am not a protected veteran", "Man" -> "Male". Mirrors
+    the resolve.py synonym maps (kept local to avoid a circular import)."""
+    a = (answer or "").strip().lower()
+    out: list[str] = []
+    gender = {
+        "male": "man",
+        "man": "male",
+        "female": "woman",
+        "woman": "female",
+        "nonbinary": "non-binary",
+        "non-binary": "nonbinary",
+    }
+    ethnic = {
+        "south asian": "asian",
+        "southeast asian": "asian",
+        "east asian": "asian",
+        "asian american": "asian",
+        "asian indian": "asian",
+        "black": "black or african american",
+        "african american": "black or african american",
+        "african": "black or african american",
+        "latino": "hispanic or latino",
+        "latina": "hispanic or latino",
+        "hispanic": "hispanic or latino",
+        "native american": "native american or alaska native",
+        "american indian": "native american or alaska native",
+        "alaska native": "native american or alaska native",
+        "two or more": "two or more races",
+        "multiracial": "two or more races",
+        "caucasian": "white",
+    }
+    veteran = {
+        "no": "i am not a protected veteran",
+        "not a veteran": "i am not a protected veteran",
+        "yes": "i identify as one or more of the classifications of a protected veteran",
+    }
+    for syn in (gender, ethnic, veteran):
+        if a in syn and syn[a] not in out:
+            out.append(syn[a])
+    return out
+
+
 def _select_answer_matches(answer: str, options: list[str]) -> str | None:
     """Map an LLM/KB answer onto a real option (exact, then unambiguous
     clause/substring). Returns None when it does not map confidently — callers
@@ -364,6 +409,16 @@ def _select_answer_matches(answer: str, options: list[str]) -> str | None:
     if not a or not options:
         return None
     low = a.lower()
+    # DEI alias candidates (gender / ethnicity / veteran) so persona answers
+    # like "South Asian" map to the form's "Asian" option instead of deferring.
+    dei_cands = _dei_alias_candidates(a)
+    for cand in dei_cands:
+        nc = cand.strip().lower()
+        if not nc:
+            continue
+        for o in options:
+            if o.lower() == nc:
+                return o
     for o in options:
         if o.lower() == low:
             return o

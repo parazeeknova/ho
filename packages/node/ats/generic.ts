@@ -8,7 +8,9 @@ import { ATSAdapter, type RpcHelper } from "./base.js";
 import {
   auditBlanks,
   finalReverify,
+  isSubmitUrl,
   type SubmitOutcome,
+  trackSubmitResponse,
   verifySubmitOutcome,
 } from "./shared/audit.js";
 import { FormControls, sanitizeNumberAnswer } from "./shared/controls.js";
@@ -1753,29 +1755,10 @@ export class GenericAdapter extends ATSAdapter {
     // Track the submit POST response so confirmation is gated on a real 2xx —
     // many generic/Workday-style boards submit via XHR without a URL change,
     // which would otherwise report "not confirmed" on a successful submission.
-    let lastSubmitResp: { ok: boolean; status?: number } | undefined;
-    let respListener: ((r: any) => void) | null = (r: any) => {
-      const u = String(r?.url?.() || r?.url || "");
-      if (!/applications?|submission|apply|submit|candidate/i.test(u)) return;
-      try {
-        const ok = typeof r.ok === "function" ? r.ok() : false;
-        const status = typeof r.status === "function" ? r.status() : undefined;
-        lastSubmitResp = { ok, status };
-        console.log(
-          `[Generic] Submit response: ${status ?? "?"} ${u.slice(0, 100)}` +
-            ` (${ok ? "ok" : "FAILED"})`,
-        );
-      } catch {
-        // Ignore responses we can't read.
-      }
-    };
-    if (typeof page.on === "function") {
-      try {
-        page.on("response", respListener);
-      } catch {
-        respListener = null;
-      }
-    }
+    // Stagehand v3 pages do NOT support page.on("response"); hook CDP
+    // Network.responseReceived on the page's main session instead.
+    const origin = page.url().split("/").slice(0, 3).join("/");
+    const submitTracker = trackSubmitResponse(page, (u) => isSubmitUrl(u, origin));
 
     const submitBtn = page
       .locator(
@@ -1830,7 +1813,7 @@ export class GenericAdapter extends ATSAdapter {
     }
 
     const submitResponse = async (): Promise<{ ok: boolean; status?: number } | undefined> =>
-      lastSubmitResp;
+      submitTracker.get();
 
     try {
       const outcome = await verifySubmitOutcome(page, {
@@ -1840,22 +1823,10 @@ export class GenericAdapter extends ATSAdapter {
           "button:has-text('Submit'), a:has-text('Submit Application')",
         submitResponse,
       });
-      if (respListener && typeof page.off === "function") {
-        try {
-          page.off("response", respListener);
-        } catch {
-          // ignore
-        }
-      }
+      submitTracker.detach();
       return outcome;
     } catch (e) {
-      if (respListener && typeof page.off === "function") {
-        try {
-          page.off("response", respListener);
-        } catch {
-          // ignore
-        }
-      }
+      submitTracker.detach();
       throw e;
     }
   }

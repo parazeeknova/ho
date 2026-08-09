@@ -104,6 +104,122 @@ function escapeLog(val: string): string {
 }
 
 /**
+ * A submit-response capture hook that works on Stagehand v3's understudy Page.
+ *
+ * Stagehand v3 pages do NOT support Playwright's ``page.on("response")`` —
+ * the only page event is ``"console"``, and attaching any other event throws
+ * ``Unsupported event``. Every adapter previously used ``page.on("response")``
+ * to capture the ATS's submit POST (the basis for treating a 2xx as
+ * confirmation on SPA/XHR boards). That listener was silently dead, so
+ * ``lastSubmitResp`` stayed undefined and successful submissions reported
+ * "Submit not confirmed". This helper subscribes to CDP's
+ * ``Network.responseReceived`` on the page's main session instead — which
+ * Stagehand v3 wires through to its CdpSession — and returns an
+ * ``{ ok, status }`` snapshot of the latest matching POST.
+ *
+ * ``matcher`` decides whether a response URL counts as the submit POST. The
+ * caller supplies its board-specific predicate (Ashby/Greenhouse/Generic use
+ * slightly different URL shapes). Returns a detach function; call it in a
+ * finally/after-verify so a stale listener is never left subscribed.
+ */
+export function trackSubmitResponse(
+  page: any,
+  matcher: (url: string) => boolean,
+): {
+  get: () => { ok: boolean; status?: number } | undefined;
+  detach: () => void;
+} {
+  let last: { ok: boolean; status?: number } | undefined;
+  const session = (page?.mainSession ?? page?.session ?? null) as any;
+
+  const onResponse = (params: any) => {
+    try {
+      const resp = params?.response ?? {};
+      const u = String(resp?.url ?? "");
+      if (!u || !matcher(u)) return;
+      const status = typeof resp?.status === "number" ? resp.status : undefined;
+      // status >= 400 is a failure; anything else that returned is ok.
+      const ok = typeof status === "number" ? status < 400 : false;
+      last = { ok, status };
+      console.log(
+        `[audit] Submit response: ${status ?? "?"} ${u.slice(0, 120)}` +
+          ` (${ok ? "ok" : "FAILED"})`,
+      );
+    } catch {
+      // Ignore responses we can't read.
+    }
+  };
+
+  let attached = false;
+  if (session && typeof session.on === "function" && typeof session.send === "function") {
+    try {
+      session.on("Network.responseReceived", onResponse);
+      attached = true;
+      // Network.enable is idempotent; calling it guarantees responseReceived
+      // events flow even if the session was created without the domain on.
+      session.send("Network.enable").catch(() => {});
+    } catch {
+      attached = false;
+    }
+  }
+  if (!attached) {
+    console.warn("[audit] No CDP session available for submit-response tracking.");
+  }
+
+  return {
+    get: () => last,
+    detach: () => {
+      if (attached && session && typeof session.off === "function") {
+        try {
+          session.off("Network.responseReceived", onResponse);
+        } catch {
+          // ignore
+        }
+      }
+    },
+  };
+}
+
+/**
+ * Default submit-POST matcher: same-origin POST-ish paths or any
+ * application/submission URL. Conservative — only URLs that look like an ATS
+ * submit endpoint count, so a background analytics POST is never misread as
+ * the submission.
+ */
+export function isSubmitUrl(url: string, origin: string): boolean {
+  const u = String(url ?? "");
+  if (!u) return false;
+  let uo: URL;
+  try {
+    uo = new URL(u);
+  } catch {
+    return false;
+  }
+  // Match only the URL PATH — never the query string. A query like
+  // "content-type=application/x-json-stream" (Microsoft OneCollector
+  // telemetry) or an analytics pixel would otherwise false-positive as a
+  // submit. Telemetry/analytics hosts are excluded outright.
+  const host = uo.hostname.toLowerCase();
+  if (
+    /(telemetry|analytics|collector|events|metrics|sentry|mixpanel|amplitude|segment|hotjar|fullstory|clarity|msedge|browser\.events)/.test(
+      host,
+    )
+  ) {
+    return false;
+  }
+  const path = uo.pathname.toLowerCase();
+  if (
+    uo.origin === origin &&
+    /applications?|submission|apply|submit|candidate|job_application|create_application/.test(path)
+  ) {
+    return true;
+  }
+  return /candidate-submissions|job_application|create_application|applications?(\/|$|\?)/.test(
+    path,
+  );
+}
+
+/**
  * The result of a submit attempt. `confirmed` is ONLY true when the ATS
  * actually reached a confirmed-submitted state: a success-page URL redirect,
  * or the form leaving the submission state (submit button gone) while a

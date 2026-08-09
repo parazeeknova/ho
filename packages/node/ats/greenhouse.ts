@@ -9,7 +9,9 @@ import { ATSAdapter, type RpcHelper } from "./base.js";
 import {
   auditBlanks,
   finalReverify,
+  isSubmitUrl,
   type SubmitOutcome,
+  trackSubmitResponse,
   verifySubmitOutcome,
 } from "./shared/audit.js";
 import { FormControls } from "./shared/controls.js";
@@ -1077,51 +1079,11 @@ export class GreenhouseAdapter extends ATSAdapter {
     // Track the submit POST response so confirmation is gated on an actual 2xx
     // from Greenhouse — many boards submit via XHR and never change the URL, so
     // verifySubmitOutcome would otherwise report "not confirmed" on a successful
-    // submission.
-    let lastSubmitResp: { ok: boolean; status?: number } | undefined;
-    let respListener: ((r: any) => void) | null = (r: any) => {
-      const u = String(r?.url?.() || r?.url || "");
-      // Greenhouse posts the application to an /applications (or similar)
-      // endpoint. Custom-domain boards (careers.airbnb.com, mongodb.com,
-      // abnormal.ai) use their own host but the same path shape. Match the
-      // path rather than the host: /applications, /apply, submission etc.
-      // ALSO accept any POST to the same origin — the submit is a form POST
-      // and no other POST happens at that moment, so a same-origin POST is a
-      // safe signal even when the path differs (e.g. a board posts to a
-      // custom path that misses the /applications|/apply regex and would
-      // otherwise be a false "Submit not confirmed").
-      try {
-        const method = typeof r.request === "function" ? r.request()?.method?.() : "";
-        if (method !== "POST") return;
-        if (
-          !/\/applications?(\/|$|\?)|\/apply|submission|submissions?(\/|$|\?)|\/submit|job_application|create_application/i.test(
-            u,
-          )
-        ) {
-          const originOk =
-            typeof r.request === "function" &&
-            r.request()?.url?.().startsWith(page.url().split("/").slice(0, 3).join("/"));
-          if (!originOk) return;
-        }
-        const ok = typeof r.ok === "function" ? r.ok() : false;
-        const status = typeof r.status === "function" ? r.status() : undefined;
-        lastSubmitResp = { ok, status };
-        console.log(
-          `[Greenhouse] Submit response: ${status ?? "?"} ${u.slice(0, 120)}` +
-            ` (${ok ? "ok" : "FAILED"})`,
-        );
-      } catch {
-        // Ignore responses we can't read.
-      }
-    };
-    if (typeof page.on === "function") {
-      try {
-        page.on("response", respListener);
-      } catch {
-        respListener = null;
-      }
-    }
-
+    // submission. Stagehand v3 pages do NOT support page.on("response") (it
+    // throws "Unsupported event"), so this hooks CDP Network.responseReceived
+    // on the page's main session instead.
+    const origin = page.url().split("/").slice(0, 3).join("/");
+    const submitTracker = trackSubmitResponse(page, (u) => isSubmitUrl(u, origin));
     await this.controls.clickSubmitButton({
       preferredSelector:
         "input[type='submit'], button[type='submit'], button:has-text('Submit Application')",
@@ -1138,7 +1100,7 @@ export class GreenhouseAdapter extends ATSAdapter {
     }
 
     const submitResponse = async (): Promise<{ ok: boolean; status?: number } | undefined> =>
-      lastSubmitResp;
+      submitTracker.get();
 
     try {
       const outcome = await verifySubmitOutcome(page, {
@@ -1148,22 +1110,10 @@ export class GreenhouseAdapter extends ATSAdapter {
           "input[type='submit'], button[type='submit'], button:has-text('Submit Application')",
         submitResponse,
       });
-      if (respListener && typeof page.off === "function") {
-        try {
-          page.off("response", respListener);
-        } catch {
-          // ignore
-        }
-      }
+      submitTracker.detach();
       return outcome;
     } catch (e) {
-      if (respListener && typeof page.off === "function") {
-        try {
-          page.off("response", respListener);
-        } catch {
-          // ignore
-        }
-      }
+      submitTracker.detach();
       throw e;
     }
   }

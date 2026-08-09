@@ -1351,6 +1351,16 @@ class AutofillWorker:
                                 )
                                 continue
 
+                            # Console-visible fill log: the question and the
+                            # answer autofill is committing, surfaced to the
+                            # run console (teed by loop.py) so a watcher sees
+                            # exactly what the runner is filling.
+                            print(
+                                f"[autofill] {job_context.get('company', '?')} · "
+                                f"{job_context.get('title', '?')} | Q: {question} "
+                                f"=> A: {answer or '<blank>'} ({source})",
+                                flush=True,
+                            )
                             if process.stdin and not process.stdin.is_closing():
                                 rpc_resp = json.dumps(
                                     {
@@ -1395,6 +1405,21 @@ class AutofillWorker:
                                 if rag is not None and normalized:
                                     answers = await rag.answer_questions(
                                         normalized, job_context=job_context
+                                    )
+                                # Console-visible fill log for batch-resolved
+                                # questions (mirror the single-question log).
+                                for bq, ba in answers.items():
+                                    if isinstance(ba, dict):
+                                        bav = ba.get("answer")
+                                        bas = ba.get("source", "kb")
+                                    else:
+                                        bav = ba
+                                        bas = "kb"
+                                    print(
+                                        f"[autofill] {job_context.get('company', '?')} · "
+                                        f"{job_context.get('title', '?')} | Q: {bq} "
+                                        f"=> A: {bav or '<blank>'} ({bas})",
+                                        flush=True,
                                     )
                                 if process.stdin and not process.stdin.is_closing():
                                     rpc_resp = json.dumps(

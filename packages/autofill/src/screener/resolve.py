@@ -108,6 +108,43 @@ _GENDER_SYNONYMS: dict[str, str] = {
     "non binary": "non-binary",
 }
 
+# Race/ethnicity synonym map: persona answers ("South Asian", "Black",
+# "Latino") vs the coarse buckets ATS forms use ("Asian", "Black or African
+# American", "Hispanic or Latino"). A persona "South Asian" must map to the
+# form's "Asian" option — otherwise the required race/ethnicity select defers
+# (or is declined) even though the persona has the fact.
+_ETHNICITY_SYNONYMS: dict[str, str] = {
+    "south asian": "asian",
+    "southeast asian": "asian",
+    "east asian": "asian",
+    "asian american": "asian",
+    "asian indian": "asian",
+    "black": "black or african american",
+    "african american": "black or african american",
+    "african": "black or african american",
+    "black or african": "black or african american",
+    "latino": "hispanic or latino",
+    "latina": "hispanic or latino",
+    "hispanic": "hispanic or latino",
+    "hispanic or latino/a": "hispanic or latino",
+    "native american": "native american or alaska native",
+    "american indian": "native american or alaska native",
+    "alaska native": "native american or alaska native",
+    "two or more": "two or more races",
+    "multiracial": "two or more races",
+    "white": "white",
+    "caucasian": "white",
+}
+
+# Veteran-status synonym map: persona "No"/"not a veteran" vs the form's
+# explicit "I am not a protected veteran" option.
+_VETERAN_SYNONYMS: dict[str, str] = {
+    "no": "i am not a protected veteran",
+    "not a veteran": "i am not a protected veteran",
+    "no, i am not a veteran": "i am not a protected veteran",
+    "yes": "i identify as one or more of the classifications of a protected veteran",
+}
+
 
 def _gender_alias(answer: str) -> list[str]:
     """Extra candidate spellings for a gender/DEI answer so option matching
@@ -117,6 +154,21 @@ def _gender_alias(answer: str) -> list[str]:
     if a in _GENDER_SYNONYMS:
         out.append(_GENDER_SYNONYMS[a])
     # "I prefer to self-describe" style answers
+    if "self-describe" in a or "self describe" in a:
+        out.append("self-describe")
+    return out
+
+
+def _dei_alias(answer: str) -> list[str]:
+    """Extra candidate spellings for DEI answers (gender, race/ethnicity,
+    veteran status) so option matching bridges persona-vs-form labels. Gender
+    "Man/Woman", ethnicity "South Asian" -> "Asian", veteran "No" -> the
+    form's protected-veteran negative option."""
+    a = (answer or "").strip().lower()
+    out: list[str] = []
+    for syn in (_GENDER_SYNONYMS, _ETHNICITY_SYNONYMS, _VETERAN_SYNONYMS):
+        if a in syn and syn[a] not in out:
+            out.append(syn[a])
     if "self-describe" in a or "self describe" in a:
         out.append("self-describe")
     return out
@@ -153,7 +205,7 @@ def match_option(answer: str, options: list[str]) -> str | None:
     tolerance). Returns None when nothing matches confidently — callers must
     ask rather than guess."""
     eligible = [o for o in (options or []) if not is_decline_option(o)]
-    candidates = list(_candidates(answer)) + _gender_alias(answer)
+    candidates = list(_candidates(answer)) + _dei_alias(answer)
     for cand in candidates:
         nc = _norm(cand)
         if not nc:

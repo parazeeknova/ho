@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { ATSAdapter } from "./base";
-import { verifySubmitOutcome } from "./shared/audit";
+import { isSubmitUrl, verifySubmitOutcome } from "./shared/audit";
 
 // A minimal fake page that models the outcomes verifySubmitOutcome polls for:
 // URL transitions, error banners, inline confirmation text, and a submit
@@ -227,5 +227,37 @@ describe("verifySubmitOutcome — 200-gate", () => {
       submitResponse: async () => ({ ok: true, status: 200 }),
     });
     assert.equal(out.confirmed, true);
+  });
+});
+
+describe("isSubmitUrl", () => {
+  const origin = "https://apply.careers.microsoft.com";
+
+  it("accepts a same-origin application POST path", () => {
+    assert.equal(isSubmitUrl(`${origin}/candidate-submission/abc`, origin), true);
+    assert.equal(isSubmitUrl(`${origin}/applications`, origin), true);
+  });
+
+  it("accepts a cross-host ATS submit URL", () => {
+    assert.equal(isSubmitUrl("https://job-boards.greenhouse.io/applications", origin), true);
+  });
+
+  it("rejects telemetry/analytics hosts even when the path looks submit-like", () => {
+    assert.equal(
+      isSubmitUrl(
+        "https://browser.events.data.microsoft.com/OneCollector/1.0/?content-type=application/x-json-stream",
+        origin,
+      ),
+      false,
+    );
+    assert.equal(isSubmitUrl("https://analytics.example.com/submit", origin), false);
+  });
+
+  it("rejects a submit-looking string buried in the query string", () => {
+    assert.equal(isSubmitUrl(`${origin}/track?endpoint=candidate-submission&x=1`, origin), false);
+    assert.equal(
+      isSubmitUrl("https://cdn.example.com/app.js?cb=candidate-submission", origin),
+      false,
+    );
   });
 });
