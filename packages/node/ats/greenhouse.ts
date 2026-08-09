@@ -899,9 +899,14 @@ export class GreenhouseAdapter extends ATSAdapter {
       }
 
       // JD-tailored resume attaches at the END of the fill (mirrors cover
-      // letter). Only when no base resume was uploaded early (fully-deferred
-      // mode) — otherwise the already-attached base resume stays.
-      if (!resumeAttached && profile.resumePath == null) {
+      // letter). Retry whenever the resume did NOT attach — the early upload
+      // can miss because the base/tailored PDF was still being written to its
+      // per-job path (tailoring runs in the background while the form walk
+      // proceeds). resolveTailoredResume waits for that task (or falls back to
+      // the base resume) and returns a path that actually exists on disk, so a
+      // transiently-missing file is re-attached here instead of submitting
+      // without a CV.
+      if (!resumeAttached) {
         const tailored = await this.resolveTailoredResume(rpc);
         if (tailored) {
           resumeAttached = await this.uploadResume(page, tailored);

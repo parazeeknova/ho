@@ -1552,9 +1552,12 @@ export class GenericAdapter extends ATSAdapter {
         }
         await this.fillCoverLetter(rpc, filled, blanked);
         // JD-tailored resume (background-generated) attaches at the END of the
-        // fill, mirroring the cover letter. When the worker resolved none
-        // (tailoring disabled / failed), the base resume uploaded above stays.
-        if (!resumeAttached && profile.resumePath == null) {
+        // fill, mirroring the cover letter. Retry whenever the resume did NOT
+        // attach — the early upload can miss because the base/tailored PDF was
+        // still being written to its per-job path while the form walk
+        // proceeded. resolveTailoredResume waits for that task (or falls back
+        // to the base resume) and returns a path that exists on disk.
+        if (!resumeAttached) {
           const tailored = await this.resolveTailoredResume(rpc);
           if (tailored) {
             resumeAttached = await this.uploadResumeIfVisible(tailored);
