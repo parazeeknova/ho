@@ -3564,6 +3564,10 @@ Questions:
                 # aggressive shared budget, which trips provider 429s and stalls
                 # a single application for 30-40s per question.
                 interactive=True,
+                # Bypass the shared budget entirely: a form answer is one
+                # low-volume, user-critical call that must never wait on the
+                # radar fleet's cooldowns or budget windows.
+                skip_budget=True,
             )
             cleaned = raw_resp.strip()
 
@@ -3713,7 +3717,10 @@ candidate has submitted; never copy phrasing verbatim across applications.
             return _strip_em_dashes(
                 (
                     await self.cm.chat(
-                        prompt, system_prompt=COVER_LETTER_SYSTEM_PROMPT, interactive=True
+                        prompt,
+                        system_prompt=COVER_LETTER_SYSTEM_PROMPT,
+                        interactive=True,
+                        skip_budget=True,
                     )
                 ).strip()
             )
