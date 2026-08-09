@@ -382,7 +382,12 @@ async def generate_dynamic_questions(
         "category should be a short lowercase slug like 'skills' or 'projects'.\n"
     )
     try:
-        raw = await ctx.chat(prompt, schema=_DYN_QUESTION_SCHEMA, max_tokens=1200)
+        raw = await ctx.chat(
+            prompt,
+            schema=_DYN_QUESTION_SCHEMA,
+            max_tokens=1200,
+            interactive=True,
+        )
         import json as _json
 
         parsed = _json.loads(raw)
