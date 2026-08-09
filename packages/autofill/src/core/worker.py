@@ -1049,8 +1049,7 @@ class AutofillWorker:
                 )
 
             process = await asyncio.create_subprocess_exec(
-                "npx",
-                "tsx",
+                str(_NODE_DIR / "node_modules" / ".bin" / "tsx"),
                 "runner.ts",
                 cwd=node_dir,
                 stdin=asyncio.subprocess.PIPE,
