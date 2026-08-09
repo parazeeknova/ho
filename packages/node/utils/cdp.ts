@@ -151,8 +151,10 @@ export async function checkCheckboxViaCdpClick(page: any, selector: string): Pro
       const cb = document.querySelector(sel) as HTMLInputElement | null;
       return cb ? cb.checked : false;
     }, selector);
+    console.log(`[cdp] checkCheckboxViaCdpClick(${selector}) => ${checked}`);
     return checked === true;
-  } catch {
+  } catch (err: any) {
+    console.warn(`[cdp] checkCheckboxViaCdpClick(${selector}) threw: ${err?.message || err}`);
     return false;
   }
 }

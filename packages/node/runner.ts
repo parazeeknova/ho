@@ -147,6 +147,7 @@ async function main() {
 
   const payload = parseResult.data;
   console.log(`[Runner] Received job ${payload.jobId} for ${payload.url}`);
+  console.log(`[Runner] DEPLOY-MARKER: consent-fix-v3 (checkCheckboxViaCdpClick)`);
 
   const apiKey = process.env.GENERALCOMPUTE_API_KEY || process.env.OPENAI_API_KEY;
   if (!apiKey) {
