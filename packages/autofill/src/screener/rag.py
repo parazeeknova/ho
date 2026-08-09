@@ -539,6 +539,19 @@ _PERSONAL_RULES: list[tuple[re.Pattern, str]] = [
         ),
         "education",
     ),
+    # Voluntary DEI / self-identification facts (ethnicity, race, veteran
+    # status, sexual orientation, gender identity, disability, pronouns). These
+    # are PERSONAL FACTS: resolve from the persona's exact answers only, never
+    # from the LLM (which guesses), and never defer when the persona has them.
+    (
+        re.compile(
+            r"race|ethnic|hispanic|latino|veteran|armed forces|military (service|veteran)|"
+            r"sexual (orientation|identity)|disability|gender identity|pronoun|"
+            r"self.?identification|self.?identify",
+            re.I,
+        ),
+        "self_identification",
+    ),
 ]
 
 # Personal-fact categories that resolve from configured data (no guessing, no prompting).
@@ -2772,6 +2785,55 @@ class ScreenerRAG:
             return program or degree or None
         return None
 
+    def _self_identification_answer(self, q: str, q_lower: str) -> str | None:
+        """Deterministic answer for voluntary DEI / self-identification
+        questions (race/ethnicity, veteran status, sexual orientation, gender
+        identity, disability, pronouns) from the persona's exact answers.
+
+        The persona stores these as Q&A entries ("What is your ethnicity /
+        race?" -> "Asian"). The form's phrasing ("Voluntary Self-Identification
+        of Race/Ethnicity") never exactly matches, and semantic lookup can miss
+        at the threshold. Match on the question's TOPIC to the persona answer
+        category, returning the persona's value for the caller to map to the
+        form's options.
+        """
+        if self.store is None:
+            return None
+        cats = {
+            "race": ("ethnicity", "race", "ethnic"),
+            "veteran": ("veteran", "armed forces"),
+            "sexual": ("sexual", "orientation"),
+            "gender": ("gender", "gender identity", "identify as"),
+            "disability": ("disability", "disabled"),
+            "pronoun": ("pronoun",),
+        }
+        topic = None
+        for cat, needles in cats.items():
+            if any(n in q_lower for n in needles):
+                topic = cat
+                break
+        if topic is None:
+            return None
+        answers = self.profile.customAnswers if hasattr(self.profile, "customAnswers") else {}
+        for _pq, _pa in answers.items():
+            pq = str(_pq or "").lower()
+            pa = str(_pa or "").strip()
+            if not pa:
+                continue
+            if topic == "race" and ("ethnic" in pq or "race" in pq):
+                return pa
+            if topic == "veteran" and ("veteran" in pq or "armed forces" in pq):
+                return pa
+            if topic == "sexual" and "sexual" in pq:
+                return pa
+            if topic == "gender" and ("gender" in pq or "identify as" in pq):
+                return pa
+            if topic == "disability" and ("disability" in pq or "disabled" in pq):
+                return pa
+            if topic == "pronoun" and "pronoun" in pq:
+                return pa
+        return None
+
     def _compensation_by_currency(self) -> dict[str, dict[str, str]]:
         """Cached per-currency compensation table (parsed once per instance)."""
         if self._comp_table is None:
@@ -3210,6 +3272,14 @@ class ScreenerRAG:
         persona_ans = await self._lookup_persona(q, q_lower)
         if persona_ans is not None:
             return _normalize_start_date(persona_ans) if key in _START_DATE_KEYS else persona_ans
+
+        # Voluntary DEI / self-identification: resolve deterministically from
+        # the persona's exact answers by topic (never the LLM, which guesses
+        # protected-class facts).
+        if key == "self_identification":
+            deid = self._self_identification_answer(q, q_lower)
+            if deid is not None:
+                return deid
 
         # Conditional free-text sibling of a sourcing select
         # "If specified fill below" / "If Other please specify"). The main
