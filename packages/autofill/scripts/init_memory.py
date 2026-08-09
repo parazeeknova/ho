@@ -341,7 +341,10 @@ async def main() -> None:
             answer = _input("").strip().lower()
             if answer in ("g", "grill", "new", "fresh"):
                 ux.chip("info", "Launching interactive wizard to build a new persona...")
-                await run_script("grill_persona.py")
+                # --all re-asks every question: a "build a new one" must not
+                # silently reuse the existing answers (which makes it only ask
+                # the gaps and then skip 26 as "already answered").
+                await run_script("grill_persona.py", "--all")
             elif answer in ("", "y", "yes"):
                 await run_script("build_persona.py")
             else:
