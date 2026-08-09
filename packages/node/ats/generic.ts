@@ -3,6 +3,7 @@ import * as fs from "fs";
 import { Stagehand, type Action } from "@browserbasehq/stagehand";
 
 import { type JobPayload, type Profile } from "../types.js";
+import { setFileInputViaDataTransfer } from "../utils/cdp.js";
 import { randomSleep } from "../utils/evasion.js";
 import { ATSAdapter, type RpcHelper } from "./base.js";
 import {
@@ -1208,10 +1209,19 @@ export class GenericAdapter extends ATSAdapter {
     if (target.index < 0) return false;
 
     const input = page.locator('input[type="file"]').nth(target.index);
+    // The nth-indexed input can't be addressed by a stable selector for
+    // setFileInputViaDataTransfer (which uses document.querySelector). Fall
+    // back: resolve the nth input's actual selector attribute (id) so the
+    // DataTransfer injection targets the right element.
+    let fileSel = 'input[type="file"]';
+    try {
+      const id = await input.getAttribute("id").catch(() => null);
+      if (id) fileSel = `input[type="file"]#${id.replace(/[^\w-]/g, "\\$&")}`;
+    } catch {}
     for (let attempt = 0; attempt < 3; attempt++) {
       if (await this.controls.isResumeAttached()) return true;
       try {
-        await input.setInputFiles(resumePath);
+        await setFileInputViaDataTransfer(page, fileSel, resumePath);
       } catch (err: any) {
         this.warn(`Resume setInputFiles threw (attempt ${attempt + 1}): ${err?.message || err}`);
       }
@@ -1286,7 +1296,7 @@ export class GenericAdapter extends ATSAdapter {
         const fileInput = page.locator(sel).first();
         if ((await fileInput.isVisible().catch(() => false)) || (await fileInput.count()) > 0) {
           try {
-            await fileInput.setInputFiles(pdfPath);
+            await setFileInputViaDataTransfer(page, sel, pdfPath);
             console.log("[Generic] Cover letter PDF uploaded successfully.");
             attached = true;
             break;

@@ -3,6 +3,7 @@ import * as fs from "fs";
 import { Stagehand } from "@browserbasehq/stagehand";
 
 import { type JobPayload, type Profile } from "../types.js";
+import { setFileInputViaDataTransfer } from "../utils/cdp.js";
 import { randomSleep } from "../utils/evasion.js";
 import { ATSAdapter, type RpcHelper } from "./base.js";
 import {
@@ -598,7 +599,15 @@ export class AshbyAdapter extends ATSAdapter {
         continue;
       }
       try {
-        await input.setInputFiles(resumePath);
+        // Stagehand's setInputFiles / raw CDP DOM.setFileInputFiles both fail to
+        // register on Ashby's React-controlled file input. Inject the bytes via
+        // a DataTransfer + change event so input.files actually populates.
+        await setFileInputViaDataTransfer(
+          page,
+          '#_systemfield_resume[type="file"]',
+          resumePath,
+          baseName,
+        );
       } catch (err: any) {
         console.warn(
           `[Ashby] Resume setInputFiles threw (attempt ${attempt + 1}): ${err?.message || err}`,
@@ -682,10 +691,11 @@ export class AshbyAdapter extends ATSAdapter {
     let committed = false;
     for (const row of rows) {
       if (row.hasFile && pdfPath) {
-        const input = page.locator(`div[data-field-path="${row.id}"] input[type="file"]`).first();
+        const inputSel = `div[data-field-path="${row.id}"] input[type="file"]`;
+        const input = page.locator(inputSel).first();
         if ((await input.count().catch(() => 0)) > 0) {
           try {
-            await input.setInputFiles(pdfPath);
+            await setFileInputViaDataTransfer(page, inputSel, pdfPath);
             await randomSleep(1200, 1800);
             const baseName = pdfPath.split(/[\\/]/).pop() || "";
             const attached = await page

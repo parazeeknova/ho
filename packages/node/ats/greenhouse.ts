@@ -3,6 +3,7 @@ import * as fs from "fs";
 import { Stagehand } from "@browserbasehq/stagehand";
 
 import { type JobPayload, type Profile } from "../types.js";
+import { setFileInputViaDataTransfer } from "../utils/cdp.js";
 import { randomSleep, typingDelayMs } from "../utils/evasion.js";
 import { gmailConfigured, waitForGreenhouseCode } from "../utils/gmail.js";
 import { ATSAdapter, type RpcHelper } from "./base.js";
@@ -562,7 +563,11 @@ export class GreenhouseAdapter extends ATSAdapter {
         continue;
       }
       try {
-        await resumeInput.setInputFiles(resumePath);
+        // Stagehand's setInputFiles and raw CDP DOM.setFileInputFiles both fail
+        // to register on Greenhouse's React-controlled visually-hidden input
+        // (input.files stays empty, submit rejects "Resume/CV*"). Inject the
+        // bytes into the page via a DataTransfer + change event instead.
+        await setFileInputViaDataTransfer(page, 'input#resume[type="file"]', resumePath, baseName);
       } catch (err: any) {
         console.warn(
           `[GreenhouseAdapter] Resume setInputFiles threw (attempt ${attempt + 1}): ${err?.message || err}`,
