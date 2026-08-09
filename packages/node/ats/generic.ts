@@ -556,7 +556,8 @@ export class GenericAdapter extends ATSAdapter {
         // strand the walk on the wrong tab.
         let adopted = false;
         const previous = this.getPage();
-        for (const p of this.stagehand.context.pages()) {
+        const ctxPages = this.stagehand.context?.pages?.() ?? [];
+        for (const p of ctxPages) {
           if (p === previous) continue;
           this.controls.adoptPage(p);
           const kind = classifyFlow(await this.probeFlow());

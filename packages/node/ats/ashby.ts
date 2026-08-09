@@ -214,7 +214,8 @@ export class AshbyAdapter extends ATSAdapter {
       // The tab may not carry /application (custom embeds); adopt any page
       // that now shows the form.
       let adopted = false;
-      for (const p of this.stagehand.context.pages()) {
+      const ctxPages = this.stagehand.context?.pages?.() ?? [];
+      for (const p of ctxPages) {
         if (
           await p
             .locator("[data-field-path]")
@@ -509,7 +510,8 @@ export class AshbyAdapter extends ATSAdapter {
           .catch(() => false))
       ) {
         // A new tab may have opened for the form; adopt the page showing it.
-        for (const p of this.stagehand.context.pages()) {
+        const ctxPages2 = this.stagehand.context?.pages?.() ?? [];
+        for (const p of ctxPages2) {
           if (
             await p
               .locator("[data-field-path]")

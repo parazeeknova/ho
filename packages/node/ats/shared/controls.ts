@@ -113,7 +113,12 @@ export class FormControls {
   protected activePage: any = null;
 
   getPage(): any {
-    return this.activePage ?? this.stagehand.context.pages()[0];
+    if (this.activePage) return this.activePage;
+    try {
+      return this.stagehand.context?.pages?.()[0];
+    } catch {
+      return undefined;
+    }
   }
 
   /** Adopt a specific page (e.g. a form opened in a new tab) as the active one. */

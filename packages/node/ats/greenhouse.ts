@@ -159,7 +159,8 @@ export class GreenhouseAdapter extends ATSAdapter {
       // The form may render in THIS page or in a NEW TAB opened by the Apply
       // click (job-boards.eu.greenhouse.io does this); adopt whichever page
       // shows the form so the rest of the fill drives the right document.
-      for (const p of this.stagehand.context.pages()) {
+      const ctxPages = this.stagehand.context?.pages?.() ?? [];
+      for (const p of ctxPages) {
         try {
           if (
             await p
