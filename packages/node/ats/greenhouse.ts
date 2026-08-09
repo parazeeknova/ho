@@ -3,7 +3,7 @@ import * as fs from "fs";
 import { Stagehand } from "@browserbasehq/stagehand";
 
 import { type JobPayload, type Profile } from "../types.js";
-import { setFileInputViaDataTransfer } from "../utils/cdp.js";
+import { setFileInputViaDataTransfer, checkCheckboxViaJs } from "../utils/cdp.js";
 import { randomSleep, typingDelayMs } from "../utils/evasion.js";
 import { gmailConfigured, waitForGreenhouseCode } from "../utils/gmail.js";
 import { ATSAdapter, type RpcHelper } from "./base.js";
@@ -1077,7 +1077,7 @@ export class GreenhouseAdapter extends ATSAdapter {
             ? `input[type='checkbox'][name='${CSS.escape(c.name)}']`
             : `input[type='checkbox']`;
         try {
-          await page.locator(sel).first().check({ force: true });
+          await checkCheckboxViaJs(page, sel);
           console.log(`[GreenhouseAdapter]   checked: ${c.label}`);
         } catch {
           console.warn(`[GreenhouseAdapter]   could not check: ${c.label}`);

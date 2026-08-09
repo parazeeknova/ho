@@ -74,3 +74,45 @@ export async function setFileInputViaDataTransfer(
     return false;
   }
 }
+
+/**
+ * Check a checkbox via in-page JS that React actually registers. Stagehand's
+ * locator.check({force:true}) and raw CDP clicks can leave a React-controlled
+ * checkbox visually checked but not committed to the form's submit payload
+ * (the ATS then rejects with "Please accept the terms to proceed"). Setting
+ * the property directly and dispatching a bubbling change/click (pointer
+ * events included) mirrors a real user's click closely enough for React's
+ * onChange to fire. Returns true when the checkbox is checked afterwards.
+ */
+export async function checkCheckboxViaJs(page: any, selector: string): Promise<boolean> {
+  try {
+    const result = await page.evaluate((sel: string) => {
+      const cb = document.querySelector(sel) as HTMLInputElement | null;
+      if (!cb) return "NO_INPUT";
+      if (!cb.checked) {
+        cb.checked = true;
+        // Dispatch the full gesture stack a real click would fire so React's
+        // onChange (which listens on change, sometimes via click) fires.
+        for (const type of [
+          "pointerdown",
+          "pointerup",
+          "mousedown",
+          "mouseup",
+          "click",
+          "change",
+          "input",
+        ]) {
+          cb.dispatchEvent(new Event(type, { bubbles: true, cancelable: true }));
+        }
+      }
+      return JSON.stringify({ checked: cb.checked });
+    }, selector);
+    if (typeof result === "string" && result.startsWith("{")) {
+      const parsed = JSON.parse(result);
+      return parsed.checked === true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
