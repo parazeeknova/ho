@@ -244,13 +244,13 @@ class AutofillDB:
         pool = await asyncpg.create_pool(cfg.dsn, min_size=1, max_size=cfg.max_pool)
         async with pool.acquire() as conn:
             await conn.execute(CREATE_TABLE_SQL)
-        logger.info("AutofillDB initialized", dsn=cfg.dsn.split("@")[-1])
+        logger.debug("AutofillDB initialized", dsn=cfg.dsn.split("@")[-1])
         return cls(pool)
 
     async def close(self) -> None:
         """Close connection pool."""
         await self._pool.close()
-        logger.info("AutofillDB closed")
+        logger.debug("AutofillDB closed")
 
     async def enqueue_job(
         self,

@@ -707,7 +707,10 @@ class MemoryStore:
             await cls._prune_llm_queue(conn)
             await cls._prune_embed_cache(conn)
             await cls._prune_http_cache(conn)
-        logger.info("MemoryStore initialized", dsn=cfg.dsn.split("@")[-1])
+        # Lifecycle noise: MemoryStore is opened/closed constantly during board
+        # polling, so "initialized"/"closed" at INFO floods the run log. Drop to
+        # DEBUG — the connect time is what matters, and that's logged by the pool.
+        logger.debug("MemoryStore initialized", dsn=cfg.dsn.split("@")[-1])
         return cls(pool)
 
     @staticmethod
@@ -756,7 +759,7 @@ class MemoryStore:
 
     async def close(self) -> None:
         await self._pool.close()
-        logger.info("MemoryStore closed")
+        logger.debug("MemoryStore closed")
 
     # Processed_jobs
 

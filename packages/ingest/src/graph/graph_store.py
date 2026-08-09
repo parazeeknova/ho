@@ -52,13 +52,13 @@ class GraphStore:
             notifications_min_severity=NotificationMinimumSeverity.OFF,
         )
         await store._ensure_indexes()
-        logger.info("Neo4j graph store initialized")
+        logger.debug("Neo4j graph store initialized")
         return store
 
     async def close(self) -> None:
         if self._driver:
             await self._driver.close()
-            logger.info("Neo4j graph store closed")
+            logger.debug("Neo4j graph store closed")
 
     async def _run(self, query: str, params: dict | None = None) -> list[dict[str, Any]]:
         async with self._driver.session() as session:
