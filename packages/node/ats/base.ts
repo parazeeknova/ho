@@ -55,7 +55,11 @@ export abstract class ATSAdapter {
   /** The page to screenshot after fill. Defaults to the first context page;
    *  adapters that switch tabs (e.g. a form opened in a new tab) override. */
   getActivePage(): any {
-    return this.stagehand.context.pages()[0];
+    try {
+      return this.stagehand.context?.pages?.()[0];
+    } catch {
+      return undefined;
+    }
   }
 
   /**

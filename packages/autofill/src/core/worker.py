@@ -1681,8 +1681,16 @@ class AutofillWorker:
                                 # reuses the same flagged session and fails.
                                 # Re-queue so the NEXT claim builds a fresh
                                 # session (new {SID} IP + new fingerprint seed).
+                                # BUT: re-queueing only helps when IP rotation
+                                # exists. With no proxy configured every retry
+                                # exits from the SAME host IP and gets re-flagged
+                                # forever — that just burns the retry budget on
+                                # doomed re-fills. In that case fail terminally.
+                                has_rotation = bool(_autofill_proxy() or _autofill_proxy_template())
                                 spam_tries = job.get("spam_retries") or 0
-                                if spam_tries < int(os.getenv("AUTOFILL_SPAM_RETRIES", "2")):
+                                if has_rotation and spam_tries < int(
+                                    os.getenv("AUTOFILL_SPAM_RETRIES", "2")
+                                ):
                                     logger.warning(
                                         "Ashby/ATS flagged submit as spam; "
                                         "re-queuing for a fresh-session retry",

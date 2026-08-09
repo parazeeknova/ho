@@ -498,10 +498,28 @@ async function main() {
       fs.mkdirSync(screenshotDir, { recursive: true });
     }
     const screenshotPath = path.join(screenshotDir, `${payload.jobId}.png`);
-    const pages = stagehand.context.pages();
+    let pages: any[] = [];
+    try {
+      pages = stagehand.context?.pages?.() ?? [];
+    } catch {
+      pages = [];
+    }
 
     if (pages.length === 0) {
-      throw new Error("No active browser pages available for taking screenshot.");
+      // The browser context is gone (rare, e.g. the remote session died between
+      // fill and screenshot). This is not a fill failure — emit a skipped status
+      // so the worker records it as such instead of crashing with
+      // "Cannot read properties of null (reading 'pages')" and burning a retry.
+      console.warn("[Runner] No browser context for screenshot; treating fill as skipped.");
+      emitStatus({
+        jobId: payload.jobId,
+        status: "skipped",
+        message: "Browser context lost after fill; nothing submitted.",
+      });
+      watchdog?.stop();
+      rl.close();
+      await stagehand.close();
+      process.exit(0);
     }
     const activePage = adapter.getActivePage();
     await activePage.screenshot({ path: screenshotPath, fullPage: true });
