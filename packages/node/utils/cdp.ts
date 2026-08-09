@@ -76,42 +76,82 @@ export async function setFileInputViaDataTransfer(
 }
 
 /**
- * Check a checkbox via in-page JS that React actually registers. Stagehand's
- * locator.check({force:true}) and raw CDP clicks can leave a React-controlled
- * checkbox visually checked but not committed to the form's submit payload
- * (the ATS then rejects with "Please accept the terms to proceed"). Setting
- * the property directly and dispatching a bubbling change/click (pointer
- * events included) mirrors a real user's click closely enough for React's
- * onChange to fire. Returns true when the checkbox is checked afterwards.
+ * Check a checkbox with a REAL trusted mouse click via CDP. Setting
+ * `cb.checked = true` then dispatching synthetic events does NOT work on
+ * Greenhouse: React's controlled checkbox ignores the programmatic property
+ * change, and a synthetic `click` TOGGLES the box back to unchecked (click's
+ * default action flips `checked`), so the submit still fails with "Please
+ * accept the terms to proceed". A real Input.dispatchMouseEvent press+release
+ * on the checkbox's visible label/visual (scrolled into view) is processed
+ * exactly like a user's click, toggles `checked`, and fires React's onChange.
+ * Returns true when the checkbox is checked afterwards.
  */
-export async function checkCheckboxViaJs(page: any, selector: string): Promise<boolean> {
+export async function checkCheckboxViaCdpClick(page: any, selector: string): Promise<boolean> {
+  const session = page?.mainSession ?? page?.session ?? null;
+  if (!session || typeof session.send !== "function") return false;
   try {
-    const result = await page.evaluate((sel: string) => {
+    await session.send("DOM.enable").catch(() => {});
+    await session.send("Runtime.enable").catch(() => {});
+
+    // Scroll the checkbox's visible label/visual into view FIRST, let the
+    // scroll settle, THEN measure its center (measuring immediately after
+    // scrollIntoView returns stale coordinates while the page is still
+    // scrolling). Greenhouse wraps the input in a custom checkbox with a
+    // sibling visual; clicking the INPUT directly can be intercepted by an
+    // overlay, so click the nearest clickable visual/label element instead.
+    const scrolled = await page.evaluate((sel: string) => {
       const cb = document.querySelector(sel) as HTMLInputElement | null;
-      if (!cb) return "NO_INPUT";
-      if (!cb.checked) {
-        cb.checked = true;
-        // Dispatch the full gesture stack a real click would fire so React's
-        // onChange (which listens on change, sometimes via click) fires.
-        for (const type of [
-          "pointerdown",
-          "pointerup",
-          "mousedown",
-          "mouseup",
-          "click",
-          "change",
-          "input",
-        ]) {
-          cb.dispatchEvent(new Event(type, { bubbles: true, cancelable: true }));
-        }
-      }
-      return JSON.stringify({ checked: cb.checked });
+      if (!cb) return false;
+      const parent = cb.parentElement;
+      const vis = parent?.querySelector(
+        '.checkbox__visual, [class*="visual"], [class*="box"], [class*="checkmark"]',
+      ) as HTMLElement | null;
+      const el: HTMLElement = vis || (parent as HTMLElement) || cb;
+      el.scrollIntoView({ block: "center", inline: "center" });
+      return true;
     }, selector);
-    if (typeof result === "string" && result.startsWith("{")) {
-      const parsed = JSON.parse(result);
-      return parsed.checked === true;
-    }
-    return false;
+    if (!scrolled) return false;
+    await new Promise((r) => setTimeout(r, 1500));
+
+    const target = await page.evaluate((sel: string) => {
+      const cb = document.querySelector(sel) as HTMLInputElement | null;
+      if (!cb) return null;
+      const parent = cb.parentElement;
+      const vis = parent?.querySelector(
+        '.checkbox__visual, [class*="visual"], [class*="box"], [class*="checkmark"]',
+      ) as HTMLElement | null;
+      const el: HTMLElement = vis || (parent as HTMLElement) || cb;
+      const r = el.getBoundingClientRect();
+      if (r.width < 2 || r.height < 2) return null;
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    }, selector);
+    if (!target) return false;
+
+    await session.send("Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x: target.x,
+      y: target.y,
+    });
+    await session.send("Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      x: target.x,
+      y: target.y,
+      button: "left",
+      clickCount: 1,
+    });
+    await session.send("Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      x: target.x,
+      y: target.y,
+      button: "left",
+      clickCount: 1,
+    });
+
+    const checked = await page.evaluate((sel: string) => {
+      const cb = document.querySelector(sel) as HTMLInputElement | null;
+      return cb ? cb.checked : false;
+    }, selector);
+    return checked === true;
   } catch {
     return false;
   }

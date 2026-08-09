@@ -115,10 +115,14 @@ export class FormControls {
   getPage(): any {
     if (this.activePage) return this.activePage;
     try {
-      return this.stagehand.context?.pages?.()[0];
+      const pages = this.stagehand.context?.pages?.();
+      if (pages && pages.length > 0) return pages[0];
     } catch {
-      return undefined;
+      // fall through
     }
+    // A live fill must have a page; fail loudly instead of returning undefined
+    // and letting a downstream .locator() crash on a null receiver.
+    throw new Error("browser context has no pages (browser closed mid-fill)");
   }
 
   /** Adopt a specific page (e.g. a form opened in a new tab) as the active one. */
