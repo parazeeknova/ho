@@ -47,6 +47,7 @@ class ContextManager:
         self._max_retries = cfg.max_retries
         self._retry_delay = cfg.retry_delay
         self._max_tokens = cfg.max_tokens
+        self._per_call_timeout_s = cfg.per_call_timeout_s
         # Per-model failure notes from the last chat() so callers can tell the
         # user what was tried and why ("deepseek-v3.2: read timeout", ...).
         self.last_failures: list[tuple[str, str]] = []
@@ -121,7 +122,10 @@ class ContextManager:
                 if not skip_budget:
                     await acquire_budget(est_tokens, interactive=interactive)
                 try:
-                    output = await asyncio.to_thread(_call_llm, model)
+                    output = await asyncio.wait_for(
+                        asyncio.to_thread(_call_llm, model),
+                        timeout=self._per_call_timeout_s,
+                    )
                     if not skip_budget:
                         release_budget()
                     return output
@@ -129,6 +133,19 @@ class ContextManager:
                     if not skip_budget:
                         release_budget()
                     raise
+                except TimeoutError:
+                    if not skip_budget:
+                        release_budget()
+                    last_error = TimeoutError(
+                        f"{model} did not respond within {self._per_call_timeout_s}s"
+                    )
+                    self.last_failures.append((model, "timed out (no response)"))
+                    logger.warning(
+                        f"LLM model {model} timed out; switching fallback",
+                        model=model,
+                        timeout_s=self._per_call_timeout_s,
+                    )
+                    break
                 except Exception as e:
                     if not skip_budget:
                         release_budget()

@@ -248,6 +248,12 @@ class LLMConfig:
     token_max: int = field(default_factory=lambda: _env_int("LLM_TOKEN_MAX", 30))
     max_retries: int = field(default_factory=lambda: _env_int("LLM_MAX_RETRIES", 3))
     retry_delay: float = field(default_factory=lambda: _env_float("LLM_RETRY_DELAY", 2.0))
+    # Hard per-attempt timeout: a model that hangs (no error, no response) must
+    # not stall the caller forever. When an attempt exceeds this, it counts as
+    # a failure and the next fallback model is tried.
+    per_call_timeout_s: float = field(
+        default_factory=lambda: _env_float("LLM_PER_CALL_TIMEOUT_S", 30.0)
+    )
     rate_penalty_secs: float = field(
         default_factory=lambda: _env_float("LLM_RATE_PENALTY_SECS", 60.0)
     )
