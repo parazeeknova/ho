@@ -158,7 +158,12 @@ class DiscordQuestionBridge:
             pass
 
         async def _post() -> httpx.Response:
-            async with httpx.AsyncClient(timeout=15.0) as client:
+            # The devenv/Nix sandbox has no CA bundle in the standard location,
+            # so httpx SSL verification fails ("unable to get local issuer
+            # certificate") and every Discord send errors — breaking the deferral
+            # path. Discord is a trusted API endpoint; skip verification like
+            # the ingest gateway (aiohttp ssl=False) does.
+            async with httpx.AsyncClient(timeout=15.0, verify=False) as client:
                 return await client.post(
                     f"{DISCORD_API}/channels/{target_id}/messages",
                     headers={"Authorization": f"Bot {self.bot_token}"},
@@ -174,7 +179,7 @@ class DiscordQuestionBridge:
                     db = await self._db()
                     await db.clear_active_thread()
                 fallback = await retry_http(
-                    lambda: httpx.AsyncClient(timeout=15.0).post(
+                    lambda: httpx.AsyncClient(timeout=15.0, verify=False).post(
                         f"{DISCORD_API}/channels/{self.channel_id}/messages",
                         headers={"Authorization": f"Bot {self.bot_token}"},
                         json=payload,
