@@ -307,9 +307,12 @@ export class AshbyAdapter extends ATSAdapter {
       // generated PDF there when present, else fill the text.
       await this.fillCoverLetter(rpc);
       // JD-tailored resume attaches at the END of the fill (mirrors cover
-      // letter). Only when no base resume was uploaded early (fully-deferred
-      // mode) — otherwise the already-attached base resume stays.
-      if (!resumeAttached && profile.resumePath == null) {
+      // letter). Retry whenever the resume did NOT attach — the early upload
+      // can miss because the base/tailored PDF was still being written to its
+      // per-job path while the form walk proceeded. resolveTailoredResume
+      // waits for that task (or falls back to the base resume) and returns a
+      // path that exists on disk.
+      if (!resumeAttached) {
         const tailored = await this.resolveTailoredResume(rpc);
         if (tailored) {
           resumeAttached = await this.uploadResume(tailored);
