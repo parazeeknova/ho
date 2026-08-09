@@ -100,6 +100,27 @@ CORE_QUESTIONS: list[tuple[str, str]] = [
     ("equity", "Do you currently hold any equity, RSUs, or ESOPs?"),
     ("availability", "How soon can you start if selected?"),
     ("working_hours", "How many hours per week are you available?"),
+    (
+        "education",
+        "What is your highest level of education (degree + field of study)?",
+    ),
+    (
+        "education",
+        "What university / college did you attend, and when do/did you graduate?",
+    ),
+    (
+        "ai_experience",
+        "Have you built or integrated any AI / LLM APIs (such as OpenAI, "
+        "Claude, etc.) into an application?",
+    ),
+    (
+        "ai_experience",
+        "Which backend language are you strongest in?",
+    ),
+    (
+        "projects",
+        "Briefly describe a recent project you're most proud of.",
+    ),
 ]
 
 
@@ -178,13 +199,14 @@ async def _resume_context() -> str:
                 rows = await conn.fetch(
                     """
                     SELECT section, content FROM resume_embeddings
-                    WHERE section IN ('header', 'skills', 'projects', 'experience', 'portfolio')
+                    WHERE section IN ('header', 'skills', 'projects', 'experience',
+                                      'education', 'portfolio')
                     ORDER BY id
                     """
                 )
             blocks: list[str] = []
             current: dict[str, list[str]] = {}
-            order = ["header", "skills", "experience", "projects", "portfolio"]
+            order = ["header", "skills", "experience", "education", "projects", "portfolio"]
             for r in rows:
                 sec = str(r.get("section") or "header")
                 txt = str(r.get("content") or "").strip()
@@ -654,6 +676,10 @@ def _extract_resume_fact(key: str, resume_ctx: str) -> str:
         m = re.search(r"=== PROJECTS ===\n(.*?)(?:\n=== |\Z)", resume_ctx, re.S)
         if m:
             return " ".join(m.group(1).split())[:300]
+    elif low in ("education", "university", "degree"):
+        m = re.search(r"=== EDUCATION ===\n(.*?)(?:\n=== |\Z)", resume_ctx, re.S)
+        if m:
+            return " ".join(m.group(1).split())[:300]
     return ""
 
 
@@ -685,6 +711,10 @@ def _auto_answer(question: str, resume: dict[str, str], resume_ctx: str = "") ->
         return resume.get("availability") or ""
     if "project" in low or "proud" in low:
         return resume.get("projects") or ""
+    if "education" in low or "university" in low or "degree" in low or "graduat" in low:
+        return resume.get("education") or ""
+    if "ai" in low or "llm" in low or "openai" in low or "claude" in low or "backend" in low:
+        return resume.get("ai_experience") or resume.get("skills") or ""
 
     # Fallback: token-overlap against resume_ctx, return the tightest extract.
     if resume_ctx:
@@ -831,6 +861,8 @@ def main() -> None:
         "hours_per_week",
         "availability",
         "projects",
+        "education",
+        "ai_experience",
         "city",
     ):
         _AUTO_RESUME.setdefault(key, _extract_resume_fact(key, resume_ctx))

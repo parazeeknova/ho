@@ -351,7 +351,7 @@ async def test_persona_low_distance_used_high_distance_rejected():
                 "category": "current_location",
                 "distance": 0.12,
                 "question": "Where do you live?",
-                "answer": "Bhopal, India",
+                "answer": "Bangalore, India",
             }
         ]
     )
@@ -360,7 +360,7 @@ async def test_persona_low_distance_used_high_distance_rejected():
     rag = ScreenerRAG(context_manager=cm, store=store, exact_answers={})
     with patch("autofill.src.screener.rag._embed_text", new=AsyncMock(return_value=[0.1, 0.2])):
         answers = await rag.answer_questions(["What is your current location?"])
-    assert answers["What is your current location?"] == "Bhopal, India"
+    assert answers["What is your current location?"] == "Bangalore, India"
     cm.chat.assert_not_awaited()
 
     store.search_similar_persona = AsyncMock(
@@ -369,7 +369,7 @@ async def test_persona_low_distance_used_high_distance_rejected():
                 "category": "current_location",
                 "distance": 0.55,
                 "question": "Where do you live?",
-                "answer": "Bhopal, India",
+                "answer": "Bangalore, India",
             }
         ]
     )
@@ -427,12 +427,12 @@ async def test_exact_answer_tier_beats_embeddings() -> None:
         ]
     )
     rag = ScreenerRAG(
-        store=store, exact_answers={"what is your current location?": "Bhopal, India"}
+        store=store, exact_answers={"what is your current location?": "Bangalore, India"}
     )
     with patch("autofill.src.screener.rag._embed_text", new=AsyncMock(return_value=[0.1, 0.2])):
         answers = await rag.answer_questions(["What is your current location?"])
 
-    assert answers["What is your current location?"] == "Bhopal, India"
+    assert answers["What is your current location?"] == "Bangalore, India"
     # The exact tier short-circuits before any embedding search.
     rag.store.search_similar_persona.assert_not_called()
 
@@ -515,7 +515,7 @@ def test_resolve_authorization_policy_home_country() -> None:
     has no country-scoped answer."""
     from autofill.src.screener.profile import Profile
 
-    profile = Profile(location="Bhopal, India")
+    profile = Profile(location="Bangalore, India")
     with patch("autofill.src.screener.rag.get_config", return_value=_cfg()):
         rag = ScreenerRAG(exact_answers={}, scoped_answers={}, profile=profile, store=None)
         # Home India, job Germany -> not authorized -> "No".
@@ -561,7 +561,7 @@ def test_target_country_residence_phrasing_uses_home_country() -> None:
     country, not the job's country (the Cohere inversion bug)."""
     from autofill.src.screener.profile import Profile
 
-    profile = Profile(location="Bhopal, India")
+    profile = Profile(location="Bangalore, India")
     with patch("autofill.src.screener.rag.get_config", return_value=_cfg()):
         rag = ScreenerRAG(exact_answers={}, scoped_answers={}, profile=profile, store=None)
         job = {"location": "San Francisco, USA", "description": "..."}
@@ -670,7 +670,7 @@ def test_authorization_policy_city_locations() -> None:
     location must resolve to 'No' for a foreign job, 'Yes' for an India job."""
     from autofill.src.screener.profile import Profile
 
-    profile = Profile(location="Bhopal, India")
+    profile = Profile(location="Bangalore, India")
     with patch("autofill.src.screener.rag.get_config", return_value=_cfg()):
         rag = ScreenerRAG(exact_answers={}, scoped_answers={}, profile=profile, store=None)
         q = "Are you authorised to work here in the country of the job?"
@@ -700,7 +700,7 @@ def test_authorization_policy_question_names_country_wins() -> None:
     job country defaults to NOT authorized."""
     from autofill.src.screener.profile import Profile
 
-    profile = Profile(location="Bhopal, India")
+    profile = Profile(location="Bangalore, India")
     with patch("autofill.src.screener.rag.get_config", return_value=_cfg()):
         rag = ScreenerRAG(exact_answers={}, scoped_answers={}, profile=profile, store=None)
         assert (
@@ -1166,7 +1166,7 @@ def _geo_rag() -> ScreenerRAG:
     from autofill.src.screener.profile import Profile
 
     profile = Profile(
-        location="Bhopal, India",
+        location="Bangalore, India",
         customAnswers={"What is your nationality?": "Indian"},
     )
     return ScreenerRAG(exact_answers={}, scoped_answers={}, profile=profile, store=None)
@@ -1204,7 +1204,7 @@ def _geo_rag() -> ScreenerRAG:
         ("Are you legally authorized to work in India?", "Bengaluru", "Yes"),
         (
             "Are you authorized to work in the country you currently reside in?",
-            "Bhopal, India",
+            "Bangalore, India",
             "Yes",
         ),
         # Genuine sponsorship-requirement → Yes abroad, No at home.
@@ -1469,12 +1469,12 @@ async def test_bare_location_field_answers_from_profile():
     the profile, never the LLM (which guessed 'United Kingdom')."""
     from autofill.src.screener.profile import Profile
 
-    profile = Profile(location="Bhopal, Madhya Pradesh, India")
+    profile = Profile(location="Bangalore, Karnataka, India")
     with patch("autofill.src.screener.rag.get_config", return_value=_cfg()):
         rag = ScreenerRAG(exact_answers={}, scoped_answers={}, profile=profile, store=None)
-        assert await rag.kb_answer("Location") == "Bhopal, Madhya Pradesh, India"
-        assert await rag.kb_answer("City") == "Bhopal, Madhya Pradesh, India"
-        assert await rag.kb_answer("Country of residence") == "Bhopal, Madhya Pradesh, India"
+        assert await rag.kb_answer("Location") == "Bangalore, Karnataka, India"
+        assert await rag.kb_answer("City") == "Bangalore, Karnataka, India"
+        assert await rag.kb_answer("Country of residence") == "Bangalore, Karnataka, India"
         assert await rag.kb_answer("What is your current location?") == (
-            "Bhopal, Madhya Pradesh, India"
+            "Bangalore, Karnataka, India"
         )

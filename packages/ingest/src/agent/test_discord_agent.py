@@ -88,13 +88,13 @@ def test_parse_instruction_portfolio_only_url() -> None:
     """A single bare portfolio URL after 'portfolio' must NOT become the resume.
 
     Regression: `/memory update this and add my resume and portfolio
-    https://przknv.cc` used to treat przknv.cc as BOTH resume and website,
+    https://example.com` used to treat example.com as BOTH resume and website,
     indexing the portfolio homepage HTML into resume_embeddings.
     """
     from src.agent.memory_wizard import parse_instruction
 
-    parsed = parse_instruction("update this and add my resume and portfolio https://przknv.cc")
-    assert parsed["website"] == "https://przknv.cc"
+    parsed = parse_instruction("update this and add my resume and portfolio https://example.com")
+    assert parsed["website"] == "https://example.com"
     assert parsed["resume_url"] is None
     assert parsed["resume_path"] is None
 
@@ -103,17 +103,17 @@ def test_parse_instruction_resume_url_and_portfolio() -> None:
     from src.agent.memory_wizard import parse_instruction
 
     parsed = parse_instruction(
-        "my resume https://f.przknv.cc/raw/XghaIR.pdf and portfolio https://przknv.cc"
+        "my resume https://f.example.com/raw/XghaIR.pdf and portfolio https://example.com"
     )
-    assert parsed["resume_url"] == "https://f.przknv.cc/raw/XghaIR.pdf"
-    assert parsed["website"] == "https://przknv.cc"
+    assert parsed["resume_url"] == "https://f.example.com/raw/XghaIR.pdf"
+    assert parsed["website"] == "https://example.com"
 
 
 def test_parse_instruction_bare_url_no_keyword_is_resume() -> None:
     from src.agent.memory_wizard import parse_instruction
 
-    parsed = parse_instruction("https://f.przknv.cc/raw/XghaIR.pdf")
-    assert parsed["resume_url"] == "https://f.przknv.cc/raw/XghaIR.pdf"
+    parsed = parse_instruction("https://f.example.com/raw/XghaIR.pdf")
+    assert parsed["resume_url"] == "https://f.example.com/raw/XghaIR.pdf"
     assert parsed["website"] is None
 
 

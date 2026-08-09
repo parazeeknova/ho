@@ -1,23 +1,37 @@
 """Unit tests for the non-LLM pre-submit consistency check."""
 
+from pathlib import Path
+from unittest.mock import patch
+
 import pytest
 
+import autofill.src.filling.consistency as consistency_mod
 from autofill.src.filling.consistency import _classify, _values_match, check_payload
 
 
 class FakeProfile:
     def __init__(self, **kw) -> None:
-        self.firstName = kw.get("firstName", "Harsh")
-        self.lastName = kw.get("lastName", "Sahu")
-        self.email = kw.get("email", "harshsahu049@gmail.com")
-        self.phone = kw.get("phone", "+91 7000127001")
-        self.location = kw.get("location", "Bhopal, Madhya Pradesh, India")
-        self.linkedin = kw.get("linkedin", "https://linkedin.com/in/hashk")
-        self.github = kw.get("github", "https://github.com/parazeeknova")
-        self.website = kw.get("website", "https://przknv.cc")
-        self.twitter = kw.get("twitter", "https://x.com/parazeeknova")
+        self.firstName = kw.get("firstName", "Test")
+        self.lastName = kw.get("lastName", "Candidate")
+        self.email = kw.get("email", "candidate@example.com")
+        self.phone = kw.get("phone", "+1 555 0100")
+        self.location = kw.get("location", "Bangalore, Karnataka, India")
+        self.linkedin = kw.get("linkedin", "https://linkedin.com/in/test-candidate")
+        self.github = kw.get("github", "https://github.com/test-user")
+        self.website = kw.get("website", "https://example.com")
+        self.twitter = kw.get("twitter", "https://x.com/test-user")
         self.school = kw.get("school", "")
         self.university = kw.get("university", "")
+
+
+def _no_live_persona():
+    """Point _PERSONA_JSON at a non-existent file so tests never read the real
+    persona.json (its grilled answers would override the test's customAnswers)."""
+    return patch.object(
+        consistency_mod,
+        "_PERSONA_JSON",
+        Path("/nonexistent/persona.json"),
+    )
 
 
 def test_classify_maps_labels_to_profile_fields():
@@ -31,14 +45,14 @@ def test_classify_maps_labels_to_profile_fields():
 
 
 def test_values_match_exact_and_partial():
-    assert _values_match("Bhopal, Madhya Pradesh, India", "Bhopal, Madhya Pradesh, India") == 1.0
+    assert _values_match("Bangalore, Karnataka, India", "Bangalore, Karnataka, India") == 1.0
     # Substring containment (form truncated the value).
-    assert _values_match("Bhopal, Madhya Pradesh, India", "Bhopal") >= 0.9
+    assert _values_match("Bangalore, Karnataka, India", "Bangalore") >= 0.9
     # Emails must match exactly.
-    assert _values_match("harshsahu049@gmail.com", "other@gmail.com") == 0.0
-    assert _values_match("harshsahu049@gmail.com", "harshsahu049@gmail.com") == 1.0
+    assert _values_match("candidate@example.com", "other@gmail.com") == 0.0
+    assert _values_match("candidate@example.com", "candidate@example.com") == 1.0
     # Different location -> low score.
-    assert _values_match("Bhopal, India", "United Kingdom") < 0.45
+    assert _values_match("Bangalore, India", "United Kingdom") < 0.45
 
 
 @pytest.mark.asyncio
@@ -46,10 +60,11 @@ async def test_check_payload_blocks_critical_mismatch():
     profile = FakeProfile()
     filled = {
         "Location": "United Kingdom",  # wrong — should block
-        "Email": "harshsahu049@gmail.com",  # right
-        "First Name": "Harsh",  # right
+        "Email": "candidate@example.com",  # right
+        "First Name": "Test",  # right
     }
-    report = await check_payload(filled, profile, store=None, rag=None)
+    with _no_live_persona():
+        report = await check_payload(filled, profile, store=None, rag=None)
     assert report["ok"] is False
     assert any(m["label"] == "Location" for m in report["critical_mismatches"])
 
@@ -58,13 +73,14 @@ async def test_check_payload_blocks_critical_mismatch():
 async def test_check_payload_passes_when_consistent():
     profile = FakeProfile()
     filled = {
-        "Location": "Bhopal, Madhya Pradesh, India",
-        "Email": "harshsahu049@gmail.com",
-        "First Name": "Harsh",
-        "Last Name": "Sahu",
-        "Phone Number": "+91 7000127001",
+        "Location": "Bangalore, Karnataka, India",
+        "Email": "candidate@example.com",
+        "First Name": "Test",
+        "Last Name": "Candidate",
+        "Phone Number": "+1 555 0100",
     }
-    report = await check_payload(filled, profile, store=None, rag=None)
+    with _no_live_persona():
+        report = await check_payload(filled, profile, store=None, rag=None)
     assert report["ok"] is True
     assert report["critical_mismatches"] == []
     assert report["checked"] == 5
@@ -72,9 +88,10 @@ async def test_check_payload_passes_when_consistent():
 
 @pytest.mark.asyncio
 async def test_check_payload_soft_mismatch_warns_but_passes():
-    profile = FakeProfile(school="IIITDM Jabalpur")
+    profile = FakeProfile(school="National Institute of Technology")
     filled = {"University": "Some Other University"}
-    report = await check_payload(filled, profile, store=None, rag=None)
+    with _no_live_persona():
+        report = await check_payload(filled, profile, store=None, rag=None)
     # School is a soft field — warns, does not block.
     assert report["ok"] is True
     assert any(w["label"] == "University" for w in report["soft_warnings"])
@@ -82,7 +99,8 @@ async def test_check_payload_soft_mismatch_warns_but_passes():
 
 @pytest.mark.asyncio
 async def test_check_payload_empty_fields_is_ok():
-    report = await check_payload({}, FakeProfile(), store=None, rag=None)
+    with _no_live_persona():
+        report = await check_payload({}, FakeProfile(), store=None, rag=None)
     assert report["ok"] is True
     assert report["checked"] == 0
 
@@ -119,7 +137,8 @@ async def test_check_payload_verifies_new_field_via_persona():
         "How soon can you start if selected?": "Tomorrow",
     }
     filled = {"When could you start?": "Tomorrow"}
-    report = await check_payload(filled, profile, store=None, rag=None)
+    with _no_live_persona():
+        report = await check_payload(filled, profile, store=None, rag=None)
     assert report["ok"] is True
     assert report["checked"] == 1
     assert report["unchecked"] == 0
@@ -134,7 +153,8 @@ async def test_check_payload_new_field_wrong_value_flags():
         "How soon can you start if selected?": "Tomorrow",
     }
     filled = {"When could you start?": "6 months"}
-    report = await check_payload(filled, profile, store=None, rag=None)
+    with _no_live_persona():
+        report = await check_payload(filled, profile, store=None, rag=None)
     # Availability hint is in _CRITICAL_FIELD_HINT_RE -> blocks.
     assert report["ok"] is False
     assert any(m["label"] == "When could you start?" for m in report["critical_mismatches"])
@@ -159,14 +179,15 @@ async def test_critical_mismatch_expected_is_correctable():
     """A critical mismatch must expose the 'expected' persona value so the
     worker can auto-correct the field before submission."""
     profile = FakeProfile()
-    filled = {"Location": "United Kingdom", "Email": "harshsahu049@gmail.com"}
-    report = await check_payload(filled, profile, store=None, rag=None)
+    filled = {"Location": "United Kingdom", "Email": "candidate@example.com"}
+    with _no_live_persona():
+        report = await check_payload(filled, profile, store=None, rag=None)
     assert report["ok"] is False
     loc = next(m for m in report["critical_mismatches"] if m["label"] == "Location")
-    assert loc["expected"] == "Bhopal, Madhya Pradesh, India"
+    assert loc["expected"] == "Bangalore, Karnataka, India"
     # The worker turns this into a correction map: {label: expected}.
     corrections = {m["label"]: m["expected"] for m in report["critical_mismatches"]}
-    assert corrections["Location"] == "Bhopal, Madhya Pradesh, India"
+    assert corrections["Location"] == "Bangalore, Karnataka, India"
 
 
 @pytest.mark.asyncio

@@ -464,7 +464,7 @@ def test_resolve_visa_policy_unknown_country_defaults_to_h1b() -> None:
 
     rag = ScreenerRAG(
         exact_answers={},
-        profile=MagicMock(location="Bhopal, India", customAnswers={}),
+        profile=MagicMock(location="Bangalore, India", customAnswers={}),
     )
     opts = ["No", "EB-1", "EB-2", "TN-1", "H1-B", "H2-B"]
     q = "Will you require visa sponsorship either now or in the near future?"
@@ -480,7 +480,7 @@ def test_resolve_visa_policy_job_country_differs_from_home_is_yes() -> None:
 
     rag = ScreenerRAG(
         exact_answers={},
-        profile=MagicMock(location="Bhopal, India", customAnswers={}),
+        profile=MagicMock(location="Bangalore, India", customAnswers={}),
     )
     opts = ["No", "Yes"]
     q = "Will you require visa sponsorship either now or in the near future?"
@@ -496,7 +496,7 @@ def test_resolve_visa_policy_job_country_equals_home_is_no() -> None:
 
     rag = ScreenerRAG(
         exact_answers={},
-        profile=MagicMock(location="Bhopal, India", customAnswers={}),
+        profile=MagicMock(location="Bangalore, India", customAnswers={}),
     )
     opts = ["No", "Yes"]
     q = "Will you require visa sponsorship either now or in the near future?"
@@ -512,7 +512,7 @@ def test_resolve_visa_policy_non_visa_question_returns_none() -> None:
 
     rag = ScreenerRAG(
         exact_answers={},
-        profile=MagicMock(location="Bhopal, India", customAnswers={}),
+        profile=MagicMock(location="Bangalore, India", customAnswers={}),
     )
     assert rag.resolve_visa_policy("Work model?", ["Remote", "Onsite"], {}) is None
 

@@ -30,8 +30,8 @@ from src.agent.memory_wizard import MemoryWizard, format_persona  # noqa: E402
 from src.llm.context import ContextManager  # noqa: E402
 from src.memory.pgvector_store import MemoryStore  # noqa: E402
 
-RESUME_URL = "https://f.przknv.cc/raw/XghaIR.pdf"
-PORTFOLIO = "https://przknv.cc"
+RESUME_URL = "https://f.example.com/raw/XghaIR.pdf"
+PORTFOLIO = "https://example.com"
 
 # Answers keyed by topic keywords; the LLM's generated questions vary run to
 # run, so we answer by topic rather than exact question text.
@@ -82,7 +82,7 @@ async def run_wizard() -> dict:
             # Submit one real extra Q&A, then finish on the next call.
             if not extra_sent:
                 extra_sent = True
-                return "portfolio | https://przknv.cc is my portfolio"
+                return "portfolio | https://example.com is my portfolio"
             return "done"
         ans = answer_for(question)
         if ans:
@@ -173,7 +173,7 @@ async def verify() -> None:
         ok &= bool(texts)
 
         # The portfolio identity chunk should rank highly.
-        portfolio_hit = any("portfolio" in t.lower() or "przknv" in t.lower() for t in texts)
+        portfolio_hit = any("portfolio" in t.lower() or "example.com" in t.lower() for t in texts)
         print(f"[{'PASS' if portfolio_hit else 'WARN'}] portfolio mentioned in top-5 retrieval")
     finally:
         await store.close()

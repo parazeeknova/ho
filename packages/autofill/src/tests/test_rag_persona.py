@@ -8,7 +8,7 @@ import pytest
 from autofill.src.screener.rag import ASK_USER, ScreenerRAG
 
 
-def _rag(store=None, profile_location="Bhopal, India"):
+def _rag(store=None, profile_location="Bangalore, India"):
     mock_cm = MagicMock()
     mock_cm.chat = AsyncMock(return_value="{}")
     rag = ScreenerRAG(context_manager=mock_cm, store=store, exact_answers={}, scoped_answers={})
