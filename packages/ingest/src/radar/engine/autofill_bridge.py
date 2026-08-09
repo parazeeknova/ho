@@ -12,6 +12,7 @@ and from the loop driver.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from autofill.src.core.db import AutofillDB
@@ -29,6 +30,17 @@ WHERE eligibility = 'accepted'
 ORDER BY updated_at DESC
 LIMIT $1
 """
+
+# URLs that are clearly NOT a direct job application form. The matcher can
+# mark a company careers page / solutions page as a STRONG_MATCH for the
+# company, but there is no application form to fill there — enqueuing them
+# makes the runner hang on a non-form and burns the queue. These are skipped.
+_NON_APPLY_URL_RE = re.compile(
+    r"(?:/careers?/?$|/careers?/(?:overview|index|all|list|search|browse|jobs|positions)"
+    r"|/solutions|/workato|/company|/about|/de/|/it/|/fr/|/nl/|/es/)"
+    r"|(?:careers?\b.*(?:overview|index|landing))",
+    re.I,
+)
 
 
 def print_summary(summary: dict[str, int]) -> None:
@@ -74,6 +86,13 @@ async def drain_once(db: AutofillDB, limit: int) -> int:
     for r in rows:
         url = r["direct_apply_url"]
         if not url:
+            continue
+        if _NON_APPLY_URL_RE.search(url):
+            logger.info(
+                "Skipping enqueue: not a direct job application URL",
+                url=url,
+                company=r["normalized_company"],
+            )
             continue
         if await db.link_known(url):
             continue
