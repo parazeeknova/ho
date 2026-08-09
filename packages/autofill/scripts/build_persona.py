@@ -141,16 +141,22 @@ async def resume_summary(store: MemoryStore) -> str:
         "achievements": "candidate achievements awards publications hackathons",
     }
     async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0)) as client:
-        for sec, query in section_queries.items():
+        for _sec, query in section_queries.items():
             resp = await client.post(
                 f"{cfg.url}/embeddings",
                 json={"model": cfg.model, "input": [query]},
             )
             resp.raise_for_status()
             emb = resp.json()["data"][0]["embedding"]
-            for r in await store.search_similar_chunks(emb, top_k=20):
+            # Pull the top chunks for this query across ALL sections and label
+            # each by its own section. The old strict "rsec == sec" filter
+            # dropped real content: e.g. hackathon/buildspace live under
+            # experience/portfolio but the "achievements" query would only
+            # accept chunks literally tagged "achievements" (none exist), so
+            # they never reached the summary.
+            for r in await store.search_similar_chunks(emb, top_k=24):
                 rsec = r["section"]
-                if rsec != sec or rsec not in _RESUME_SECTIONS:
+                if rsec not in _RESUME_SECTIONS:
                     continue
                 cleaned = _clean(r["content"])
                 if not cleaned or cleaned in seen:
