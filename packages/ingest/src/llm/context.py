@@ -76,6 +76,7 @@ class ContextManager:
         max_tokens: int | None = None,
         interactive: bool = False,
         system_prompt: str | None = None,
+        skip_budget: bool = False,
     ) -> str:
         current_prompt = prompt
         if len(current_prompt) > 120000:
@@ -117,16 +118,20 @@ class ContextManager:
         for model in chain:
             backoff = self._retry_delay
             for attempt in range(1, self._max_retries + 1):
-                await acquire_budget(est_tokens, interactive=interactive)
+                if not skip_budget:
+                    await acquire_budget(est_tokens, interactive=interactive)
                 try:
                     output = await asyncio.to_thread(_call_llm, model)
-                    release_budget()
+                    if not skip_budget:
+                        release_budget()
                     return output
                 except asyncio.CancelledError:
-                    release_budget()
+                    if not skip_budget:
+                        release_budget()
                     raise
                 except Exception as e:
-                    release_budget()
+                    if not skip_budget:
+                        release_budget()
                     last_error = e
                     # 429 = provider throttled. Don't hammer the same model;
                     # move to the next one in the chain immediately.
@@ -180,6 +185,7 @@ class ContextManager:
         max_tokens: int | None = None,
         interactive: bool = False,
         system_prompt: str | None = None,
+        skip_budget: bool = False,
     ) -> dict[str, Any] | list[Any]:
         full = prompt
         if content:
@@ -190,6 +196,7 @@ class ContextManager:
             max_tokens=max_tokens,
             interactive=interactive,
             system_prompt=system_prompt,
+            skip_budget=skip_budget,
         )
         raw = _strip_markdown(raw)
         try:

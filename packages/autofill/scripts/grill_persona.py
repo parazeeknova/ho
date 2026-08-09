@@ -387,6 +387,7 @@ async def generate_dynamic_questions(
             schema=_DYN_QUESTION_SCHEMA,
             max_tokens=1200,
             interactive=True,
+            skip_budget=True,
         )
         import json as _json
 
@@ -506,7 +507,7 @@ def _overlaps_blocklist(question: str, blocked: list[tuple[str, set[str]]]) -> b
 
 
 def _finish_question_gen_thread(
-    result: dict[str, object], ctx: Any, extra_budget: float = 20.0
+    result: dict[str, object], ctx: Any, extra_budget: float = 60.0
 ) -> list[tuple[str, str]]:
     """Await the background thread's question generation with a bounded extra
     wait. Returns the merged question set, or the static core set on timeout/

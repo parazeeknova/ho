@@ -84,6 +84,7 @@ class TestContextManager:
             max_tokens=None,
             interactive=False,
             system_prompt=None,
+            skip_budget=False,
         )
 
     @pytest.mark.asyncio
