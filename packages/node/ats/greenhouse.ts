@@ -1047,8 +1047,15 @@ export class GreenhouseAdapter extends ATSAdapter {
               let sib = cb.parentElement?.textContent ?? "";
               if (sib.trim().length > 160) sib = sib.trim().slice(0, 160);
               label += " " + sib;
-              return /term|agree|consent|privacy|acknowledge|accept|signature|notice/.test(
-                label.toLowerCase(),
+              // Application forms carry no functional checkboxes OTHER than
+              // consent/terms — an unchecked box is a terms box by definition.
+              // The label regex is a soft hint; a bare consent box with no
+              // label text must still be checked, else Greenhouse rejects the
+              // submit with "Please accept the terms to proceed".
+              return (
+                /term|agree|consent|privacy|acknowledge|accept|signature|notice/.test(
+                  label.toLowerCase(),
+                ) || label.trim().length < 20
               );
             })
             .map((cb) => {
@@ -1495,6 +1502,12 @@ export class GreenhouseAdapter extends ATSAdapter {
    */
   async recheckMissingFields(rpc?: RpcHelper): Promise<number> {
     console.log("[GreenhouseAdapter] Rechecking missing required fields...");
+    // A "Please accept the terms to proceed" submit error means a consent
+    // checkbox was unchecked at POST time. Force-check ALL remaining unchecked
+    // checkboxes (they are all consent in an application form) so the retry
+    // submits with terms accepted.
+    const page = this.getPage();
+    await this.checkConsentCheckboxes(page);
     const stillBlank: string[] = [];
     const controls = this.controls;
     const fields = await this.collectQuestions();
