@@ -1536,6 +1536,18 @@ _AFFILIATION_NEGATIVE_RE = re.compile(
     re.I,
 )
 
+# Sourcing questions: "How did you hear/learn about us / this position / this
+# employer?" These get a deterministic concrete source (LinkedIn / job board),
+# never a deferral and never the LLM (which mirrors the select into the box).
+_SOURCING_QUESTION_RE = re.compile(
+    r"how did you (?:first )?(?:hear|learn|find out) about|"
+    r"where did you (?:hear|learn) about|"
+    r"how (?:did|do) you (?:hear|learn) about|"
+    r"what (?:source|channel|platform) (?:did you )?(?:hear|learn) about|"
+    r"how (?:did|do) you (?:learn|find) about (?:us|this|the)",
+    re.I,
+)
+
 # Mirrors resolve.is_decline_option: user-decline survey choices ("I don't
 # wish to answer") are never valid targets for a definite answer. Local copy so
 # rag.py need not import resolve.py (circular).
@@ -3437,6 +3449,23 @@ class ScreenerRAG:
                     answers[q] = aff
                 else:
                     answers[q] = ASK_USER
+                continue
+            # Sourcing question ("How did you hear/learn about us / this
+            # position / this employer?"): answer deterministically with a
+            # concrete source (LinkedIn / job board) instead of deferring. The
+            # LLM mirrors "LinkedIn" into the follow-up box and guesses
+            # otherwise; a fixed honest source is better than a deferral.
+            if _SOURCING_QUESTION_RE.search(q.lower()):
+                if s["kind"] in ("select", "multi") and s["options"]:
+                    picked = _select_answer_matches("LinkedIn", s["options"])
+                    if not picked:
+                        picked = _select_answer_matches("Job board", s["options"])
+                    if not picked:
+                        picked = _select_answer_matches("Company website", s["options"])
+                    if picked:
+                        answers[q] = picked
+                        continue
+                answers[q] = "LinkedIn"
                 continue
             # Protected-class questions never reach the LLM: without a confident
             # KB answer they are a user prompt, never a generated guess.
