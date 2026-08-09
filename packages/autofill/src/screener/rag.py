@@ -3141,6 +3141,19 @@ class ScreenerRAG:
             location = (self.profile.location or "").strip()
             if location:
                 logger.info("Location resolved from profile", question=q, location=location)
+                # A question that asks ONLY for the country ("Country", "Country
+                # of residence", a phone country-code select) must get the
+                # country name, not the full "City, State, Country" string —
+                # returning the full location makes the option matcher map
+                # "Bhopal, Madhya Pradesh, India" to the wrong option (Spain).
+                if re.search(
+                    r"^country$|country (of (residence|origin|citizenship))|"
+                    r"which country|country code|phone.*country|country.*phone",
+                    q_lower,
+                ):
+                    country = _country_from_text(location)
+                    if country:
+                        return country.capitalize()
                 return location
 
         matched_rule = next(((p, key) for p, key in _PERSONAL_RULES if p.search(q)), None)
