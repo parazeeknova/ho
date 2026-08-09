@@ -41,8 +41,12 @@ LIMIT $1
 _NON_APPLY_URL_RE = re.compile(
     r"(?:/careers?/?$|/careers?/(?:overview|index|all|list|search|browse|home)"
     r"|/careers?/[a-z]{2}/?$"  # locale-only careers page (/careers/de/)
-    r"|/careers/open-positions"
-    r"|/solutions|/workato|/company/?$|/about/?$|/it/?$|/fr/?$|/nl/?$|/es/?$)"
+    r"|/careers/open-positions/?$"
+    r"|/careers/open-roles/?(?:\?|$)"  # /careers/open-roles or /careers/open-roles?category=...
+    r"|/(?:it|fr|nl|es|de)/company/careers"  # localized company/careers pages
+    r"|/company/careers/?$"  # bare company careers landing page
+    r"|/solutions/"  # solutions pages (not job postings)
+    r"|/workato|/company/?$|/about/?$|/it/?$|/fr/?$|/nl/?$|/es/?$)"
     r"|linkedin\.com/(?:jobs|company)/[^/]*?\?(?:trk|ref)="  # LinkedIn search/browse URLs
     r"|linkedin\.com/jobs/research|linkedin\.com/jobs/[^/]+-jobs"
     r"|(?:careers?\b.*(?:overview|index|landing))",

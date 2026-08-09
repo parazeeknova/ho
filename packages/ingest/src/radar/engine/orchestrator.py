@@ -299,7 +299,9 @@ async def _discover_new_companies() -> list[dict[str, Any]]:
             logger.info(f"Discovery {adp_name}: {len(companies)} companies ({elapsed:.1f}s)")
         except Exception as e:
             logger.warning(f"Discovery adapter {adp_name} failed", exception=str(e))
-            _DISCOVERY_METRICS[f"failed_{adp_name}"] += 1
+            _DISCOVERY_METRICS[f"failed_{adp_name}"] = (
+                _DISCOVERY_METRICS.get(f"failed_{adp_name}", 0) + 1
+            )
 
     # Deduplicate by domain
     seen_domains: set[str] = set()
@@ -1720,7 +1722,9 @@ def _json_safe(obj: Any) -> Any:
     return obj
 
 
-async def _outreach_handler(entry: FrontierEntry) -> list[FrontierEntry]:
+async def _outreach_handler(
+    entry: FrontierEntry, ta: DiscordAgent | None = None
+) -> list[FrontierEntry]:
     company, founder_name, linkedin_url = (
         entry.payload.get("company", ""),
         entry.payload.get("founder_name", ""),
@@ -1742,7 +1746,8 @@ async def _outreach_handler(entry: FrontierEntry) -> list[FrontierEntry]:
     )
     card = generate_outreach_card(c)
     if card and card.confidence >= 0.4:
-        ta = DiscordAgent()
+        if ta is None:
+            ta = DiscordAgent()
         if ta.is_configured:
             link = linkedin_url or (c.founders[0].get("email") if c.founders else "")
             await ta.send_categorized_alert(
@@ -1951,7 +1956,6 @@ async def _run_radar_pipeline() -> None:
         linkedin = d.get("linkedin_url")
         if email or linkedin:
             try:
-                ta = DiscordAgent(ctx=ctx)
                 if ta.is_configured:
                     link = linkedin or (f"mailto:{email}" if email else "")
                     await ta.send_categorized_alert(
@@ -2034,7 +2038,7 @@ async def _run_radar_pipeline() -> None:
     engine.register_agent("employee_discovery", employee_discovery_agent)
     engine.register_agent("ats_crawler", ats_crawler)
     engine.register_agent("job_processor", _job_processor)
-    engine.register_agent("outreach_generator", _outreach_handler)
+    engine.register_agent("outreach_generator", lambda e: _outreach_handler(e, ta=ta))
     engine.start(worker_count=8)
 
     loop = asyncio.get_running_loop()
@@ -2347,7 +2351,11 @@ async def _run_radar_pipeline() -> None:
                     except Exception as exc:
                         logger.warning(f"Company discovery failed: {exc}")
 
-                asyncio.create_task(_run_discovery())
+                task = asyncio.create_task(_run_discovery())
+                if not hasattr(asyncio, "_bg_tasks"):
+                    asyncio._bg_tasks = set()
+                asyncio._bg_tasks.add(task)
+                task.add_done_callback(asyncio._bg_tasks.discard)
 
             # 5. Periodic graph metrics (embeddings, PageRank, WCC, betweenness)
             if not is_worker and time.monotonic() - last_graph_metrics > _graph_metrics_interval:

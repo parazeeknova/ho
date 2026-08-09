@@ -398,6 +398,23 @@ _NON_TECH_TITLE_PATTERNS = [
     r"\bpsycholog\b",
     r"\bpharmac\b",
     r"\bveterinary\b",
+    # Hardware / firmware / thermal / physical engineering roles
+    r"\bfirmware\s+(?:engineer|developer|intern)\b",
+    r"\bthermal\s+(?:engineer|application|design)\b",
+    r"\bhvac\b",
+    r"\bembedded\s+hardware\b",
+    r"\bpcb\s+design\b",
+    r"\brf\s+engineer\b",
+    r"\banalog\s+design\b",
+    r"\bpower\s+electronics\b",
+    # Tech sales / solutions consulting (non-SWE)
+    r"\btech(?:nical)?\s+sales\b",
+    r"\bsales\s+engineer\b",
+    r"\baccount\s+(?:executive|manager)\b",
+    r"\bbusiness\s+development\b",
+    r"\bsolutions?\s+consultant\b",
+    r"\bcustomer\s+success\b",
+    r"\btechnical\s+account\s+manager\b",
 ]
 
 

@@ -297,12 +297,12 @@ export async function verifySubmitOutcome(
       // the redirect alone stands (backwards compatible).
       if (opts.submitResponse) {
         const resp = await opts.submitResponse().catch(() => undefined);
-        if (!resp || !resp.ok) {
-          const code = resp?.status ?? "no-response";
-          console.error(`[${tag}] Success URL reached but submit response was not 2xx (${code}).`);
+        if (resp && resp.status >= 400) {
+          const code = resp.status;
+          console.error(`[${tag}] Success URL reached but submit response returned error (${code}).`);
           return {
             confirmed: false,
-            error: `submit response not 2xx (${code}) despite success-page redirect`,
+            error: `submit response error (${code}) despite success-page redirect`,
             retryable: true,
           };
         }
@@ -323,7 +323,8 @@ export async function verifySubmitOutcome(
       // submission blocker.
       if (clean && !/exceeds? the maximum upload size|too large|100MB/i.test(clean)) {
         console.error(`[${tag}] Submit error banner: ${escapePromptValue(clean)}`);
-        return { confirmed: false, error: clean, retryable: true };
+        const isCooldown = /90 days|already applied|applied recently|applied within|cooldown|application limit|previously applied/i.test(clean);
+        return { confirmed: false, error: isCooldown ? `cooldown: ${clean}` : clean, retryable: !isCooldown };
       }
     }
 

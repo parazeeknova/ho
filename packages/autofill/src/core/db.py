@@ -463,25 +463,31 @@ class AutofillDB:
             args.append(error)
             updates.append(f"error = ${len(args)}")
 
-        if status == "submitted":
-            updates.append("applied_at = NOW()")
-        elif status == "failed":
-            if not infra_failure:
-                updates.append("error_count = error_count + 1")
-            updates.append("last_error_at = NOW()")
-            if error is not None:
-                args.append(error)
-                updates.append(f"last_error = ${len(args)}")
-        elif status == "expired":
-            # Terminal: record why so the queue shows the posting is gone.
-            updates.append("last_error_at = NOW()")
-            if error is not None:
-                args.append(error)
-                updates.append(f"last_error = ${len(args)}")
-
-        query = f"UPDATE autofill_queue SET {', '.join(updates)} WHERE job_id = $1"
-
         async with self._pool.acquire() as conn:
+            if status == "submitted":
+                updates.append("applied_at = NOW()")
+                active = await conn.fetchrow(
+                    "SELECT epoch_id FROM learning_epochs "
+                    "WHERE status = 'active' ORDER BY started_at DESC LIMIT 1"
+                )
+                if active and active["epoch_id"]:
+                    args.append(active["epoch_id"])
+                    updates.append(f"epoch_id = ${len(args)}")
+            elif status == "failed":
+                if not infra_failure:
+                    updates.append("error_count = error_count + 1")
+                updates.append("last_error_at = NOW()")
+                if error is not None:
+                    args.append(error)
+                    updates.append(f"last_error = ${len(args)}")
+            elif status == "expired":
+                # Terminal: record why so the queue shows the posting is gone.
+                updates.append("last_error_at = NOW()")
+                if error is not None:
+                    args.append(error)
+                    updates.append(f"last_error = ${len(args)}")
+
+            query = f"UPDATE autofill_queue SET {', '.join(updates)} WHERE job_id = $1"
             result = await conn.execute(query, *args)
             updated = "UPDATE 1" in result
             if updated:
@@ -606,6 +612,22 @@ class AutofillDB:
             await conn.execute(
                 "UPDATE autofill_queue SET epoch_id=$2 WHERE job_id=$1", job_id, epoch_id
             )
+
+    async def skip_company_jobs(self, company: str, reason: str) -> int:
+        """Skip all remaining pending/filling jobs for a company due to cooldown or cap."""
+        if not company:
+            return 0
+        async with self._pool.acquire() as conn:
+            res = await conn.execute(
+                "UPDATE autofill_queue SET status = 'skipped', error = $2 "
+                "WHERE company = $1 AND status IN ('pending', 'filling', 'awaiting_review')",
+                company,
+                reason,
+            )
+            try:
+                return int(res.split(" ")[-1])
+            except Exception:
+                return 0
 
     async def complete_epoch(self, epoch_id: str, final_status: str = "completed") -> None:
         async with self._pool.acquire() as conn:

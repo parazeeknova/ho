@@ -465,8 +465,8 @@ def _status_report() -> int:
         try:
             async with store._pool.acquire() as c:
                 active = await c.fetchrow(
-                    "SELECT epoch_id, started_at, target_submissions, "
-                    "completed_submissions FROM learning_epochs "
+                    "SELECT epoch_id, started_at, target_submissions "
+                    "FROM learning_epochs "
                     "WHERE status='active' ORDER BY started_at DESC LIMIT 1"
                 )
                 total = await c.fetchval("SELECT COUNT(*) FROM learning_epochs")
@@ -474,7 +474,13 @@ def _status_report() -> int:
                     "SELECT COUNT(*) FROM learning_epochs WHERE status IN "
                     "('completed','target_reached')"
                 )
-            a = dict(active) if active else None
+                a = dict(active) if active else None
+                if a:
+                    a["completed_submissions"] = await c.fetchval(
+                        "SELECT COUNT(*) FROM autofill_queue "
+                        "WHERE epoch_id = $1 AND applied_at IS NOT NULL",
+                        a["epoch_id"],
+                    )
             return {"active": a, "total": total, "done": done}
         finally:
             await store.close()

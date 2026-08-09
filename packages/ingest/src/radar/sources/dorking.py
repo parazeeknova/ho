@@ -16,7 +16,7 @@ from src.radar.core.models import JobObservation
 
 logger = get_logger("dorking_engine")
 
-_TIME_SYNTAX = ""
+_TIME_SYNTAX = " qdr:d2"
 
 _ATS_SITES = [
     "site:boards.greenhouse.io",

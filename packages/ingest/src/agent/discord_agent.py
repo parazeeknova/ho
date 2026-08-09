@@ -635,9 +635,13 @@ class DiscordAgent:
     async def _wait_channel(self) -> discord.abc.Messageable | None:
         if self._channel is not None:
             return self._channel
-        if self._client is not None and self._client.is_ready():
-            with contextlib.suppress(Exception):
-                if self.channel_id:
+        if self._client is not None:
+            for _ in range(15):
+                if self._client.is_ready():
+                    break
+                await asyncio.sleep(1)
+            if self._client.is_ready() and self.channel_id:
+                with contextlib.suppress(Exception):
                     self._channel = await self._client.fetch_channel(int(self.channel_id))  # type: ignore[assignment]
         return self._channel
 
@@ -866,16 +870,6 @@ class DiscordAgent:
         try:
             if sweep == self._last_sweep and self._sweep_thread is not None:
                 return
-            # Reuse a fresh active thread (persisted for the autofill bridge)
-            # instead of creating a new one per sweep.
-            existing = self._sweep_thread
-            if existing is None:
-                existing = await self._fetch_active_thread(channel)
-            if existing is not None:
-                self._sweep_thread = existing
-                self._last_sweep = sweep
-                await self._send_sweep_intro(sweep)
-                return
 
             embed = discord.Embed(
                 title=f"🔄 Sweep #{sweep} Started",
@@ -886,21 +880,27 @@ class DiscordAgent:
                 ),
             )
             starter = await channel.send(embed=embed)
-            self._sweep_thread = await starter.create_thread(
-                name=f"Sweep #{sweep}",
-                auto_archive_duration=1440,
-            )
-            # Record the thread id so the autofill bridge (a separate
-            # process) can send deferred/captcha/queue notifications into
-            # this thread instead of the main channel.
-            with contextlib.suppress(Exception):
-                from autofill.src.core.db import AutofillDB
+            try:
+                self._sweep_thread = await starter.create_thread(
+                    name=f"Sweep #{sweep}",
+                    auto_archive_duration=1440,
+                )
+            except Exception:
+                self._sweep_thread = None
 
-                db = await AutofillDB.create()
-                try:
-                    await db.set_active_thread(str(self._sweep_thread.id))
-                finally:
-                    await db.close()
+            if self._sweep_thread is not None:
+                # Record the thread id so the autofill bridge (a separate
+                # process) can send deferred/captcha/queue notifications into
+                # this thread instead of the main channel.
+                with contextlib.suppress(Exception):
+                    from autofill.src.core.db import AutofillDB
+
+                    db = await AutofillDB.create()
+                    try:
+                        await db.set_active_thread(str(self._sweep_thread.id))
+                    finally:
+                        await db.close()
+
             await self._send_sweep_intro(sweep)
             self._last_sweep = sweep
         except Exception as e:
@@ -930,8 +930,9 @@ class DiscordAgent:
             return None
 
     async def _send_sweep_intro(self, sweep: int) -> None:
-        """Post the per-sweep started + starting-point intro into the thread."""
-        if self._sweep_thread is None:
+        """Post the per-sweep started + starting-point intro into the thread or channel."""
+        target = self._sweep_thread or await self._wait_channel()
+        if target is None:
             return
         try:
             embed = discord.Embed(
@@ -939,7 +940,7 @@ class DiscordAgent:
                 color=0x42A5F5,
                 description="Scanning sources, matching jobs, and filing applications.",
             )
-            await self._sweep_thread.send(embed=embed)
+            await target.send(embed=embed)
         except Exception as e:
             logger.debug("Sweep started embed skipped", error=str(e))
         try:
@@ -959,7 +960,7 @@ class DiscordAgent:
                     "Watching for new matches — alerts land below as they're found."
                 ),
             )
-            await self._sweep_thread.send(embed=intro)
+            await target.send(embed=intro)
         except Exception as e:
             logger.debug("Sweep intro summary skipped", error=str(e))
 
@@ -1117,42 +1118,45 @@ class DiscordAgent:
 
     # ── commands ───────────────────────────────────────────────────────
 
-    async def _reply(self, message: discord.Message, text: str) -> None:
+    async def _reply(self, message: discord.Message, text: str, title: str = "") -> None:
         try:
-            await message.channel.send(text[:1900])
+            embed = discord.Embed(
+                title=title or None,
+                color=0x42A5F5,
+                description=text[:3900],
+            )
+            await message.channel.send(embed=embed)
         except Exception as e:
             logger.warning("Discord command reply failed", error=str(e))
 
     async def _handle_status(self, message: discord.Message) -> None:
         s = _pipeline_state
         lines = [
-            "**Pipeline Status**",
-            f"Running: {s.get('running')}",
-            f"Sweep: {s.get('sweep')}",
-            f"Phase: {s.get('phase')}",
-            f"Matched total: {s.get('matched_total')}",
-            f"Scraped count: {s.get('scraped_count')}",
+            f"**Running**: `{s.get('running')}`",
+            f"**Sweep**: `{s.get('sweep')}`",
+            f"**Phase**: `{s.get('phase')}`",
+            f"**Matched Total**: `{s.get('matched_total')}`",
+            f"**Scraped Count**: `{s.get('scraped_count')}`",
         ]
         if s.get("last_error"):
-            lines.append(f"Last error: {s.get('last_error')}")
+            lines.append(f"**Last Error**: `{s.get('last_error')}`")
         ml_line = await self._ml_status_line()
         lines.append(ml_line)
-        await self._reply(message, "\n".join(lines))
+        await self._reply(message, "\n".join(lines), title="⚡ Pipeline Status")
 
     async def _handle_health(self, message: discord.Message) -> None:
         try:
             report = await run_health_checks()
         except Exception as e:
             report = f"Health check failed: {e}"
-        await self._reply(message, report[:1900])
+        await self._reply(message, report[:1900], title="🏥 Health Check Report")
 
     async def _handle_analytics(self, message: discord.Message) -> None:
-        await self._reply(message, "Crunching market data and calculating skill arbitrage...")
         queue_lines = await autofill_queue_lines()
-        if queue_lines:
-            await message.channel.send("**[QUEUE] Autofill Status**\n" + "\n".join(queue_lines))
         if self.ctx is None:
-            await message.channel.send("Analytics unavailable (no LLM context).")
+            await self._reply(
+                message, "Analytics unavailable (no LLM context).", title="📊 Market Analytics"
+            )
             return
         try:
             from src.agent.analytics_agent import AnalyticsAgent
@@ -1167,12 +1171,42 @@ class DiscordAgent:
             finally:
                 await graph.close()
                 await store.close()
-            for section in sections:
-                if section.strip():
-                    await message.channel.send(section[:1900])
-                    await asyncio.sleep(0.5)
+
+            # Group report inside a clean thread attached to the message
+            thread = await message.create_thread(name="📊 Market Analytics Report")
+            if queue_lines:
+                embed = discord.Embed(
+                    title="⚡ Queue Status",
+                    color=0x42A5F5,
+                    description="\n".join(queue_lines)[:4000],
+                )
+                await thread.send(embed=embed)
+
+            for raw_sec in sections:
+                text = ("\n".join(raw_sec) if isinstance(raw_sec, list) else str(raw_sec)).strip()
+                if not text:
+                    continue
+                # Clean HTML tags to proper Discord Markdown
+                md = (
+                    text.replace("<b>", "**")
+                    .replace("</b>", "**")
+                    .replace("<i>", "*")
+                    .replace("</i>", "*")
+                )
+                lines = md.splitlines()
+                section_title = lines[0].strip("* ") if lines else "Market Intelligence"
+                body = "\n".join(lines[1:]).strip() if len(lines) > 1 else md
+                embed = discord.Embed(
+                    title=section_title[:256],
+                    color=0x42A5F5,
+                    description=body[:4000],
+                )
+                await thread.send(embed=embed)
+                await asyncio.sleep(0.3)
         except Exception as e:
-            await message.channel.send(f"Analytics failed: {e}")
+            await self._reply(
+                message, f"Analytics report generation failed: {e}", title="❌ Analytics Error"
+            )
 
     async def _handle_resend(self, message: discord.Message) -> None:
         dry = "--dry" in message.content

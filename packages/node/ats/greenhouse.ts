@@ -1073,9 +1073,9 @@ export class GreenhouseAdapter extends ATSAdapter {
       console.log(`[GreenhouseAdapter] Checking ${checked.length} consent checkbox(es):`);
       for (const c of checked) {
         const sel = c.id
-          ? `#${CSS.escape(c.id)}`
+          ? `input[id="${c.id.replace(/"/g, '\\"')}"]`
           : c.name
-            ? `input[type='checkbox'][name='${CSS.escape(c.name)}']`
+            ? `input[type='checkbox'][name="${c.name.replace(/"/g, '\\"')}"]`
             : `input[type='checkbox']`;
         try {
           await checkCheckboxViaCdpClick(page, sel);
@@ -1104,7 +1104,7 @@ export class GreenhouseAdapter extends ATSAdapter {
     const submitTracker = trackSubmitResponse(page, (u) => isSubmitUrl(u, origin));
     await this.controls.clickSubmitButton({
       preferredSelector:
-        "input[type='submit'], button[type='submit'], button:has-text('Submit Application')",
+        "#submit_app, input[type='submit'], input[type='button'][value*='Submit'], button[type='submit'], button:has-text('Submit Application')",
     });
     await randomSleep(500, 1000);
 
@@ -1125,7 +1125,7 @@ export class GreenhouseAdapter extends ATSAdapter {
         tag: "Greenhouse",
         successUrlRe: /thanks|submitted|confirmation|success|applied|complete/i,
         submitButtonSelector:
-          "input[type='submit'], button[type='submit'], button:has-text('Submit Application')",
+          "#submit_app, input[type='submit'], input[type='button'][value*='Submit'], button[type='submit'], button:has-text('Submit Application')",
         submitResponse,
       });
       submitTracker.detach();
@@ -1262,7 +1262,18 @@ export class GreenhouseAdapter extends ATSAdapter {
     );
     const primary = entries[0];
     const segmented = primary.segmented;
-    const selector = segmented && primary.name ? `input[name="${primary.name}"]` : primary.selector;
+    let selector = primary.selector;
+    if (segmented) {
+      if (primary.name) {
+        selector = `input[name="${primary.name}"]`;
+      } else if (selector.startsWith("#")) {
+        if (primary.containerSel) {
+          selector = `${primary.containerSel} input[maxlength='1'], ${primary.containerSel} input[maxlength='2']`;
+        } else {
+          selector = "input[maxlength='1'], input[maxlength='2']";
+        }
+      }
+    }
     return { selector, segmented, containerSel: primary.containerSel || "" };
   }
 
@@ -1359,7 +1370,7 @@ export class GreenhouseAdapter extends ATSAdapter {
    *  Greenhouse asks for after the emailed code is accepted). */
   private async clickMainSubmit(page: any): Promise<boolean> {
     const sel =
-      "input[type='submit'], button[type='submit'], button:has-text('Submit Application')";
+      "#submit_app, input[type='submit'], input[type='button'][value*='Submit'], button[type='submit'], button:has-text('Submit Application')";
     const loc = page.locator(sel).first();
     if (!(await loc.isVisible().catch(() => false))) return false;
     await loc.click().catch(() => {});

@@ -50,7 +50,8 @@ def extract_github_index_markdown(markdown: str, source_url: str) -> list[JobObs
         if not line.startswith("|") or not line.endswith("|"):
             if not found_header:
                 continue
-            break
+            found_header = False
+            continue
 
         cells = _split_cells(line)
 

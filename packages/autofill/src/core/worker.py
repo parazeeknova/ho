@@ -902,7 +902,45 @@ class AutofillWorker:
                 )
                 await self._record_outcome(store, job, "skipped", error="country_ineligible")
                 return
-            # Unified mode: no day/night split. Always fill + submit on
+
+            # ── LinkedIn & non-automatable URL gate ──────────────────
+            # LinkedIn Easy Apply, generic career pages, and other
+            # non-ATS URLs can't be autofilled. Send a Discord message
+            # asking the user to apply manually and defer the job.
+            _non_automatable_patterns = (
+                "linkedin.com/jobs",
+                "linkedin.com/in/",
+                "careers.microsoft.com",
+                "ycombinator.com/companies",
+                "smartrecruiters.com",
+            )
+            _is_non_automatable = any(p in apply_link.lower() for p in _non_automatable_patterns)
+            if _is_non_automatable:
+                role_str = str(job.get("role") or "Position")
+                company_str = str(job.get("company") or "Company")
+                text = (
+                    f"📋 **Manual Application Required**: {company_str} — {role_str}\n"
+                    f"🔗 **Apply Directly**: <{apply_link}>\n"
+                    "*(This posting is on a platform that doesn't support autofill "
+                    "— please apply manually)*"
+                )
+                with contextlib.suppress(Exception):
+                    await bridge.send(text)
+                    logger.info(
+                        "Manual apply notification sent for non-automatable URL",
+                        job_id=job_id,
+                        company=company_str,
+                    )
+                await self.db.update_status(
+                    job_id,
+                    status="deferred",
+                    error=(
+                        f"non-automatable URL ({apply_link[:60]}…) — "
+                        "manual apply notification sent to Discord"
+                    ),
+                )
+                await self._record_outcome(store, job, "deferred", error="non_automatable_url")
+                return
             # success; unknown questions are asked via Discord with a 1-min
             # timeout (AUTOFILL_QUESTION_TIMEOUT) and deferred if no answer
             # arrives. `overnight` only tunes pacing (inter-job delay) and the
@@ -1719,6 +1757,29 @@ class AutofillWorker:
                                         role=job.get("role"),
                                         company=job.get("company"),
                                     )
+                            is_cooldown = bool(
+                                re.search(
+                                    r"cooldown|90 days|already applied|applied recently|"
+                                    r"applied within|application limit",
+                                    error_msg,
+                                    re.I,
+                                )
+                            )
+                            if is_cooldown:
+                                terminal_seen = True
+                                company_name = job.get("company") or ""
+                                await self.db.update_status(
+                                    job_id, status="skipped", error=error_msg
+                                )
+                                if company_name:
+                                    skipped_cnt = await self.db.skip_company_jobs(
+                                        company_name,
+                                        f"skipped due to cooldown at {company_name}",
+                                    )
+                                    logger.info(
+                                        f"Application cooldown detected for {company_name}; "
+                                        f"skipped {skipped_cnt} remaining pending jobs."
+                                    )
                             else:
                                 terminal_seen = True
                                 await self.db.update_status(
@@ -1975,18 +2036,20 @@ class AutofillWorker:
             return
         role_str = str(role or "Position")
         company_str = str(company or "Company")
-        snippet = (error_msg or "unknown error").strip().splitlines()[-1][:260]
+        snippet = (error_msg or "form optimization needed").strip().splitlines()[-1][:260]
         text = (
-            f"\u274c **Failed**: {company_str} \u2014 {role_str}\n"
-            f"[Open posting \u2192]({apply_link})\n"
-            f"`{job_id}` — {snippet}"
+            f"⚠️ **Manual Application Required**: {company_str} — {role_str}\n"
+            f"🔗 **Apply Directly**: <{apply_link}>\n"
+            f"**Reason**: `{snippet}`\n"
+            "*(Autofill encountered an unoptimized or complex form structure "
+            "— please submit manually via link above)*"
         )
         with contextlib.suppress(Exception):
             ok = await bridge.send(text)
             if ok:
-                logger.info("Failed notification sent", job_id=job_id)
+                logger.info("Manual apply notification sent to Discord", job_id=job_id)
             else:
-                logger.warning("Failed notification send failed", job_id=job_id)
+                logger.warning("Failed to send manual apply notification to Discord", job_id=job_id)
 
     async def _surface_email_feedback(
         self,
