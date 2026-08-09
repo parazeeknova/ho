@@ -101,6 +101,13 @@ Job listing:
 If this is a company homepage, job directory, error page, or lists
 multiple jobs, set match_percent=0 and verdict=NO_MATCH.
 
+EXPERIENCE SENIORITY: The candidate is an early-career / new-grad /
+intern-level engineer (about 0-1 years of professional experience, still
+a student). If the job explicitly requires 3+ years of experience, 5+
+years, "senior", "staff", "principal", or equivalent senior-level
+experience, set match_percent below 40 and verdict=NO_MATCH. Do not
+match senior-level roles.
+
 Return valid JSON matching the required schema.
 """
 
