@@ -478,6 +478,24 @@ def _overlaps_blocklist(question: str, blocked: list[tuple[str, set[str]]]) -> b
     return False
 
 
+async def _finish_question_gen(
+    task: Any, ctx: Any, extra_budget: float = 20.0
+) -> list[tuple[str, str]]:
+    """Await the background dynamic-question generation with a bounded extra
+    wait. Returns the merged question set, or the static core set on timeout/
+    error — the wizard must never block long on optional questions."""
+    if task is None:
+        return list(CORE_QUESTIONS)
+    try:
+        return await asyncio.wait_for(task, timeout=extra_budget)
+    except TimeoutError:
+        _report_llm_fallback(ctx, "timed out", f"after {int(extra_budget)}s more")
+        return list(CORE_QUESTIONS)
+    except Exception as exc:
+        _report_llm_fallback(ctx, "failed", str(exc))
+        return list(CORE_QUESTIONS)
+
+
 def _report_llm_fallback(ctx: Any, reason: str, detail: str = "") -> None:
     """Print a clean [ho] line telling the user which models were tried and why
     the optional LLM follow-up questions fell back to the static set."""
@@ -797,21 +815,6 @@ def main() -> None:
         ctx = ContextManager()
     except Exception:
         ctx = None
-    questions = asyncio.run(
-        build_question_set(
-            ctx,
-            str(data.get("resume_summary") or ""),
-            data.get("answers", []),
-            data.get("identity", {}),
-            resume_context=resume_ctx,
-        )
-    )
-    if len(questions) > len(CORE_QUESTIONS):
-        ux.chip(
-            "info",
-            f"Grilling {len(questions)} questions "
-            f"({len(questions) - len(CORE_QUESTIONS)} generated from your resume).",
-        )
 
     # Populate auto-prefill sources: identity-ish facts + full resume text so
     # each question shows a best-guess default (Enter keeps, type to change).
@@ -830,7 +833,31 @@ def main() -> None:
         _AUTO_RESUME.setdefault(key, _extract_resume_fact(key, resume_ctx))
     _AUTO_RESUME_CTX = resume_ctx
 
+    # Dynamic question generation is best-effort and can take a while on a
+    # slow/overloaded model. Run it in the BACKGROUND while the user answers
+    # the identity section, then await it right before personal Q&A with a
+    # short remaining budget — the static core set is the instant fallback, so
+    # the wizard never blocks 90s on optional questions.
+    q_gen_task = asyncio.create_task(
+        build_question_set(
+            ctx,
+            str(data.get("resume_summary") or ""),
+            data.get("answers", []),
+            data.get("identity", {}),
+            resume_context=resume_ctx,
+        )
+    )
+
     data = grill_identity(data, resume, ask_all=args.all)
+
+    questions = asyncio.run(_finish_question_gen(q_gen_task, ctx))
+    if len(questions) > len(CORE_QUESTIONS):
+        ux.chip(
+            "info",
+            f"Grilling {len(questions)} questions "
+            f"({len(questions) - len(CORE_QUESTIONS)} generated from your resume).",
+        )
+
     data = grill_answers(data, ask_all=args.all, questions=questions)
     save_persona(data)
 
