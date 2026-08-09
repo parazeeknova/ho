@@ -809,6 +809,37 @@ def grill_answers(data: dict, ask_all: bool = False, questions: list | None = No
     return data
 
 
+def _missing_generated_questions(data: dict) -> list[str]:
+    """Return previously-LLM-generated questions that are still unanswered.
+
+    When the LLM was down during an earlier grill, only the static core
+    questions were asked and saved. The dynamic (LLM-generated) questions were
+    never asked, so answering them now (with the LLM working) fills real gaps
+    without redoing the whole wizard. Reads the ``generated_questions`` list
+    persisted by the grill and diffs against the stored answers.
+    """
+    generated = data.get("generated_questions") or []
+    if not generated:
+        return []
+    missing: list[str] = []
+    for entry in generated:
+        if not isinstance(entry, dict):
+            continue
+        q = (entry.get("question") or "").strip()
+        cat = (entry.get("category") or "").strip()
+        if not q:
+            continue
+        # Unanswered if no stored answer has this question text, or the same
+        # category has no answer at all.
+        has_q = any(
+            (a.get("question") or "").strip().lower() == q.lower() for a in data.get("answers", [])
+        )
+        has_cat = any((a.get("category") or "").strip() == cat for a in data.get("answers", []))
+        if not has_q and not has_cat:
+            missing.append(q)
+    return missing
+
+
 def save_persona(data: dict) -> None:
     data["version"] = int(data.get("version", 1)) + 1
     PERSONA_JSON.parent.mkdir(parents=True, exist_ok=True)
@@ -913,6 +944,17 @@ def main() -> None:
             f"Grilling {len(questions)} questions "
             f"({len(questions) - len(CORE_QUESTIONS)} generated from your resume).",
         )
+
+    # Persist the LLM-generated (dynamic) questions so a later run can detect
+    # which generated questions are still unanswered (e.g. the LLM was down
+    # when this persona was built and only core questions got asked) and offer
+    # to fill just those instead of redoing the whole wizard.
+    dynamic_questions = [
+        {"category": category, "question": question}
+        for category, question in questions
+        if (category, question) not in CORE_QUESTIONS
+    ]
+    data["generated_questions"] = dynamic_questions
 
     data = grill_answers(data, ask_all=args.all, questions=questions)
     save_persona(data)

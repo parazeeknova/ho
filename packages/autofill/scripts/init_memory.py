@@ -219,7 +219,11 @@ def _missing_persona_items(persona_json: Path) -> set[str]:
     from the old file.
     """
     try:
-        from grill_persona import CONTACT_FIELDS, CORE_QUESTIONS  # type: ignore[import-not-found]
+        from grill_persona import (  # type: ignore[import-not-found]
+            CONTACT_FIELDS,
+            CORE_QUESTIONS,
+            _missing_generated_questions,
+        )
 
         data = json.loads(persona_json.read_text())
     except Exception:
@@ -228,6 +232,9 @@ def _missing_persona_items(persona_json: Path) -> set[str]:
     answered = {(a.get("category") or "").strip() for a in data.get("answers", [])}
     expected = {category for category, _ in CORE_QUESTIONS}
     missing |= expected - answered
+    # Previously-LLM-generated questions that were never answered (LLM was down
+    # when this persona was built). Each is labeled by its question text.
+    missing |= set(_missing_generated_questions(data))
     identity = data.get("identity") or {}
     for field in CONTACT_FIELDS:
         if not (identity.get(field) or "").strip():
