@@ -85,6 +85,25 @@ services:
         max-size: "5m"
         max-file: "1"
 
+  steel:
+    image: ghcr.io/steel-dev/steel-browser:latest
+    restart: "no"
+    ports:
+      - "3000:3000"
+      - "9223:9223"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=3000
+      - CDP_REDIRECT_PORT=9223
+      - CHROME_HEADLESS=${STEEL_BROWSER_HEADLESS:-true}
+      - CHROME_EXECUTABLE_PATH=${STEEL_CHROME_PATH:-/usr/bin/chromium}
+      - LOG_LEVEL=${STEEL_LOG_LEVEL:-info}
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "1"
+
 volumes:
   agent_memory_data:
   neo4j_data:

@@ -1264,9 +1264,7 @@ export class GenericAdapter extends ATSAdapter {
         });
         const match = out.find(
           (c) =>
-            /cover letter/i.test(
-              c.label,
-            ) && !(areas[c.index] as HTMLTextAreaElement).value.trim(),
+            /cover letter/i.test(c.label) && !(areas[c.index] as HTMLTextAreaElement).value.trim(),
         );
         return match ?? null;
       })
@@ -1803,7 +1801,9 @@ export class GenericAdapter extends ATSAdapter {
     // Click it too when present — and log progress so the runner's activity
     // watchdog never sees 5 minutes of silence and kills a healthy submit.
     for (let confirmPass = 0; confirmPass < 2; confirmPass++) {
-      console.log(`[Generic] Submit confirm pass ${confirmPass + 1}: waiting for review/final button...`);
+      console.log(
+        `[Generic] Submit confirm pass ${confirmPass + 1}: waiting for review/final button...`,
+      );
       await randomSleep(1500, 2500);
       const finalBtn = page
         .locator(

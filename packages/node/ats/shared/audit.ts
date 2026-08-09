@@ -232,8 +232,21 @@ export async function verifySubmitOutcome(
         }
       }
       if (stillVisible && i >= 1) {
-        // A button that is still on the page after the click usually means
-        // validation refused the submit.
+        // A submit button that is STILL on the page after the click can mean
+        // validation refused the submit — BUT on SPA boards that validated a
+        // code and re-render the same button, a captured 2xx submit POST is
+        // the real signal (the form re-rendered after a successful save, so
+        // the button being visible again is not a failure). Only call it a
+        // retryable failure when we have NO 2xx POST.
+        const resp = opts.submitResponse
+          ? await opts.submitResponse().catch(() => undefined)
+          : undefined;
+        if (resp && resp.ok) {
+          console.log(
+            `[${tag}] Submitted: submit POST 2xx + re-rendered form (SPA) — treated as confirmed.`,
+          );
+          return { confirmed: true, retryable: false };
+        }
         console.warn(`[${tag}] Submit button still visible after click; validation likely failed.`);
         return {
           confirmed: false,

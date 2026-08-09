@@ -15,6 +15,7 @@
     "@browserbasehq/stagehand": "^3.7.1",
     "imapflow": "^1.6.5",
     "mailparser": "^3.9.14",
+    "steel-sdk": "^0.18.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {

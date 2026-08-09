@@ -690,11 +690,7 @@ export class AshbyAdapter extends ATSAdapter {
             ).toString(),
           );
           const lower = labelRaw.toLowerCase();
-          if (
-            !/cover letter|cover_letter/.test(
-              lower,
-            )
-          ) {
+          if (!/cover letter|cover_letter/.test(lower)) {
             continue;
           }
           out.push({

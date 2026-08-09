@@ -20,6 +20,7 @@ import { JobPayloadSchema, ActionCallbackSchema, type StatusEvent } from "./type
 import { ActivityWatchdog } from "./utils/activity";
 import { waitForAtsEmail, type AtsEmailResult } from "./utils/atsEmail";
 import { applyFingerprint, loadFingerprint } from "./utils/fingerprint";
+import { createSteelSession, releaseSteelSession, type SteelSessionHandle } from "./utils/steel";
 
 // Rejects when a promise has not settled within `ms`. Used so a best-effort
 // captcha attempt can never stall the run indefinitely.
@@ -168,13 +169,29 @@ async function main() {
     );
   }
 
-  console.log(`[Runner] Initializing Stagehand LOCAL environment with model ${genericModel}...`);
-
   // Per-job browser fingerprint (UA/platform/viewport/cores/memory/languages,
   // India-consistent locale+timezone). Seeded by AUTOFILL_FINGERPRINT_SEED
   // (set per job by the worker) so a batch of applications never presents as
   // a single device — the "many apps from one device" fraud signal.
   const fingerprint = loadFingerprint();
+
+  // Steel browser backend (optional): when STEEL_BASE_URL is set (local Steel
+  // server, e.g. http://localhost:3000), create a per-job session and attach
+  // Stagehand to it via CDP instead of launching a fresh Chrome. Steel owns
+  // the browser process, so session cleanup happens on close (see the patched
+  // stagehand.close below). Falls back to the direct chrome-launcher path when
+  // Steel is unset or the session cannot be created.
+  let steelHandle: SteelSessionHandle | null = null;
+  if ((process.env.STEEL_BASE_URL || "").trim()) {
+    steelHandle = await createSteelSession(fingerprint, {
+      proxyUrl: process.env.AUTOFILL_PROXY || undefined,
+    });
+  }
+
+  console.log(
+    `[Runner] Initializing Stagehand ${steelHandle ? `via Steel session ${steelHandle.sessionId}` : "LOCAL direct launch"} ` +
+      `with model ${genericModel}...`,
+  );
 
   // Stagehand v3 unified model config: modelClientOptions was removed, and the
   // OpenAI AI SDK defaults custom baseURL endpoints to the Responses API. GeneralCompute
@@ -215,25 +232,50 @@ async function main() {
       // worker via AUTOFILL_USER_DATA_DIR) so the browser accumulates cookies,
       // storage, and history like a real lived-in browser instead of starting
       // as a brand-new profile on every run — the "fresh browser every submit"
-      // session shape is itself an automation signal.
-      ...(process.env.AUTOFILL_USER_DATA_DIR
-        ? { userDataDir: process.env.AUTOFILL_USER_DATA_DIR }
-        : {}),
+      // session shape is itself an automation signal. Steel owns the browser,
+      // so this only applies to the direct-launch path.
+      ...(steelHandle
+        ? {}
+        : process.env.AUTOFILL_USER_DATA_DIR
+          ? { userDataDir: process.env.AUTOFILL_USER_DATA_DIR }
+          : {}),
       // Randomized device attributes applied at launch: locale -> --lang,
       // viewport -> --window-size, deviceScaleFactor ->
       // --force-device-scale-factor. UA + timezone are applied post-init via
       // CDP (see applyFingerprint below) since they need the page session.
-      locale: fingerprint.locale,
-      viewport: fingerprint.viewport,
-      deviceScaleFactor: fingerprint.deviceScaleFactor,
+      // Steel-backed runs pass viewport+UA at session-create instead.
+      locale: steelHandle ? undefined : fingerprint.locale,
+      viewport: steelHandle ? undefined : fingerprint.viewport,
+      deviceScaleFactor: steelHandle ? undefined : fingerprint.deviceScaleFactor,
       // Route the whole browser session through a proxy when AUTOFILL_PROXY is
       // set (either the legacy Tor SOCKS5 proxy, or — with a proxy template —
       // a per-job residential IP URL substituted by the worker). Stagehand maps
-      // proxy.server -> --proxy-server=... at launch.
-      ...(process.env.AUTOFILL_PROXY ? { proxy: { server: process.env.AUTOFILL_PROXY } } : {}),
+      // proxy.server -> --proxy-server=... at launch. Steel sessions take the
+      // proxy URL at session-create instead (handed to createSteelSession).
+      ...(steelHandle
+        ? {}
+        : process.env.AUTOFILL_PROXY
+          ? { proxy: { server: process.env.AUTOFILL_PROXY } }
+          : {}),
+      // Steel backend: attach to the created session's CDP websocket rather
+      // than launching a browser. V3Context.create connects to it and stages
+      // the local-browser launch path entirely.
+      ...(steelHandle ? { cdpUrl: steelHandle.websocketUrl } : {}),
     },
   };
   const stagehand = new Stagehand(stagehandConfig);
+
+  // When running on a Steel session, releasing the session on close is what
+  // actually terminates the remote browser. Patch close once so EVERY exit
+  // path (watchdog, captcha, expired, skipped, submitted, failed) releases the
+  // Steel session without needing per-callsite edits. Best-effort: the session
+  // self-expires even if the release call fails.
+  if (steelHandle) {
+    const originalClose = stagehand.close.bind(stagehand);
+    stagehand.close = async () => {
+      await Promise.allSettled([originalClose(), releaseSteelSession(steelHandle)]);
+    };
+  }
 
   // Unified Single Readline Dispatcher for RPC responses and Action Callbacks
   const pendingRpcPromises = new Map<
@@ -541,7 +583,9 @@ async function main() {
         try {
           const stillBlank = await adapter.recheckMissingFields(askPythonRpc);
           if (stillBlank === 0) {
-            console.log("[Runner] Re-fill resolved all blank required fields; proceeding to submit.");
+            console.log(
+              "[Runner] Re-fill resolved all blank required fields; proceeding to submit.",
+            );
           } else {
             console.warn(`[Runner] ${stillBlank} required field(s) still blank after re-fill.`);
           }

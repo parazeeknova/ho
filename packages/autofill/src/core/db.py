@@ -1240,7 +1240,15 @@ class AutofillDB:
         network) or the raw message. When the consecutive failures reach the
         quarantine threshold, ``cooldown_until`` is set so the domain is skipped
         for a while instead of burning job retries.
+
+        A "Submit not confirmed" error does NOT count toward quarantine: the
+        submission may have actually landed (the confirmation heuristic is
+        intentionally strict and can false-negative on SPA boards), so
+        quarantining the whole domain on those would wrongly block every
+        subsequent job there.
         """
+        if "submit not confirmed" in (error or "").lower():
+            return
         threshold = int(os.environ.get("SITE_HEALTH_QUARANTINE", "3"))
         label = _failure_label(error)
         async with self._pool.acquire() as conn:

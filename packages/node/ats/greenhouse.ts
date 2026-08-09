@@ -1017,8 +1017,7 @@ export class GreenhouseAdapter extends ATSAdapter {
               if (cb.id) {
                 label +=
                   " " +
-                  (document.querySelector(`label[for="${CSS.escape(cb.id)}"]`)?.textContent ??
-                    "");
+                  (document.querySelector(`label[for="${CSS.escape(cb.id)}"]`)?.textContent ?? "");
               }
               label +=
                 " " +
@@ -1036,8 +1035,9 @@ export class GreenhouseAdapter extends ATSAdapter {
               let sib = cb.parentElement?.textContent ?? "";
               if (sib.trim().length > 160) sib = sib.trim().slice(0, 160);
               label += " " + sib;
-              return /term|agree|consent|privacy|acknowledge|accept|signature|notice/
-                .test(label.toLowerCase());
+              return /term|agree|consent|privacy|acknowledge|accept|signature|notice/.test(
+                label.toLowerCase(),
+              );
             })
             .map((cb) => {
               const label =
@@ -1093,9 +1093,14 @@ export class GreenhouseAdapter extends ATSAdapter {
       try {
         const method = typeof r.request === "function" ? r.request()?.method?.() : "";
         if (method !== "POST") return;
-        if (!/\/applications?(\/|$|\?)|\/apply|submission|submissions?(\/|$|\?)|\/submit|job_application|create_application/i.test(u)) {
+        if (
+          !/\/applications?(\/|$|\?)|\/apply|submission|submissions?(\/|$|\?)|\/submit|job_application|create_application/i.test(
+            u,
+          )
+        ) {
           const originOk =
-            typeof r.request === "function" && r.request()?.url?.().startsWith(page.url().split("/").slice(0, 3).join("/"));
+            typeof r.request === "function" &&
+            r.request()?.url?.().startsWith(page.url().split("/").slice(0, 3).join("/"));
           if (!originOk) return;
         }
         const ok = typeof r.ok === "function" ? r.ok() : false;
@@ -1432,7 +1437,10 @@ export class GreenhouseAdapter extends ATSAdapter {
       const n = Math.min(count, code.length);
       // Clear every box first so stale values never leave a partial code.
       for (let i = 0; i < count; i++) {
-        await loc.nth(i).fill("").catch(() => {});
+        await loc
+          .nth(i)
+          .fill("")
+          .catch(() => {});
       }
       for (let i = 0; i < n; i++) {
         const box = loc.nth(i);
@@ -1446,7 +1454,10 @@ export class GreenhouseAdapter extends ATSAdapter {
       // If the code is longer than the box count, put the tail into the last
       // box (some boards accept a full code pasted into the final slot).
       if (code.length > n) {
-        await loc.nth(n - 1).click().catch(() => {});
+        await loc
+          .nth(n - 1)
+          .click()
+          .catch(() => {});
         await randomSleep(80, 160);
         await this.typeChar(page, loc.nth(n - 1), code.slice(n - 1));
       }

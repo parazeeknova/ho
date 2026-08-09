@@ -228,18 +228,84 @@ export function cssIdLocator(id: string): string {
  * the answer names no country at all.
  */
 const KNOWN_COUNTRIES = new Set([
-  "india", "united states", "usa", "us", "america", "united kingdom", "uk",
-  "england", "scotland", "wales", "canada", "australia", "new zealand",
-  "germany", "france", "spain", "italy", "netherlands", "belgium", "sweden",
-  "norway", "denmark", "finland", "ireland", "poland", "portugal", "austria",
-  "switzerland", "japan", "china", "singapore", "south korea", "hong kong",
-  "taiwan", "israel", "uae", "united arab emirates", "saudi arabia", "qatar",
-  "kuwait", "oman", "bahrain", "brazil", "mexico", "argentina", "chile",
-  "colombia", "peru", "south africa", "egypt", "nigeria", "kenya", "ghana",
-  "pakistan", "bangladesh", "sri lanka", "nepal", "philippines", "vietnam",
-  "thailand", "malaysia", "indonesia", "turkey", "russia", "ukraine", "greece",
-  "czech republic", "hungary", "romania", "bulgaria", "croatia", "estonia",
-  "latvia", "lithuania", "luxembourg", "iceland", "cyprus", "malta",
+  "india",
+  "united states",
+  "usa",
+  "us",
+  "america",
+  "united kingdom",
+  "uk",
+  "england",
+  "scotland",
+  "wales",
+  "canada",
+  "australia",
+  "new zealand",
+  "germany",
+  "france",
+  "spain",
+  "italy",
+  "netherlands",
+  "belgium",
+  "sweden",
+  "norway",
+  "denmark",
+  "finland",
+  "ireland",
+  "poland",
+  "portugal",
+  "austria",
+  "switzerland",
+  "japan",
+  "china",
+  "singapore",
+  "south korea",
+  "hong kong",
+  "taiwan",
+  "israel",
+  "uae",
+  "united arab emirates",
+  "saudi arabia",
+  "qatar",
+  "kuwait",
+  "oman",
+  "bahrain",
+  "brazil",
+  "mexico",
+  "argentina",
+  "chile",
+  "colombia",
+  "peru",
+  "south africa",
+  "egypt",
+  "nigeria",
+  "kenya",
+  "ghana",
+  "pakistan",
+  "bangladesh",
+  "sri lanka",
+  "nepal",
+  "philippines",
+  "vietnam",
+  "thailand",
+  "malaysia",
+  "indonesia",
+  "turkey",
+  "russia",
+  "ukraine",
+  "greece",
+  "czech republic",
+  "hungary",
+  "romania",
+  "bulgaria",
+  "croatia",
+  "estonia",
+  "latvia",
+  "lithuania",
+  "luxembourg",
+  "iceland",
+  "cyprus",
+  "malta",
 ]);
 
 /** Extract the country name from a location string, or "" if none. */
@@ -247,7 +313,12 @@ function extractCountry(location: string): string {
   const lower = location.toLowerCase().trim();
   // Last comma-separated segment is usually the country ("Bhopal, India",
   // "Bangalore, Karnataka, India").
-  const lastSeg = lower.split(",").map((s) => s.trim()).filter(Boolean).pop() ?? "";
+  const lastSeg =
+    lower
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .pop() ?? "";
   for (const c of KNOWN_COUNTRIES) {
     if (lastSeg === c) return c;
   }
@@ -292,13 +363,9 @@ export function pickLocationOption(answer: string, opts: string[]): string | nul
     .split(/[\s,]+/)
     .filter((t) => t.length > 2 && !KNOWN_COUNTRIES.has(t));
   for (const tok of tokens) {
-    const start = opts.find(
-      (o) => sameCountry(answer, o) && norm(o).startsWith(tok),
-    );
+    const start = opts.find((o) => sameCountry(answer, o) && norm(o).startsWith(tok));
     if (start) return start;
-    const contains = opts.find(
-      (o) => sameCountry(answer, o) && norm(o).includes(tok),
-    );
+    const contains = opts.find((o) => sameCountry(answer, o) && norm(o).includes(tok));
     if (contains) return contains;
   }
   // 4. No country in the answer: prefer the country-consistent first option,

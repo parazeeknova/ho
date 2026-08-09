@@ -1017,12 +1017,7 @@ export class WorkdayAdapter extends ATSAdapter {
         return out;
       })
       .catch(() => []);
-    const target = candidates.find(
-      (c) =>
-        /cover letter/i.test(
-          c.label,
-        ) && !c.filled,
-    );
+    const target = candidates.find((c) => /cover letter/i.test(c.label) && !c.filled);
     if (!target) {
       console.log("[Workday] No cover-letter textarea on this step; skipping generation.");
       return;

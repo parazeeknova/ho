@@ -60,8 +60,9 @@ _NODE_DIR = _REPO_ROOT / "packages" / "node"
 
 # Worker-side runner watchdog: if the Node runner produces no stdout for this
 # many seconds, it is dead or hung (its own activity watchdog died with it).
-# Kill and fail the job rather than block forever on a stale pipe.
-_RUNNER_IDLE_TIMEOUT_S = int(os.environ.get("AUTOFILL_RUNNER_IDLE_TIMEOUT_S", "420"))
+# Kill and fail the job rather than block forever on a stale pipe. 180s keeps
+# a hung runner from blocking the slot for 7 minutes.
+_RUNNER_IDLE_TIMEOUT_S = int(os.environ.get("AUTOFILL_RUNNER_IDLE_TIMEOUT_S", "180"))
 
 
 def is_overnight() -> bool:

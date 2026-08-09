@@ -46,6 +46,10 @@ DOCKER_SERVICES = [
     "neo4j",
     "agent-memory-db",
     "redis",
+    # Steel browser backend: only needed when STEEL_BASE_URL is set, but the
+    # compose `up -d` below is what pulls the image on first run, so it is
+    # always part of the infra bring-up (harmless when unused).
+    "steel",
 ]
 
 # Infra readiness probes (host, port).
@@ -54,6 +58,7 @@ HOST_PROBES = {
     "neo4j": (7687, 15),
     "agent-memory-db": (5433, 20),
     "redis": (6379, 15),
+    "steel": (3000, 60),
     "embed": (8900, 60),
 }
 
@@ -139,13 +144,18 @@ async def _ensure_infra() -> bool:
     if not _compose_up():
         return False
     ok = True
-    for name in ("agent-memory-db", "neo4j", "searxng", "embed"):
+    for name in ("agent-memory-db", "neo4j", "searxng", "redis", "steel", "embed"):
         # embed is started below; if already up, great.
         if name == "embed" and not _http_ok("http://localhost:8900/health"):
             continue
         if not await _wait_for(name, HOST_PROBES.get(name, (0, 15))[1]):
             print(f"[ho] WARNING: {name} not ready", flush=True)
-            ok = False
+            # Steel is optional infra: the runner falls back to a direct
+            # browser launch when STEEL_BASE_URL is unreachable, so a Steel
+            # that never comes up must warn, not abort the pipeline. All the
+            # other services (pg/neo4j/searxng/redis) are required.
+            if name != "steel":
+                ok = False
         else:
             print(f"[ho] ✓ {name} ready", flush=True)
     # Pre-run backup once infra is confirmed
@@ -989,7 +999,13 @@ def _gmail_check() -> None:
 def _autoheal_containers() -> None:
     import subprocess as _sp
 
-    for name in ("ho_searxng_1", "ho_agent-memory-db_1", "ho_neo4j_1"):
+    for name in (
+        "ho_searxng_1",
+        "ho_agent-memory-db_1",
+        "ho_neo4j_1",
+        "ho_redis_1",
+        "ho_steel_1",
+    ):
         try:
             r = _sp.run(
                 ["podman", "ps", "-a", "--filter", f"name={name}", "--format", "{{.Status}}"],

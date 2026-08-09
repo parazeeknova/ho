@@ -1,5 +1,6 @@
-import { Stagehand } from "@browserbasehq/stagehand";
 import * as fs from "fs";
+
+import { Stagehand } from "@browserbasehq/stagehand";
 
 import { type JobPayload } from "../types";
 import type { SubmitOutcome } from "./shared/audit";
