@@ -59,7 +59,9 @@ def extract_links_from_text(text: str) -> dict[str, Any]:
 
 async def fetch_github_profile(username: str | None = None) -> str:
     """Fetch public repositories and tech stack from GitHub API (async)."""
-    user = username or os.environ.get("GITHUB_USERNAME") or "parazeeknova"
+    user = username or os.environ.get("GITHUB_USERNAME") or ""
+    if not user:
+        return ""
     url = f"https://api.github.com/users/{user}/repos?sort=updated&per_page=15"
 
     headers: dict[str, str] = {
@@ -111,10 +113,11 @@ async def scrape_portfolio(url: str) -> str:
     """Scrape personal portfolio site to extract bio and projects (async).
 
     Some portfolios are SPAs whose raw HTML is mostly nav/shell (e.g.
-    przknv.cc renders "raw/blogs/Toggle theme" first); the meaningful profile
-    content sits further down. We render JS shells via the shared renderer so
-    the portfolio text is the REAL content, then keep up to 6000 chars. Best-
-    effort: returns '' when the fetch or render fails.
+    przknv.cc renders "raw/blogs/Toggle theme" first) and whose projects are
+    lazy-rendered from an embedded JS data blob, so a plain text extraction
+    misses below-the-fold projects entirely. We render JS shells via the shared
+    renderer, then extract project titles+descriptions from the embedded data
+    blob when the visible text is thin. Best-effort: returns '' on failure.
     """
     try:
         # render_html fetches statically and falls back to a Playwright render
@@ -133,7 +136,8 @@ async def scrape_portfolio(url: str) -> str:
         if len(clean_text) < 100:
             return ""
         # Strip recurring nav/chrome lines that every page render repeats and
-        # that carry no profile signal ("Toggle theme", "raw", "blogs", ...).
+        # that carry no profile signal. Generic only — never a specific
+        # username/site, so it works for any candidate's portfolio.
         noise = {
             "toggle theme",
             "raw",
@@ -148,7 +152,11 @@ async def scrape_portfolio(url: str) -> str:
             "light",
             "dark",
             "system",
-            "parazeeknova",
+            "theme",
+            "navigation",
+            "nav",
+            "footer",
+            "back to top",
         }
         lines = [
             ln.strip()
@@ -158,7 +166,16 @@ async def scrape_portfolio(url: str) -> str:
         clean_text = "\n".join(lines)
         if len(clean_text) < 100:
             return ""
-        return clean_text[:6000]
+        # Projects rendered lazily from an embedded JS blob are NOT in the DOM
+        # text. Recover them from the raw HTML blob so nothing is truncated.
+        embedded = _extract_embedded_projects(html)
+        if embedded and len(embedded) > len(clean_text):
+            clean_text = embedded
+        # Keep substantially more than before: the portfolio page is long and
+        # scrolling-rendered (projects deep in the page like Maya, Doty, Snix)
+        # would be truncated at 6000 chars. 12000 keeps all projects while
+        # still bounding the embedding payload.
+        return clean_text[:12000]
     except Exception as e:
         logger.warning(
             "Portfolio scrape failed",
@@ -166,6 +183,40 @@ async def scrape_portfolio(url: str) -> str:
             exception=str(e),
         )
         return ""
+
+
+def _extract_embedded_projects(html: str) -> str:
+    """Recover project title + description from the SPA's embedded JS data blob.
+
+    Many portfolio sites (przknv.cc included) ship all projects as a JSON-ish
+    array in a `<script>` — ``$R[36]={title:"Maya. ...",desc:"Fully local face
+    recognition ...",section:"personal"}`` — and only mount them on scroll.
+    ``BeautifulSoup.get_text`` discards script tags, so those projects never
+    surface in the extracted text. This scans the raw HTML for those objects
+    and returns a "title: desc" block per project.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    # Match title:"...",desc:"..." pairs (also unquoted/escaped variants).
+    for m in re.finditer(
+        r'title:"((?:[^"\\]|\\.)*)"[^}]{0,400}?desc:"((?:[^"\\]|\\.)*)"',
+        html,
+        re.DOTALL,
+    ):
+        title = m.group(1).strip()
+        desc = m.group(2).strip()
+        if not title or not desc:
+            continue
+        # Skip non-project blobs (nav, footer, generic labels).
+        low = title.lower()
+        if low in {"portfolio", "resume", "blogs", "raw"} or len(title) < 4:
+            continue
+        key = title[:40].lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(f"{title}\n{desc[:600]}")
+    return "\n\n".join(out)
 
 
 async def enrich_candidate_chunks(chunks: dict[str, str], resume_text: str = "") -> dict[str, str]:
@@ -176,7 +227,7 @@ async def enrich_candidate_chunks(chunks: dict[str, str], resume_text: str = "")
     gh_user = parsed_links.get("github_username") or os.environ.get("GITHUB_USERNAME")
     github_text = await fetch_github_profile(gh_user)
     if github_text:
-        user_display = gh_user or "parazeeknova"
+        user_display = gh_user or "candidate"
         logger.info(
             "GitHub profile extracted",
             entity=user_display,
