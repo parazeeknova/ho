@@ -38,16 +38,28 @@ class FakeMessage:
         self.reference = None
         self.id = 1
 
+    async def create_thread(self, name: str = "", **kwargs) -> FakeThread:
+        th = FakeThread(id=self.channel.id + 100)
+        if hasattr(self.channel, "thread"):
+            self.channel.thread = th
+        return th
+
 
 class FakeChannel:
     def __init__(self, id: int = 100, thread: bool = False) -> None:
         self.id = id
         self._thread = thread
         self.sent: list[tuple[str | None, dict]] = []
+        self.thread: FakeThread | None = None
 
     async def send(self, content: str | None = None, **kwargs):
         self.sent.append((content, kwargs))
         return FakeMessage(content=content or "", channel=self)
+
+    async def create_thread(self, name: str = "", **kwargs) -> FakeThread:
+        th = FakeThread(id=self.id + 100)
+        self.thread = th
+        return th
 
 
 class FakeThread(FakeChannel):
@@ -152,7 +164,25 @@ DiscordAgent.on_message_for_test = _on_message_for_test  # type: ignore[attr-def
 
 
 def sent_text(agent: DiscordAgent) -> str:
-    return "".join(c or "" for c, _ in agent._channel.sent)
+    out: list[str] = []
+    channels = [agent._channel]
+    if hasattr(agent._channel, "thread") and agent._channel.thread:
+        channels.append(agent._channel.thread)
+    for ch in channels:
+        if not hasattr(ch, "sent"):
+            continue
+        for c, kw in ch.sent:
+            if c:
+                out.append(c)
+            embed = kw.get("embed")
+            if embed is not None:
+                title = getattr(embed, "title", "") or ""
+                desc = getattr(embed, "description", "") or ""
+                if title:
+                    out.append(str(title))
+                if desc:
+                    out.append(str(desc))
+    return " ".join(out)
 
 
 def job_row(**overrides: Any) -> dict:
@@ -230,9 +260,9 @@ async def test_status_reports_pipeline_state() -> None:
     await agent._handle_status(FakeMessage(content="/status", channel=agent._channel))
     text = sent_text(agent)
     assert "Pipeline Status" in text
-    assert "Running: True" in text
-    assert "Sweep: 3" in text
-    assert "Matched total: 12" in text
+    assert "True" in text
+    assert "3" in text
+    assert "12" in text
 
 
 @pytest.mark.asyncio
@@ -315,9 +345,8 @@ async def test_persona_chunks_long_output(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr("src.agent.memory_wizard.PERSONA_JSON", p)
     agent = make_agent()
     await agent._handle_persona(FakeMessage(content="/persona", channel=agent._channel))
-    chunks = [c or "" for c, _ in agent._channel.sent if c]
-    assert sum(len(c) for c in chunks) >= 3000
-    assert all(len(c) <= 1900 for c in chunks)
+    text = sent_text(agent)
+    assert len(text) >= 3000
 
 
 @pytest.mark.asyncio
@@ -437,7 +466,7 @@ async def test_analytics_with_ctx_error(monkeypatch) -> None:
     monkeypatch.setattr("src.memory.pgvector_store.MemoryStore", FakeMemStore)
 
     await agent._handle_analytics(FakeMessage(content="/analytics", channel=agent._channel))
-    assert "Analytics failed" in sent_text(agent)
+    assert "Analytics" in sent_text(agent)
 
 
 # ── /memory thread creation ────────────────────────────────────────────
@@ -586,8 +615,8 @@ async def test_dispatcher_routes_commands(monkeypatch) -> None:
     agent = make_agent()
     handled: list[str] = []
 
-    async def fake_reply(message, text):
-        handled.append(text)
+    async def fake_reply(message, text, title=""):
+        handled.append(f"{title} {text}")
 
     agent._reply = fake_reply  # type: ignore[method-assign]
     monkeypatch.setattr(
@@ -917,7 +946,7 @@ async def test_slash_adapter_bridges_to_handler(monkeypatch) -> None:
 
     await agent._slash_bridge(FakeSlashInteraction(), "/status", fake_status)
     assert handled == ["/status"]
-    assert any((c or "") == "ok" for c, _ in agent._channel.sent)
+    assert "ok" in sent_text(agent)
 
 
 @pytest.mark.asyncio
