@@ -45,7 +45,15 @@ PERSONA_JSON = REPO / "data" / "persona.json"  # repo root
 # missing here, so every project bullet (Asocialmedia, Verso, Lumen, Chorus)
 # was silently dropped from the matcher grounding, leaving the LLM scoring
 # against a summary that described none of the candidate's actual work.
-_RESUME_SECTIONS = ("header", "skills", "experience", "projects", "education", "achievements")
+_RESUME_SECTIONS = (
+    "header",
+    "skills",
+    "experience",
+    "projects",
+    "education",
+    "achievements",
+    "portfolio",
+)
 
 
 def load_persona(path: Path = PERSONA_JSON) -> list[dict[str, str]]:
@@ -128,6 +136,7 @@ async def resume_summary(store: MemoryStore) -> str:
         "skills": "candidate technical skills technologies",
         "experience": "candidate work experience roles employers",
         "projects": "candidate projects built products",
+        "portfolio": "candidate portfolio projects bio work",
         "education": "candidate education university degree",
         "achievements": "candidate achievements awards publications hackathons",
     }
@@ -155,6 +164,8 @@ async def resume_summary(store: MemoryStore) -> str:
                     parts.append(f"- Education: {cleaned}")
                 elif rsec == "achievements":
                     parts.append(f"- Achievements: {cleaned}")
+                elif rsec == "portfolio":
+                    parts.append(f"- Portfolio: {cleaned}")
                 else:
                     parts.append(f"- {cleaned}")
     return "\n".join(parts[:60])
