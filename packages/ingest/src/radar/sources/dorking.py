@@ -9,6 +9,8 @@ ghost jobs from contaminating the pipeline.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+from typing import Any
 
 from src.http_client import get_client
 from src.logging import get_logger
@@ -68,7 +70,10 @@ class DorkingEngine:
         self._seen_urls: set[str] = set()
 
     async def execute_dorks(
-        self, queries: list[str] | None = None, time_range: str = "week"
+        self,
+        queries: list[str] | None = None,
+        time_range: str = "week",
+        store: Any | None = None,
     ) -> list[JobObservation]:
         """Runs time-restricted dork queries against SearXNG.
 
@@ -109,6 +114,10 @@ class DorkingEngine:
 
                     self._seen_urls.add(link)
                     comp_guess = self._extract_company_from_url(link)
+                    if store is not None and hasattr(store, "save_discovered_domain"):
+                        with contextlib.suppress(Exception):
+                            await store.save_discovered_domain(comp_guess, link)
+
                     observations.append(
                         JobObservation(
                             url=link,

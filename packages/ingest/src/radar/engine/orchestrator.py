@@ -2273,7 +2273,9 @@ async def _run_radar_pipeline() -> None:
                     # Bound the dork run: SearXNG behind can hang (captcha,
                     # slow engines) and the sweep must never block on it — the
                     # loop's hang-watchdog would kill the master mid-sweep.
-                    dork_obs = await asyncio.wait_for(dork_engine.execute_dorks(), timeout=180)
+                    dork_obs = await asyncio.wait_for(
+                        dork_engine.execute_dorks(store=store), timeout=180
+                    )
                     all_obs.extend(dork_obs)
                     logger.info(f"Sweep {sweep}: {len(dork_obs)} observations from SearXNG dorks")
             except TimeoutError:

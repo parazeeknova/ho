@@ -394,7 +394,7 @@ def _status_report() -> int:
                     "SELECT COUNT(*) FROM source_checkpoints WHERE active"
                 )
                 sources_polled = await c.fetchval(
-                    "SELECT COUNT(*) FROM source_checkpoints WHERE last_polled > 0"
+                    "SELECT COUNT(*) FROM source_checkpoints WHERE last_polled IS NOT NULL"
                 )
                 events = await c.fetchval("SELECT COUNT(*) FROM decision_events")
                 rewards = await c.fetchval(
