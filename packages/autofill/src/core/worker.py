@@ -2256,11 +2256,13 @@ async def run_worker() -> None:
     db = await AutofillDB.create()
     # Reclaim jobs left in 'filling' by a previously-crashed worker (its lease
     # outlived the process). Without this, a restart waits out the whole
-    # 1-hour lease before re-processing those jobs.
+    # 1-hour lease before re-processing those jobs. This is a single-worker
+    # deployment: any 'filling' row on boot is an orphan (the prior worker and
+    # its runners are gone), so reset them ALL to pending immediately.
     try:
-        released = await db.release_stale_leases(stale_minutes=30)
+        released = await db.release_stale_leases(reset_all_filling=True)
         if released:
-            logger.info("Released stale filling leases from prior worker", count=released)
+            logger.info("Released orphan filling leases from prior worker", count=released)
     except Exception as release_err:
         logger.warning("Stale lease release skipped", error=str(release_err))
     # Fail loudly at boot if the browser runner cannot be spawned. A worker
