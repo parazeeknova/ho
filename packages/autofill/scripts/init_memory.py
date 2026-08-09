@@ -138,10 +138,13 @@ def _compose_file() -> Path:
 
 
 async def _start_postgres() -> bool:
-    """Auto-start the agent-memory Postgres container and wait for it.
+    """Auto-start the agent-memory Postgres + redis containers and wait for
+    Postgres.
 
     The app database is the ``agent-memory-db`` service (host port 5433,
-    pgvector image, persistent volume).
+    pgvector image, persistent volume). ``redis`` (port 6379) is also brought
+    up because the LLM governor uses it as the shared token/RPM budget store —
+    without it every LLM call logs "Redis budget unavailable, local-only".
     """
     import shutil
 
@@ -150,7 +153,16 @@ async def _start_postgres() -> bool:
     try:
         result = await asyncio.to_thread(
             subprocess.run,
-            ["docker", "compose", "-f", str(_compose_file()), "up", "-d", "agent-memory-db"],
+            [
+                "docker",
+                "compose",
+                "-f",
+                str(_compose_file()),
+                "up",
+                "-d",
+                "agent-memory-db",
+                "redis",
+            ],
             cwd=REPO,
             capture_output=True,
             timeout=180,
@@ -172,6 +184,20 @@ async def _start_postgres() -> bool:
         except Exception:
             await asyncio.sleep(1)
     return False
+
+
+async def _ensure_redis() -> None:
+    """Confirm redis (the LLM governor budget store) is reachable; warn only."""
+    import redis.asyncio as aioredis
+
+    url = os.environ.get("LLM_BUDGET_REDIS_URL", "redis://127.0.0.1:6379/1")
+    try:
+        r = aioredis.from_url(url, socket_connect_timeout=2)
+        await r.ping()
+        await r.aclose()
+        ux.chip("ok", f"Redis up ({url.split('@')[-1]})")
+    except Exception as e:
+        ux.chip("warn", f"Redis unavailable ({e}); LLM governor will run local-only")
 
 
 async def run_script(name: str, *extra: str) -> int:
@@ -235,7 +261,7 @@ async def main() -> None:
         store = await MemoryStore.create()
     except Exception as e:
         ux.chip("err", f"Could not connect to Postgres: {e}")
-        ux.bullet("Starting agent-memory-db (docker compose) automatically...")
+        ux.bullet("Starting agent-memory-db + redis (docker compose) automatically...")
         if await _start_postgres():
             ux.chip("ok", "Postgres started automatically")
             store = await MemoryStore.create()
@@ -243,7 +269,8 @@ async def main() -> None:
             ux.chip("err", "Could not start Postgres automatically")
             ux.bullet("Start it manually:")
             ux.bullet(
-                f"  docker compose -f {_compose_file().relative_to(REPO)} up -d agent-memory-db",
+                "  docker compose -f "
+                f"{_compose_file().relative_to(REPO)} up -d agent-memory-db redis",
                 style="cyan",
             )
             ux.bullet(
@@ -255,6 +282,7 @@ async def main() -> None:
             sys.exit(1)
     await store.close()
     ux.chip("ok", "Postgres connected (localhost:5433/agent_memory)")
+    await _ensure_redis()
 
     # 2. Embedding server
     ux.section(2, 4, "Embedding server")
