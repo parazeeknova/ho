@@ -478,22 +478,25 @@ def _overlaps_blocklist(question: str, blocked: list[tuple[str, set[str]]]) -> b
     return False
 
 
-async def _finish_question_gen(
-    task: Any, ctx: Any, extra_budget: float = 20.0
+def _finish_question_gen_thread(
+    result: dict[str, object], ctx: Any, extra_budget: float = 20.0
 ) -> list[tuple[str, str]]:
-    """Await the background dynamic-question generation with a bounded extra
+    """Await the background thread's question generation with a bounded extra
     wait. Returns the merged question set, or the static core set on timeout/
     error — the wizard must never block long on optional questions."""
-    if task is None:
-        return list(CORE_QUESTIONS)
-    try:
-        return await asyncio.wait_for(task, timeout=extra_budget)
-    except TimeoutError:
-        _report_llm_fallback(ctx, "timed out", f"after {int(extra_budget)}s more")
-        return list(CORE_QUESTIONS)
-    except Exception as exc:
-        _report_llm_fallback(ctx, "failed", str(exc))
-        return list(CORE_QUESTIONS)
+    import time as _time
+
+    if result.get("done"):
+        qs = result.get("questions")
+        return list(qs) if isinstance(qs, list) and qs else list(CORE_QUESTIONS)
+    deadline = _time.time() + extra_budget
+    while _time.time() < deadline:
+        if result.get("done"):
+            qs = result.get("questions")
+            return list(qs) if isinstance(qs, list) and qs else list(CORE_QUESTIONS)
+        _time.sleep(0.2)
+    _report_llm_fallback(ctx, "timed out", f"after {int(extra_budget)}s more")
+    return list(CORE_QUESTIONS)
 
 
 def _report_llm_fallback(ctx: Any, reason: str, detail: str = "") -> None:
@@ -834,23 +837,39 @@ def main() -> None:
     _AUTO_RESUME_CTX = resume_ctx
 
     # Dynamic question generation is best-effort and can take a while on a
-    # slow/overloaded model. Run it in the BACKGROUND while the user answers
-    # the identity section, then await it right before personal Q&A with a
-    # short remaining budget — the static core set is the instant fallback, so
-    # the wizard never blocks 90s on optional questions.
-    q_gen_task = asyncio.create_task(
-        build_question_set(
-            ctx,
-            str(data.get("resume_summary") or ""),
-            data.get("answers", []),
-            data.get("identity", {}),
-            resume_context=resume_ctx,
-        )
-    )
+    # slow/overloaded model. Run it in a background THREAD while the user
+    # answers the identity section (the interactive flow is sync/blocking, so
+    # an asyncio task would be frozen by the prompts). Await the thread result
+    # right before personal Q&A with a short budget — the static core set is the
+    # instant fallback, so the wizard never blocks 90s on optional questions.
+    import threading as _threading
+
+    q_gen_result: dict[str, object] = {"questions": None, "done": False}
+
+    def _gen_in_thread() -> None:
+        try:
+            qs = asyncio.run(
+                build_question_set(
+                    ctx,
+                    str(data.get("resume_summary") or ""),
+                    data.get("answers", []),
+                    data.get("identity", {}),
+                    resume_context=resume_ctx,
+                )
+            )
+            q_gen_result["questions"] = qs
+        except Exception as exc:  # noqa: BLE001
+            q_gen_result["questions"] = list(CORE_QUESTIONS)
+            _report_llm_fallback(ctx, "failed", str(exc))
+        finally:
+            q_gen_result["done"] = True
+
+    gen_thread = _threading.Thread(target=_gen_in_thread, daemon=True)
+    gen_thread.start()
 
     data = grill_identity(data, resume, ask_all=args.all)
 
-    questions = asyncio.run(_finish_question_gen(q_gen_task, ctx))
+    questions = _finish_question_gen_thread(q_gen_result, ctx)
     if len(questions) > len(CORE_QUESTIONS):
         ux.chip(
             "info",
