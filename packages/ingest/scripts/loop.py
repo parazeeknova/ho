@@ -45,7 +45,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))  # scripts/ (ml_trainer
 
 from dotenv import load_dotenv
 
-load_dotenv()
+# .env is the source of truth: override any shell-inherited vars (e.g. a
+# stale GENERALCOMPUTE_MODEL exported in the user's profile) so the model
+# and budget settings in .env always win.
+load_dotenv(override=True)
 
 from autofill.src.core.db import AutofillDB  # noqa: E402
 from src.radar.engine.autofill_bridge import drain_once, print_summary, queue_balance  # noqa: E402
