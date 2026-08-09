@@ -35,9 +35,14 @@ LIMIT $1
 # mark a company careers page / solutions page as a STRONG_MATCH for the
 # company, but there is no application form to fill there — enqueuing them
 # makes the runner hang on a non-form and burns the queue. These are skipped.
+# Job-SPECIFIC pages (careers/jobs/{id}, careers/opportunity/{id}, job
+# detail URLs with a job id) are KEPT — only bare career/index/solutions
+# landing pages are rejected.
 _NON_APPLY_URL_RE = re.compile(
-    r"(?:/careers?/?$|/careers?/(?:overview|index|all|list|search|browse|jobs|positions)"
-    r"|/solutions|/workato|/company|/about|/de/|/it/|/fr/|/nl/|/es/)"
+    r"(?:/careers?/?$|/careers?/(?:overview|index|all|list|search|browse|home)"
+    r"|/careers?/[a-z]{2}/?$"  # locale-only careers page (/careers/de/)
+    r"|/careers/open-positions"
+    r"|/solutions|/workato|/company/?$|/about/?$|/it/?$|/fr/?$|/nl/?$|/es/?$)"
     r"|(?:careers?\b.*(?:overview|index|landing))",
     re.I,
 )
