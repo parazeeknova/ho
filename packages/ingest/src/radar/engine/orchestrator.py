@@ -2203,15 +2203,20 @@ async def _run_radar_pipeline() -> None:
         from ml import POLICY_VERSION, RANKER_VERSION
 
         _db = await AutofillDB.create()
-        active_epoch_id = await _db.start_epoch(
-            target_submissions=epoch_target,
-            model_version=str(RANKER_VERSION or ""),
-            policy_version=str(POLICY_VERSION or ""),
-        )
-        logger.info(f"Learning epoch started: {active_epoch_id}")
+        existing = await _db.get_active_epoch()
+        if existing and os.environ.get("FORCE_NEW_EPOCH", "false").lower() != "true":
+            active_epoch_id = str(existing["epoch_id"])
+            logger.info(f"Resuming active learning epoch: {active_epoch_id}")
+        else:
+            active_epoch_id = await _db.start_epoch(
+                target_submissions=epoch_target,
+                model_version=str(RANKER_VERSION or ""),
+                policy_version=str(POLICY_VERSION or ""),
+            )
+            logger.info(f"Learning epoch started: {active_epoch_id}")
         await _db.close()
     except Exception as exc:
-        logger.warning(f"Failed to start learning epoch: {exc}")
+        logger.warning(f"Failed to start/resume learning epoch: {exc}")
 
     reached_target = False
     while True:

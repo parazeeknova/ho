@@ -457,7 +457,9 @@ def _status_report(watch: bool = False) -> int:
                     "outcomes": outcomes,
                     "frontier": frontier,
                     "discovered": discovered,
-                    "model": f"{model['version']}({model['status']})" if model else "none",
+                    "model": f"{model['version']}({model['status']})"
+                    if model
+                    else "rule_v1 (heuristic baseline)",
                     "gmail": "ON" if gmail else "off",
                 }
         finally:
