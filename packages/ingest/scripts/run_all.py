@@ -402,8 +402,14 @@ def _status_report() -> int:
                 )
                 imp = await c.fetchval("SELECT COUNT(*) FROM impressions")
                 outcomes = await c.fetchval("SELECT COUNT(*) FROM unattributed_outcomes")
-                frontier = await c.fetchval("SELECT COUNT(*) FROM frontier_state")
-                discovered = await c.fetchval("SELECT COUNT(*) FROM discovered_domains")
+                frontier = await c.fetchval(
+                    "SELECT COUNT(*) FROM job_observations WHERE last_seen > "
+                    "(extract(epoch from now()) - 86400)"
+                )
+                discovered = await c.fetchval(
+                    "SELECT COUNT(*) FROM job_observations WHERE source LIKE '%searxng%' "
+                    "OR source LIKE '%github%' OR source LIKE '%discovered%'"
+                )
                 model = await c.fetchrow(
                     "SELECT version, status FROM model_registry "
                     "WHERE status='active' ORDER BY created_at DESC LIMIT 1"
