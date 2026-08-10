@@ -2248,6 +2248,33 @@ async def _run_radar_pipeline() -> None:
                     logger.info(
                         f"Sweep {sweep}: {len(ungated)} never-gated observations from corpus"
                     )
+            if not is_worker:
+                try:
+                    from src.radar.core.dedup_engine import FastDeduplicationEngine
+                    from src.radar.sources.high_speed_fetcher import HighSpeedFetcherEngine
+                    from src.radar.sources.high_volume_discovery import HighVolumeDiscoveryEngine
+
+                    hv_disc = HighVolumeDiscoveryEngine()
+                    hv_urls = await hv_disc.discover_urls_parallel(duration_seconds=4.0)
+                    if hv_urls:
+                        dedup = FastDeduplicationEngine()
+                        await dedup.initialize()
+                        new_urls = await dedup.filter_new_urls(hv_urls)
+                        await dedup.mark_urls_seen(new_urls)
+                        await dedup.close()
+                        if new_urls:
+                            fetcher = HighSpeedFetcherEngine(concurrency=60)
+                            hv_obs = await fetcher.fetch_job_observations_parallel(
+                                new_urls[:300], timeout_seconds=4.0
+                            )
+                            all_obs.extend(hv_obs)
+                            logger.info(
+                                f"Sweep {sweep}: {len(hv_obs)} observations from "
+                                f"HighVolumeDiscovery engine ({len(new_urls)} new URLs)"
+                            )
+                except Exception as hv_err:
+                    logger.warning(f"High-Volume Discovery error: {hv_err}")
+
             if not is_worker and time.monotonic() - last_mass_poll > _mass_poll_interval:
                 try:
                     from src.radar.sources.ats_mass_poller import poll_all_mass_slugs
