@@ -1193,6 +1193,15 @@ def main() -> int:
             return 0
         return await _run_loop(args)
 
+    import asyncio.base_events
+
+    if not hasattr(asyncio.base_events.BaseEventLoop, "_safe_is_closed"):
+
+        def _safe_is_closed(self: object) -> bool:
+            return getattr(self, "_closed", True)
+
+        asyncio.base_events.BaseEventLoop.is_closed = _safe_is_closed
+
     try:
         rc = asyncio.run(_run())
         return rc

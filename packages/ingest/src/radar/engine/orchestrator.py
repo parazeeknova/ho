@@ -2678,6 +2678,17 @@ def run() -> None:
     if problems:
         for p in problems:
             logger.warning(f"Config problem: {p}")
+
+    # Fix Python 3.14 asyncio BaseEventLoop.__del__ AttributeError during GC
+    import asyncio.base_events
+
+    if not hasattr(asyncio.base_events.BaseEventLoop, "_safe_is_closed"):
+
+        def _safe_is_closed(self: Any) -> bool:
+            return getattr(self, "_closed", True)
+
+        asyncio.base_events.BaseEventLoop.is_closed = _safe_is_closed
+
     asyncio.run(_run_radar_pipeline())
 
 

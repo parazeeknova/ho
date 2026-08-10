@@ -402,15 +402,19 @@ async def _build_job_embed(category: str, job: dict[str, Any]) -> discord.Embed:
         warnings.append("⚠️ Onsite role - requires visa/relocation, may be rejected")
     if is_us and not job.get("sponsors_visa"):
         warnings.append("⚠️ US role - visa sponsorship not confirmed")
+    if warnings:
+        embed.add_field(name="Warnings", value="\n".join(warnings), inline=False)
+
+    osint_lines: list[str] = []
     if job.get("osint_signals"):
         sigs = job["osint_signals"]
         if isinstance(sigs, list):
             for sig in sigs[:2]:
                 txt = sig.get("text") if isinstance(sig, dict) else str(sig)
                 if txt:
-                    warnings.append(f"📡 {txt[:120]}")
-    if warnings:
-        embed.add_field(name="Warnings", value="\n".join(warnings), inline=False)
+                    osint_lines.append(f"📡 {txt[:120]}")
+    if osint_lines:
+        embed.add_field(name="OSINT Signals", value="\n".join(osint_lines), inline=False)
 
     badges: list[str] = []
     if job.get("sponsors_visa"):

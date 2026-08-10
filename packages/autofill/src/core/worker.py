@@ -800,22 +800,26 @@ class AutofillWorker:
     ) -> str:
         lines = [f"**{title}**", ""]
         for i, r in enumerate(rows, 1):
+            job_id = r.get("job_id") or ""
             role = r.get("role") or "Position"
             company = r.get("company") or "Company"
-            link = r.get("apply_link") or ""
+            link = (r.get("apply_link") or "").strip()
             questions = r.get("pending_questions") or []
             lines.append(f"**{i}. {company}** — {role}")
+            if job_id:
+                lines.append(f"    `Job ID`: `{job_id}`")
             if link:
-                lines.append(f"    [Open posting →]({link})")
+                lines.append(f"    [Open Posting →]({link})")
             if questions:
                 lines.append(f"    Needs input ({len(questions)}):")
                 for entry in questions[:6]:
                     if isinstance(entry, str):
                         lines.append(f"    • {entry}")
                     else:
-                        lines.append(f"    • {AutofillWorker._format_pending(entry)}")
+                        lines.append(f"    {AutofillWorker._format_pending(entry)}")
             lines.append("")
-        lines.append("Answer them with `python -m autofill.src.filling.resume <job_id>`")
+        lines.append("To answer questions and resume filing a job, run:")
+        lines.append("`python -m autofill.src.filling.resume <job_id>`")
         return "\n".join(lines)
 
     async def _process_job(self, job: dict[str, Any]) -> None:

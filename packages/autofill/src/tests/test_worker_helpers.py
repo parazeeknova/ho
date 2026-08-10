@@ -233,7 +233,7 @@ def test_format_digest_is_markdown_not_html() -> None:
     assert "&lt;" not in text
     # Discord Markdown
     assert "**1. Acme** — Backend Engineer" in text
-    assert "[Open posting →](https://boards.greenhouse.io/acme/123)" in text
+    assert "[Open Posting →](https://boards.greenhouse.io/acme/123)" in text
     assert "`python -m autofill.src.filling.resume <job_id>`" in text
     assert "• Are you authorized to work in the country?" in text
     assert "Acme" in text
