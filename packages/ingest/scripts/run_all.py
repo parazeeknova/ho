@@ -332,7 +332,13 @@ async def _run_loop(args: argparse.Namespace) -> int:
     # sweep/status progress) AND run_all.log (for tailing). A bare pipe to
     # stdout would deadlock if un-drained, so we drain it here.
     log_path = log_dir / "run_all.log"
-    with (log_path).open("ab") as out:
+    run_log_path = log_dir / "run.log"
+    loop_log_path = log_dir / "loop.log"
+    with (
+        log_path.open("ab") as out1,
+        run_log_path.open("ab") as out2,
+        loop_log_path.open("ab") as out3,
+    ):
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=str(PROJECT),
@@ -348,8 +354,12 @@ async def _run_loop(args: argparse.Namespace) -> int:
                 if not chunk:
                     break
                 line = chunk.decode(errors="replace")
-                out.write(chunk)
-                out.flush()
+                out1.write(chunk)
+                out1.flush()
+                out2.write(chunk)
+                out2.flush()
+                out3.write(chunk)
+                out3.flush()
                 sys.stdout.write(line)
                 sys.stdout.flush()
 
@@ -367,18 +377,36 @@ def _handle_sig(signum: int, frame) -> None:  # noqa: ANN001
     raise KeyboardInterrupt
 
 
-def _status_report() -> int:
+class _LogTee:
+    """Tee output to both console stream and file."""
+
+    def __init__(self, original_stream: object, log_file: object) -> None:
+        self.original_stream = original_stream
+        self.log_file = log_file
+
+    def write(self, data: str) -> None:
+        getattr(self.original_stream, "write", lambda s: None)(data)
+        getattr(self.original_stream, "flush", lambda: None)()
+        with contextlib.suppress(Exception):
+            getattr(self.log_file, "write", lambda s: None)(data)
+            getattr(self.log_file, "flush", lambda: None)()
+
+    def flush(self) -> None:
+        getattr(self.original_stream, "flush", lambda: None)()
+        with contextlib.suppress(Exception):
+            getattr(self.log_file, "flush", lambda: None)()
+
+
+def _status_report(watch: bool = False) -> int:
     """`bun run run --status`: a full read-only snapshot of every counter the
     pipeline tracks — DB, graph, RAG, ML, autofill, epochs, sources, and
     whether anything is currently running. No side effects: does not touch
     containers, the lock, or the embed server."""
-    import asyncio as _asyncio
+    import asyncio
     import os as _os
     from typing import Any
 
     # Quiet the pipeline loggers (MemoryStore/AutofillDB emit INFO on open/close).
-    # Status is a clean snapshot by design, so INFO is suppressed regardless of
-    # any LOG_LEVEL in the caller's environment.
     _os.environ["LOG_LEVEL"] = "WARNING"
 
     async def _pg_section() -> dict[str, Any]:
@@ -540,99 +568,175 @@ def _status_report() -> int:
         finally:
             await store.close()
 
-    def _table(title: str) -> Any:
+    async def _collect_all_stats() -> dict[str, Any]:
+        pg, elig, queue, epoch, rag, graph, top = await asyncio.gather(
+            _pg_section(),
+            _eligibility_section(),
+            _queue_section(),
+            _epoch_section(),
+            _rag_section(),
+            _graph_section(),
+            _top_sources(),
+        )
+        running = _pipeline_running()
+        return {
+            "pg": pg,
+            "elig": elig,
+            "queue": queue,
+            "epoch": epoch,
+            "rag": rag,
+            "graph": graph,
+            "top": top,
+            "running": running,
+        }
+
+    def _render(stats: dict[str, Any]) -> Any:
         from rich import box
+        from rich.console import Group
+        from rich.panel import Panel
         from rich.table import Table
 
-        t = Table(
-            title=title,
-            title_style="bold",
-            header_style="dim",
-            box=box.SIMPLE,
-            show_header=False,
-            show_edge=False,
-            padding=(0, 2),
-            expand=False,
-            min_width=len(title) + 4,
+        running = stats["running"]
+        pid_str = (
+            f"[bold green]RUNNING[/bold green] (PID {running})"
+            if running
+            else "[bold red]STOPPED[/bold red]"
         )
-        t.add_column("key", style="dim", no_wrap=True)
-        t.add_column("value", style="bold")
-        return t
+        now_str = time.strftime("%Y-%m-%d %H:%M:%S")
 
-    def _print_table(t: Any) -> None:
+        hdr_table = Table.grid(expand=True)
+        hdr_table.add_column(justify="left")
+        hdr_table.add_column(justify="right")
+        hdr_table.add_row(
+            f"[bold cyan]HO AGENT PIPELINE DASHBOARD[/bold cyan]  ·  Status: {pid_str}",
+            f"[dim]{now_str}[/dim]",
+        )
+        header_panel = Panel(hdr_table, box=box.ROUNDED, style="cyan")
+
+        # Table 1: Ingestion & Discovery Stats
+        t_ingest = Table(title="📊 INGESTION & DISCOVERY", box=box.ROUNDED, expand=True)
+        t_ingest.add_column("Metric", style="cyan", no_wrap=True)
+        t_ingest.add_column("Count", style="bold white", justify="right")
+        t_ingest.add_column("Details", style="dim")
+
+        pg = stats["pg"]
+        t_ingest.add_row("Raw Observations (obs)", f"{pg.get('obs', 0):,}", "Ingested raw job URLs")
+        t_ingest.add_row(
+            "Canonical Candidates (cand)", f"{pg.get('cand', 0):,}", "Normalized postings"
+        )
+        t_ingest.add_row(
+            "Active Company Sources",
+            f"{pg.get('sources_active', 0):,}",
+            f"Polled: {pg.get('sources_polled', 0):,}",
+        )
+        t_ingest.add_row("24h Queue Frontier", f"{pg.get('frontier', 0):,}", "Observed in last 24h")
+        t_ingest.add_row(
+            "Dynamic Discovered", f"{pg.get('discovered', 0):,}", "SearXNG / GitHub / YC"
+        )
+        t_ingest.add_row(
+            "Events / Impressions",
+            f"{pg.get('events', 0):,} / {pg.get('impressions', 0):,}",
+            f"Rewards: {pg.get('rewards', 0):,}",
+        )
+        t_ingest.add_row("Gmail Outcome Push", str(pg.get("gmail", "off")), "Push listener status")
+
+        # Table 2: Candidate Eligibility Gating
+        t_elig = Table(title="🎯 CANDIDATE ELIGIBILITY", box=box.ROUNDED, expand=True)
+        t_elig.add_column("Eligibility", style="cyan", no_wrap=True)
+        t_elig.add_column("Count", style="bold white", justify="right")
+        t_elig.add_column("Share", style="bold", justify="right")
+
+        elig = stats["elig"]
+        total_elig = sum(elig.values()) or 1
+        acc = elig.get("accepted", 0)
+        nm = elig.get("near_miss", 0)
+        rej = elig.get("rejected", 0)
+        err = elig.get("error", 0)
+
+        t_elig.add_row(
+            "Accepted (High Fit)",
+            f"[bold green]{acc:,}[/bold green]",
+            f"[green]{acc / total_elig * 100:.1f}%[/green]",
+        )
+        t_elig.add_row(
+            "Near Miss",
+            f"[yellow]{nm:,}[/yellow]",
+            f"[yellow]{nm / total_elig * 100:.1f}%[/yellow]",
+        )
+        t_elig.add_row(
+            "Rejected",
+            f"[dim red]{rej:,}[/dim red]",
+            f"[dim]{rej / total_elig * 100:.1f}%[/dim]",
+        )
+        if err:
+            t_elig.add_row(
+                "Error",
+                f"[magenta]{err:,}[/magenta]",
+                f"[magenta]{err / total_elig * 100:.1f}%[/magenta]",
+            )
+
+        # Table 3: Autofill Queue & Learning Epoch
+        t_queue = Table(title="⚡ AUTOFILL QUEUE & EPOCHS", box=box.ROUNDED, expand=True)
+        t_queue.add_column("State", style="cyan", no_wrap=True)
+        t_queue.add_column("Value", style="bold white", justify="right")
+
+        q = stats["queue"]
+        ep = stats["epoch"]
+        t_queue.add_row("Fills Total", f"{q.get('fills', 0):,}")
+        t_queue.add_row("Pending Queue", f"[bold yellow]{q.get('pending', 0):,}[/bold yellow]")
+        t_queue.add_row("Currently Filling", f"[bold green]{q.get('filling', 0):,}[/bold green]")
+        t_queue.add_row(
+            "Confirmed Submitted", f"[bold green]{q.get('submitted', 0):,}[/bold green]"
+        )
+        t_queue.add_row("Awaiting Review", f"[cyan]{q.get('awaiting_review', 0):,}[/cyan]")
+        t_queue.add_row("Failed / Deferred", f"{q.get('failed', 0):,} / {q.get('deferred', 0):,}")
+
+        if ep["active"]:
+            a = ep["active"]
+            tgt = a.get("target_submissions") or 0
+            tgt_str = (
+                f"{a['completed_submissions']}/{tgt}"
+                if tgt > 0
+                else f"{a['completed_submissions']} (no cap)"
+            )
+            t_queue.add_row("Active Epoch", f"{a['epoch_id'][:18]}.. ({tgt_str})")
+        else:
+            t_queue.add_row("Active Epoch", "None")
+
+        # Table 4: Top ATS Sources
+        t_top = Table(title="🔥 TOP ATS DISCOVERY SOURCES", box=box.ROUNDED, expand=True)
+        t_top.add_column("Source Platform", style="cyan", no_wrap=True)
+        t_top.add_column("Gated Candidates", style="bold white", justify="right")
+
+        for src, n in stats["top"][:10]:
+            t_top.add_row(src, f"{n:,}")
+
+        return Group(header_panel, t_ingest, t_elig, t_queue, t_top)
+
+    async def _live_loop() -> int:
         from rich.console import Console
+        from rich.live import Live
 
         console = Console()
-        console.print("")
-        console.print(t)
-
-    async def _all() -> int:
-        pg = await _pg_section()
-        elig = await _eligibility_section()
-        queue = await _queue_section()
-        epoch = await _epoch_section()
-        rag = await _rag_section()
-        graph = await _graph_section()
-        top = await _top_sources()
-        running = _pipeline_running()
-
-        status = f"RUNNING (pid {running})" if running else "not running"
-        print(f"\n[ho] STATUS  ·  {time.strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"[ho] pipeline: {status}")
-
-        t = _table("POSTGRES · agent-memory")
-        for k, v in pg.items():
-            t.add_row(k, str(v))
-        _print_table(t)
-
-        t = _table("CANDIDATES · eligibility")
-        for k, v in sorted(elig.items(), key=lambda kv: (-kv[1], kv[0])):
-            t.add_row(k, str(v))
-        _print_table(t)
-
-        t = _table("TOP SOURCES · radar_candidates")
-        for src, n in top:
-            t.add_row(src, str(n))
-        _print_table(t)
-
-        t = _table("AUTOFILL QUEUE")
-        for k, v in sorted(queue.items(), key=lambda kv: (-kv[1], kv[0])):
-            t.add_row(k, str(v))
-        _print_table(t)
-
-        t = _table("LEARNING EPOCHS")
-        if epoch["active"]:
-            a = epoch["active"]
-            t.add_row("active", a["epoch_id"])
-            target = a.get("target_submissions") or 0
-            if target > 0:
-                t.add_row(
-                    "progress",
-                    f"{a['completed_submissions']}/{target} submitted",
-                )
-            else:
-                t.add_row(
-                    "progress",
-                    f"{a['completed_submissions']} submitted (no target cap)",
-                )
+        if watch:
+            console.print(
+                "[bold dim]Entering live status dashboard (Press Ctrl+C to exit)...[/bold dim]\n"
+            )
+            try:
+                with Live(console=console, refresh_per_second=1, screen=False) as live:
+                    while True:
+                        stats = await _collect_all_stats()
+                        live.update(_render(stats))
+                        await asyncio.sleep(1.5)
+            except KeyboardInterrupt, asyncio.CancelledError:
+                console.print("\n[dim]Status monitor exited.[/dim]")
+                return 0
         else:
-            t.add_row("active", "none")
-        t.add_row("total", str(epoch["total"]))
-        t.add_row("completed", str(epoch["done"]))
-        _print_table(t)
+            stats = await _collect_all_stats()
+            console.print(_render(stats))
+            return 0
 
-        t = _table("RAG / MEMORY")
-        for k, v in rag.items():
-            t.add_row(k, str(v))
-        _print_table(t)
-
-        t = _table("GRAPH · neo4j")
-        t.add_row("counts", graph)
-        _print_table(t)
-        print(flush=True)
-        return 0
-
-    return _asyncio.run(_all())
+    return asyncio.run(_live_loop())
 
 
 def _pipeline_running() -> int | None:
@@ -774,6 +878,15 @@ async def _system_stats() -> tuple[str, str, str, str, str]:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--status", action="store_true", help="Print all pipeline counters and exit")
+    ap.add_argument(
+        "--watch",
+        "-w",
+        action="store_true",
+        help="Continuously watch status updates in real-time dashboard",
+    )
+    ap.add_argument(
+        "--once", action="store_true", help="Print status snapshot once and exit (no live watch)"
+    )
     ap.add_argument("--dry-run", action="store_true", help="Start infra only, then stop")
     ap.add_argument("--no-fill", action="store_true", help="Skip the autofill worker")
     ap.add_argument("--radar-workers", type=int, default=2, help="Extra radar worker procs")
@@ -782,20 +895,34 @@ def main() -> int:
     ap.add_argument("--max-minutes", type=int, default=0, help="Hard stop after N minutes")
     args = ap.parse_args()
 
-    # Read-only status: no lock, no takeover, no infra — just print counters.
-    if args.status:
-        return _status_report()
+    # Read-only status: no lock, no takeover, no infra — display dashboard.
+    if args.status or args.watch:
+        import sys as _sys
 
-    # Single-instance lock: only one `bun run run` may own the pipeline at a
-    # time. If another instance is already running, STOP it (kill its whole
-    # tree) and take over — running `bun run run` again should always start a
-    # fresh pipeline, never just complain about a stale one.
+        is_watch = args.watch or (_sys.stdout.isatty() and not args.once)
+        return _status_report(watch=is_watch)
+
+    # Single-instance lock: only one `bun run run` may own the pipeline at a time.
     import os as _os
     import signal as _signal
+    import sys as _sys
 
     lock_path = PROJECT / "logs" / "ho_run.lock"
     log_dir = PROJECT / "logs"
     log_dir.mkdir(exist_ok=True)
+
+    # Automatically stream all run logs to logs/run.log & logs/loop.log
+    try:
+        run_log_path = log_dir / "run.log"
+        log_fp = run_log_path.open("a", encoding="utf-8")
+        _sys.stdout = _LogTee(_sys.stdout, log_fp)
+        _sys.stderr = _LogTee(_sys.stderr, log_fp)
+        latest_log_path = log_dir / "latest.log"
+        latest_log_path.unlink(missing_ok=True)
+        with contextlib.suppress(Exception):
+            latest_log_path.symlink_to(run_log_path.name)
+    except Exception:
+        pass
 
     def _stop_pipeline_tree(old_pid: int) -> None:
         """Gracefully stop a running pipeline: the run_all + its loop, radar
