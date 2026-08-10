@@ -63,6 +63,121 @@ A typical two-minute run can produce a substantial stream of opportunities while
 
 The interface is intentionally operational rather than a separate dashboard. HO does the work in the background; Discord exposes what it found, what it decided, and what happened afterward.
 
+## Execution Guide & Commands Reference
+
+### Quickstart
+
+1. **Environment Setup**:
+   ```bash
+   cp .env.example .env
+   ```
+2. **Initialize RAG Memory & Resume Indexing**:
+   ```bash
+   bun run initm
+   ```
+3. **Run Production Engine**:
+   ```bash
+   bun run run
+   ```
+
+---
+
+### Workspace Commands Summary
+
+All workspace tasks are managed via `bun run <command>`:
+
+| Command | Description |
+| :--- | :--- |
+| `bun run run` | **Main Production Engine** — Starts infrastructure (Postgres, Redis, Neo4j), discovery, ranking, and Stagehand browser autofill. |
+| `bun run status` | **Live Real-Time Dashboard** — Monitors live throughput rates (obs/min, cand/min, fills/min), queue state, worker procs, and ML epochs. |
+| `bun run export` | **Export Candidates** — Dumps filtered/accepted jobs to CSV (`packages/ingest/intel/accepted_jobs.csv`). |
+| `bun run initm` | **Initialize RAG Memory** — Re-indexes master resume (`resume.pdf` / `RESUME_URL`) into vector memory. |
+| `bun run intel` | **Market Intelligence** — Runs competitive hiring radar, salary statistics, and company research. |
+| `bun run health` | **Health Diagnostics** — Checks database connections, proxy relays, and container status. |
+| `bun run backup` | **System Backup** — Creates gzipped volume snapshots of PostgreSQL and vector indexes. |
+| `bun run check` | **Full Quality Check** — Runs Ruff formatting, Ruff linting, MyPy type checking, and test suites. |
+| `bun run test` | **Test Execution** — Runs unit & benchmark test suites across Python and Node. |
+
+---
+
+### Command Flags & Detailed Usage
+
+#### 1. `bun run run` (Main Pipeline Runner)
+```bash
+bun run run [FLAGS]
+```
+* **`--radar-workers <N>`**: Number of parallel candidate discovery and scoring worker procs (default: `32`).
+  ```bash
+  bun run run --radar-workers 48
+  ```
+* **`--bridge-interval <seconds>`**: Interval in seconds between candidate queue drain cycles (default: `10`).
+  ```bash
+  bun run run --bridge-interval 5
+  ```
+* **`--bridge-batch <N>`**: Maximum candidates processed per drain batch (default: `20`).
+  ```bash
+  bun run run --bridge-batch 50
+  ```
+* **`--max-minutes <N>`**: Hard stop timer after N minutes of continuous operation.
+  ```bash
+  bun run run --max-minutes 120
+  ```
+* **`--no-fill`**: Runs job discovery, dorking, and ranking, but skips the autofill browser worker.
+  ```bash
+  bun run run --no-fill
+  ```
+* **`--dry-run`**: Starts infrastructure services (Postgres, Redis) to verify health without launching sweeps.
+  ```bash
+  bun run run --dry-run
+  ```
+
+#### 2. `bun run status` (Live TUI Dashboard)
+```bash
+bun run status [FLAGS]
+```
+* **`--watch` / `-w`**: *(Default)* Continuously updates the TUI dashboard in real time.
+* **`--once`**: Prints a single static snapshot table and exits immediately.
+  ```bash
+  bun run status --once
+  ```
+
+#### 3. `bun run export` (Candidate Exporter)
+```bash
+bun run export [FLAGS]
+```
+* **`--eligibility <status>`**: Filter candidates by eligibility status (`accepted` [default], `near_miss`, `rejected`, `all`).
+  ```bash
+  bun run export -- --eligibility near_miss
+  ```
+* **`--mode <format>`**: Output schema format (`jobs` [default CSV], `outreach` [founder socials/funding], `all` [full JSON dump]).
+  ```bash
+  bun run export -- --mode outreach
+  ```
+* **`--out <path>`**: Specify a custom CSV output file path.
+  ```bash
+  bun run export -- --out ~/Desktop/accepted.csv
+  ```
+
+#### 4. `python -m autofill.src.filling.resume <job_id>`
+Resumes filing a deferred application waiting on user input or OTP:
+```bash
+python -m autofill.src.filling.resume <job_id>
+```
+
+---
+
+### Discord Agent Control Plane
+
+Use the following commands directly inside Discord:
+
+* **`/analytics` or `!analytics`**: Generates market intelligence (Pipeline Velocity, Top Companies, Sector Signals, Skill Arbitrage) inside a dedicated thread.
+* **`/status` or `!status`**: Displays active queue status, fill counts, and worker health.
+* **`/memory` or `!memory`**: Shows currently loaded candidate persona context and indexed resume chunks.
+* **`/health` or `!health`**: Runs diagnostic checks on databases and proxy relays.
+* **`/stop` or `!stop`**: Gracefully stops active discovery and browser workers.
+
+---
+
 ## Architecture
 
 The diagram below shows the complete execution and learning path through HO, from web discovery to application submission and eventual outcome feedback.
