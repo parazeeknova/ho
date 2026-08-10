@@ -212,7 +212,7 @@ CREATE INDEX IF NOT EXISTS idx_candidate_evidence_created ON candidate_evidence(
 CREATE TABLE IF NOT EXISTS learning_epochs (
     epoch_id                TEXT PRIMARY KEY,
     started_at              TIMESTAMPTZ DEFAULT NOW(),
-    target_submissions      INTEGER NOT NULL DEFAULT 20,
+    target_submissions      INTEGER NOT NULL DEFAULT 0,
     completed_submissions   INTEGER NOT NULL DEFAULT 0,
     status                  TEXT NOT NULL DEFAULT 'active',  -- active|completed
     model_version           TEXT DEFAULT '',
