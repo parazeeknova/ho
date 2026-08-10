@@ -49,6 +49,7 @@ _NON_APPLY_URL_RE = re.compile(
     r"|/workato|/company/?$|/about/?$|/it/?$|/fr/?$|/nl/?$|/es/?$)"
     r"|linkedin\.com/(?:jobs|company)/[^/]*?\?(?:trk|ref)="  # LinkedIn search/browse URLs
     r"|linkedin\.com/jobs/research|linkedin\.com/jobs/[^/]+-jobs"
+    r"|thoughtworks\.com/.*careers"  # Thoughtworks generic career landing pages
     r"|(?:careers?\b.*(?:overview|index|landing))",
     re.I,
 )

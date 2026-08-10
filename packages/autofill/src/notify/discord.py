@@ -166,7 +166,10 @@ class DiscordQuestionBridge:
             async with httpx.AsyncClient(timeout=15.0, verify=False) as client:
                 return await client.post(
                     f"{DISCORD_API}/channels/{target_id}/messages",
-                    headers={"Authorization": f"Bot {self.bot_token}"},
+                    headers={
+                        "Authorization": f"Bot {self.bot_token}",
+                        "User-Agent": "DiscordBot (https://github.com/ho-app, 1.0)",
+                    },
                     json=payload,
                 )
 
@@ -181,7 +184,10 @@ class DiscordQuestionBridge:
                 fallback = await retry_http(
                     lambda: httpx.AsyncClient(timeout=15.0, verify=False).post(
                         f"{DISCORD_API}/channels/{self.channel_id}/messages",
-                        headers={"Authorization": f"Bot {self.bot_token}"},
+                        headers={
+                            "Authorization": f"Bot {self.bot_token}",
+                            "User-Agent": "DiscordBot (https://github.com/ho-app, 1.0)",
+                        },
                         json=payload,
                     ),
                     max_retries=1,

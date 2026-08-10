@@ -515,15 +515,20 @@ class AutofillDB:
         return result
 
     async def link_known(self, apply_link: str) -> bool:
-        """True when any row (any status) exists for a link.
+        """True when an *active* (non-terminal) row exists for a link.
 
-        Used by the radar bridge so an already-applied or already-failed job
-        is never re-enqueued from the stored corpus.
+        Terminal statuses (submitted, failed, skipped) are NOT considered
+        "known" — this lets the bridge re-enqueue a URL that previously
+        failed so it can be retried with bug fixes. Only 'submitted' URLs
+        are permanently blocked (already applied).
         """
         async with self._pool.acquire() as conn:
             return bool(
                 await conn.fetchval(
-                    "SELECT 1 FROM autofill_queue WHERE apply_link = $1 LIMIT 1",
+                    "SELECT 1 FROM autofill_queue WHERE apply_link = $1"
+                    " AND status IN ('pending', 'filling', 'awaiting_review',"
+                    " 'deferred', 'submitted')"
+                    " LIMIT 1",
                     apply_link,
                 )
             )
