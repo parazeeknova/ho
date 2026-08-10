@@ -570,8 +570,48 @@ def _status_report(watch: bool = False) -> int:
         finally:
             await store.close()
 
+    async def _rates_section() -> dict[str, Any]:
+        from autofill.src.core.db import AutofillDB
+        from src.memory.pgvector_store import MemoryStore
+
+        store = await MemoryStore.create()
+        db = await AutofillDB.create()
+        try:
+            async with store._pool.acquire() as c:
+                obs_15m = await c.fetchval(
+                    "SELECT COUNT(*) FROM job_observations WHERE last_seen > "
+                    "(extract(epoch from now()) - 900)"
+                )
+                cand_15m = await c.fetchval(
+                    "SELECT COUNT(*) FROM radar_candidates WHERE updated_at > "
+                    "(now() - interval '15 minutes')"
+                )
+            async with db._pool.acquire() as c:
+                fills_15m = await c.fetchval(
+                    "SELECT COUNT(*) FROM autofill_fills WHERE created_at > "
+                    "(now() - interval '15 minutes')"
+                )
+                sub_60m = await c.fetchval(
+                    "SELECT COUNT(*) FROM autofill_queue WHERE applied_at > "
+                    "(now() - interval '60 minutes')"
+                )
+            return {
+                "obs_rate": round((obs_15m or 0) / 15.0, 1),
+                "obs_total_15m": obs_15m or 0,
+                "cand_rate": round((cand_15m or 0) / 15.0, 1),
+                "cand_total_15m": cand_15m or 0,
+                "fill_rate": round((fills_15m or 0) / 15.0, 1),
+                "fill_total_15m": fills_15m or 0,
+                "sub_rate": round((sub_60m or 0) / 60.0, 2),
+                "sub_total_60m": sub_60m or 0,
+            }
+        finally:
+            await store.close()
+            await db.close()
+
     async def _collect_all_stats() -> dict[str, Any]:
-        pg, elig, queue, epoch, rag, graph, top = await asyncio.gather(
+        rates, pg, elig, queue, epoch, rag, graph, top = await asyncio.gather(
+            _rates_section(),
             _pg_section(),
             _eligibility_section(),
             _queue_section(),
@@ -582,6 +622,7 @@ def _status_report(watch: bool = False) -> int:
         )
         running = _pipeline_running()
         return {
+            "rates": rates,
             "pg": pg,
             "elig": elig,
             "queue": queue,
@@ -593,35 +634,64 @@ def _status_report(watch: bool = False) -> int:
         }
 
     def _render(stats: dict[str, Any]) -> Any:
-        from rich import box
         from rich.console import Group
-        from rich.panel import Panel
         from rich.table import Table
 
         running = stats["running"]
-        pid_str = (
-            f"[bold green]RUNNING[/bold green] (PID {running})"
-            if running
-            else "[bold red]STOPPED[/bold red]"
-        )
+        pid_str = f"RUNNING (PID {running})" if running else "STOPPED"
         now_str = time.strftime("%Y-%m-%d %H:%M:%S")
 
-        hdr_table = Table.grid(expand=True)
-        hdr_table.add_column(justify="left")
-        hdr_table.add_column(justify="right")
-        hdr_table.add_row(
-            f"[bold cyan]HO AGENT PIPELINE DASHBOARD[/bold cyan]  ·  Status: {pid_str}",
-            f"[dim]{now_str}[/dim]",
-        )
-        header_panel = Panel(hdr_table, box=box.ROUNDED, style="cyan")
+        # Header
+        t_hdr = Table(box=None, show_header=False, expand=True, padding=(0, 0))
+        t_hdr.add_column("title", style="bold cyan", justify="left")
+        t_hdr.add_column("time", style="dim", justify="right")
+        t_hdr.add_row(f"HO AGENT PIPELINE STATUS  ·  {pid_str}", now_str)
 
-        # Table 1: Ingestion & Discovery Stats
-        t_ingest = Table(title="📊 INGESTION & DISCOVERY", box=box.ROUNDED, expand=True)
+        # 1. Rates Table
+        rates = stats["rates"]
+        t_rates = Table(
+            title="LIVE PROCESS RATES (/min)",
+            box=None,
+            show_header=True,
+            header_style="bold cyan",
+            padding=(0, 2),
+        )
+        t_rates.add_column("Process Pipeline Stage", style="cyan")
+        t_rates.add_column("Current Rate", style="bold white", justify="right")
+        t_rates.add_column("Window Total", style="dim", justify="right")
+        t_rates.add_row(
+            "Job Discovery (obs/min)",
+            f"{rates['obs_rate']} / min",
+            f"{rates['obs_total_15m']:,} obs (15m)",
+        )
+        t_rates.add_row(
+            "Candidate Gating (cand/min)",
+            f"{rates['cand_rate']} / min",
+            f"{rates['cand_total_15m']:,} cand (15m)",
+        )
+        t_rates.add_row(
+            "Autofill Form Filling (fills/min)",
+            f"{rates['fill_rate']} / min",
+            f"{rates['fill_total_15m']:,} fills (15m)",
+        )
+        t_rates.add_row(
+            "Application Submissions (sub/min)",
+            f"{rates['sub_rate']} / min",
+            f"{rates['sub_total_60m']:,} sub (60m)",
+        )
+
+        # 2. Postgres DB & Ingestion
+        pg = stats["pg"]
+        t_ingest = Table(
+            title="POSTGRES DB AND DISCOVERY",
+            box=None,
+            show_header=True,
+            header_style="bold cyan",
+            padding=(0, 2),
+        )
         t_ingest.add_column("Metric", style="cyan", no_wrap=True)
         t_ingest.add_column("Count", style="bold white", justify="right")
-        t_ingest.add_column("Details", style="dim")
-
-        pg = stats["pg"]
+        t_ingest.add_column("Details / Status", style="dim")
         t_ingest.add_row("Raw Observations (obs)", f"{pg.get('obs', 0):,}", "Ingested raw job URLs")
         t_ingest.add_row(
             "Canonical Candidates (cand)", f"{pg.get('cand', 0):,}", "Normalized postings"
@@ -633,21 +703,19 @@ def _status_report(watch: bool = False) -> int:
         )
         t_ingest.add_row("24h Queue Frontier", f"{pg.get('frontier', 0):,}", "Observed in last 24h")
         t_ingest.add_row(
-            "Dynamic Discovered", f"{pg.get('discovered', 0):,}", "SearXNG / GitHub / YC"
+            "Dynamic Discovered", f"{pg.get('discovered', 0):,}", "SearXNG / GitHub / YC feeds"
         )
         t_ingest.add_row(
-            "Events / Impressions",
+            "Decision Events / Impressions",
             f"{pg.get('events', 0):,} / {pg.get('impressions', 0):,}",
             f"Rewards: {pg.get('rewards', 0):,}",
         )
-        t_ingest.add_row("Gmail Outcome Push", str(pg.get("gmail", "off")), "Push listener status")
+        t_ingest.add_row(
+            "Active Model Ranker", str(pg.get("model", "none")), "Candidate scoring model"
+        )
+        t_ingest.add_row("Gmail Outcome Push", str(pg.get("gmail", "off")), "Outcome push listener")
 
-        # Table 2: Candidate Eligibility Gating
-        t_elig = Table(title="🎯 CANDIDATE ELIGIBILITY", box=box.ROUNDED, expand=True)
-        t_elig.add_column("Eligibility", style="cyan", no_wrap=True)
-        t_elig.add_column("Count", style="bold white", justify="right")
-        t_elig.add_column("Share", style="bold", justify="right")
-
+        # 3. Eligibility Breakdown
         elig = stats["elig"]
         total_elig = sum(elig.values()) or 1
         acc = elig.get("accepted", 0)
@@ -655,43 +723,43 @@ def _status_report(watch: bool = False) -> int:
         rej = elig.get("rejected", 0)
         err = elig.get("error", 0)
 
-        t_elig.add_row(
-            "Accepted (High Fit)",
-            f"[bold green]{acc:,}[/bold green]",
-            f"[green]{acc / total_elig * 100:.1f}%[/green]",
+        t_elig = Table(
+            title="CANDIDATE ELIGIBILITY BREAKDOWN",
+            box=None,
+            show_header=True,
+            header_style="bold cyan",
+            padding=(0, 2),
         )
-        t_elig.add_row(
-            "Near Miss",
-            f"[yellow]{nm:,}[/yellow]",
-            f"[yellow]{nm / total_elig * 100:.1f}%[/yellow]",
-        )
-        t_elig.add_row(
-            "Rejected",
-            f"[dim red]{rej:,}[/dim red]",
-            f"[dim]{rej / total_elig * 100:.1f}%[/dim]",
-        )
+        t_elig.add_column("Eligibility Filter State", style="cyan", no_wrap=True)
+        t_elig.add_column("Candidate Count", style="bold white", justify="right")
+        t_elig.add_column("Share Percent", style="bold", justify="right")
+        t_elig.add_row("Accepted (High Fit)", f"{acc:,}", f"{acc / total_elig * 100:.1f}%")
+        t_elig.add_row("Near Miss", f"{nm:,}", f"{nm / total_elig * 100:.1f}%")
+        t_elig.add_row("Rejected", f"{rej:,}", f"{rej / total_elig * 100:.1f}%")
         if err:
-            t_elig.add_row(
-                "Error",
-                f"[magenta]{err:,}[/magenta]",
-                f"[magenta]{err / total_elig * 100:.1f}%[/magenta]",
-            )
+            t_elig.add_row("Error", f"{err:,}", f"{err / total_elig * 100:.1f}%")
 
-        # Table 3: Autofill Queue & Learning Epoch
-        t_queue = Table(title="⚡ AUTOFILL QUEUE & EPOCHS", box=box.ROUNDED, expand=True)
-        t_queue.add_column("State", style="cyan", no_wrap=True)
-        t_queue.add_column("Value", style="bold white", justify="right")
-
+        # 4. Autofill Queue & Learning Epoch
         q = stats["queue"]
         ep = stats["epoch"]
-        t_queue.add_row("Fills Total", f"{q.get('fills', 0):,}")
-        t_queue.add_row("Pending Queue", f"[bold yellow]{q.get('pending', 0):,}[/bold yellow]")
-        t_queue.add_row("Currently Filling", f"[bold green]{q.get('filling', 0):,}[/bold green]")
-        t_queue.add_row(
-            "Confirmed Submitted", f"[bold green]{q.get('submitted', 0):,}[/bold green]"
+        t_queue = Table(
+            title="AUTOFILL WORKER QUEUE AND LEARNING EPOCHS",
+            box=None,
+            show_header=True,
+            header_style="bold cyan",
+            padding=(0, 2),
         )
-        t_queue.add_row("Awaiting Review", f"[cyan]{q.get('awaiting_review', 0):,}[/cyan]")
-        t_queue.add_row("Failed / Deferred", f"{q.get('failed', 0):,} / {q.get('deferred', 0):,}")
+        t_queue.add_column("Queue / Epoch Metric", style="cyan", no_wrap=True)
+        t_queue.add_column("Value / Status", style="bold white", justify="right")
+        t_queue.add_row("Total Form Fills Executed", f"{q.get('fills', 0):,}")
+        t_queue.add_row("Pending Queue Jobs", f"{q.get('pending', 0):,}")
+        t_queue.add_row("Currently Filling Jobs", f"{q.get('filling', 0):,}")
+        t_queue.add_row("Confirmed Applications Submitted", f"{q.get('submitted', 0):,}")
+        t_queue.add_row("Awaiting Review", f"{q.get('awaiting_review', 0):,}")
+        t_queue.add_row(
+            "Failed / Deferred Jobs", f"{q.get('failed', 0):,} / {q.get('deferred', 0):,}"
+        )
+        t_queue.add_row("Skipped Jobs", f"{q.get('skipped', 0):,}")
 
         if ep["active"]:
             a = ep["active"]
@@ -699,21 +767,45 @@ def _status_report(watch: bool = False) -> int:
             tgt_str = (
                 f"{a['completed_submissions']}/{tgt}"
                 if tgt > 0
-                else f"{a['completed_submissions']} (no cap)"
+                else f"{a['completed_submissions']} (no target cap)"
             )
-            t_queue.add_row("Active Epoch", f"{a['epoch_id'][:18]}.. ({tgt_str})")
+            t_queue.add_row("Active Learning Epoch ID", f"{a['epoch_id']} ({tgt_str})")
         else:
-            t_queue.add_row("Active Epoch", "None")
+            t_queue.add_row("Active Learning Epoch ID", "None")
+        t_queue.add_row("Learning Epochs (Total / Completed)", f"{ep['total']} / {ep['done']}")
 
-        # Table 4: Top ATS Sources
-        t_top = Table(title="🔥 TOP ATS DISCOVERY SOURCES", box=box.ROUNDED, expand=True)
-        t_top.add_column("Source Platform", style="cyan", no_wrap=True)
+        # 5. RAG Memory & Graph
+        rag = stats["rag"]
+        graph = stats["graph"]
+        t_rag = Table(
+            title="RAG VECTOR MEMORY AND GRAPH DATABASE",
+            box=None,
+            show_header=True,
+            header_style="bold cyan",
+            padding=(0, 2),
+        )
+        t_rag.add_column("Subsystem Metric", style="cyan", no_wrap=True)
+        t_rag.add_column("Count / Details", style="bold white", justify="right")
+        t_rag.add_row("Resume Vector Chunks", f"{rag.get('resume_chunks', 0):,}")
+        t_rag.add_row("Persona Vector Chunks", f"{rag.get('persona_chunks', 0):,}")
+        t_rag.add_row("Embed Cache Entries", f"{rag.get('embed_cache', 0):,}")
+        t_rag.add_row("Page Render Cache Entries", f"{rag.get('render_cache', 0):,}")
+        t_rag.add_row("Neo4j Graph Database Counts", graph)
+
+        # 6. Top Sources Table
+        t_top = Table(
+            title="TOP ATS DISCOVERY SOURCES",
+            box=None,
+            show_header=True,
+            header_style="bold cyan",
+            padding=(0, 2),
+        )
+        t_top.add_column("Source Platform and Board Slug", style="cyan", no_wrap=True)
         t_top.add_column("Gated Candidates", style="bold white", justify="right")
-
         for src, n in stats["top"][:10]:
             t_top.add_row(src, f"{n:,}")
 
-        return Group(header_panel, t_ingest, t_elig, t_queue, t_top)
+        return Group(t_hdr, t_rates, t_ingest, t_elig, t_queue, t_rag, t_top)
 
     async def _live_loop() -> int:
         from rich.console import Console
