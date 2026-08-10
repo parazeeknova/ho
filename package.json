@@ -12,6 +12,7 @@
     "status": "PYTHONPATH=.:packages/ingest:packages uv run python packages/ingest/scripts/run_all.py --status",
     "initm": "PYTHONPATH=.:packages/ingest:packages uv run python packages/autofill/scripts/init_memory.py",
     "intel": "PYTHONPATH=.:packages/ingest:packages uv run python packages/ingest/scripts/intel/radar_intel.py",
+    "export": "PYTHONPATH=.:packages/ingest:packages uv run python packages/ingest/scripts/tools/export_accepted.py",
     "health": "uv run python packages/ingest/scripts/tools/health.py",
     "backup": "uv run python packages/ingest/scripts/backup/checkpoint_backup.py",
     "check": "uv run ruff format . && uv run ruff check . --fix && uv run mypy && bun run --filter 'autofill-node*' lint && bun run --filter 'autofill-node*' format:check && bun run --filter 'autofill-node*' typecheck",
