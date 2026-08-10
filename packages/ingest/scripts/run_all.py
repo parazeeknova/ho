@@ -643,7 +643,7 @@ def _status_report(watch: bool = False) -> int:
 
         # Header
         t_hdr = Table(box=None, show_header=False, expand=True, padding=(0, 0))
-        t_hdr.add_column("title", style="bold cyan", justify="left")
+        t_hdr.add_column("title", style="bold italic cyan", justify="left")
         t_hdr.add_column("time", style="dim", justify="right")
         t_hdr.add_row(f"HO AGENT PIPELINE STATUS  ·  {pid_str}", now_str)
 
@@ -651,12 +651,15 @@ def _status_report(watch: bool = False) -> int:
         rates = stats["rates"]
         t_rates = Table(
             title="LIVE PROCESS RATES (/min)",
+            title_style="bold italic cyan",
+            title_justify="left",
             box=None,
             show_header=True,
             header_style="bold cyan",
+            expand=True,
             padding=(0, 2),
         )
-        t_rates.add_column("Process Pipeline Stage", style="cyan")
+        t_rates.add_column("Process Pipeline Stage", style="cyan", justify="left")
         t_rates.add_column("Current Rate", style="bold white", justify="right")
         t_rates.add_column("Window Total", style="dim", justify="right")
         t_rates.add_row(
@@ -684,14 +687,17 @@ def _status_report(watch: bool = False) -> int:
         pg = stats["pg"]
         t_ingest = Table(
             title="POSTGRES DB AND DISCOVERY",
+            title_style="bold italic cyan",
+            title_justify="left",
             box=None,
             show_header=True,
             header_style="bold cyan",
+            expand=True,
             padding=(0, 2),
         )
-        t_ingest.add_column("Metric", style="cyan", no_wrap=True)
+        t_ingest.add_column("Metric", style="cyan", justify="left", no_wrap=True)
         t_ingest.add_column("Count", style="bold white", justify="right")
-        t_ingest.add_column("Details / Status", style="dim")
+        t_ingest.add_column("Details / Status", style="dim", justify="right")
         t_ingest.add_row("Raw Observations (obs)", f"{pg.get('obs', 0):,}", "Ingested raw job URLs")
         t_ingest.add_row(
             "Canonical Candidates (cand)", f"{pg.get('cand', 0):,}", "Normalized postings"
@@ -725,12 +731,15 @@ def _status_report(watch: bool = False) -> int:
 
         t_elig = Table(
             title="CANDIDATE ELIGIBILITY BREAKDOWN",
+            title_style="bold italic cyan",
+            title_justify="left",
             box=None,
             show_header=True,
             header_style="bold cyan",
+            expand=True,
             padding=(0, 2),
         )
-        t_elig.add_column("Eligibility Filter State", style="cyan", no_wrap=True)
+        t_elig.add_column("Eligibility Filter State", style="cyan", justify="left", no_wrap=True)
         t_elig.add_column("Candidate Count", style="bold white", justify="right")
         t_elig.add_column("Share Percent", style="bold", justify="right")
         t_elig.add_row("Accepted (High Fit)", f"{acc:,}", f"{acc / total_elig * 100:.1f}%")
@@ -744,12 +753,15 @@ def _status_report(watch: bool = False) -> int:
         ep = stats["epoch"]
         t_queue = Table(
             title="AUTOFILL WORKER QUEUE AND LEARNING EPOCHS",
+            title_style="bold italic cyan",
+            title_justify="left",
             box=None,
             show_header=True,
             header_style="bold cyan",
+            expand=True,
             padding=(0, 2),
         )
-        t_queue.add_column("Queue / Epoch Metric", style="cyan", no_wrap=True)
+        t_queue.add_column("Queue / Epoch Metric", style="cyan", justify="left", no_wrap=True)
         t_queue.add_column("Value / Status", style="bold white", justify="right")
         t_queue.add_row("Total Form Fills Executed", f"{q.get('fills', 0):,}")
         t_queue.add_row("Pending Queue Jobs", f"{q.get('pending', 0):,}")
@@ -779,12 +791,15 @@ def _status_report(watch: bool = False) -> int:
         graph = stats["graph"]
         t_rag = Table(
             title="RAG VECTOR MEMORY AND GRAPH DATABASE",
+            title_style="bold italic cyan",
+            title_justify="left",
             box=None,
             show_header=True,
             header_style="bold cyan",
+            expand=True,
             padding=(0, 2),
         )
-        t_rag.add_column("Subsystem Metric", style="cyan", no_wrap=True)
+        t_rag.add_column("Subsystem Metric", style="cyan", justify="left", no_wrap=True)
         t_rag.add_column("Count / Details", style="bold white", justify="right")
         t_rag.add_row("Resume Vector Chunks", f"{rag.get('resume_chunks', 0):,}")
         t_rag.add_row("Persona Vector Chunks", f"{rag.get('persona_chunks', 0):,}")
@@ -795,12 +810,17 @@ def _status_report(watch: bool = False) -> int:
         # 6. Top Sources Table
         t_top = Table(
             title="TOP ATS DISCOVERY SOURCES",
+            title_style="bold italic cyan",
+            title_justify="left",
             box=None,
             show_header=True,
             header_style="bold cyan",
+            expand=True,
             padding=(0, 2),
         )
-        t_top.add_column("Source Platform and Board Slug", style="cyan", no_wrap=True)
+        t_top.add_column(
+            "Source Platform and Board Slug", style="cyan", justify="left", no_wrap=True
+        )
         t_top.add_column("Gated Candidates", style="bold white", justify="right")
         for src, n in stats["top"][:10]:
             t_top.add_row(src, f"{n:,}")
