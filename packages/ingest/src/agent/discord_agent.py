@@ -764,19 +764,58 @@ class DiscordAgent:
         except Exception:
             return {}
 
-    async def _send_analytics_report(self, interaction: discord.Interaction) -> None:
-        with contextlib.suppress(Exception):
-            await interaction.response.defer()
-        channel = await self._wait_channel()
-        if channel is None:
+    async def _post_analytics_report(
+        self, parent_message: discord.Message | None = None, target_channel: Any = None
+    ) -> None:
+        if target_channel is None:
+            target_channel = await self._wait_channel()
+        if target_channel is None:
             return
-        await channel.send("Crunching market data and calculating skill arbitrage...")
+
+        if self.ctx is None:
+            if parent_message:
+                await self._reply(
+                    parent_message,
+                    "Analytics unavailable (no LLM context).",
+                    title="📊 Market Analytics",
+                )
+            else:
+                await target_channel.send("Analytics unavailable (no LLM context).")
+            return
+
+        import datetime
+
+        now_str = datetime.datetime.now().strftime("%b %d, %H:%M")
+        summary_embed = discord.Embed(
+            title="📊 Market & Pipeline Analytics Report",
+            description=f"Generated on **{now_str}** — detailed breakdown posted in thread below ↓",
+            color=0x42A5F5,
+        )
+        if parent_message and hasattr(parent_message, "reply"):
+            root_msg = await parent_message.reply(embed=summary_embed)
+        elif hasattr(target_channel, "send"):
+            root_msg = await target_channel.send(embed=summary_embed)
+        else:
+            root_msg = None
+
+        thread: Any = None
+        if root_msg is not None and hasattr(root_msg, "create_thread"):
+            thread = await root_msg.create_thread(name=f"📊 Analytics — {now_str}")
+        elif parent_message is not None and hasattr(parent_message, "create_thread"):
+            thread = await parent_message.create_thread(name=f"📊 Analytics — {now_str}")
+
+        target = thread if thread is not None else target_channel
+
         queue_lines = await autofill_queue_lines()
         if queue_lines:
-            await channel.send("**[QUEUE] Autofill Status**\n" + "\n".join(queue_lines))
-        if self.ctx is None:
-            await channel.send("Analytics unavailable (no LLM context).")
-            return
+            embed = discord.Embed(
+                title="⚡ Queue Status",
+                color=0x42A5F5,
+                description="\n".join(queue_lines)[:4000],
+            )
+            if hasattr(target, "send"):
+                await target.send(embed=embed)
+
         try:
             from src.agent.analytics_agent import AnalyticsAgent
             from src.graph.graph_store import GraphStore
@@ -790,12 +829,39 @@ class DiscordAgent:
             finally:
                 await graph.close()
                 await store.close()
-            for section in sections:
-                if section.strip():
-                    await channel.send(section[:1900])
-                    await asyncio.sleep(0.5)
+
+            for raw_sec in sections:
+                text = ("\n".join(raw_sec) if isinstance(raw_sec, list) else str(raw_sec)).strip()
+                if not text:
+                    continue
+                md = (
+                    text.replace("<b>", "**")
+                    .replace("</b>", "**")
+                    .replace("<i>", "*")
+                    .replace("</i>", "*")
+                )
+                lines = md.splitlines()
+                section_title = lines[0].strip("* ") if lines else "Market Intelligence"
+                body = "\n".join(lines[1:]).strip() if len(lines) > 1 else md
+                embed = discord.Embed(
+                    title=section_title[:256],
+                    color=0x42A5F5,
+                    description=body[:4000],
+                )
+                if hasattr(target, "send"):
+                    await target.send(embed=embed)
+                await asyncio.sleep(0.3)
         except Exception as e:
-            await channel.send(f"Analytics failed: {e}")
+            if hasattr(target, "send"):
+                await target.send(f"❌ Analytics report generation failed: {e}")
+
+    async def _send_analytics_report(self, interaction: discord.Interaction) -> None:
+        with contextlib.suppress(Exception):
+            await interaction.response.defer()
+        channel = await self._wait_channel()
+        if channel is None:
+            return
+        await self._post_analytics_report(target_channel=channel)
 
     async def _stop_pipeline(self, interaction: discord.Interaction) -> None:
         with contextlib.suppress(Exception):
@@ -1156,61 +1222,7 @@ class DiscordAgent:
         await self._reply(message, report[:1900], title="🏥 Health Check Report")
 
     async def _handle_analytics(self, message: discord.Message) -> None:
-        queue_lines = await autofill_queue_lines()
-        if self.ctx is None:
-            await self._reply(
-                message, "Analytics unavailable (no LLM context).", title="📊 Market Analytics"
-            )
-            return
-        try:
-            from src.agent.analytics_agent import AnalyticsAgent
-            from src.graph.graph_store import GraphStore
-            from src.memory.pgvector_store import MemoryStore
-
-            store = await MemoryStore.create()
-            graph = await GraphStore.create()
-            try:
-                agent = AnalyticsAgent(store=store, graph=graph, ctx=self.ctx)
-                sections = await agent.generate_resilient_report()
-            finally:
-                await graph.close()
-                await store.close()
-
-            # Group report inside a clean thread attached to the message
-            thread = await message.create_thread(name="📊 Market Analytics Report")
-            if queue_lines:
-                embed = discord.Embed(
-                    title="⚡ Queue Status",
-                    color=0x42A5F5,
-                    description="\n".join(queue_lines)[:4000],
-                )
-                await thread.send(embed=embed)
-
-            for raw_sec in sections:
-                text = ("\n".join(raw_sec) if isinstance(raw_sec, list) else str(raw_sec)).strip()
-                if not text:
-                    continue
-                # Clean HTML tags to proper Discord Markdown
-                md = (
-                    text.replace("<b>", "**")
-                    .replace("</b>", "**")
-                    .replace("<i>", "*")
-                    .replace("</i>", "*")
-                )
-                lines = md.splitlines()
-                section_title = lines[0].strip("* ") if lines else "Market Intelligence"
-                body = "\n".join(lines[1:]).strip() if len(lines) > 1 else md
-                embed = discord.Embed(
-                    title=section_title[:256],
-                    color=0x42A5F5,
-                    description=body[:4000],
-                )
-                await thread.send(embed=embed)
-                await asyncio.sleep(0.3)
-        except Exception as e:
-            await self._reply(
-                message, f"Analytics report generation failed: {e}", title="❌ Analytics Error"
-            )
+        await self._post_analytics_report(parent_message=message)
 
     async def _handle_resend(self, message: discord.Message) -> None:
         dry = "--dry" in message.content

@@ -64,63 +64,62 @@ class AnalyticsAgent:
 
     async def _section_health(self) -> list[str]:
         """Live pipeline velocity: how fast are matches landing right now."""
-        lines = ["<b>Pipeline Velocity</b>"]
+        lines = ["**Pipeline Velocity**"]
         try:
             rows = await self.store.get_recent_accepts(hours=24)
             total24 = len(rows)
             h1 = [r for r in rows if (time.time() - (r.get("ts") or 0)) < 3600]
             n_h1 = len(h1)
-            lines.append(f"  Accepted last 24h: <b>{total24}</b>")
-            lines.append(f"  Accepted last 1h:  <b>{n_h1}</b>")
+            lines.append(f"  Accepted last 24h: **{total24}**")
+            lines.append(f"  Accepted last 1h:  **{n_h1}**")
             if rows:
                 lines.append(f"  Rate: ~{total24 / 24:.1f}/hr ({total24 / 24 / 60:.2f}/min)")
             near = await self.store.get_near_miss_count()
             lines.append(f"  Near-miss (LARP-able): {near}")
         except Exception:
-            lines.append("  <i>Velocity data unavailable.</i>")
+            lines.append("  *Velocity data unavailable.*")
         lines.append("")
         return lines
 
     async def _section_top_companies(self) -> list[str]:
         """Accepted companies ranked — where your applications actually land."""
-        lines = ["<b>Top Companies To Chase</b>"]
+        lines = ["**Top Companies To Chase**"]
         try:
             top = await self.store.get_top_companies(limit=8)
             if top:
                 for idx, c in enumerate(top, 1):
                     stage = c.get("funding_stage") or "seed"
                     lines.append(
-                        f"  {idx}. {_esc(c['company'])} — "
+                        f"  {idx}. {c['company']} — "
                         f"{c['accepted']} accepted, match {c.get('avg_match', 0)}% "
-                        f"[{_esc(stage)}]"
+                        f"[{stage}]"
                     )
             else:
-                lines.append("  <i>No accepted companies yet.</i>")
+                lines.append("  *No accepted companies yet.*")
         except Exception:
-            lines.append("  <i>Company data unavailable.</i>")
+            lines.append("  *Company data unavailable.*")
         lines.append("")
         return lines
 
     async def _section_sector_signal(self) -> list[str]:
         """Vector-discovered sector clusters from accepted vs market (if embedded)."""
-        lines = ["<b>Sector Signal</b>"]
+        lines = ["**Sector Signal**"]
         try:
             signal = await self.store.get_sector_signal(limit=6)
             if signal:
                 for idx, s in enumerate(signal, 1):
                     lines.append(
-                        f"  {idx}. {_esc(s['label'])} — "
-                        f"{s['count']} accepted, {s['pct']}% of accepted"
+                        f"  {idx}. {s['label']} — {s['count']} accepted, {s['pct']}% of accepted"
                     )
             else:
-                lines.append("  <i>Embed a few sweeps first; sector signal needs vectors.</i>")
+                lines.append("  *Embed a few sweeps first; sector signal needs vectors.*")
         except Exception:
-            lines.append("  <i>Sector data unavailable.</i>")
+            lines.append("  *Sector data unavailable.*")
         lines.append("")
         return lines
 
     async def _section_radar_stats(self) -> list[str]:
-        lines = ["<b>Radar Gate Stats</b>"]
+        lines = ["**Radar Gate Stats**"]
         try:
             stats = await self.store.get_radar_gate_stats()
             lines.append(f"  Total candidates: {stats.get('total', 0)}")
@@ -131,47 +130,47 @@ class AnalyticsAgent:
             lines.append(f"  Review lane: {stats.get('review', 0)}")
         except Exception as e:
             logger.warning("Radar stats failed", exception=str(e))
-            lines.append("  <i>Radar data not yet available.</i>")
+            lines.append("  *Radar data not yet available.*")
         lines.append("")
         return lines
 
     async def _section_radar_skills(self) -> list[str]:
-        lines = ["<b>Most In-Demand Skills</b>"]
+        lines = ["**Most In-Demand Skills**"]
         try:
             top = await self.store.get_radar_top_skills(limit=12)
             if top:
                 for idx, item in enumerate(top, 1):
                     lines.append(
-                        f"  {idx}. {_esc(item['skill'])} ({item['count']} matches)",
+                        f"  {idx}. {item['skill']} ({item['count']} matches)",
                     )
             else:
-                lines.append("  <i>No skills data from radar yet.</i>")
+                lines.append("  *No skills data from radar yet.*")
         except Exception:
-            lines.append("  <i>Radar skills unavailable.</i>")
+            lines.append("  *Radar skills unavailable.*")
         lines.append("")
         return lines
 
     async def _section_radar_arbitrage(self) -> list[str]:
         lines = [
-            "<b>Near-Miss Skill Gaps</b>",
-            "  <i>(Skills that appear most in near-miss roles)</i>",
+            "**Near-Miss Skill Gaps**",
+            "  *(Skills that appear most in near-miss roles)*",
         ]
         try:
             arbitrage = await self.store.get_radar_skill_arbitrage()
             if arbitrage:
                 for idx, item in enumerate(arbitrage[:8], 1):
                     lines.append(
-                        f"  {idx}. {_esc(item['skill'])} (blocked {item['miss_count']} roles)",
+                        f"  {idx}. {item['skill']} (blocked {item['miss_count']} roles)",
                     )
             else:
-                lines.append("  <i>No near-miss data yet.</i>")
+                lines.append("  *No near-miss data yet.*")
         except Exception:
-            lines.append("  <i>Near-miss data unavailable.</i>")
+            lines.append("  *Near-miss data unavailable.*")
         lines.append("")
         return lines
 
     async def _section_radar_rejections(self) -> list[str]:
-        lines = ["<b>Rejection Breakdown</b>"]
+        lines = ["**Rejection Breakdown**"]
         try:
             stats = await self.store.get_radar_gate_stats()
             top = stats.get("top_rejection_reasons", [])
@@ -180,14 +179,14 @@ class AnalyticsAgent:
                     reason = rr.get("reason", "?").replace("_", " ")
                     lines.append(f"  • {reason}: {rr.get('count', 0)}")
             else:
-                lines.append("  <i>No rejections recorded yet.</i>")
+                lines.append("  *No rejections recorded yet.*")
         except Exception:
-            lines.append("  <i>Rejection data unavailable.</i>")
+            lines.append("  *Rejection data unavailable.*")
         lines.append("")
         return lines
 
     async def _section_radar_salaries(self) -> list[str]:
-        lines = ["<b>Salary Statistics</b>"]
+        lines = ["**Salary Statistics**"]
         try:
             s = await self.store.get_salary_stats()
             if s.get("count", 0) > 0:
@@ -195,14 +194,14 @@ class AnalyticsAgent:
                 lines.append(f"  Average: {s.get('avg', 0):,}")
                 lines.append(f"  Roles with salary: {s.get('count', 0)}")
             else:
-                lines.append("  <i>Not enough salary data yet.</i>")
+                lines.append("  *Not enough salary data yet.*")
         except Exception:
-            lines.append("  <i>Salary data unavailable.</i>")
+            lines.append("  *Salary data unavailable.*")
         lines.append("")
         return lines
 
     async def _section_radar_freshness(self) -> list[str]:
-        lines = ["<b>Posting Freshness Lanes</b>"]
+        lines = ["**Posting Freshness Lanes**"]
         try:
             stats = await self.store.get_radar_gate_stats()
             total = stats.get("total", 0)
@@ -212,9 +211,9 @@ class AnalyticsAgent:
                 lines.append(f"  Urgent: {stats.get('urgent', 0)} ({pct_urgent:.0f}%)")
                 lines.append(f"  Review: {stats.get('review', 0)} ({pct_review:.0f}%)")
             else:
-                lines.append("  <i>No freshness data yet.</i>")
+                lines.append("  *No freshness data yet.*")
         except Exception:
-            lines.append("  <i>Freshness data unavailable.</i>")
+            lines.append("  *Freshness data unavailable.*")
         lines.append("")
         return lines
 
@@ -233,7 +232,7 @@ class AnalyticsAgent:
 
     async def _section_funding_hiring(self) -> list[str]:
         """Companies that just raised AND are hiring now (highest-ROI tier)."""
-        lines = ["<b>Funding + Hiring Signal</b>"]
+        lines = ["**Funding + Hiring Signal**"]
         data = self._load_smart_intel()
         fh = data.get("funding_hiring") or []
         if fh:
@@ -243,33 +242,21 @@ class AnalyticsAgent:
                 amt = f"${amount / 1e6:.1f}M" if amount else ""
                 stage = fund.get("stage", "")
                 roles = ", ".join(r["role"][:24] for r in c.get("hiring_roles", [])[:2])
-                lines.append(
-                    f"  {idx}. {_esc(c['company'])} — raised {amt} {_esc(stage)} "
-                    f"→ hiring: {_esc(roles)}"
-                )
+                lines.append(f"  {idx}. {c['company']} — raised {amt} {stage} → hiring: {roles}")
         else:
-            lines.append("  <i>No funding-hiring signals yet (Azure funding tracker feeding).</i>")
+            lines.append("  *No funding-hiring signals yet (Azure funding tracker feeding).*")
         lines.append("")
         return lines
 
     async def _section_reposts(self) -> list[str]:
         """Same role reposted repeatedly = active/hungry hiring, apply again."""
-        lines = ["<b>Repost Signal — Re-Hiring Now</b>"]
+        lines = ["**Repost Signal — Re-Hiring Now**"]
         data = self._load_smart_intel()
         reps = data.get("reposts") or []
         if reps:
             for idx, r in enumerate(reps[:8], 1):
-                lines.append(
-                    f"  {idx}. {_esc(r['company'])} — {_esc(r['role'][:30])} "
-                    f"seen {r['seen_times']}x"
-                )
+                lines.append(f"  {idx}. {r['company']} — {r['role'][:30]} seen {r['seen_times']}x")
         else:
-            lines.append("  <i>No repost signal yet.</i>")
+            lines.append("  *No repost signal yet.*")
         lines.append("")
         return lines
-
-
-def _esc(text: str) -> str:
-    import html
-
-    return html.escape(str(text))
