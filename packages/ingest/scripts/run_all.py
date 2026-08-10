@@ -168,7 +168,7 @@ def _ensure_embed_server() -> None:
         print("[ho] embedding server already up", flush=True)
         return
     print("[ho] starting embedding server...", flush=True)
-    log = PROJECT / "logs"
+    log = REPO / "logs"
     log.mkdir(exist_ok=True)
     with (log / "embed_server.log").open("ab") as out:
         subprocess.Popen(
@@ -326,7 +326,7 @@ async def _run_loop(args: argparse.Namespace) -> int:
     if args.max_minutes:
         cmd += ["--max-minutes", str(args.max_minutes)]
     print(f"[ho] launching loop: {' '.join(cmd)}", flush=True)
-    log_dir = PROJECT / "logs"
+    log_dir = REPO / "logs"
     log_dir.mkdir(exist_ok=True)
     # Stream the loop's output to BOTH the console (so the user sees live
     # sweep/status progress) AND run_all.log (for tailing). A bare pipe to
@@ -1021,8 +1021,8 @@ def main() -> int:
     import signal as _signal
     import sys as _sys
 
-    lock_path = PROJECT / "logs" / "ho_run.lock"
-    log_dir = PROJECT / "logs"
+    lock_path = REPO / "logs" / "ho_run.lock"
+    log_dir = REPO / "logs"
     log_dir.mkdir(exist_ok=True)
 
     # Automatically stream all run logs to logs/run.log & logs/loop.log

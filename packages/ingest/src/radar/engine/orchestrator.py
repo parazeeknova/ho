@@ -2158,10 +2158,10 @@ async def _run_radar_pipeline() -> None:
     last_graph_metrics = 0.0
     last_mass_poll = -9999.0
     last_dorks = -9999.0
-    _index_interval = 1800.0  # 30 min between GitHub index scrapes
-    _graph_metrics_interval = 7200.0  # 2 hours between graph metric recomputes
-    _mass_poll_interval = 14400.0  # 4 hours between mass ATS slug polls
-    _dork_interval = 1800.0  # 30 min between SearXNG dork runs
+    _index_interval = 60.0  # 1 min between GitHub index scrapes
+    _graph_metrics_interval = 3600.0  # 1 hour between graph metric recomputes
+    _mass_poll_interval = 120.0  # 2 min between mass ATS slug polls
+    _dork_interval = 60.0  # 1 min between SearXNG dork runs
 
     from src.radar.sources.dorking import DorkingEngine
 

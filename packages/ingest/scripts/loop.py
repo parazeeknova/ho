@@ -55,7 +55,7 @@ from src.radar.engine.autofill_bridge import drain_once, print_summary, queue_ba
 
 PROJECT = Path(__file__).resolve().parent.parent  # packages/ingest
 REPO = PROJECT.parent.parent  # repo root
-LOG_DIR = PROJECT / "logs"
+LOG_DIR = REPO / "logs"
 
 # Same LLM throttle overrides run.py forces so workers blast through the corpus.
 RADAR_ENV_OVERRIDES = {
