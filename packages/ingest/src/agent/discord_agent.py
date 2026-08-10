@@ -789,8 +789,9 @@ class DiscordAgent:
         summary_embed = discord.Embed(
             title="📊 Market & Pipeline Analytics Report",
             description=f"Generated on **{now_str}** — detailed breakdown posted in thread below ↓",
-            color=0x42A5F5,
+            color=0x5865F2,
         )
+        summary_embed.set_footer(text="HO Engine • Market Intelligence")
         if parent_message and hasattr(parent_message, "reply"):
             root_msg = await parent_message.reply(embed=summary_embed)
         elif hasattr(target_channel, "send"):
@@ -830,6 +831,21 @@ class DiscordAgent:
                 await graph.close()
                 await store.close()
 
+            # Themed Discord color map per analytics section
+            section_themes: dict[str, tuple[str, int]] = {
+                "pipeline velocity": ("⚡ Pipeline Velocity", 0x57F287),
+                "top companies to chase": ("🏢 Top Companies To Chase", 0xFEE75C),
+                "sector signal": ("🌐 Sector Signals", 0xEB459E),
+                "radar gate stats": ("🎯 Radar Gate & Freshness", 0x3498DB),
+                "most in-demand skills": ("💡 Most In-Demand Skills", 0x9B59B6),
+                "near-miss skill gaps": ("🧱 Near-Miss Skill Gaps", 0xE67E22),
+                "rejection breakdown": ("🛑 Rejection Breakdown", 0xED4245),
+                "salary statistics": ("💰 Salary Statistics", 0x2ECC71),
+                "posting freshness lanes": ("🔥 Posting Freshness Lanes", 0x1ABC9C),
+                "funding + hiring signal": ("🚀 Funding + Hiring Signal", 0x34495E),
+                "repost signal": ("🔄 Repost Signals", 0x95A5A6),
+            }
+
             for raw_sec in sections:
                 text = ("\n".join(raw_sec) if isinstance(raw_sec, list) else str(raw_sec)).strip()
                 if not text:
@@ -841,11 +857,20 @@ class DiscordAgent:
                     .replace("</i>", "*")
                 )
                 lines = md.splitlines()
-                section_title = lines[0].strip("* ") if lines else "Market Intelligence"
+                raw_title = lines[0].strip("* ") if lines else "Market Intelligence"
                 body = "\n".join(lines[1:]).strip() if len(lines) > 1 else md
+
+                # Match theme
+                key = raw_title.lower()
+                themed_title, embed_color = raw_title, 0x42A5F5
+                for t_key, (t_title, t_color) in section_themes.items():
+                    if t_key in key:
+                        themed_title, embed_color = t_title, t_color
+                        break
+
                 embed = discord.Embed(
-                    title=section_title[:256],
-                    color=0x42A5F5,
+                    title=themed_title[:256],
+                    color=embed_color,
                     description=body[:4000],
                 )
                 if hasattr(target, "send"):

@@ -670,6 +670,10 @@ def gate_source_freshness(
         candidate.freshness_lane = FreshnessLane.URGENT
         return None
 
+    if candidate.first_seen > 0 and (now - candidate.first_seen) <= window_secs:
+        candidate.freshness_lane = FreshnessLane.URGENT
+        return None
+
     if not is_baseline_crawl:
         age = now - prev_seen
         if age > cfg.stale_days * 86400:
