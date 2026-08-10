@@ -335,9 +335,9 @@ async def _run_loop(args: argparse.Namespace) -> int:
     run_log_path = log_dir / "run.log"
     loop_log_path = log_dir / "loop.log"
     with (
-        log_path.open("ab") as out1,
+        log_path.open("wb") as out1,
         run_log_path.open("ab") as out2,
-        loop_log_path.open("ab") as out3,
+        loop_log_path.open("wb") as out3,
     ):
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -1028,7 +1028,7 @@ def main() -> int:
     # Automatically stream all run logs to logs/run.log & logs/loop.log
     try:
         run_log_path = log_dir / "run.log"
-        log_fp = run_log_path.open("a", encoding="utf-8")
+        log_fp = run_log_path.open("w", encoding="utf-8")
         _sys.stdout = _LogTee(_sys.stdout, log_fp)
         _sys.stderr = _LogTee(_sys.stderr, log_fp)
         latest_log_path = log_dir / "latest.log"

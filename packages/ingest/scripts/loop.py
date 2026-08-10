@@ -200,8 +200,9 @@ class Child:
         # while output is drained.
         def _stream_blocking() -> None:
             assert self.proc is not None and self.proc.stdout is not None
+            mode = "wb" if self.restarts == 0 else "ab"
             with (
-                open(LOG_DIR / f"{self.name}.log", "ab") as log_file,
+                open(LOG_DIR / f"{self.name}.log", mode) as log_file,
                 open(LOG_DIR / "loop.log", "ab") as loop_log,
             ):
                 for line in self.proc.stdout:
