@@ -129,7 +129,7 @@ class PipelineConfig:
     max_scrape_workers: int = field(default_factory=lambda: _env_int("MAX_SCRAPE_WORKERS", 18))
     match_concurrency: int = field(default_factory=lambda: _env_int("MATCH_CONCURRENCY", 24))
     verify_concurrency: int = field(default_factory=lambda: _env_int("VERIFY_CONCURRENCY", 20))
-    sweep_interval: float = field(default_factory=lambda: _env_float("SWEEP_INTERVAL", 300.0))
+    sweep_interval: float = field(default_factory=lambda: _env_float("SWEEP_INTERVAL", 5.0))
 
 
 @dataclass
@@ -180,8 +180,8 @@ class RenderConfig:
 
     url: str = field(default_factory=lambda: _env_str("FIRECRAWL_URL", "http://127.0.0.1:3002"))
     timeout: float = field(default_factory=lambda: _env_float("FIRECRAWL_TIMEOUT", 60.0))
-    map_limit: int = field(default_factory=lambda: _env_int("FIRECRAWL_MAP_LIMIT", 200))
-    scrape_limit: int = field(default_factory=lambda: _env_int("FIRECRAWL_SCRAPE_LIMIT", 200))
+    map_limit: int = field(default_factory=lambda: _env_int("FIRECRAWL_MAP_LIMIT", 500))
+    scrape_limit: int = field(default_factory=lambda: _env_int("FIRECRAWL_SCRAPE_LIMIT", 1000))
     scrape_timeout: float = field(
         default_factory=lambda: _env_float("FIRECRAWL_SCRAPE_TIMEOUT", 15.0)
     )

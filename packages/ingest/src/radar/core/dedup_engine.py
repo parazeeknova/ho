@@ -66,7 +66,10 @@ class FastDeduplicationEngine:
             import contextlib
 
             with contextlib.suppress(Exception):
-                await self._redis.close()
+                if hasattr(self._redis, "aclose"):
+                    await self._redis.aclose()
+                else:
+                    await self._redis.close()
 
     @staticmethod
     def hash_key(val: str) -> str:
@@ -185,7 +188,7 @@ class FastDeduplicationEngine:
                 pipe = self._redis.pipeline()
                 for u in clean_urls:
                     k = f"dedup:url:{self.hash_key(u)}"
-                    pipe.setex(k, self.cache_ttl_seconds, "1")
+                    pipe.set(k, "1", ex=self.cache_ttl_seconds)
                 await pipe.execute()
             except Exception as exc:
                 logger.debug(f"Redis pipeline error in mark_urls_seen ({exc})")
@@ -207,7 +210,7 @@ class FastDeduplicationEngine:
                 pipe = self._redis.pipeline()
                 for cid in clean_ids:
                     k = f"dedup:cand:{self.hash_key(cid)}"
-                    pipe.setex(k, self.cache_ttl_seconds, "1")
+                    pipe.set(k, "1", ex=self.cache_ttl_seconds)
                 await pipe.execute()
             except Exception as exc:
                 logger.debug(f"Redis pipeline error in mark_canonicals_seen ({exc})")

@@ -839,7 +839,7 @@ async def _fetch_postings_and_gate(
     except Exception:
         pass
 
-    sem = asyncio.Semaphore(8)
+    sem = asyncio.Semaphore(60)
     processed_count = 0
     total = len(observations)
     scrape_budget = cfg.scrape_limit
