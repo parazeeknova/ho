@@ -69,14 +69,25 @@ def _extract_company_name(url: str, source: str) -> str:
     from urllib.parse import urlparse
 
     try:
-        host = urlparse(url).netloc.lower()
+        parsed_url = urlparse(url)
+        host = parsed_url.netloc.lower()
         if host.startswith("www."):
             host = host[4:]
+
+        # ATS domain path slug extraction (e.g., boards.greenhouse.io/stripe/jobs/123 -> Stripe)
+        if any(
+            ats in host
+            for ats in ("greenhouse", "lever", "ashbyhq", "workable", "smartrecruiters", "rippling")
+        ):
+            path_parts = [p for p in parsed_url.path.split("/") if p]
+            if path_parts:
+                slug = path_parts[0]
+                if slug not in ("jobs", "j", "v0", "v1", "postings", "accounts"):
+                    return slug.replace("-", " ").title()
+
         parts = host.split(".")
         if len(parts) >= 2:
-            comp = parts[0]
-            if comp in ("boards", "jobs", "apply", "app") and len(parts) >= 3:
-                comp = parts[1]
+            comp = parts[-2]
             return comp.replace("-", " ").title()
     except Exception:
         pass
