@@ -91,7 +91,7 @@ def _domain_of(url: str) -> str:
     try:
         from urllib.parse import urlparse
 
-        return (urlparse(url).netloc or "").lower().removeprefix("www.")
+        return (urlparse(url).hostname or "").lower().removeprefix("www.")
     except Exception:
         return ""
 

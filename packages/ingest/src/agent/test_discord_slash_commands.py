@@ -1147,5 +1147,5 @@ async def test_send_sweep_summary_posts_complete_embed(monkeypatch) -> None:
     complete = [e for e in embeds if e is not None and "Complete" in str(e.title)]
     assert complete, "expected a Sweep Complete embed"
     desc = str(complete[0].description)
-    assert "Scraped" in desc and "7" in desc and "12.5" in desc
+    assert "Observed" in desc and "Accepted (final)" in desc and "7" in desc and "12.5" in desc
     assert "Applied" in desc

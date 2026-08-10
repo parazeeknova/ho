@@ -52,6 +52,11 @@ ATS_SENDERS = [
     "rippling.com",
 ]
 
+# The loop.py hang-watchdog restarts any child that writes nothing for
+# LOOP_HANG_MINUTES (default 6m). This daemon is intentionally silent while
+# idle, so it emits a heartbeat well under that threshold to stay alive.
+_HEARTBEAT_S = 120
+
 CONFIRM_RE = re.compile(
     r"\b(received|confirm|submitted|complete|successful|thanks?|thank you for applying|applied)\b",
     re.IGNORECASE,
@@ -400,16 +405,20 @@ async def run_gmail_push_loop(store: Any) -> None:
 async def _history_poll_loop(store: Any, service: Any) -> None:
     """Poll Gmail history on an interval using the OAuth2 service (no Pub/Sub
     ADC needed). Runs when GMAIL_STREAMING=0."""
+    import logging
+    import time
+
     cfg = get_ml_config().gmail_push
+    logger = logging.getLogger("gmail_push")
+    next_beat = time.monotonic() + _HEARTBEAT_S
     while True:
         try:
             await _poll_cycle(store, service)
         except Exception:
-            import logging
-
-            logging.getLogger("gmail_push").warning(
-                "Gmail history poll failed, will retry", exc_info=True
-            )
+            logger.warning("Gmail history poll failed, will retry", exc_info=True)
+        if time.monotonic() >= next_beat:
+            logger.info("gmail_push heartbeat: history poll alive")
+            next_beat = time.monotonic() + _HEARTBEAT_S
         await asyncio.sleep(cfg.poll_interval_s)
 
 
@@ -447,8 +456,19 @@ async def _streaming_pull_loop(store: Any) -> None:
 
             streaming_future = subscriber.subscribe(subscription_path, callback=_callback)
             try:
+                import logging
+                import time
+
+                logger = logging.getLogger("gmail_push")
+                next_beat = time.monotonic() + _HEARTBEAT_S
                 while True:
-                    history_id = await asyncio.wait_for(queue.get(), timeout=5)
+                    try:
+                        history_id = await asyncio.wait_for(queue.get(), timeout=5)
+                    except TimeoutError:
+                        if time.monotonic() >= next_beat:
+                            logger.info("gmail_push heartbeat: streaming pull alive")
+                            next_beat = time.monotonic() + _HEARTBEAT_S
+                        continue
                     if history_id:
                         try:
                             await _process_history(store, None, history_id)

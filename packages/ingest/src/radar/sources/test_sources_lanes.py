@@ -66,8 +66,10 @@ class TestLaneTransitions:
     def test_success_without_jobs_keeps_lane(self) -> None:
         _cp("s5")
         _poll_unchanged("s5", 6)
+        before = src_sources.get_checkpoint("s5").consecutive_empty
         src_sources.record_success("s5", job_count=0, direct_url_count=0)
         assert src_sources.get_checkpoint("s5").poll_lane == "medium"
+        assert src_sources.get_checkpoint("s5").consecutive_empty == before
 
     def test_three_failures_demote_one_lane(self) -> None:
         _cp("s6")

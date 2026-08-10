@@ -435,13 +435,27 @@ async def _poll_board(
     # Layer 1: High-Speed Direct ATS API Interceptor
     # (Greenhouse, Lever, Ashby, Workable, SmartRecruiters)
     try:
-        from src.radar.sources.ats_interceptor import intercept_ats_board
+        from src.radar.sources.ats_interceptor import intercept_ats_board, parse_ats_slug
 
         ats_obs = await intercept_ats_board(board_url, source_id)
         if ats_obs is not None:
-            record_success(source_id, len(ats_obs), len(ats_obs))
+            # Direct ATS APIs return every live opening on each poll.  Diff at
+            # this layer so unchanged boards neither re-enter the gate queue
+            # nor keep the source in the high-frequency lane indefinitely.
+            state = diff_snapshots(source_id, [obs.url for obs in ats_obs])
+            new_urls = set(state.new_urls)
+            new_obs = [obs for obs in ats_obs if obs.url in new_urls]
+            record_success(source_id, len(new_obs), len(new_obs))
             await _record_ats_evidence(store, board_url, ats_obs)
-            return ats_obs
+            return new_obs
+
+        # A registered first-party ATS board should not fall through to a
+        # 10-40 second browser render when its API is temporarily unavailable.
+        # It is retried through the normal source health/backoff path instead.
+        if is_official and parse_ats_slug(board_url):
+            record_failure(source_id)
+            logger.info(f"ATS API unavailable; deferring browser fallback: {source_id}")
+            return []
     except Exception as e:
         logger.debug(f"ATS interceptor fallback for {board_url}: {e}")
 
@@ -807,6 +821,60 @@ async def _poll_board_safe(
         return await _poll_board(board, store)
 
 
+def _partition_known_observations(
+    observations: list[JobObservation],
+    known_hashes: set[str],
+    last_seen: dict[str, float],
+    now: float,
+) -> tuple[list[JobObservation], list[str], int]:
+    """Deduplicate a sweep and keep already-decided postings out of its gates.
+
+    A single ATS sweep can return thousands of postings already represented by
+    a candidate decision.  Creating one task and one write per duplicate
+    exhausts the DB pool and delays the small set of genuinely new jobs that
+    should reach matching and Discord.  Preserve the richest observation for
+    each URL, return unseen work, and batch-refresh stale known rows later.
+    """
+    unique: dict[str, JobObservation] = {}
+    for observation in observations:
+        posting_id = _posting_id(observation)
+        current = unique.get(posting_id)
+        if current is None or len(observation.raw_markdown) > len(current.raw_markdown):
+            unique[posting_id] = observation
+
+    unseen: list[JobObservation] = []
+    refresh_ids: list[str] = []
+    known_count = 0
+    for posting_id, observation in unique.items():
+        if posting_id not in known_hashes:
+            unseen.append(observation)
+            continue
+        known_count += 1
+        if now - (last_seen.get(posting_id) or 0.0) > 6 * 3600:
+            refresh_ids.append(posting_id)
+
+    return unseen, refresh_ids, known_count
+
+
+async def _refresh_known_observations(
+    store: MemoryStore,
+    posting_ids: list[str],
+    observed_at: float,
+) -> None:
+    """Update last-seen timestamps for known postings in one DB round trip."""
+    if not posting_ids:
+        return
+    try:
+        async with store._pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE job_observations SET last_seen = $1 WHERE url_hash = ANY($2::text[])",
+                observed_at,
+                posting_ids,
+            )
+    except Exception:
+        pass
+
+
 async def _fetch_postings_and_gate(
     observations: list[JobObservation],
     store: MemoryStore,
@@ -839,11 +907,24 @@ async def _fetch_postings_and_gate(
     except Exception:
         pass
 
+    observations, refresh_ids, known_count = _partition_known_observations(
+        observations,
+        known_hashes,
+        last_seen,
+        _time.time(),
+    )
+    await _refresh_known_observations(store, refresh_ids, _time.time())
+
     sem = asyncio.Semaphore(60)
     processed_count = 0
     total = len(observations)
     scrape_budget = cfg.scrape_limit
     scrape_used = 0
+    if known_count:
+        logger.info(
+            f"Gating skip: {known_count} already-decided postings "
+            f"({len(refresh_ids)} freshness timestamps refreshed)"
+        )
     if total > 0:
         logger.info(f"Fetching and gating {total} postings...")
 
@@ -852,17 +933,6 @@ async def _fetch_postings_and_gate(
         async with sem:
             try:
                 pid = _posting_id(obs)
-                if pid in known_hashes:
-                    # Already indexed before: URL_DUPLICATE gate would reject this
-                    # regardless, so skip the expensive scrape entirely. Refresh
-                    # last_seen at most once every 6h so a full-corpus sweep
-                    # doesn't upsert ~15K unchanged rows every run.
-                    if time.time() - (last_seen.get(pid) or 0) > 6 * 3600:
-                        obs.observed_at = _time.time()
-                        await _persist_observation(store, obs, pid)
-                    processed_count += 1
-                    return
-
                 if not obs.raw_markdown or len(obs.raw_markdown) < 100:
                     if scrape_used >= scrape_budget:
                         # Per-sweep scrape cap (render budget):
@@ -1033,30 +1103,43 @@ async def _enrich_graph_features(
     if not graph or not candidates:
         return {}
     out: dict[str, dict[str, Any]] = {}
+    by_company: dict[str, dict[str, Any] | None] = {}
     for c in candidates:
-        try:
-            company_id = make_company_id(c.normalized_company)
-            node = await graph.get_node(company_id)
-            if not node:
-                continue
-            metrics = await graph.get_graph_metrics_for_node(company_id)
-            hiring = await graph.predict_hiring_likelihood(company_id)
-            techs: set[str] = set()
+        company_id = make_company_id(c.normalized_company)
+        if company_id not in by_company:
             try:
-                local = await graph.get_local_graph(company_id, radius=1)
-                for n in local.get("nodes", []):
-                    if n.get("node_type") == "technology":
-                        techs.add(n.get("data", {}).get("name", "").lower())
+                node = await graph.get_node(company_id)
+                if not node:
+                    by_company[company_id] = None
+                    continue
+                metrics = await graph.get_graph_metrics_for_node(company_id)
+                hiring = await graph.predict_hiring_likelihood(company_id)
+                techs: set[str] = set()
+                try:
+                    local = await graph.get_local_graph(company_id, radius=1)
+                    for n in local.get("nodes", []):
+                        if n.get("node_type") == "technology":
+                            techs.add(n.get("data", {}).get("name", "").lower())
+                except Exception:
+                    pass
+                by_company[company_id] = {
+                    "pagerank": float(metrics.get("pagerank", 0.0)),
+                    "betweenness": float(metrics.get("betweenness", 0.0)),
+                    "hiring_likelihood": float(hiring.get("score", 0.5)),
+                    "hiring_signal": bool(hiring.get("score", 0) > 0.6),
+                    "company_techs": sorted(tech for tech in techs if tech)[:20],
+                    "funding_recency_days": 9999,
+                    "observed_at": time.time(),
+                }
             except Exception:
-                pass
+                by_company[company_id] = None
+        features = by_company[company_id]
+        if features is None:
+            continue
+        try:
             out[c.canonical_id] = {
-                "pagerank": float(metrics.get("pagerank", 0.0)),
-                "betweenness": float(metrics.get("betweenness", 0.0)),
-                "hiring_likelihood": float(hiring.get("score", 0.5)),
-                "hiring_signal": bool(hiring.get("score", 0) > 0.6),
-                "company_techs": list(techs)[:20],
-                "funding_recency_days": 9999,
-                "observed_at": time.time(),
+                **features,
+                "company_techs": list(features["company_techs"]),
             }
         except Exception:
             continue
@@ -2261,6 +2344,7 @@ async def _run_radar_pipeline() -> None:
 
                     hv_disc = HighVolumeDiscoveryEngine()
                     hv_urls = await hv_disc.discover_urls_parallel(duration_seconds=4.0)
+                    await store.record_pipeline_stage_event("url_discovery", len(hv_urls))
                     if hv_urls:
                         dedup = FastDeduplicationEngine()
                         await dedup.initialize()
@@ -2305,8 +2389,9 @@ async def _run_radar_pipeline() -> None:
                     # Bound the dork run: SearXNG behind can hang (captcha,
                     # slow engines) and the sweep must never block on it — the
                     # loop's hang-watchdog would kill the master mid-sweep.
+                    dork_timeout = float(os.environ.get("SEARXNG_DORK_TIMEOUT", "20"))
                     dork_obs = await asyncio.wait_for(
-                        dork_engine.execute_dorks(store=store), timeout=180
+                        dork_engine.execute_dorks(store=store), timeout=dork_timeout
                     )
                     all_obs.extend(dork_obs)
                     logger.info(f"Sweep {sweep}: {len(dork_obs)} observations from SearXNG dorks")
@@ -2382,8 +2467,8 @@ async def _run_radar_pipeline() -> None:
                                 f"({len(added)} new, {min(len(added), mine_limit)} "
                                 "queued for founder mining).",
                             )
-                    except Exception as exc:
-                        logger.warning(f"Company discovery failed: {exc}")
+                    except Exception:
+                        logger.warning("Company discovery failed", exc_info=True)
 
                 task = asyncio.create_task(_run_discovery())
                 if not hasattr(asyncio, "_bg_tasks"):
@@ -2437,8 +2522,8 @@ async def _run_radar_pipeline() -> None:
                 await ta.send_stage_progress(
                     f"Sweep {sweep}: Source Polling & Gating",
                     f"Polled {len(active_sources)} sources ({len(all_obs)} jobs). "
-                    f"{len(candidates)} passed gating filter "
-                    f"({gate_stats.get('rejected', 0)} rejected).",
+                    f"{len(candidates)} passed basic eligibility "
+                    f"({gate_stats.get('rejected', 0)} rejected); final matching follows.",
                 )
 
             if not is_worker:

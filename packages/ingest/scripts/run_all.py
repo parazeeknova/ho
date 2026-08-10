@@ -339,12 +339,17 @@ async def _run_loop(args: argparse.Namespace) -> int:
         run_log_path.open("ab") as out2,
         loop_log_path.open("wb") as out3,
     ):
+        # start_new_session: loop.py becomes a session leader so a terminal
+        # Ctrl+C (foreground process group) never reaches it directly. run_all
+        # stays the single owner of loop.py's lifecycle and tears the whole
+        # tree down in the finally below.
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=str(PROJECT),
             env=env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
+            start_new_session=True,
         )
 
         async def _tee() -> None:
@@ -364,8 +369,28 @@ async def _run_loop(args: argparse.Namespace) -> int:
                 sys.stdout.flush()
 
         tee_task = asyncio.create_task(_tee())
-        rc = await proc.wait()
-        await tee_task
+        try:
+            rc = await proc.wait()
+        except asyncio.CancelledError:
+            rc = 130
+            raise
+        finally:
+            # Whatever exits us (Ctrl+C, crash, normal finish), never strand
+            # the pipeline: TERM the loop's whole group, give it time to run
+            # its own child cleanup, then KILL whatever is left and reap any
+            # surviving pattern processes as a final safety net.
+            with contextlib.suppress(Exception):
+                if proc.returncode is None:
+                    os.killpg(proc.pid, signal.SIGTERM)
+                    try:
+                        await asyncio.wait_for(proc.wait(), timeout=15)
+                    except TimeoutError:
+                        with contextlib.suppress(Exception):
+                            os.killpg(proc.pid, signal.SIGKILL)
+                        with contextlib.suppress(Exception):
+                            await proc.wait()
+            _reap_pipeline_orphans(sig="KILL", grace_s=1.0)
+            await tee_task
         return rc
 
 
@@ -578,6 +603,11 @@ def _status_report(watch: bool = False) -> int:
         db = await AutofillDB.create()
         try:
             async with store._pool.acquire() as c:
+                url_discovery_15m = await c.fetchval(
+                    "SELECT COALESCE(SUM(item_count), 0) FROM pipeline_stage_events "
+                    "WHERE stage = 'url_discovery' "
+                    "AND created_at > (now() - interval '15 minutes')"
+                )
                 obs_15m = await c.fetchval(
                     "SELECT COUNT(*) FROM job_observations WHERE last_seen > "
                     "(extract(epoch from now()) - 900)"
@@ -596,6 +626,8 @@ def _status_report(watch: bool = False) -> int:
                     "(now() - interval '60 minutes')"
                 )
             return {
+                "url_discovery_rate": round((url_discovery_15m or 0) / 15.0, 1),
+                "url_discovery_total_15m": url_discovery_15m or 0,
                 "obs_rate": round((obs_15m or 0) / 15.0, 1),
                 "obs_total_15m": obs_15m or 0,
                 "cand_rate": round((cand_15m or 0) / 15.0, 1),
@@ -663,7 +695,12 @@ def _status_report(watch: bool = False) -> int:
         t_rates.add_column("Current Rate", style="bold white", justify="right")
         t_rates.add_column("Window Total", style="dim", justify="right")
         t_rates.add_row(
-            "Job Discovery (obs/min)",
+            "URL Discovery (urls/min)",
+            f"{rates['url_discovery_rate']} / min",
+            f"{rates['url_discovery_total_15m']:,} URLs (15m)",
+        )
+        t_rates.add_row(
+            "Job Intake (obs/min)",
             f"{rates['obs_rate']} / min",
             f"{rates['obs_total_15m']:,} obs (15m)",
         )
@@ -853,6 +890,48 @@ def _status_report(watch: bool = False) -> int:
     return asyncio.run(_live_loop())
 
 
+def _reap_pipeline_orphans(sig: str = "KILL", grace_s: float = 1.0) -> None:
+    """Kill every leftover pipeline process (loop, radar, autofill, gmail).
+
+    Reaps processes whose parent is dead (orphans) without touching our own
+    process or the terminal foreground group that hosts us. ``sig`` is applied
+    after a ``grace_s`` SIGINT pass so graceful handlers get a chance first.
+    """
+    import subprocess as _sp
+
+    patterns = (
+        "scripts/loop.py",
+        "radar.engine.orchestrator",
+        "autofill.src.core.worker",
+        "ml.src.outcomes.gmail_push",
+    )
+    own_pgid = os.getpgid(os.getpid())
+
+    def _sig(signal_name: str) -> None:
+        seen: set[int] = set()
+        for pat in patterns:
+            with contextlib.suppress(Exception):
+                r = _sp.run(["pgrep", "-f", pat], capture_output=True, text=True, timeout=5)
+                for pid in r.stdout.split():
+                    try:
+                        pid_i = int(pid)
+                        if pid_i in seen or pid_i == os.getpid():
+                            continue
+                        # Never signal our own terminal group: that contains
+                        # the `uv`/`bun` wrapper which would forward the
+                        # signal straight back into us.
+                        if os.getpgid(pid_i) == own_pgid:
+                            continue
+                        seen.add(pid_i)
+                        os.kill(pid_i, getattr(signal, "SIG" + signal_name))
+                    except ValueError, ProcessLookupError:
+                        pass
+
+    _sig("INT")
+    time.sleep(grace_s)
+    _sig(sig)
+
+
 def _pipeline_running() -> int | None:
     """Return the loop.py pid if the pipeline is running, else None."""
     import subprocess as _sp
@@ -1003,7 +1082,12 @@ def main() -> int:
     )
     ap.add_argument("--dry-run", action="store_true", help="Start infra only, then stop")
     ap.add_argument("--no-fill", action="store_true", help="Skip the autofill worker")
-    ap.add_argument("--radar-workers", type=int, default=2, help="Extra radar worker procs")
+    ap.add_argument(
+        "--radar-workers",
+        type=int,
+        default=4,
+        help="Radar worker procs (in addition to the master)",
+    )
     ap.add_argument("--bridge-interval", type=int, default=120, help="Bridge drain seconds")
     ap.add_argument("--bridge-batch", type=int, default=50, help="Max candidates per drain")
     ap.add_argument("--max-minutes", type=int, default=0, help="Hard stop after N minutes")
@@ -1040,72 +1124,13 @@ def main() -> int:
 
     def _stop_pipeline_tree(old_pid: int) -> None:
         """Gracefully stop a running pipeline: the run_all + its loop, radar
-        master/workers, and autofill worker. SIGINT first so in-flight jobs
-        wrap up cleanly; SIGKILL only stragglers. Kills by pattern too so
-        orphans (children of a died run_all) are reaped, while never
-        signalling our own pid."""
-        import subprocess as _sp
-
-        def _pk(sig: str) -> None:
-            patterns = (
-                "scripts/loop.py",
-                "scripts/run_all.py",
-                "radar.engine.orchestrator",
-                "autofill.src.core.worker",
-            )
-            own_pgid = _os.getpgid(_os.getpid())
-            for pat in patterns:
-                with contextlib.suppress(Exception):
-                    r = _sp.run(["pgrep", "-f", pat], capture_output=True, text=True, timeout=5)
-                    for pid in r.stdout.split():
-                        try:
-                            pid_i = int(pid)
-                            # Skip our own tree (incl. the `uv run` wrapper,
-                            # which has a different PID but shares our PGID and
-                            # would forward SIGINT back to us).
-                            if pid_i == _os.getpid() or _os.getpgid(pid_i) == own_pgid:
-                                continue
-                            _os.kill(pid_i, getattr(_signal, "SIG" + sig))
-                        except ValueError, ProcessLookupError:
-                            pass
-
-        def _pk_alive() -> bool:
-            """True if any pipeline pattern process (outside our group) lives."""
-            patterns = (
-                "scripts/loop.py",
-                "radar.engine.orchestrator",
-                "autofill.src.core.worker",
-            )
-            own_pgid = _os.getpgid(_os.getpid())
-            for pat in patterns:
-                try:
-                    r = _sp.run(["pgrep", "-f", pat], capture_output=True, text=True, timeout=5)
-                    for pid in r.stdout.split():
-                        try:
-                            pid_i = int(pid)
-                            if pid_i == _os.getpid() or _os.getpgid(pid_i) == own_pgid:
-                                continue
-                            return True
-                        except ValueError, ProcessLookupError:
-                            pass
-                except Exception:
-                    pass
-            return False
-
+        master/workers, autofill worker, and gmail listener. SIGINT first so
+        in-flight jobs wrap up cleanly; SIGKILL only stragglers. Kills by
+        pattern too so orphans (children of a died run_all) are reaped, while
+        never signalling our own process or terminal group."""
         with contextlib.suppress(Exception):
             _os.kill(old_pid, _signal.SIGINT)
-        _pk("INT")
-        # Grace period for graceful shutdown. Watch old_pid AND the pattern
-        # matches: when run_all exits on SIGINT the loop would otherwise break
-        # immediately, stranding stuck children (a hung orchestrator ignores
-        # SIGINT) as orphans.
-        for _ in range(20):
-            with contextlib.suppress(ProcessLookupError):
-                _os.kill(old_pid, 0)
-            if not _pk_alive():
-                break
-            time.sleep(0.5)
-        _pk("KILL")
+        _reap_pipeline_orphans(sig="KILL", grace_s=10.0)
         with contextlib.suppress(Exception):
             _os.kill(old_pid, _signal.SIGKILL)
         time.sleep(1)
@@ -1122,27 +1147,10 @@ def main() -> int:
             lock_path.unlink(missing_ok=True)
     else:
         # No lock file, but a pipeline may still be running (e.g. a run started
-        # before the lock existed). Reap any lingering loop/radar/worker procs
-        # so `bun run run` always starts one clean pipeline.
-        with contextlib.suppress(Exception):
-            import subprocess as _sp
-
-            own_pgid = _os.getpgid(_os.getpid())
-            for pat in (
-                "scripts/loop.py",
-                "radar.engine.orchestrator",
-                "autofill.src.core.worker",
-            ):
-                r = _sp.run(["pgrep", "-f", pat], capture_output=True, text=True, timeout=5)
-                for pid in r.stdout.split():
-                    try:
-                        pid_i = int(pid)
-                        if pid_i == _os.getpid() or _os.getpgid(pid_i) == own_pgid:
-                            continue
-                        _os.kill(pid_i, _signal.SIGINT)
-                    except ValueError, ProcessLookupError:
-                        pass
-            time.sleep(1)
+        # before the lock existed, or a crashed run_all that leaked children).
+        # Reap any lingering loop/radar/worker procs so `bun run run` always
+        # starts one clean pipeline.
+        _reap_pipeline_orphans(sig="KILL", grace_s=2.0)
     lock_path.write_text(str(_os.getpid()))
 
     signal.signal(signal.SIGINT, _handle_sig)

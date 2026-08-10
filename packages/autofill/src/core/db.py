@@ -34,6 +34,8 @@ _FAILURE_TAXONOMY: dict[str, str] = {
     "127": "infra",
 }
 
+_TERMINAL_STATUSES = ("deferred", "submitted", "failed", "skipped", "expired")
+
 
 def _failure_label(error: str) -> str:
     """Map a raw error message onto the failure taxonomy.
@@ -84,6 +86,13 @@ ALTER TABLE autofill_queue ADD COLUMN IF NOT EXISTS error_count INTEGER DEFAULT 
 ALTER TABLE autofill_queue ADD COLUMN IF NOT EXISTS last_error TEXT DEFAULT '';
 ALTER TABLE autofill_queue ADD COLUMN IF NOT EXISTS last_error_at TIMESTAMP WITH TIME ZONE;
 ALTER TABLE autofill_queue ADD COLUMN IF NOT EXISTS source TEXT DEFAULT '';
+
+-- A submitted application is authoritative even if a late runner event raced
+-- with it and wrote a failure afterward. Preserve it as submitted so it can
+-- never be picked up or bridged again.
+UPDATE autofill_queue
+SET status = 'submitted', updated_at = NOW()
+WHERE applied_at IS NOT NULL AND status <> 'submitted';
 
 -- Post-submit email feedback: {kind, from, subject, snippet} read back from
 -- the ATS's reply email (confirmation/rejection/screening/otp). Soft evidence
@@ -263,8 +272,9 @@ class AutofillDB:
     ) -> str:
         """Enqueue a new job application. Returns job_id.
 
-        Deduplicates against active rows (pending / filling / awaiting_review /
-        deferred) for the same apply_link, returning the existing job_id.
+        Deduplicates against every prior row for the same apply_link, returning
+        the existing job ID. Retrying a terminal application must be explicit,
+        never an automatic radar bridge side effect.
 
         ``ats_platform`` defaults to ``classify_ats(apply_link)`` so every row
         is tagged with the ATS platform the browser adapter will use — callers
@@ -279,7 +289,6 @@ class AutofillDB:
                 """
                 SELECT job_id FROM autofill_queue
                 WHERE apply_link = $1
-                  AND status IN ('pending', 'filling', 'awaiting_review', 'deferred')
                 ORDER BY created_at ASC
                 LIMIT 1
                 """,
@@ -287,7 +296,7 @@ class AutofillDB:
             )
             if existing:
                 logger.info(
-                    "Enqueue skipped: active row exists for link",
+                    "Enqueue skipped: existing row found for link",
                     job_id=existing,
                     apply_link=apply_link,
                 )
@@ -332,9 +341,12 @@ class AutofillDB:
             )
             AND NOT EXISTS (
                 SELECT 1 FROM site_health sh
-                WHERE sh.domain = SPLIT_PART(SPLIT_PART(
-                    COALESCE(NULLIF(q.apply_link, ''), ''),
-                    '://', 2), '/', 1)
+                WHERE sh.domain = REGEXP_REPLACE(
+                    LOWER(SPLIT_PART(SPLIT_PART(
+                        COALESCE(NULLIF(q.apply_link, ''), ''),
+                        '://', 2), '/', 1)),
+                    '^(www\\.)|(:[0-9]+)$', '', 'g'
+                )
                   AND sh.cooldown_until IS NOT NULL AND sh.cooldown_until > NOW()
             )
             ORDER BY q.created_at ASC
@@ -421,10 +433,10 @@ class AutofillDB:
     ) -> bool:
         """Update status and payload of a job.
 
-        Guarded: a terminal status (``deferred``, ``submitted``, ``expired``) is
-        never overwritten by a later non-terminal transition, so a deferred job
-        that still reaches the review step keeps its deferred status and stays
-        in the morning digest, and an expired posting is never resurrected.
+        Guarded: a terminal status is never overwritten by a later runner
+        event, so a submitted application cannot turn into a failure and be
+        re-enqueued by the radar bridge. The database predicate below makes
+        this guarantee atomic even when runner events race.
         The resume flow (``run_resume``) passes ``override_terminal=True``:
         after the user answers the deferred questions, clearing ``deferred``
         to ``skipped``/``failed`` is exactly what is wanted, not a downgrade.
@@ -433,17 +445,6 @@ class AutofillDB:
         the job's ``error_count`` is NOT incremented so a broken environment
         can never burn a real job's retry budget.
         """
-        if not override_terminal and status not in ("deferred", "submitted", "expired"):
-            current = await self.get_job(job_id)
-            if current and current.get("status") in ("deferred", "submitted", "expired"):
-                logger.info(
-                    "Skipping status update: job is terminal",
-                    job_id=job_id,
-                    current=current.get("status"),
-                    requested=status,
-                )
-                return False
-
         updates = ["status = $2", "updated_at = NOW()"]
         args: list[Any] = [job_id, status]
 
@@ -487,11 +488,19 @@ class AutofillDB:
                     args.append(error)
                     updates.append(f"last_error = ${len(args)}")
 
-            query = f"UPDATE autofill_queue SET {', '.join(updates)} WHERE job_id = $1"
+            where = "WHERE job_id = $1"
+            if not override_terminal:
+                statuses = ", ".join(f"'{value}'" for value in _TERMINAL_STATUSES)
+                where += f" AND (status NOT IN ({statuses}) OR status = $2)"
+            query = f"UPDATE autofill_queue SET {', '.join(updates)} {where}"
             result = await conn.execute(query, *args)
             updated = "UPDATE 1" in result
             if updated:
                 logger.info("Job status updated", job_id=job_id, status=status)
+            else:
+                logger.info(
+                    "Skipping status update: job is terminal", job_id=job_id, requested=status
+                )
             return updated
 
     async def get_all_jobs(self) -> list[dict[str, Any]]:
@@ -515,20 +524,16 @@ class AutofillDB:
         return result
 
     async def link_known(self, apply_link: str) -> bool:
-        """True when an *active* (non-terminal) row exists for a link.
+        """True when any prior queue row exists for a link.
 
-        Terminal statuses (submitted, failed, skipped) are NOT considered
-        "known" — this lets the bridge re-enqueue a URL that previously
-        failed so it can be retried with bug fixes. Only 'submitted' URLs
-        are permanently blocked (already applied).
+        Radar sweeps are recurring discovery passes, not retry requests: a
+        failed, skipped, deferred, or submitted application must never be
+        re-enqueued automatically on every bridge cycle.
         """
         async with self._pool.acquire() as conn:
             return bool(
                 await conn.fetchval(
-                    "SELECT 1 FROM autofill_queue WHERE apply_link = $1"
-                    " AND status IN ('pending', 'filling', 'awaiting_review',"
-                    " 'deferred', 'submitted')"
-                    " LIMIT 1",
+                    "SELECT 1 FROM autofill_queue WHERE apply_link = $1 LIMIT 1",
                     apply_link,
                 )
             )

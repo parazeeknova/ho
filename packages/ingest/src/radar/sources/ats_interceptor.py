@@ -53,8 +53,13 @@ def parse_ats_slug(url: str) -> tuple[str, str] | None:
     return None
 
 
-async def fetch_ats_jobs(platform: str, slug: str) -> list[dict[str, Any]]:
-    """Fetch all open job postings directly via official JSON API endpoints."""
+async def _fetch_ats_jobs_result(platform: str, slug: str) -> list[dict[str, Any]] | None:
+    """Fetch an ATS API response, returning ``None`` only when it is unavailable.
+
+    An empty list is a successful response from a board with no openings (or
+    an invalid slug).  Keeping that distinct from a transport failure lets the
+    poller avoid an expensive browser fallback for every empty ATS endpoint.
+    """
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "application/json",
@@ -167,8 +172,19 @@ async def fetch_ats_jobs(platform: str, slug: str) -> list[dict[str, Any]]:
 
     except Exception as exc:
         logger.debug(f"ATS API fetch failed for {platform}:{slug}: {exc}")
+        return None
 
     return jobs
+
+
+async def fetch_ats_jobs(platform: str, slug: str) -> list[dict[str, Any]]:
+    """Fetch all open job postings directly via official JSON API endpoints.
+
+    This public helper retains its historical list-only contract.  Callers
+    that need to distinguish an empty board from an unreachable API use the
+    internal result helper above.
+    """
+    return await _fetch_ats_jobs_result(platform, slug) or []
 
 
 async def intercept_ats_board(board_url: str, source_id: str) -> list[JobObservation] | None:
@@ -181,8 +197,8 @@ async def intercept_ats_board(board_url: str, source_id: str) -> list[JobObserva
         return None
 
     platform, slug = parsed
-    raw_jobs = await fetch_ats_jobs(platform, slug)
-    if not raw_jobs:
+    raw_jobs = await _fetch_ats_jobs_result(platform, slug)
+    if raw_jobs is None:
         return None
 
     observations: list[JobObservation] = []
@@ -203,7 +219,8 @@ async def intercept_ats_board(board_url: str, source_id: str) -> list[JobObserva
         obs.extra["company_slug"] = slug
         observations.append(obs)
 
-    logger.info(
-        f"ATS Interceptor ({platform}:{slug}): {len(observations)} jobs fetched via direct API"
-    )
+    if observations:
+        logger.info(
+            f"ATS Interceptor ({platform}:{slug}): {len(observations)} jobs fetched via direct API"
+        )
     return observations

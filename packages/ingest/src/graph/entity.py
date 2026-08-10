@@ -154,7 +154,8 @@ class GraphNode(BaseModel):
 
     @property
     def name(self) -> str:
-        return str(self.data.get("name") or self.data.get("company") or self.id[:12])
+        value = self.data.get("name") or self.data.get("company") or self.id[:12]
+        return str(_unwrap_prov(value))
 
     def has_edge(self, etype: EdgeType, target_id: str) -> bool:
         key = f"{etype.value}:{target_id}"

@@ -296,6 +296,15 @@ CREATE TABLE IF NOT EXISTS job_observations (
     created_at            TIMESTAMP DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS pipeline_stage_events (
+    id           BIGSERIAL PRIMARY KEY,
+    stage        TEXT NOT NULL,
+    item_count   INTEGER NOT NULL CHECK (item_count >= 0),
+    created_at   TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_pipeline_stage_events_recent
+ON pipeline_stage_events (stage, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS radar_candidates (
     canonical_id          TEXT PRIMARY KEY,
     source                TEXT NOT NULL DEFAULT '',
@@ -1446,6 +1455,20 @@ class MemoryStore:
                 role,
                 company,
             )
+
+    async def record_pipeline_stage_event(self, stage: str, item_count: int) -> None:
+        """Record an observed pipeline-stage volume for the live dashboard."""
+        if item_count <= 0:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    "INSERT INTO pipeline_stage_events (stage, item_count) VALUES ($1, $2)",
+                    stage,
+                    item_count,
+                )
+        except Exception:
+            pass
 
     # Jobs_ledger
 

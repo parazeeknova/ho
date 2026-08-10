@@ -276,10 +276,10 @@ def record_failure(source_id: str) -> None:
 def record_success(source_id: str, job_count: int, direct_url_count: int) -> None:
     cp = get_checkpoint(source_id)
     cp.consecutive_failures = 0
-    cp.consecutive_empty = 0
     cp.total_jobs_produced += job_count
     cp.yield_per_poll = _ewma(cp.yield_per_poll, float(job_count))
     if job_count > 0:
+        cp.consecutive_empty = 0
         cp.total_direct_url_rate = direct_url_count / job_count
         if cp.poll_lane != "high":
             cp.poll_lane = "high"  # productive source -> promote

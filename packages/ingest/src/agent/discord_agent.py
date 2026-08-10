@@ -1063,7 +1063,7 @@ class DiscordAgent:
 
             ml_line = await self._ml_status_line()
             description = (
-                f"**Scraped** `{scraped}` · **Matched** `{matched}` · "
+                f"**Observed** `{scraped}` · **Accepted (final)** `{matched}` · "
                 f"**Took** `{duration:.1f}s`\n"
                 f"**Queue** — Applied `{applied}` · Remaining `{remaining}` · "
                 f"Review `{review}` · Failed `{failed}`\n"

@@ -320,16 +320,25 @@ async def test_update_status_failed_bumps_error_count(db: AutofillDB):
 
 
 @pytest.mark.asyncio
-async def test_link_known_covers_terminal_rows(db: AutofillDB):
-    link = "https://boards.greenhouse.io/test/known"
-    assert await db.link_known(link) is False
+async def test_link_known_covers_all_prior_rows(db: AutofillDB):
+    statuses = ("submitted", "failed", "skipped", "deferred")
+    for status in statuses:
+        link = f"https://boards.greenhouse.io/test/known-{status}"
+        job_id = await db.enqueue_job(apply_link=link, source="radar")
+        assert await db.update_status(job_id, status=status)
+        assert await db.link_known(link) is True
+        assert await db.enqueue_job(apply_link=link, source="radar") == job_id
 
-    job_id = await db.enqueue_job(apply_link=link, source="radar")
-    assert await db.link_known(link) is True
 
-    # Terminal status still counts: bridge must never re-enqueue an applied job.
-    await db.update_status(job_id, status="submitted")
-    assert await db.link_known(link) is True
+@pytest.mark.asyncio
+async def test_submitted_job_cannot_be_overwritten_by_late_failure(db: AutofillDB):
+    job_id = await db.enqueue_job(apply_link="https://boards.greenhouse.io/test/race")
+    assert await db.update_status(job_id, status="submitted")
+
+    assert not await db.update_status(job_id, status="failed", error="late runner event")
+    row = await db.get_job(job_id)
+    assert row["status"] == "submitted"
+    assert row["applied_at"] is not None
 
 
 @pytest.mark.asyncio
@@ -456,6 +465,20 @@ async def test_site_health_quarantines_after_threshold(db: AutofillDB, monkeypat
     health = await db.site_health("bad.com")
     assert health is not None and health["cooldown_until"] is not None
     assert await db.domain_quarantined("bad.com") is True
+
+
+@pytest.mark.asyncio
+async def test_claim_skips_quarantined_www_domain(db: AutofillDB, monkeypatch):
+    monkeypatch.setenv("SITE_HEALTH_QUARANTINE", "1")
+    blocked_id = await db.enqueue_job(apply_link="https://www.blocked-ats.com/jobs/1")
+    available_id = await db.enqueue_job(apply_link="https://boards.greenhouse.io/test/available")
+    await db.record_site_failure("blocked-ats.com", "captcha", cooldown_seconds=60)
+
+    claimed = await db.claim_next_job(lease_seconds=60)
+
+    assert claimed is not None
+    assert claimed["job_id"] == available_id
+    assert (await db.get_job(blocked_id))["status"] == "pending"
 
 
 @pytest.mark.asyncio

@@ -878,7 +878,9 @@ class GraphStore:
         score = sum(s["weight"] for s in signals) if signals else 0.0
         score = min(1.0, score)
 
-        logger.info(f"Hiring prediction for {node.name}: score={score:.2f}, {len(signals)} signals")
+        logger.debug(
+            f"Hiring prediction for {node.name}: score={score:.2f}, {len(signals)} signals"
+        )
         return {
             "node_id": company_node_id,
             "company_name": node.name,

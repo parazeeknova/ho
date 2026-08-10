@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 
+from src.radar.sources import ats_interceptor
 from src.radar.sources.ats_interceptor import intercept_ats_board, parse_ats_slug
 from src.radar.sources.dorking import DorkingEngine
 from src.radar.sources.github_poller import poll_github_index_etag
@@ -43,6 +44,19 @@ class TestLayer1ATSInterceptor:
     async def test_intercept_ats_board_fallback_non_ats(self) -> None:
         result = await intercept_ats_board("https://example.com/careers", "example:careers")
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_intercept_ats_board_returns_empty_for_empty_api_response(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def _empty_api_response(_platform: str, _slug: str) -> list[dict[str, object]]:
+            return []
+
+        monkeypatch.setattr(ats_interceptor, "_fetch_ats_jobs_result", _empty_api_response)
+
+        result = await intercept_ats_board("https://boards.greenhouse.io/test", "test:greenhouse")
+
+        assert result == []
 
 
 class TestLayer2GitHubETagPoller:

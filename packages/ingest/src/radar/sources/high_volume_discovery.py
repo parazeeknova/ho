@@ -129,11 +129,12 @@ class HighVolumeDiscoveryEngine:
                 try:
                     resp = await client.get(repo_url, headers={"User-Agent": "Mozilla/5.0"})
                     if resp.status_code == 200:
-                        urls = _URL_EXTRACT_RE.findall(resp.text)
-                        for u in urls:
-                            u_clean = u.rstrip(".,)")
-                            if "http" in u_clean:
-                                await queue.put(u_clean)
+                        # A README contains badges, docs, and contributor
+                        # links alongside openings.  Only emit direct ATS job
+                        # URLs so the discovery counter and downstream queue
+                        # represent jobs rather than arbitrary web links.
+                        for job_url in _JOB_URL_RE.findall(resp.text):
+                            await queue.put(job_url.rstrip(".,)"))
                 except Exception:
                     pass
 

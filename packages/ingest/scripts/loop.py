@@ -182,6 +182,12 @@ class Child:
 
     async def start(self) -> None:
         LOG_DIR.mkdir(exist_ok=True)
+        # start_new_session: each child is a session leader with its own process
+        # group (pgid == pid). A terminal Ctrl+C therefore only reaches loop.py
+        # (which shares the foreground group), never the children — so loop.py is
+        # the single owner of child cleanup and can signal the whole subtree via
+        # killpg. It also prevents an orphaned child from inheriting a dead
+        # parent's group.
         self.proc = subprocess.Popen(
             self.argv,
             cwd=str(PROJECT),
@@ -190,6 +196,7 @@ class Child:
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
+            start_new_session=True,
         )
         print(f"[loop] started {self.name} (pid {self.proc.pid})", flush=True)
 
@@ -223,9 +230,12 @@ class Child:
     def stop(self, sig: int = signal.SIGINT) -> None:
         if self.proc is not None and self.proc.poll() is None:
             try:
-                self.proc.send_signal(sig)
+                # Signal the whole process group so grandchildren (node
+                # subprocesses, playwright browsers) are torn down too, not
+                # just the direct child.
+                os.killpg(self.proc.pid, sig)
                 print(f"[loop] sent interrupt to {self.name}", flush=True)
-            except ProcessLookupError:
+            except ProcessLookupError, PermissionError:
                 pass
 
     async def wait(self, timeout: float = 45.0) -> None:
@@ -233,7 +243,8 @@ class Child:
             try:
                 await asyncio.to_thread(self.proc.wait, timeout)
             except Exception:
-                self.proc.kill()
+                with contextlib.suppress(Exception):
+                    os.killpg(self.proc.pid, signal.SIGKILL)
                 await asyncio.to_thread(self.proc.wait)
 
 
@@ -247,7 +258,7 @@ async def _spawn_radar(children: list[Child], workers: int) -> None:
     )
     await master.start()
     children.append(master)
-    for idx in range(1, workers):
+    for idx in range(1, workers + 1):
         w_env = env.copy()
         w_env["HO_WORKER_ONLY"] = "1"
         child = Child(
@@ -293,7 +304,12 @@ async def main() -> None:
     parser.add_argument(
         "--no-fill", action="store_true", help="Do not start the autofill.src.core.worker"
     )
-    parser.add_argument("--radar-workers", type=int, default=2, help="Extra radar worker procs")
+    parser.add_argument(
+        "--radar-workers",
+        type=int,
+        default=4,
+        help="Radar worker procs (in addition to the master)",
+    )
     parser.add_argument(
         "--bridge-interval", type=int, default=120, help="Seconds between bridge drains"
     )
@@ -306,6 +322,34 @@ async def main() -> None:
 
     children: list[Child] = []
     started_at = time.monotonic()
+    stop_evt = asyncio.Event()
+
+    # Deterministic shutdown: the FIRST Ctrl+C/SIGTERM asks the loop to finish
+    # gracefully (the finally block below stops every child's process group).
+    # A SECOND signal force-kills all child groups immediately — the graceful
+    # path must never be the reason children get orphaned.
+    _sig_state = {"interrupts": 0}
+
+    def _on_signal(signum: int, frame: Any) -> None:
+        _sig_state["interrupts"] += 1
+        if _sig_state["interrupts"] > 1:
+            print("[loop] second interrupt; force-killing children", flush=True)
+            for child in children:
+                with contextlib.suppress(Exception):
+                    if child.proc is not None and child.proc.poll() is None:
+                        os.killpg(child.proc.pid, signal.SIGKILL)
+            os._exit(130)
+        print("[loop] interrupt received; shutting down...", flush=True)
+        loop.call_soon_threadsafe(stop_evt.set)
+
+    try:
+        loop = asyncio.get_running_loop()
+        loop.add_signal_handler(signal.SIGINT, _on_signal, signal.SIGINT, None)
+        loop.add_signal_handler(signal.SIGTERM, _on_signal, signal.SIGTERM, None)
+    except NotImplementedError, RuntimeError:
+        signal.signal(signal.SIGINT, _on_signal)
+        signal.signal(signal.SIGTERM, _on_signal)
+
     try:
         if not args.no_radar:
             await _spawn_radar(children, args.radar_workers)
@@ -328,7 +372,12 @@ async def main() -> None:
     radar_done = False
     try:
         while True:
-            await asyncio.sleep(args.bridge_interval)
+            try:
+                await asyncio.wait_for(stop_evt.wait(), timeout=args.bridge_interval)
+                print("[loop] interrupted; shutting down...", flush=True)
+                break
+            except TimeoutError:
+                pass
 
             for child in children:
                 # Hang-watchdog: a process can be alive yet STUCK (e.g. the
@@ -456,10 +505,13 @@ async def main() -> None:
     except KeyboardInterrupt:
         print("[loop] interrupted; shutting down...", flush=True)
     finally:
+        # Stop every child's process group. Wait for them CONCURRENTLY with a
+        # short bound: orchestrators may ignore SIGINT mid-sweep (their
+        # graceful shutdown only applies between phases), so one stuck child
+        # must not delay the rest — Child.wait SIGKILLs the group on timeout.
         for child in children:
             child.stop()
-        for child in children:
-            await child.wait()
+        await asyncio.gather(*(child.wait(timeout=12) for child in children))
         print("[loop] final queue state:", flush=True)
         print_summary(await queue_balance(db))
         await db.close()
