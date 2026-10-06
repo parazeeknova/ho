@@ -54,7 +54,7 @@ export async function setFileInputViaDataTransfer(
         const bin = atob(b64);
         const bytes = new Uint8Array(bin.length);
         for (let i = 0; i < bin.length; i++) {
-          bytes[i] = bin.charCodeAt(i);
+          bytes[i] = bin.codePointAt(i) ?? 0;
         }
         const file = new File([bytes], fname, { type: mtype });
         const dt = new DataTransfer();

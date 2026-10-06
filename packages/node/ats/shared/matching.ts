@@ -360,8 +360,7 @@ function extractCountry(location: string): string {
     lower
       .split(",")
       .map((s) => s.trim())
-      .filter(Boolean)
-      .pop() ?? "";
+      .findLast(Boolean) ?? "";
   for (const c of KNOWN_COUNTRIES) {
     if (lastSeg === c) {
       return c;

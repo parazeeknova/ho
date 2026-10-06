@@ -127,27 +127,25 @@ describe("extractQuestionsFromJsonObject", () => {
               {
                 questions: [
                   {
-                    required: false,
-                    label: "Veteran Status",
                     fields: [
                       {
                         name: "veteran_status",
                         type: "multi_value_single_select",
                       },
                     ],
+                    label: "Veteran Status",
+                    required: false,
                   },
                 ],
               },
             ],
             questions: [
               {
-                required: true,
-                label: "Preferred First Name",
                 fields: [{ name: "preferred_name", type: "input_text" }],
+                label: "Preferred First Name",
+                required: true,
               },
               {
-                required: false,
-                label: "Race",
                 fields: [
                   {
                     name: "race",
@@ -158,6 +156,8 @@ describe("extractQuestionsFromJsonObject", () => {
                     ],
                   },
                 ],
+                label: "Race",
+                required: false,
               },
             ],
           },
@@ -255,11 +255,11 @@ describe("atsApiJobContext", () => {
         return {
           jobs: [
             {
+              descriptionHtml: "<h2>About</h2><p>Build AI infra.</p>",
               id: "abc-123",
-              title: "AI Platform Engineer",
               locationName: "Remote",
               team: "Platform",
-              descriptionHtml: "<h2>About</h2><p>Build AI infra.</p>",
+              title: "AI Platform Engineer",
             },
           ],
         };

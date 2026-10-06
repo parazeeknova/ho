@@ -15,7 +15,7 @@ interface RectEl {
   display: string;
   visibility: string;
   textContent?: string;
-  getBoundingClientRect(): {
+  getBoundingClientRect: () => {
     width: number;
     height: number;
     top: number;
@@ -41,12 +41,12 @@ function el(
   return {
     display: opts.display ?? "",
     getBoundingClientRect: () => ({
-      width: w,
-      height: h,
-      top,
-      left,
       bottom: top + h,
+      height: h,
+      left,
       right: left + w,
+      top,
+      width: w,
     }),
     h,
     left,
@@ -56,6 +56,8 @@ function el(
     w,
   };
 }
+
+const DEFAULT_VIEWPORT = { h: 800, w: 1280 };
 
 class FakePage {
   private iframes: RectEl[];
@@ -69,11 +71,11 @@ class FakePage {
   constructor(
     iframes: RectEl[],
     widgets: RectEl[],
-    bodyText: string = "",
+    bodyText = "",
     pageFrames: FakeFrame[] = [],
-    viewport = { h: 800, w: 1280 },
+    viewport = DEFAULT_VIEWPORT,
     puzzleEls: RectEl[] = [],
-    pageUrl: string = ""
+    pageUrl = ""
   ) {
     this.iframes = iframes;
     this.widgets = widgets;

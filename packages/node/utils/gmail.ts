@@ -48,7 +48,7 @@ export function extractVerificationCode(text: string): string | null {
     /\b(?:code|verification|one[ -]?time|otp|pin|resubmit|security)\b/gi;
   let best: { token: string; penalty: number } | null = null;
   for (const m of src.matchAll(/\b([A-Za-z0-9]{6,12})\b/g)) {
-    const token = m[1];
+    const [, token] = m;
     // Codes are 6-12 alnum chars with mixed case and/or digits ("gfMvrZ38",
     // "vCipmku6", "lJwcuQgh"). Common English words fail every arm:
     //  - title-case words ("Security", "Street"): only the initial cap;
@@ -81,7 +81,7 @@ export function extractVerificationCode(text: string): string | null {
     }
     const penalty = Math.abs(token.length - 8) * 2 + dist;
     if (!best || penalty < best.penalty) {
-      best = { token, penalty };
+      best = { penalty, token };
     }
   }
   if (best) {

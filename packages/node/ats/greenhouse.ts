@@ -132,13 +132,13 @@ export function parseRemixJobContext(
     }
     return {
       company: String(jp?.company_name || "")
-        .replace(/\s+/g, " ")
+        .replaceAll(/\s+/g, " ")
         .trim(),
       location: String(jp?.job_post_location || "")
-        .replace(/\s+/g, " ")
+        .replaceAll(/\s+/g, " ")
         .trim(),
       title: String(jp?.title || "")
-        .replace(/\s+/g, " ")
+        .replaceAll(/\s+/g, " ")
         .trim(),
     };
   } catch {
@@ -258,9 +258,11 @@ export class GreenhouseAdapter extends ATSAdapter {
 
       const read = async (selector: string): Promise<string> => {
         try {
-          return (await page.locator(selector).first().textContent())
-            .replaceAll(/\s+/g, " ")
-            .trim();
+          const textContent = await page
+            .locator(selector)
+            .first()
+            .textContent();
+          return (textContent ?? "").replaceAll(/\s+/g, " ").trim();
         } catch {
           return "";
         }
@@ -269,15 +271,18 @@ export class GreenhouseAdapter extends ATSAdapter {
       // Title: JSON first, else DOM (.app-title / .job__title).
       let title = remix?.title ?? "";
       if (!title) {
-        const titleBlock =
-          (await page
-            .locator(
-              ".board_title, .app-title, .job-post h1, .job-post-title h1, h1"
-            )
-            .first()
-            .textContent()
-            .catch(() => "")) ||
-          (await page.title()).replace(/\s*[|–-].*$/, "").trim();
+        const domTitleText = await page
+          .locator(
+            ".board_title, .app-title, .job-post h1, .job-post-title h1, h1"
+          )
+          .first()
+          .textContent()
+          .catch(() => "");
+        let titleBlock = domTitleText || "";
+        if (!titleBlock) {
+          const pageTitle = await page.title();
+          titleBlock = pageTitle.replace(/\s*[|–-].*$/, "").trim();
+        }
         title =
           titleBlock
             .split("\n")
@@ -298,11 +303,10 @@ export class GreenhouseAdapter extends ATSAdapter {
           ".job__location, .location, .job-location, .job-post .metadata"
         ));
 
-      const description = (
-        await read(
-          "#job-description, .job__description, .job-description, #content .job-post, #content"
-        )
-      ).slice(0, 6000);
+      const descriptionText = await read(
+        "#job-description, .job__description, .job-description, #content .job-post, #content"
+      );
+      const description = descriptionText.slice(0, 6000);
       return { company, description, location, title };
     } catch (error: any) {
       this.warn(`readJobContext failed: ${error?.message || error}`);
@@ -436,13 +440,15 @@ export class GreenhouseAdapter extends ATSAdapter {
               const forLabel = input.id
                 ? document.querySelector(`label[for="${input.id}"]`)
                 : null;
-              const text = norm(
-                wrapLabel
-                  ? wrapLabel.textContent || ""
-                  : forLabel
-                    ? forLabel.textContent || ""
-                    : input.getAttribute("aria-label") || ""
-              );
+              let optionLabelText: string;
+              if (wrapLabel) {
+                optionLabelText = wrapLabel.textContent || "";
+              } else if (forLabel) {
+                optionLabelText = forLabel.textContent || "";
+              } else {
+                optionLabelText = input.getAttribute("aria-label") || "";
+              }
+              const text = norm(optionLabelText);
               if (!text) {
                 continue;
               }
@@ -468,63 +474,126 @@ export class GreenhouseAdapter extends ATSAdapter {
         ];
 
         // 1) label[for] -> text/select/multi inputs.
-        document
-          .querySelectorAll(
-            "#application-form label, .application--questions label, label.select__label"
-          )
-          .forEach((lbl) => {
-            const text = norm(lbl.textContent || "");
-            const forId = (lbl as HTMLLabelElement).getAttribute("for");
-            if (!text || !forId) {
-              return;
-            }
-            const input = document.querySelector(`#${forId}`);
-            if (!input) {
-              return;
-            }
-            if (hidden(input)) {
-              return;
-            }
-            const type = (
-              (input as HTMLInputElement).type || input.tagName
-            ).toLowerCase();
-            if (type === "file") {
-              return;
-            }
-            if (type === "radio" || type === "checkbox") {
-              return;
-            } // group collection
-            const shell = input.closest("[class*='select-shell']");
-            const isSelect =
-              !!shell ||
-              !!input.closest("[class*='select'], select") ||
-              input.getAttribute("role") === "combobox";
-            if (isSelect) {
-              const isMulti =
-                input.getAttribute("aria-multiselectable") === "true" ||
-                (shell
-                  ? /(^|\s)multi(\s|$)|select__multi|--is-multi/.test(
-                      shell.className as string
-                    )
-                  : false);
-              push(text, forId, isMulti ? "multi" : "select");
-            } else {
-              push(text, forId, "text");
-            }
-          });
+        for (const lbl of document.querySelectorAll(
+          "#application-form label, .application--questions label, label.select__label"
+        )) {
+          const text = norm(lbl.textContent || "");
+          const forId = (lbl as HTMLLabelElement).getAttribute("for");
+          if (!text || !forId) {
+            continue;
+          }
+          const input = document.querySelector(`#${forId}`);
+          if (!input) {
+            continue;
+          }
+          if (hidden(input)) {
+            continue;
+          }
+          const type = (
+            (input as HTMLInputElement).type || input.tagName
+          ).toLowerCase();
+          if (type === "file") {
+            continue;
+          }
+          if (type === "radio" || type === "checkbox") {
+            continue;
+          } // group collection
+          const shell = input.closest("[class*='select-shell']");
+          const isSelect =
+            !!shell ||
+            !!input.closest("[class*='select'], select") ||
+            input.getAttribute("role") === "combobox";
+          if (isSelect) {
+            const isMulti =
+              input.getAttribute("aria-multiselectable") === "true" ||
+              (shell
+                ? /(^|\s)multi(\s|$)|select__multi|--is-multi/.test(
+                    shell.className as string
+                  )
+                : false);
+            push(text, forId, isMulti ? "multi" : "select");
+          } else {
+            push(text, forId, "text");
+          }
+        }
 
         // 2) Radio/checkbox groups with an identifying container.
         const seenContainers = new Set<string>();
-        document
-          .querySelectorAll(
-            "#application-form fieldset, #application-form [role='group'], " +
-              "#application-form .eeoc__question__wrapper, " +
-              ".application--questions fieldset, .application--questions [role='group']"
-          )
-          .forEach((container) => {
-            let labelText = "";
-            const legend = container.querySelector("legend");
-            const labelledBy = (container as HTMLElement).getAttribute(
+        for (const container of document.querySelectorAll(
+          "#application-form fieldset, #application-form [role='group'], " +
+            "#application-form .eeoc__question__wrapper, " +
+            ".application--questions fieldset, .application--questions [role='group']"
+        )) {
+          let labelText = "";
+          const legend = container.querySelector("legend");
+          const labelledBy = (container as HTMLElement).getAttribute(
+            "aria-labelledby"
+          );
+          if (legend) {
+            labelText = norm(legend.textContent || "");
+          } else if (labelledBy) {
+            const l = document.querySelector(`#${labelledBy}`);
+            if (l) {
+              labelText = norm(l.textContent || "");
+            }
+          }
+          if (!labelText) {
+            const wrap = container.closest(
+              ".field-wrapper, .eeoc__question__wrapper"
+            );
+            const wl = wrap
+              ? wrap.querySelector("label.select__label, label")
+              : null;
+            if (wl) {
+              labelText = norm(wl.textContent || "");
+            }
+          }
+          const inputs = [
+            ...container.querySelectorAll(
+              "input[type='radio'], input[type='checkbox']"
+            ),
+          ] as HTMLInputElement[];
+          if (!inputs.length) {
+            continue;
+          }
+          const name = inputs[0].name || "";
+          if (seenContainers.has(name || labelText)) {
+            continue;
+          }
+          seenContainers.add(name || labelText);
+          addGroup(
+            inputs,
+            labelText,
+            (container as HTMLElement).id || name || labelText
+          );
+        }
+
+        // 3) Bare radio/checkbox groups grouped by input name (no container found).
+        const bareSeen = new Set<string>();
+        for (const input of document.querySelectorAll(
+          "#application-form input[type='radio'], #application-form input[type='checkbox'], " +
+            ".application--questions input[type='radio'], .application--questions input[type='checkbox']"
+        )) {
+          const i = input as HTMLInputElement;
+          const name = i.name || "";
+          if (!name || bareSeen.has(name)) {
+            continue;
+          }
+          bareSeen.add(name);
+          const q = i.type === "radio" ? "radio" : "checkbox";
+          const groupInputs = [
+            ...document.querySelectorAll(`input[type="${q}"][name="${name}"]`),
+          ] as HTMLInputElement[];
+          if (!groupInputs.length) {
+            continue;
+          }
+          let labelText = "";
+          const wrap = input.closest(
+            ".field-wrapper, .eeoc__question__wrapper, [role='group'], fieldset"
+          );
+          if (wrap) {
+            const legend = wrap.querySelector("legend");
+            const labelledBy = (wrap as HTMLElement).getAttribute(
               "aria-labelledby"
             );
             if (legend) {
@@ -536,89 +605,15 @@ export class GreenhouseAdapter extends ATSAdapter {
               }
             }
             if (!labelText) {
-              const wrap = container.closest(
-                ".field-wrapper, .eeoc__question__wrapper"
-              );
-              const wl = wrap
-                ? wrap.querySelector("label.select__label, label")
-                : null;
-              if (wl) {
+              const wl = wrap.querySelector("label.select__label, label");
+              // Must be a distinct question label, not one of this group's options.
+              if (wl && !groupInputs.some((gi) => gi.closest("label") === wl)) {
                 labelText = norm(wl.textContent || "");
               }
             }
-            const inputs = [
-              ...container.querySelectorAll(
-                "input[type='radio'], input[type='checkbox']"
-              ),
-            ] as HTMLInputElement[];
-            if (!inputs.length) {
-              return;
-            }
-            const name = inputs[0].name || "";
-            if (seenContainers.has(name || labelText)) {
-              return;
-            }
-            seenContainers.add(name || labelText);
-            addGroup(
-              inputs,
-              labelText,
-              (container as HTMLElement).id || name || labelText
-            );
-          });
-
-        // 3) Bare radio/checkbox groups grouped by input name (no container found).
-        const bareSeen = new Set<string>();
-        document
-          .querySelectorAll(
-            "#application-form input[type='radio'], #application-form input[type='checkbox'], " +
-              ".application--questions input[type='radio'], .application--questions input[type='checkbox']"
-          )
-          .forEach((input) => {
-            const i = input as HTMLInputElement;
-            const name = i.name || "";
-            if (!name || bareSeen.has(name)) {
-              return;
-            }
-            bareSeen.add(name);
-            const q = i.type === "radio" ? "radio" : "checkbox";
-            const groupInputs = [
-              ...document.querySelectorAll(
-                `input[type="${q}"][name="${name}"]`
-              ),
-            ] as HTMLInputElement[];
-            if (!groupInputs.length) {
-              return;
-            }
-            let labelText = "";
-            const wrap = input.closest(
-              ".field-wrapper, .eeoc__question__wrapper, [role='group'], fieldset"
-            );
-            if (wrap) {
-              const legend = wrap.querySelector("legend");
-              const labelledBy = (wrap as HTMLElement).getAttribute(
-                "aria-labelledby"
-              );
-              if (legend) {
-                labelText = norm(legend.textContent || "");
-              } else if (labelledBy) {
-                const l = document.querySelector(`#${labelledBy}`);
-                if (l) {
-                  labelText = norm(l.textContent || "");
-                }
-              }
-              if (!labelText) {
-                const wl = wrap.querySelector("label.select__label, label");
-                // Must be a distinct question label, not one of this group's options.
-                if (
-                  wl &&
-                  !groupInputs.some((gi) => gi.closest("label") === wl)
-                ) {
-                  labelText = norm(wl.textContent || "");
-                }
-              }
-            }
-            addGroup(groupInputs, labelText, name);
-          });
+          }
+          addGroup(groupInputs, labelText, name);
+        }
 
         return out;
       });
@@ -637,7 +632,7 @@ export class GreenhouseAdapter extends ATSAdapter {
           id: r.id,
           kind: r.kind as FormField["kind"],
           label: r.label,
-          name: r.id.replace(/-/g, "_"),
+          name: r.id.replaceAll("-", "_"),
           optionTargets: r.targets,
           options: r.options,
           required: false,
@@ -985,7 +980,7 @@ export class GreenhouseAdapter extends ATSAdapter {
             const text = drop ? drop.textContent || "" : "";
             return (
               text.includes(baseName) ||
-              text.replace(/\s+/g, "").includes(baseName)
+              text.replaceAll(/\s+/g, "").includes(baseName)
             );
           }, coverBaseName)
           .catch(() => false);
@@ -1283,11 +1278,14 @@ export class GreenhouseAdapter extends ATSAdapter {
         `[GreenhouseAdapter] Checking ${checked.length} consent checkbox(es):`
       );
       for (const c of checked) {
-        const sel = c.id
-          ? `input[id="${c.id.replaceAll('"', '\\"')}"]`
-          : c.name
-            ? `input[type='checkbox'][name="${c.name.replaceAll('"', '\\"')}"]`
-            : `input[type='checkbox']`;
+        let sel: string;
+        if (c.id) {
+          sel = `input[id="${c.id.replaceAll('"', '\\"')}"]`;
+        } else if (c.name) {
+          sel = `input[type='checkbox'][name="${c.name.replaceAll('"', '\\"')}"]`;
+        } else {
+          sel = `input[type='checkbox']`;
+        }
         try {
           await checkCheckboxViaCdpClick(page, sel);
           console.log(`[GreenhouseAdapter]   checked: ${c.label}`);
@@ -1505,18 +1503,16 @@ export class GreenhouseAdapter extends ATSAdapter {
       (a: { segmented: boolean }, b: { segmented: boolean }) =>
         (a.segmented ? 0 : 1) - (b.segmented ? 0 : 1)
     );
-    const primary = entries[0];
+    const [primary] = entries;
     const { segmented } = primary;
     let { selector } = primary;
     if (segmented) {
       if (primary.name) {
         selector = `input[name="${primary.name}"]`;
       } else if (selector.startsWith("#")) {
-        if (primary.containerSel) {
-          selector = `${primary.containerSel} input[maxlength='1'], ${primary.containerSel} input[maxlength='2']`;
-        } else {
-          selector = "input[maxlength='1'], input[maxlength='2']";
-        }
+        selector = primary.containerSel
+          ? `${primary.containerSel} input[maxlength='1'], ${primary.containerSel} input[maxlength='2']`
+          : "input[maxlength='1'], input[maxlength='2']";
       }
     }
     return { containerSel: primary.containerSel || "", segmented, selector };

@@ -1,11 +1,11 @@
 import * as fs from "node:fs";
-import * as path from "node:path";
+import path from "node:path";
 import * as readline from "node:readline";
 
 import { Stagehand } from "@browserbasehq/stagehand";
 
 import { AshbyAdapter } from "./ats/ashby";
-import { type ATSAdapter, type RpcHelper } from "./ats/base";
+import type { ATSAdapter, RpcHelper } from "./ats/base";
 import { GenericAdapter } from "./ats/generic";
 import { GreenhouseAdapter } from "./ats/greenhouse";
 import { LeverAdapter } from "./ats/lever";
@@ -31,16 +31,15 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
       () => reject(new Error(`operation timed out after ${ms}ms`)),
       ms
     );
-    promise.then(
-      (v) => {
+    promise
+      .then((v) => {
         clearTimeout(timer);
         resolve(v);
-      },
-      (error) => {
+      })
+      .catch((error) => {
         clearTimeout(timer);
         reject(error);
-      }
-    );
+      });
   });
 }
 
@@ -212,20 +211,9 @@ async function main() {
   // exposes an OpenAI-compatible Chat Completions endpoint, so we must opt into chat format.
   const stagehandConfig: any = {
     env: "LOCAL",
-    model: {
-      apiKey,
-      baseURL: "https://api.generalcompute.com/v1",
-      modelName: genericModel,
-      openaiEndpointFormat: "chat",
-    },
-    // Deterministic act(action) fills must never self-heal via an LLM — a
-    // self-heal can silently re-target a DIFFERENT element (and the committed
-    // value check would then read the wrong field). The generic adapter's
-    // observe fallback relies on exact selector execution.
-    selfHeal: false,
     localBrowserLaunchOptions: {
-      headless: false,
       args: ["--disable-blink-features=AutomationControlled"],
+      headless: false,
       // Drop the test-harness flags that scream "automation" to a fingerprint
       // scanner. A real user's Chrome has no --metrics-recording-only,
       // --propagate-iph-for-testing, disabled sync/extensions/background
@@ -254,9 +242,9 @@ async function main() {
       // viewport -> --window-size, deviceScaleFactor ->
       // --force-device-scale-factor. UA + timezone are applied post-init via
       // CDP (see applyFingerprint below) since they need the page session.
+      deviceScaleFactor: fingerprint.deviceScaleFactor,
       locale: fingerprint.locale,
       viewport: fingerprint.viewport,
-      deviceScaleFactor: fingerprint.deviceScaleFactor,
       // Route the whole browser session through a proxy when AUTOFILL_PROXY is
       // set (either the legacy Tor SOCKS5 proxy, or — with a proxy template —
       // a per-job residential IP URL substituted by the worker). Stagehand maps
@@ -265,6 +253,17 @@ async function main() {
         ? { proxy: { server: process.env.AUTOFILL_PROXY } }
         : {}),
     },
+    model: {
+      apiKey,
+      baseURL: "https://api.generalcompute.com/v1",
+      modelName: genericModel,
+      openaiEndpointFormat: "chat",
+    },
+    // Deterministic act(action) fills must never self-heal via an LLM — a
+    // self-heal can silently re-target a DIFFERENT element (and the committed
+    // value check would then read the wrong field). The generic adapter's
+    // observe fallback relies on exact selector execution.
+    selfHeal: false,
   };
   const stagehand = new Stagehand(stagehandConfig);
 
@@ -348,8 +347,8 @@ async function main() {
         );
       }, rpcTimeoutMs);
 
-      pendingRpcPromises.set(id, { resolve, reject, timer });
-      console.log(`RPC_REQUEST:${JSON.stringify({ id, method, args })}`);
+      pendingRpcPromises.set(id, { reject, resolve, timer });
+      console.log(`RPC_REQUEST:${JSON.stringify({ args, id, method })}`);
     });
 
   // Overnight safety: an activity watchdog kills a run whose browser stops
@@ -516,9 +515,9 @@ async function main() {
         );
         console.error("[Runner] Captcha detected:", err.message);
         emitStatus({
+          error: err.message,
           jobId: payload.jobId,
           status: "failed",
-          error: err.message,
         });
         // The abandoned fill is still running in the background; stop its
         // unhandled-rejection noise before tearing the browser down.
@@ -1066,9 +1065,9 @@ async function main() {
     watchdog?.stop();
     console.error("[Runner] Execution error:", error);
     emitStatus({
+      error: error?.message || String(error),
       jobId: payload.jobId,
       status: "failed",
-      error: error?.message || String(error),
     });
     try {
       rl.close();

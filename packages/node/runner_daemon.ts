@@ -16,10 +16,10 @@
  * so a long-lived daemon cannot accumulate memory/leaked resources.
  */
 import { spawn } from "node:child_process";
-import * as path from "node:path";
+import path from "node:path";
 import * as readline from "node:readline";
 
-const RUNNER = path.resolve(__dirname, "runner.ts");
+const RUNNER = path.resolve(import.meta.dirname, "runner.ts");
 
 async function main(): Promise<void> {
   const rl = readline.createInterface({

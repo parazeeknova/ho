@@ -38,10 +38,10 @@ export interface BrowserFingerprint {
 function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
   return () => {
-    a |= 0;
-    a = (a + 0x6d_2b_79_f5) | 0;
+    a = Math.trunc(a);
+    a = Math.trunc(a + 0x6d_2b_79_f5);
     let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    t ^= t + Math.imul(t ^ (t >>> 7), 61 | t);
     return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
   };
 }
@@ -49,7 +49,7 @@ function mulberry32(seed: number): () => number {
 function hashString(str: string): number {
   let h = 2_166_136_261;
   for (let i = 0; i < str.length; i++) {
-    h ^= str.charCodeAt(i);
+    h ^= str.codePointAt(i) ?? 0;
     h = Math.imul(h, 16_777_619);
   }
   return h >>> 0;

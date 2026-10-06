@@ -60,33 +60,20 @@ export const JobPayloadSchema = z.preprocess(
   },
   z.object({
     jobId: z.string(),
-    url: z.string().url(),
-    profile: ProfileSchema,
     mode: z.enum(["auto", "review"]).default("review"),
-    // No-apply phase: when false the fill completes with a screenshot but the
-    // application is never submitted, regardless of mode or review choice.
-    submitAllowed: z.boolean().default(true),
+    profile: ProfileSchema,
     // Learned per-site selectors/flow (procedural memory) passed from the
     // worker so the generic adapter can consult known-good selectors before
     // re-probing the DOM.
     siteKnowledge: z.record(z.string(), z.any()).default({}),
+    // No-apply phase: when false the fill completes with a screenshot but the
+    // application is never submitted, regardless of mode or review choice.
+    submitAllowed: z.boolean().default(true),
+    url: z.string().url(),
   })
 );
 
 export const StatusEventSchema = z.object({
-  jobId: z.string(),
-  status: z.enum([
-    "in_progress",
-    "awaiting_review",
-    "submitted",
-    "failed",
-    "skipped",
-    "expired",
-  ]),
-  screenshotPath: z.string().optional(),
-  filledFields: z.record(z.string(), z.string()).optional(),
-  error: z.string().optional(),
-  message: z.string().optional(),
   // Post-submit email feedback: {kind, from, subject, snippet} from the soft
   // ATS-email poll, surfaced by the worker (confirmation/rejection/screening).
   emailStatus: z
@@ -97,6 +84,19 @@ export const StatusEventSchema = z.object({
       subject: z.string(),
     })
     .optional(),
+  error: z.string().optional(),
+  filledFields: z.record(z.string(), z.string()).optional(),
+  jobId: z.string(),
+  message: z.string().optional(),
+  screenshotPath: z.string().optional(),
+  status: z.enum([
+    "in_progress",
+    "awaiting_review",
+    "submitted",
+    "failed",
+    "skipped",
+    "expired",
+  ]),
 });
 
 export const ActionCallbackSchema = z.object({

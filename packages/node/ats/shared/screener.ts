@@ -128,12 +128,7 @@ export class Screener {
           .catch(() => []);
       }
       specs.push({
-        kind:
-          field.kind === "radio"
-            ? "select"
-            : field.kind === "checkbox"
-              ? "multi"
-              : field.kind,
+        kind: toRpcKind(field.kind),
         options: optionTexts,
         question: field.label,
         required: !!field.required,
@@ -285,12 +280,7 @@ export class Screener {
       }
     }
 
-    const rpcKind =
-      field.kind === "radio"
-        ? "select"
-        : field.kind === "checkbox"
-          ? "multi"
-          : field.kind;
+    const rpcKind = toRpcKind(field.kind);
 
     // Batch cache hit: an answer pre-resolved in one form-wide RPC. Use it
     // directly (fill + verify) without a second per-field RPC round-trip.
@@ -306,7 +296,7 @@ export class Screener {
           );
         }
         const committed = await this.controls.readSelectValue(field.id);
-        ok = ok && !!committed;
+        ok &&= !!committed;
       } else {
         ok = await this.controls.fillByKind(field, cached.answer, optionTexts);
         if (!ok) {
@@ -332,9 +322,9 @@ export class Screener {
     let result: any;
     try {
       result = await this.rpc("answer_question", {
-        question: field.label,
         kind: rpcKind,
         options: optionTexts,
+        question: field.label,
         // Whether the form marks this field required (its label has the
         // asterisk). Overnight, an UNRESOLVED optional question is skipped
         // rather than deferred; the Python side decides with this flag.
@@ -386,7 +376,7 @@ export class Screener {
         ok = await this.controls.fillAsyncAutocomplete(field.id, answer);
       }
       const committed = await this.controls.readSelectValue(field.id);
-      ok = ok && !!committed;
+      ok &&= !!committed;
     } else {
       ok = await this.controls.fillByKind(field, answer, optionTexts);
       if (!ok) {
@@ -403,10 +393,8 @@ export class Screener {
         field.kind === "checkbox" ||
         field.kind === "select" ||
         field.kind === "multi";
-      ok =
-        ok &&
-        !!committed &&
-        (!isOptionKind || valuesConsistent(answer, committed));
+      ok &&=
+        !!committed && (!isOptionKind || valuesConsistent(answer, committed));
     }
 
     if (!ok) {
@@ -421,6 +409,16 @@ export class Screener {
     filled.push(field.label);
     await randomSleep(150, 300);
   }
+}
+
+function toRpcKind(kind: string): string {
+  if (kind === "radio") {
+    return "select";
+  }
+  if (kind === "checkbox") {
+    return "multi";
+  }
+  return kind;
 }
 
 function normalizeQuestionLabel(label: string): string {

@@ -213,7 +213,7 @@ export class WorkdayAdapter extends ATSAdapter {
         .replaceAll(/\s+/g, " ")
         .trim()
         .slice(0, 6000);
-      const location = (info?.location || "").replace(/\s+/g, " ").trim();
+      const location = (info?.location || "").replaceAll(/\s+/g, " ").trim();
 
       // On the apply view the JD DOM is absent — fetch the server-rendered
       // posting page (og tags) and the company from the hostname.
@@ -227,14 +227,12 @@ export class WorkdayAdapter extends ATSAdapter {
             (html.match(
               new RegExp(`<meta[^>]*property="${p}"[^>]*content="([^"]*)"`, "i")
             ) || [])[1] || "";
-          title = title || og("og:title").replaceAll(/\s+/g, " ").trim();
-          description =
-            description ||
-            og("og:description")
-              .replaceAll(/<[^>]+>/g, " ")
-              .replaceAll(/\s+/g, " ")
-              .trim()
-              .slice(0, 6000);
+          title ||= og("og:title").replaceAll(/\s+/g, " ").trim();
+          description ||= og("og:description")
+            .replaceAll(/<[^>]+>/g, " ")
+            .replaceAll(/\s+/g, " ")
+            .trim()
+            .slice(0, 6000);
         } catch {
           // Best-effort; title/description may stay empty.
         }
@@ -921,7 +919,7 @@ export class WorkdayAdapter extends ATSAdapter {
           const seenText = new Set<string>();
           const textSel =
             'input[type="text"], input[type="email"], input[type="tel"], input[type="url"], input[type="number"], input[type="date"], input:not([type]), textarea';
-          for (const el of [...document.querySelectorAll(textSel)]) {
+          for (const el of document.querySelectorAll(textSel)) {
             const e = el as HTMLInputElement;
             const aid = (e as HTMLElement).dataset.automationId || "";
             if (aid === "beecatcher") {
@@ -967,11 +965,9 @@ export class WorkdayAdapter extends ATSAdapter {
 
           // Radio/checkbox groups grouped by input name.
           const seenGroups = new Set<string>();
-          for (const el of [
-            ...document.querySelectorAll(
-              'input[type="radio"], input[type="checkbox"]'
-            ),
-          ]) {
+          for (const el of document.querySelectorAll(
+            'input[type="radio"], input[type="checkbox"]'
+          )) {
             const e = el as HTMLInputElement;
             if (inNav(e)) {
               continue;
@@ -1067,11 +1063,9 @@ export class WorkdayAdapter extends ATSAdapter {
                 }
               }
               if (!groupLabel) {
-                for (const cand of [
-                  ...container.querySelectorAll(
-                    ":scope > legend, :scope > [data-automation-label], :scope > label, :scope > h1, :scope > h2, :scope > h3, :scope > span"
-                  ),
-                ]) {
+                for (const cand of container.querySelectorAll(
+                  ":scope > legend, :scope > [data-automation-label], :scope > label, :scope > h1, :scope > h2, :scope > h3, :scope > span"
+                )) {
                   const t = norm(cand.textContent || "");
                   if (!t || t.length > 150) {
                     continue;
@@ -1110,7 +1104,7 @@ export class WorkdayAdapter extends ATSAdapter {
           }
 
           // Native selects (rare on Workday, but handled).
-          for (const el of [...document.querySelectorAll("select")]) {
+          for (const el of document.querySelectorAll("select")) {
             const e = el as HTMLSelectElement;
             if (!visible(e)) {
               continue;
@@ -1164,10 +1158,10 @@ export class WorkdayAdapter extends ATSAdapter {
         label: r.label,
         name: r.name,
         optionTargets: (r.targets ?? []).map((t: any) => ({
-          text: t.text,
-          name: t.name,
-          value: t.value,
           id: t.id ?? "",
+          name: t.name,
+          text: t.text,
+          value: t.value,
         })),
         options: r.options ?? [],
         required: !!r.required,
@@ -1268,10 +1262,10 @@ export class WorkdayAdapter extends ATSAdapter {
         .evaluate(() => {
           const out: { index: number; label: string; filled: boolean }[] = [];
           const areas = [...document.querySelectorAll("textarea")];
-          areas.forEach((el, i) => {
+          for (const [i, el] of areas.entries()) {
             const e = el as HTMLTextAreaElement;
             if (e.offsetParent === null) {
-              return;
+              continue;
             }
             const aria = e.getAttribute("aria-label") || "";
             const id = e.getAttribute("id") || "";
@@ -1283,7 +1277,7 @@ export class WorkdayAdapter extends ATSAdapter {
               .replaceAll(/\s+/g, " ")
               .trim();
             out.push({ filled: !!e.value.trim(), index: i, label });
-          });
+          }
           return out;
         })
         .catch(() => []);
@@ -1356,11 +1350,9 @@ export class WorkdayAdapter extends ATSAdapter {
     const page = this.getPage();
     return (await page
       .evaluate(() => {
-        for (const el of [
-          ...document.querySelectorAll(
-            "[class*='step'], [class*='Step'], [data-automation-id]"
-          ),
-        ]) {
+        for (const el of document.querySelectorAll(
+          "[class*='step'], [class*='Step'], [data-automation-id]"
+        )) {
           const t = (el.textContent || "").replaceAll(/\s+/g, " ").trim();
           const m = t.match(/step\s+(\d+)\s+of\s+\d+/i);
           if (m) {
@@ -1706,20 +1698,18 @@ export class WorkdayAdapter extends ATSAdapter {
           'button:has-text("Submit Application")'
       )
       .first();
-    if (await submitBtn.isVisible().catch(() => false)) {
-      // The final review screen can wrap Submit in the same invisible
-      // click_filter overlay that swallows trusted Playwright clicks on the
-      // wizard's nav buttons — drive it through the same synthetic dispatch.
-      await this.clickSubmitAction(page, submitBtn);
-    } else {
-      await this.controls.clickSubmitButton({
-        preferredSelector:
-          '[data-automation-id="bottom-navigation-submit-button"], ' +
-          '[data-automation-id="submitButton"], ' +
-          '[data-automation-id="pageFooterSubmitButton"], ' +
-          'button:has-text("Submit Application")',
-      });
-    }
+    // The final review screen can wrap Submit in the same invisible
+    // click_filter overlay that swallows trusted Playwright clicks on the
+    // wizard's nav buttons — drive it through the same synthetic dispatch.
+    await ((await submitBtn.isVisible().catch(() => false))
+      ? this.clickSubmitAction(page, submitBtn)
+      : this.controls.clickSubmitButton({
+          preferredSelector:
+            '[data-automation-id="bottom-navigation-submit-button"], ' +
+            '[data-automation-id="submitButton"], ' +
+            '[data-automation-id="pageFooterSubmitButton"], ' +
+            'button:has-text("Submit Application")',
+        }));
     await randomSleep(1500, 2500);
 
     // Verify a success/error outcome like Lever.

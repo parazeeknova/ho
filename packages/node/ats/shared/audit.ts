@@ -450,13 +450,10 @@ export async function verifySubmitOutcome(
   const lastUrl = page.url();
   // Keep the error diagnostic short (and avoid dumping the applicant's own
   // form answers — name/email/work history — into the persisted job error).
-  const bodySnip = (
-    await page
-      .evaluate(() => document.body?.textContent?.slice(0, 120) ?? "")
-      .catch(() => "")
-  )
-    .replaceAll(/\s+/g, " ")
-    .trim();
+  const bodyText = await page
+    .evaluate(() => document.body?.textContent?.slice(0, 120) ?? "")
+    .catch(() => "");
+  const bodySnip = bodyText.replaceAll(/\s+/g, " ").trim();
   return {
     confirmed: false,
     error: `no success-page redirect or error outcome detected after clicking submit (final url: ${lastUrl}; body: ${escapePromptValue(bodySnip)})`,

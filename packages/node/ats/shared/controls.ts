@@ -586,7 +586,7 @@ export class FormControls {
       return await page.evaluate((selector: string) => {
         const out: string[] = [];
         const seen = new Set<string>();
-        for (const el of [...document.querySelectorAll(selector)]) {
+        for (const el of document.querySelectorAll(selector)) {
           const text = ((el as HTMLElement).textContent || "")
             .replaceAll(/\s+/g, " ")
             .trim();
@@ -609,7 +609,7 @@ export class FormControls {
       return await page.evaluate((selector: string) => {
         const out: string[] = [];
         const seen = new Set<string>();
-        for (const el of [...document.querySelectorAll(selector)]) {
+        for (const el of document.querySelectorAll(selector)) {
           const node = el as HTMLElement;
           if (
             node.offsetParent === null &&
@@ -995,10 +995,11 @@ export class FormControls {
         const wrapLabel = page.locator(`label:has(${base})`).first();
         if (await wrapLabel.isVisible().catch(() => false)) {
           await wrapLabel.click();
-          if (await input.isChecked().catch(() => false)) {
-            if (await verified()) {
-              return true;
-            }
+          if (
+            (await input.isChecked().catch(() => false)) &&
+            (await verified())
+          ) {
+            return true;
           }
         }
         // 2) Sibling label[for=<input id>] — label is NOT an ancestor. The
@@ -1018,20 +1019,22 @@ export class FormControls {
             .first();
           if (await forLabel.isVisible().catch(() => false)) {
             await forLabel.click();
-            if (await input.isChecked().catch(() => false)) {
-              if (await verified()) {
-                return true;
-              }
+            if (
+              (await input.isChecked().catch(() => false)) &&
+              (await verified())
+            ) {
+              return true;
             }
           }
         }
         // 3) Bare input: force-check it (never rely on a wrapping label or
         //    visibility — the input is often the styled/hidden native control).
         await (input as any).check({ force: true }).catch(() => {});
-        if (await input.isChecked().catch(() => false)) {
-          if (await verified()) {
-            return true;
-          }
+        if (
+          (await input.isChecked().catch(() => false)) &&
+          (await verified())
+        ) {
+          return true;
         }
       }
 
@@ -1088,7 +1091,14 @@ export class FormControls {
               }
               // Exact option rows beat short containment matches; buttons are
               // the most precise target (toggle rows), then labels, then any.
-              const score = exact ? (tag === "BUTTON" ? 0 : 1) : 2;
+              let score: number;
+              if (exact && tag === "BUTTON") {
+                score = 0;
+              } else if (exact) {
+                score = 1;
+              } else {
+                score = 2;
+              }
               scored.push({ el, score });
             }
             scored.sort((a, b) => a.score - b.score);

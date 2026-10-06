@@ -189,8 +189,8 @@ export class LeverAdapter extends ATSAdapter {
       return {
         company: company.trim(),
         description: info?.description ?? "",
-        location: (info?.location ?? "").replace(/\s+/g, " ").trim(),
-        title: (info?.title ?? "").replace(/\s+/g, " ").trim(),
+        location: (info?.location ?? "").replaceAll(/\s+/g, " ").trim(),
+        title: (info?.title ?? "").replaceAll(/\s+/g, " ").trim(),
       };
     } catch (error: any) {
       console.warn(`[Lever] readJobContext failed: ${error?.message || error}`);
@@ -417,13 +417,15 @@ export class LeverAdapter extends ATSAdapter {
           for (const inEl of [...radios, ...checks]) {
             const wrapLabel = inEl.closest("label");
             const row = inEl.closest("[class*='option']") || inEl.closest("li");
-            const text = norm(
-              wrapLabel
-                ? wrapLabel.textContent || ""
-                : row
-                  ? row.textContent || ""
-                  : inEl.getAttribute("aria-label") || ""
-            );
+            let rawText: string;
+            if (wrapLabel) {
+              rawText = wrapLabel.textContent || "";
+            } else if (row) {
+              rawText = row.textContent || "";
+            } else {
+              rawText = inEl.getAttribute("aria-label") || "";
+            }
+            const text = norm(rawText);
             if (!text) {
               continue;
             }
@@ -468,10 +470,10 @@ export class LeverAdapter extends ATSAdapter {
         label: r.label,
         name: r.id,
         optionTargets: (r.targets ?? []).map((t: any) => ({
-          text: t.text,
-          name: t.name,
-          value: t.value,
           id: t.id ?? "",
+          name: t.name,
+          text: t.text,
+          value: t.value,
         })),
         options: r.options ?? [],
         required: !!r.required,
@@ -850,13 +852,19 @@ export class LeverControlStack extends FormControls {
       await input.click().catch(() => {});
       // Stagehand's locator wrapper has no pressSequentially; type via the
       // page-level keyboard (fires the key/input events the autocomplete needs).
-      const typed = await page.keyboard
-        ?.type(value, { delay: 40 })
-        .then(() => true)
-        .catch(async () => {
+      let typed = false;
+      try {
+        if (page.keyboard) {
+          await page.keyboard.type(value, { delay: 40 });
+          typed = true;
+        } else {
           await input.fill(value).catch(() => {});
-          return false;
-        });
+          typed = false;
+        }
+      } catch {
+        await input.fill(value).catch(() => {});
+        typed = false;
+      }
       if (!typed) {
         await input.fill(value).catch(() => {});
       }
@@ -934,7 +942,7 @@ export class LeverControlStack extends FormControls {
     try {
       return await page.evaluate(() => {
         const out: string[] = [];
-        for (const el of [...document.querySelectorAll(".dropdown-location")]) {
+        for (const el of document.querySelectorAll(".dropdown-location")) {
           if ((el as HTMLElement).offsetParent === null) {
             continue;
           }

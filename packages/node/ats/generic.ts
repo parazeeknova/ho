@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 
-import { type Stagehand, type Action } from "@browserbasehq/stagehand";
+import type { Stagehand, Action } from "@browserbasehq/stagehand";
 
 import type { JobPayload, Profile } from "../types.js";
 import { setFileInputViaDataTransfer } from "../utils/cdp.js";
@@ -346,16 +346,16 @@ export function extractJsonJobContext(html: string): {
           company: String(
             jp?.company_name || jp?.company || jp?.companyName || ""
           )
-            .replace(/\s+/g, " ")
+            .replaceAll(/\s+/g, " ")
             .trim(),
-          description: htmlDesc.replace(/\s+/g, " ").trim().slice(0, 6000),
+          description: htmlDesc.replaceAll(/\s+/g, " ").trim().slice(0, 6000),
           location: String(
             jp?.job_post_location || jp?.location || jp?.locationName || ""
           )
-            .replace(/\s+/g, " ")
+            .replaceAll(/\s+/g, " ")
             .trim(),
           title: String(jp?.title || "")
-            .replace(/\s+/g, " ")
+            .replaceAll(/\s+/g, " ")
             .trim(),
         };
       })();
@@ -388,8 +388,7 @@ export async function atsApiJobContext(url: string): Promise<{
     if (host.endsWith("ashbyhq.com")) {
       const m = u.pathname.match(/^\/(?:jobs\/)?([^/]+)\/([^/]+)/);
       if (m) {
-        const slug = m[1];
-        const jobId = m[2];
+        const [, slug, jobId] = m;
         const res = await fetch(
           `https://api.ashbyhq.com/posting-api/job-board/${slug}?includeCompensation=true`,
           { headers: { "user-agent": "Mozilla/5.0" } }
@@ -403,8 +402,8 @@ export async function atsApiJobContext(url: string): Promise<{
               description: String(
                 job.descriptionHtml || job.descriptionPlain || ""
               )
-                .replace(/<[^>]+>/g, " ")
-                .replace(/\s+/g, " ")
+                .replaceAll(/<[^>]+>/g, " ")
+                .replaceAll(/\s+/g, " ")
                 .trim()
                 .slice(0, 6000),
               location: String(job.locationName || job.location || "").trim(),
@@ -417,7 +416,7 @@ export async function atsApiJobContext(url: string): Promise<{
     // Greenhouse: /jobs/{id} or boards.greenhouse.io/{board}/jobs/{id}
     if (host.endsWith("greenhouse.io") || host.includes("greenhouse.io")) {
       const m = u.pathname.match(/\/jobs\/(\d+)/);
-      const board = u.pathname.split("/")[1];
+      const [, board] = u.pathname.split("/");
       if (m && board) {
         const res = await fetch(
           `https://boards-api.greenhouse.io/v1/boards/${board}/jobs/${m[1]}`,
@@ -428,8 +427,8 @@ export async function atsApiJobContext(url: string): Promise<{
           return {
             company: String(j?.company_name || board || "").trim(),
             description: String(j?.content || "")
-              .replace(/<[^>]+>/g, " ")
-              .replace(/\s+/g, " ")
+              .replaceAll(/<[^>]+>/g, " ")
+              .replaceAll(/\s+/g, " ")
               .trim()
               .slice(0, 6000),
             location: String(j?.location?.name || "").trim(),
@@ -451,8 +450,8 @@ export async function atsApiJobContext(url: string): Promise<{
           return {
             company: String(j?.team || m[1] || "").trim(),
             description: String(j?.descriptionPlain || j?.description || "")
-              .replace(/<[^>]+>/g, " ")
-              .replace(/\s+/g, " ")
+              .replaceAll(/<[^>]+>/g, " ")
+              .replaceAll(/\s+/g, " ")
               .trim()
               .slice(0, 6000),
             location: String(
@@ -873,9 +872,9 @@ export class GenericAdapter extends ATSAdapter {
         const html = await fetched.text();
         const json = extractJsonJobContext(html);
         if (json) {
-          title = title || json.title;
-          location = location || json.location;
-          description = description || json.description;
+          title ||= json.title;
+          location ||= json.location;
+          description ||= json.description;
         }
         const ogTitle =
           (html.match(/<meta[^>]*property="og:title"[^>]*content="([^"]*)"/i) ||
@@ -884,8 +883,8 @@ export class GenericAdapter extends ATSAdapter {
           (html.match(
             /<meta[^>]*property="og:description"[^>]*content="([^"]*)"/i
           ) || [])[1] || "";
-        title = title || ogTitle;
-        description = description || ogDesc;
+        title ||= ogTitle;
+        description ||= ogDesc;
       } catch {
         // Best-effort; the live DOM values stand.
       }
@@ -909,22 +908,22 @@ export class GenericAdapter extends ATSAdapter {
       if (!description) {
         const api = await atsApiJobContext(page.url());
         if (api) {
-          title = title || api.title;
-          location = location || api.location;
-          description = api.description;
-          company = company || api.company;
+          title ||= api.title;
+          location ||= api.location;
+          ({ description } = api);
+          company ||= api.company;
         }
       }
 
       return {
-        company: company.replace(/[-_]+/g, " ").trim(),
+        company: company.replaceAll(/[-_]+/g, " ").trim(),
         description: description
-          .replace(/<[^>]+>/g, " ")
-          .replace(/\s+/g, " ")
+          .replaceAll(/<[^>]+>/g, " ")
+          .replaceAll(/\s+/g, " ")
           .trim()
           .slice(0, 6000),
         location,
-        title: title.replace(/\s+/g, " ").trim(),
+        title: title.replaceAll(/\s+/g, " ").trim(),
       };
     } catch (error: any) {
       this.warn(`readJobContext failed: ${error?.message || error}`);
@@ -1186,7 +1185,7 @@ export class GenericAdapter extends ATSAdapter {
           'input[type="text"], input[type="email"], input[type="tel"], input[type="number"], ' +
           'input[type="url"], input[type="date"], input:not([type]), textarea';
         const seenText = new Set<string>();
-        for (const el of [...document.querySelectorAll(textSel)]) {
+        for (const el of document.querySelectorAll(textSel)) {
           const e = el as HTMLInputElement;
           if (
             e.type === "password" ||
@@ -1231,7 +1230,7 @@ export class GenericAdapter extends ATSAdapter {
 
         // Native selects.
         const seenSel = new Set<string>();
-        for (const el of [...document.querySelectorAll("select")]) {
+        for (const el of document.querySelectorAll("select")) {
           const e = el as HTMLSelectElement;
           if (!visible(e) || inNav(e)) {
             continue;
@@ -1268,11 +1267,9 @@ export class GenericAdapter extends ATSAdapter {
         // group keyed by its element path, so the structural accept/leave logic
         // still sees it instead of silently losing a required gate.
         const seenGroups = new Set<string>();
-        for (const el of [
-          ...document.querySelectorAll(
-            'input[type="radio"], input[type="checkbox"]'
-          ),
-        ]) {
+        for (const el of document.querySelectorAll(
+          'input[type="radio"], input[type="checkbox"]'
+        )) {
           const e = el as HTMLInputElement;
           if (inNav(e)) {
             continue;
@@ -1357,12 +1354,10 @@ export class GenericAdapter extends ATSAdapter {
               }
             }
             if (!groupLabel) {
-              for (const cand of [
-                ...container.querySelectorAll(
-                  ':scope > legend, :scope > [class*="label"], :scope > label, ' +
-                    ":scope > h1, :scope > h2, :scope > h3, :scope > span"
-                ),
-              ]) {
+              for (const cand of container.querySelectorAll(
+                ':scope > legend, :scope > [class*="label"], :scope > label, ' +
+                  ":scope > h1, :scope > h2, :scope > h3, :scope > span"
+              )) {
                 const t = norm(cand.textContent || "");
                 if (!t || t.length > 160) {
                   continue;
@@ -1431,10 +1426,10 @@ export class GenericAdapter extends ATSAdapter {
         label: r.label,
         name: r.name || undefined,
         optionTargets: (r.targets ?? []).map((t: any) => ({
-          text: t.text,
-          name: t.name,
-          value: t.value,
           id: t.id ?? "",
+          name: t.name,
+          text: t.text,
+          value: t.value,
         })),
         options: r.options ?? [],
         required: !!r.required,
@@ -1498,7 +1493,7 @@ export class GenericAdapter extends ATSAdapter {
         // label really is empty; a transcript/portfolio-only form must not get
         // the resume jammed into the wrong upload.
         if (!resume && inputs.length === 1) {
-          const e = inputs[0];
+          const [e] = inputs;
           const id = e.id || "";
           const txt = `${e.getAttribute("aria-label") || ""} ${
             id
@@ -1527,7 +1522,7 @@ export class GenericAdapter extends ATSAdapter {
     try {
       const id = await input.getAttribute("id").catch(() => null);
       if (id) {
-        fileSel = `input[type="file"]#${id.replace(/[^\w-]/g, "\\$&")}`;
+        fileSel = `input[type="file"]#${id.replaceAll(/[^\w-]/g, "\\$&")}`;
       }
     } catch {
       // best-effort cleanup; ignore failures
@@ -1582,10 +1577,10 @@ export class GenericAdapter extends ATSAdapter {
       .evaluate(() => {
         const out: { index: number; label: string }[] = [];
         const areas = [...document.querySelectorAll("textarea")];
-        areas.forEach((el, i) => {
+        for (const [i, el] of areas.entries()) {
           const e = el as HTMLTextAreaElement;
           if (e.offsetParent === null) {
-            return;
+            continue;
           }
           const aria = e.getAttribute("aria-label") || "";
           const id = e.getAttribute("id") || "";
@@ -1597,7 +1592,7 @@ export class GenericAdapter extends ATSAdapter {
             .replaceAll(/\s+/g, " ")
             .trim();
           out.push({ index: i, label });
-        });
+        }
         const match = out.find(
           (c) =>
             /cover letter/i.test(c.label) &&
@@ -1745,7 +1740,7 @@ export class GenericAdapter extends ATSAdapter {
         }
         const name = el.getAttribute("name");
         if (name) {
-          return clean(name.replace(/[_-]/g, " "));
+          return clean(name.replaceAll(/[_-]/g, " "));
         }
         return "";
       };
@@ -2226,16 +2221,14 @@ export class GenericAdapter extends ATSAdapter {
           "button:has-text('Submit'), a:has-text('Submit Application'), [data-automation-id*='submit' i]"
       )
       .first();
-    if (await submitBtn.isVisible().catch(() => false)) {
-      await submitBtn.click();
-    } else {
-      await this.controls.clickSubmitButton({
-        preferredSelector:
-          "button[type='submit'], input[type='submit'], button:has-text('Submit Application'), " +
-          "button:has-text('Submit'), a:has-text('Submit Application'), " +
-          "[data-automation-id*='submit' i]",
-      });
-    }
+    await ((await submitBtn.isVisible().catch(() => false))
+      ? submitBtn.click()
+      : this.controls.clickSubmitButton({
+          preferredSelector:
+            "button[type='submit'], input[type='submit'], button:has-text('Submit Application'), " +
+            "button:has-text('Submit'), a:has-text('Submit Application'), " +
+            "[data-automation-id*='submit' i]",
+        }));
     await randomSleep(1500, 2500);
 
     // Multi-step boards (Microsoft Careers, Workday, Deloitte, ...) show a
@@ -2525,8 +2518,8 @@ export class GenericControls extends FormControls {
       try {
         const v = await page.evaluate(
           (args: { id: string; name: string }) => {
-            const byId = document.getElementById(
-              args.id
+            const byId = document.querySelector(
+              `#${args.id}`
             ) as HTMLSelectElement | null;
             const byName = document.querySelector(
               `select[name="${args.name}"]`

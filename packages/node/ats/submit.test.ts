@@ -43,11 +43,20 @@ class FakePage {
     return fn();
   }
 
+  get bodyText() {
+    return this._bodyText;
+  }
   set bodyText(t: string) {
     this._bodyText = t;
   }
+  get errors() {
+    return this._errors;
+  }
   set errors(e: string[]) {
     this._errors = e;
+  }
+  get submitVisible() {
+    return this._submitVisible;
   }
   set submitVisible(v: boolean) {
     this._submitVisible = v;

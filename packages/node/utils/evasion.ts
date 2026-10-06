@@ -1,7 +1,4 @@
-export async function randomSleep(
-  minMs: number = 200,
-  maxMs: number = 600
-): Promise<void> {
+export async function randomSleep(minMs = 200, maxMs = 600): Promise<void> {
   const duration = Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs;
   // AUTOFILL_PACING scales every sleep so machine-speed fills can be slowed
   // to human-like timing (e.g. 4 => 4x slower). Must be >= 1; ignored otherwise.

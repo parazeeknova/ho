@@ -16,11 +16,7 @@ export class ActivityWatchdog {
   private readonly onTimeout: () => void;
   private readonly intervalMs: number;
 
-  constructor(
-    timeoutMs: number,
-    onTimeout: () => void,
-    intervalMs: number = 1000
-  ) {
+  constructor(timeoutMs: number, onTimeout: () => void, intervalMs = 1000) {
     this.timeoutMs = timeoutMs;
     this.onTimeout = onTimeout;
     this.intervalMs = intervalMs;

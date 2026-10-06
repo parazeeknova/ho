@@ -99,6 +99,7 @@ export abstract class ATSAdapter {
         // Only count a frame that is big AND within the viewport AND not
         // hidden by itself or an ancestor.
         const blocking =
+          // eslint-disable-next-line no-void -- `void 0` keeps the arrow anonymous (see WARNING above); `undefined` trips TS2695 here.
           (void 0,
           (el: Element): boolean => {
             const r = el.getBoundingClientRect();
@@ -127,22 +128,18 @@ export abstract class ATSAdapter {
             }
             return true;
           });
-        for (const fr of [
-          ...document.querySelectorAll(
-            'iframe[src*="recaptcha"], iframe[src*="hcaptcha"], ' +
-              'iframe[src*="turnstile"], iframe[src*="challenges.cloudflare.com"]'
-          ),
-        ]) {
+        for (const fr of document.querySelectorAll(
+          'iframe[src*="recaptcha"], iframe[src*="hcaptcha"], ' +
+            'iframe[src*="turnstile"], iframe[src*="challenges.cloudflare.com"]'
+        )) {
           if (blocking(fr)) {
             return "captcha challenge iframe";
           }
         }
-        for (const el of [
-          ...document.querySelectorAll(
-            ".g-recaptcha, .h-captcha, .cf-turnstile, " +
-              "#challenge-stage, .cf-challenge, [class*='challenge-error']"
-          ),
-        ]) {
+        for (const el of document.querySelectorAll(
+          ".g-recaptcha, .h-captcha, .cf-turnstile, " +
+            "#challenge-stage, .cf-challenge, [class*='challenge-error']"
+        )) {
           if (blocking(el)) {
             return "captcha challenge widget";
           }
@@ -151,9 +148,9 @@ export abstract class ATSAdapter {
         // recaptcha/turnstile iframe) with a distinctive prompt. Only a LARGE
         // visible widget counts — never the invisible v3 badge. Match the
         // prompt text so legitimate form instructions can't false-positive.
-        for (const el of [
-          ...document.querySelectorAll("div, section, form, iframe"),
-        ]) {
+        for (const el of document.querySelectorAll(
+          "div, section, form, iframe"
+        )) {
           if (!blocking(el)) {
             continue;
           }

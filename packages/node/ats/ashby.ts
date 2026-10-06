@@ -114,6 +114,7 @@ export class AshbyAdapter extends ATSAdapter {
         .replaceAll(/\s+/g, " ")
         .trim()
         .slice(0, 6000);
+      const pageTitle = await page.title();
       const title =
         (posting?.title as string) ||
         (await page
@@ -121,7 +122,7 @@ export class AshbyAdapter extends ATSAdapter {
           .first()
           .textContent()
           .catch(() => "")) ||
-        (await page.title()).replace(/\s*[|–-].*$/, "").trim();
+        pageTitle.replace(/\s*[|–-].*$/, "").trim();
       const company =
         ((posting?.companyName || posting?.company || "") as string) ||
         (appData?.organization?.name as string) ||
@@ -145,10 +146,10 @@ export class AshbyAdapter extends ATSAdapter {
           .textContent()
           .catch(() => ""));
       return {
-        company: company.replace(/\s+/g, " ").trim(),
+        company: company.replaceAll(/\s+/g, " ").trim(),
         description,
-        location: location.replace(/\s+/g, " ").trim(),
-        title: title.replace(/\s+/g, " ").trim(),
+        location: location.replaceAll(/\s+/g, " ").trim(),
+        title: title.replaceAll(/\s+/g, " ").trim(),
       };
     } catch (error: any) {
       console.warn(`[Ashby] readJobContext failed: ${error?.message || error}`);
@@ -453,16 +454,14 @@ export class AshbyAdapter extends ATSAdapter {
     const submitBtn = page
       .locator("button.ashby-application-form-submit-button")
       .first();
-    if (await submitBtn.isVisible().catch(() => false)) {
-      await this.controls.humanClick(
-        submitBtn,
-        "button.ashby-application-form-submit-button"
-      );
-    } else {
-      await this.controls.clickSubmitButton({
-        preferredSelector: "button.ashby-application-form-submit-button",
-      });
-    }
+    await ((await submitBtn.isVisible().catch(() => false))
+      ? this.controls.humanClick(
+          submitBtn,
+          "button.ashby-application-form-submit-button"
+        )
+      : this.controls.clickSubmitButton({
+          preferredSelector: "button.ashby-application-form-submit-button",
+        }));
     await randomSleep(800, 1600);
 
     try {
@@ -810,9 +809,7 @@ export class AshbyAdapter extends ATSAdapter {
                     'div[data-field-path] input[type="file"]'
                   ),
                 ].find(
-                  (x) =>
-                    (x as HTMLInputElement).files &&
-                    (x as HTMLInputElement).files!.length > 0
+                  (x) => ((x as HTMLInputElement).files?.length ?? 0) > 0
                 ) as HTMLInputElement | null;
                 if (i && i.files && i.files.length > 0) {
                   const n = (i.files[0].name || "").toLowerCase();
@@ -1037,11 +1034,9 @@ export class AshbyAdapter extends ATSAdapter {
             // yes/no toggle rows (a hidden checkbox rendered as Yes/No BUTTONS)
             // have no input text — record each button as a clickable target.
             if (targets.length === 0) {
-              for (const row of [
-                ...el.querySelectorAll(
-                  "[class*='option'] label, [class*='option'] span, li, button[class*='option']"
-                ),
-              ]) {
+              for (const row of el.querySelectorAll(
+                "[class*='option'] label, [class*='option'] span, li, button[class*='option']"
+              )) {
                 const t = collect(row as HTMLElement);
                 if (!t || options.includes(t)) {
                   continue;
@@ -1095,11 +1090,11 @@ export class AshbyAdapter extends ATSAdapter {
         label: r.label,
         name: r.id,
         optionTargets: (r.targets ?? []).map((t: any) => ({
-          text: t.text,
-          name: t.name,
-          value: t.value,
-          id: t.id ?? "",
           button: !!t.button,
+          id: t.id ?? "",
+          name: t.name,
+          text: t.text,
+          value: t.value,
         })),
         options: r.options ?? [],
         required: !!r.required,

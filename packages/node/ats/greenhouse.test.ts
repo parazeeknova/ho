@@ -207,8 +207,8 @@ describe("checkboxAction (structural consent/opt-in semantics, label-agnostic)",
     kind: "checkbox",
     label,
     optionTargets: Array.from({ length: nTargets }, (_, i) => ({
-      text: `opt ${i}`,
       name: "x[]",
+      text: `opt ${i}`,
       value: String(i),
     })),
     options: [],
@@ -264,8 +264,6 @@ describe("parseRemixQuestionsModel", () => {
         description: "...",
         questions: [
           {
-            required: false,
-            label: "Race",
             fields: [
               {
                 name: "race",
@@ -277,30 +275,32 @@ describe("parseRemixQuestionsModel", () => {
                 ],
               },
             ],
+            label: "Race",
+            required: false,
           },
         ],
       },
     ],
     questions: [
       {
-        required: true,
-        label: "Preferred First Name",
         fields: [{ name: "preferred_name", type: "input_text" }],
-      },
-      {
+        label: "Preferred First Name",
         required: true,
-        label: "Candidate Location",
+      },
+      {
         fields: [{ name: "candidate_location", type: "input_text" }],
+        label: "Candidate Location",
+        required: true,
       },
       {
-        required: false,
-        label: "LinkedIn Profile",
         fields: [{ name: "question_65822505", type: "input_text" }],
+        label: "LinkedIn Profile",
+        required: false,
       },
       {
-        required: false,
-        label: "Cover Letter",
         fields: [{ name: "cover_letter", type: "input_file" }],
+        label: "Cover Letter",
+        required: false,
       },
     ],
   };
@@ -394,11 +394,11 @@ describe("mergeFormInventory", () => {
     },
     {
       // Listed by the board JSON but never rendered — must be dropped.
-      name: "social_security",
-      label: "Social Security Number",
       kind: "input_text",
-      required: false,
+      label: "Social Security Number",
+      name: "social_security",
       options: [],
+      required: false,
     },
   ];
 
@@ -436,8 +436,8 @@ describe("mergeFormInventory", () => {
       label: "Race",
       name: "race",
       optionTargets: [
-        { text: "Asian", name: "race", value: "2" },
-        { text: "White", name: "race", value: "5" },
+        { name: "race", text: "Asian", value: "2" },
+        { name: "race", text: "White", value: "5" },
       ],
       options: ["Asian", "White"],
       required: false,
@@ -600,7 +600,9 @@ describe("fieldKey / unprocessedFields (iterative re-scan walk)", () => {
     ];
     const processed = new Set<string>();
     const round1 = unprocessedFields(pass1, processed);
-    round1.forEach((f) => processed.add(fieldKey(f)));
+    for (const f of round1) {
+      processed.add(fieldKey(f));
+    }
     // After answering "No", Race is revealed.
     const pass2 = [...pass1, mk("Race", "radio", "race")];
     const round2 = unprocessedFields(pass2, processed);
@@ -609,7 +611,9 @@ describe("fieldKey / unprocessedFields (iterative re-scan walk)", () => {
       ["race"]
     );
     // And once processed it is never returned again.
-    round2.forEach((f) => processed.add(fieldKey(f)));
+    for (const f of round2) {
+      processed.add(fieldKey(f));
+    }
     const round3 = unprocessedFields(pass2, processed);
     assert.deepEqual(round3, []);
   });
@@ -617,7 +621,8 @@ describe("fieldKey / unprocessedFields (iterative re-scan walk)", () => {
 
 describe("translateToDate", () => {
   it("maps immediate/now to today", () => {
-    const d = translateToDate("Immediately")!;
+    const d = translateToDate("Immediately");
+    assert.ok(d);
     const now = new Date();
     assert.equal(d.getFullYear(), now.getFullYear());
     assert.equal(d.getMonth(), now.getMonth());
@@ -625,7 +630,8 @@ describe("translateToDate", () => {
   });
 
   it("adds relative offsets", () => {
-    const d = translateToDate("in 2 weeks")!;
+    const d = translateToDate("in 2 weeks");
+    assert.ok(d);
     const expected = new Date();
     expected.setDate(expected.getDate() + 14);
     assert.equal(d.getFullYear(), expected.getFullYear());
@@ -634,7 +640,8 @@ describe("translateToDate", () => {
   });
 
   it("parses explicit dates", () => {
-    const d = translateToDate("2026-08-15")!;
+    const d = translateToDate("2026-08-15");
+    assert.ok(d);
     assert.equal(d.getFullYear(), 2026);
     assert.equal(d.getMonth(), 7);
     assert.equal(d.getDate(), 15);
@@ -646,7 +653,8 @@ describe("translateToDate", () => {
   });
 
   it("parses a bare graduation year as Dec 31", () => {
-    const d = translateToDate("2027")!;
+    const d = translateToDate("2027");
+    assert.ok(d);
     assert.equal(d.getFullYear(), 2027);
     assert.equal(d.getMonth(), 11);
     assert.equal(d.getDate(), 31);
