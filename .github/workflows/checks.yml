@@ -44,7 +44,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: astral-sh/setup-uv@v10.2.0
-      - run: uvx ty check packages/ingest/src packages/ingest/scripts packages/autofill packages/ml
+      # ty needs the real project environment to resolve third-party imports;
+      # uvx's isolated env cannot see them. setup-uv caches the venv between runs.
+      - run: uv sync --frozen
+      - run: uv run ty check packages/ingest/src packages/ingest/scripts packages/autofill packages/ml
       - uses: oven-sh/setup-bun@v2.2.0
       - uses: actions/cache@v6.1.0
         with:

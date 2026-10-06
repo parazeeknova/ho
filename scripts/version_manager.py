@@ -89,7 +89,11 @@ def repo_root(start: Path) -> Path:
             check=True,
         )
         return Path(out.stdout.strip())
-    except subprocess.CalledProcessError, FileNotFoundError:
+    # NOTE: kept as two clauses (never `except (A, B):`) — ruff format
+    # 0.16.x strips tuple parens here, emitting invalid Python 3 syntax.
+    except subprocess.CalledProcessError:
+        return start
+    except FileNotFoundError:
         return start
 
 
@@ -103,7 +107,9 @@ def staged_files(root: Path) -> list[str]:
             text=True,
             check=True,
         )
-    except subprocess.CalledProcessError, FileNotFoundError:
+    except subprocess.CalledProcessError:
+        return []
+    except FileNotFoundError:
         return []
     return [p for p in out.stdout.split("\0") if p]
 
@@ -151,7 +157,9 @@ def discover_manifests(root: Path) -> list[Manifest]:
 def _read_package_json_version(path: Path) -> str | None:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except OSError, ValueError:
+    except OSError:
+        return None
+    except ValueError:
         return None
     version = data.get("version") if isinstance(data, dict) else None
     return version if isinstance(version, str) else None
@@ -186,10 +194,26 @@ def read_version(manifest: Manifest) -> str | None:
     return _read_pyproject_version(manifest.path)
 
 
+def _oxfmt_json(path: Path) -> None:
+    """Reformat a JSON manifest with the repo formatter.
+
+    Plain json.dumps output (e.g. multi-line arrays) is not oxfmt-canonical,
+    so without this every version bump would fail `oxfmt --check` in CI.
+    Best-effort: warns and continues when bunx/oxfmt is unavailable.
+    """
+    try:
+        subprocess.run(["bunx", "oxfmt", str(path)], check=True, capture_output=True)
+    except FileNotFoundError as exc:
+        print(f"warn: could not format {path} (bunx missing): {exc}", file=sys.stderr)
+    except subprocess.CalledProcessError as exc:
+        print(f"warn: could not format {path}: {exc}", file=sys.stderr)
+
+
 def write_package_json_version(path: Path, version: str) -> None:
     data = json.loads(path.read_text(encoding="utf-8"))
     data["version"] = version
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    _oxfmt_json(path)
 
 
 def write_pyproject_version(path: Path, version: str) -> None:
@@ -246,7 +270,9 @@ def stage_files(root: Path, rels: list[str]) -> None:
     for rel in rels:
         try:
             subprocess.run(["git", "add", "--", rel], cwd=root, check=True, capture_output=True)
-        except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        except subprocess.CalledProcessError as exc:
+            print(f"warn: could not stage {rel}: {exc}", file=sys.stderr)
+        except FileNotFoundError as exc:
             print(f"warn: could not stage {rel}: {exc}", file=sys.stderr)
 
 
@@ -287,7 +313,10 @@ def apply_plan(root: Path, plan: list[Bump], *, stage: bool) -> None:
     for bump in plan:
         try:
             write_version(bump.manifest, bump.new)
-        except (OSError, ValueError) as exc:
+        except OSError as exc:
+            print(f"warn: could not write {bump.manifest.path}: {exc}", file=sys.stderr)
+            continue
+        except ValueError as exc:
             print(f"warn: could not write {bump.manifest.path}: {exc}", file=sys.stderr)
             continue
         rel = str(bump.manifest.path.relative_to(root))

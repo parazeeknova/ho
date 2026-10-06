@@ -1,6 +1,6 @@
 {
   "name": "ho",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "private": true,
   "description": "ho monorepo",
   "workspaces": [
@@ -18,7 +18,7 @@
     "check": "bun run lint && bun run format:check && bun run check-types",
     "fix": "uv run ruff format . && uv run ruff check . --fix && bunx oxfmt && bunx oxlint --fix",
     "check-types": "uv run ty check packages/ingest/src packages/ingest/scripts packages/autofill packages/ml && lerna run typecheck",
-    "format:check": "uv run ruff format --check . && lerna run format:check",
+    "format:check": "uv run ruff format --check . && bunx oxfmt --check && lerna run format:check",
     "bump": "uv run python scripts/version_manager.py",
     "bump:dry": "uv run python scripts/version_manager.py --dry-run",
     "docker:web": "docker build -f apps/web/Dockerfile -t ho-web .",
