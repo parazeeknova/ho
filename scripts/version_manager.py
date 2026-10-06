@@ -14,6 +14,9 @@ Behavior (wired into the ``pre-commit`` hook so it runs on every commit):
   (e.g. ``packages/ingest``) only contribute to the root bump.
 
 Bumped manifests are staged with ``git add`` so they land in the same commit.
+When a ``pyproject.toml`` version moves, the matching ``[[package]]`` entry in
+``uv.lock`` is synced to the same version (otherwise ``uv run`` would dirty the
+tree right after every commit).
 The tool never fails the commit: unreadable files or unparseable versions
 produce a warning and are skipped.
 """
@@ -147,7 +150,8 @@ def _read_package_json_version(path: Path) -> str | None:
     return version if isinstance(version, str) else None
 
 
-def _read_pyproject_version(path: Path) -> str | None:
+def _read_pyproject_field(path: Path, field: str) -> str | None:
+    pattern = re.compile(rf"""{field}\s*=\s*(['"])([^'"]+)\1""")
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError:
@@ -159,10 +163,14 @@ def _read_pyproject_version(path: Path) -> str | None:
             in_project = stripped == "[project]"
             continue
         if in_project:
-            match = _PYPROJECT_VERSION_RE.match(stripped)
+            match = pattern.match(stripped)
             if match:
                 return match.group(2)
     return None
+
+
+def _read_pyproject_version(path: Path) -> str | None:
+    return _read_pyproject_field(path, "version")
 
 
 def read_version(manifest: Manifest) -> str | None:
@@ -227,6 +235,47 @@ def plan_bumps(root: Path, staged: list[str]) -> list[Bump]:
     return plan
 
 
+def stage_files(root: Path, rels: list[str]) -> None:
+    for rel in rels:
+        try:
+            subprocess.run(["git", "add", "--", rel], cwd=root, check=True, capture_output=True)
+        except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+            print(f"warn: could not stage {rel}: {exc}", file=sys.stderr)
+
+
+def sync_uv_lock(root: Path, project_name: str, version: str) -> bool:
+    """Sync matching ``[[package]]`` version entries in ``uv.lock``.
+
+    Only bare ``version = ...`` lines inside the named package block are
+    touched; inline ``{ name = ... }`` dependency specs and ``[package.*]``
+    metadata subtables are left alone. Returns True when the file changed.
+    """
+    lock = root / "uv.lock"
+    try:
+        lines = lock.read_text(encoding="utf-8").splitlines(keepends=True)
+    except OSError:
+        return False
+    name_pattern = re.compile(rf'name\s*=\s*"{re.escape(project_name)}"')
+    in_target = False
+    changed = False
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("["):
+            in_target = False
+            continue
+        if re.match(r"name\s*=", stripped):
+            in_target = name_pattern.match(stripped) is not None
+            continue
+        if in_target and re.match(r"version\s*=", stripped):
+            indent = line[: len(line) - len(line.lstrip())]
+            lines[i] = f'{indent}version = "{version}"\n'
+            changed = True
+            in_target = False
+    if changed:
+        lock.write_text("".join(lines), encoding="utf-8")
+    return changed
+
+
 def apply_plan(root: Path, plan: list[Bump], *, stage: bool) -> None:
     for bump in plan:
         try:
@@ -234,15 +283,10 @@ def apply_plan(root: Path, plan: list[Bump], *, stage: bool) -> None:
         except (OSError, ValueError) as exc:
             print(f"warn: could not write {bump.manifest.path}: {exc}", file=sys.stderr)
             continue
-        rel = bump.manifest.path.relative_to(root)
+        rel = str(bump.manifest.path.relative_to(root))
         print(f"bumped {rel} ({bump.manifest.scope}): {bump.old} -> {bump.new}")
         if stage:
-            try:
-                subprocess.run(
-                    ["git", "add", "--", str(rel)], cwd=root, check=True, capture_output=True
-                )
-            except (subprocess.CalledProcessError, FileNotFoundError) as exc:
-                print(f"warn: could not stage {rel}: {exc}", file=sys.stderr)
+            stage_files(root, [rel])
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -270,6 +314,14 @@ def main(argv: list[str] | None = None) -> int:
             print(f"would bump {rel} ({bump.manifest.scope}): {bump.old} -> {bump.new}")
         return 0
     apply_plan(root, plan, stage=not args.no_stage)
+    for bump in plan:
+        if bump.manifest.kind != "pyproject":
+            continue
+        project_name = _read_pyproject_field(bump.manifest.path, "name")
+        if project_name and sync_uv_lock(root, project_name, bump.new):
+            print(f"synced uv.lock ({project_name}): -> {bump.new}")
+            if not args.no_stage:
+                stage_files(root, ["uv.lock"])
     return 0
 
 

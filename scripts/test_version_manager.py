@@ -149,6 +149,79 @@ def test_pyproject_without_project_version(tmp_path: Path) -> None:
     assert vm.manifests_in(tmp_path, "root") == []
 
 
+# -- uv.lock sync -----------------------------------------------------------------
+
+
+_FAKE_LOCK = """\
+version = 1
+
+[[package]]
+name = "ho"
+version = "0.0.1"
+source = { virtual = "." }
+dependencies = [
+    { name = "ho-ml" },
+    { name = "requests" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "requests" }]
+
+[[package]]
+name = "ho-ml"
+version = "0.4.9"
+source = { editable = "packages/ml" }
+
+[[package]]
+name = "requests"
+version = "2.32.0"
+source = { registry = "https://pypi.org/simple" }
+"""
+
+
+def test_sync_uv_lock_updates_only_matching_package(tmp_path: Path) -> None:
+    (tmp_path / "uv.lock").write_text(_FAKE_LOCK)
+    assert vm.sync_uv_lock(tmp_path, "ho", "0.0.2") is True
+    text = (tmp_path / "uv.lock").read_text()
+    assert 'name = "ho"\nversion = "0.0.2"' in text
+    assert 'name = "ho-ml"\nversion = "0.4.9"' in text
+    assert 'name = "requests"\nversion = "2.32.0"' in text
+    assert '{ name = "ho-ml" }' in text
+
+
+def test_sync_uv_lock_missing_file_is_noop(tmp_path: Path) -> None:
+    assert vm.sync_uv_lock(tmp_path, "ho", "0.0.2") is False
+
+
+def test_sync_uv_lock_unknown_package_is_noop(tmp_path: Path) -> None:
+    (tmp_path / "uv.lock").write_text(_FAKE_LOCK)
+    assert vm.sync_uv_lock(tmp_path, "nope", "1.0.0") is False
+    assert (tmp_path / "uv.lock").read_text() == _FAKE_LOCK
+
+
+@needs_git
+def test_e2e_pyproject_bump_syncs_and_stages_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "package.json").write_text('{"name": "r", "version": "0.0.1"}\n')
+    (root / "pyproject.toml").write_text('[project]\nname = "ho"\nversion = "0.0.1"\n')
+    (root / "uv.lock").write_text(_FAKE_LOCK)
+    _git(root, "init", "-q")
+    _git(root, "config", "user.email", "t@t.t")
+    _git(root, "config", "user.name", "t")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-qm", "init")
+
+    monkeypatch.chdir(root)
+    assert vm.main([]) == 0
+    text = (root / "uv.lock").read_text()
+    assert 'name = "ho"\nversion = "0.0.2"' in text
+    assert 'name = "ho-ml"\nversion = "0.4.9"' in text
+    assert "uv.lock" in _git(root, "diff", "--cached", "--name-only")
+
+
 # -- planning ------------------------------------------------------------------
 
 
