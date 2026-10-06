@@ -25,26 +25,26 @@ Discord acts as the control plane rather than the intelligence layer. It provide
 
 HO is designed as an asynchronous, worker-based pipeline where discovery and intelligence operate significantly faster than the human-facing application layer.
 
-| Pipeline Stage | Operation                     | Typical / min |     Peak / min | Unit             |
-| -------------- | ----------------------------- | ------------: | -------------: | ---------------- |
-| Discovery      | Web URLs discovered           |   **10,000+** |    **25,000+** | URLs/min         |
-| Discovery      | Job postings fetched          |    **2,000+** |     **5,000+** | jobs/min         |
-| Parsing        | Job postings parsed           |    **1,500+** |     **4,000+** | jobs/min         |
-| Normalization  | Jobs canonicalized            |    **1,500+** |     **4,000+** | jobs/min         |
-| Deduplication  | Duplicate candidates checked  |   **10,000+** |    **50,000+** | candidates/min   |
-| Embeddings     | Documents embedded            |    **1,000+** |     **2,500+** | texts/min        |
-| Vector Search  | Semantic retrievals           |    **5,000+** |    **15,000+** | queries/min      |
-| Graph          | Entities enriched             |    **2,000+** |     **5,000+** | jobs/min         |
-| Features       | Feature vectors generated     |    **5,000+** |    **15,000+** | candidates/min   |
-| LTR            | Candidates ranked             |  **100,000+** |   **500,000+** | candidates/min   |
-| Calibration    | Predictions calibrated        |  **500,000+** | **1,000,000+** | predictions/min  |
-| Bandits        | Policy decisions              |  **100,000+** |   **500,000+** | decisions/min    |
-| Event Stream   | Events processed              |   **50,000+** |   **250,000+** | events/min       |
-| LLM            | Application content generated |      **5–15** |      **20–30** | applications/min |
-| Evidence RAG   | Candidate evidence retrieved  |      **100+** |       **500+** | retrievals/min   |
-| Browser        | Forms processed               |     **20–40** |        **60+** | applications/min |
-| Submission     | Applications submitted        |     **10–20** |        **30+** | applications/min |
-| Feedback       | Gmail outcomes processed      |      **100+** |     **1,000+** | events/min       |
+| Pipeline Stage | Operation | Typical / min | Peak / min | Unit |
+| --- | --- | --: | --: | --- |
+| Discovery | Web URLs discovered | **10,000+** | **25,000+** | URLs/min |
+| Discovery | Job postings fetched | **2,000+** | **5,000+** | jobs/min |
+| Parsing | Job postings parsed | **1,500+** | **4,000+** | jobs/min |
+| Normalization | Jobs canonicalized | **1,500+** | **4,000+** | jobs/min |
+| Deduplication | Duplicate candidates checked | **10,000+** | **50,000+** | candidates/min |
+| Embeddings | Documents embedded | **1,000+** | **2,500+** | texts/min |
+| Vector Search | Semantic retrievals | **5,000+** | **15,000+** | queries/min |
+| Graph | Entities enriched | **2,000+** | **5,000+** | jobs/min |
+| Features | Feature vectors generated | **5,000+** | **15,000+** | candidates/min |
+| LTR | Candidates ranked | **100,000+** | **500,000+** | candidates/min |
+| Calibration | Predictions calibrated | **500,000+** | **1,000,000+** | predictions/min |
+| Bandits | Policy decisions | **100,000+** | **500,000+** | decisions/min |
+| Event Stream | Events processed | **50,000+** | **250,000+** | events/min |
+| LLM | Application content generated | **5–15** | **20–30** | applications/min |
+| Evidence RAG | Candidate evidence retrieved | **100+** | **500+** | retrievals/min |
+| Browser | Forms processed | **20–40** | **60+** | applications/min |
+| Submission | Applications submitted | **10–20** | **30+** | applications/min |
+| Feedback | Gmail outcomes processed | **100+** | **1,000+** | events/min |
 
 > [!NOTE]
 > **Benchmark environment:** Throughput figures were measured on a local deployment running **32 GB DDR5 RAM, Intel Core i7 12th Gen, NVIDIA RTX 3060 6 GB, and a 700 Mbps internet connection**. Figures represent observed subsystem throughput under the benchmark workload; end-to-end throughput varies by pipeline path and workload composition.
@@ -87,7 +87,7 @@ The interface is intentionally operational rather than a separate dashboard. HO 
 All workspace tasks are managed via `bun run <command>`:
 
 | Command | Description |
-| :--- | :--- |
+| :-- | :-- |
 | `bun run run` | **Main Production Engine** — Starts infrastructure (Postgres, Redis, Neo4j), discovery, ranking, and Stagehand browser autofill. |
 | `bun run status` | **Live Real-Time Dashboard** — Monitors live throughput rates (obs/min, cand/min, fills/min), queue state, worker procs, and ML epochs. |
 | `bun run export` | **Export Candidates** — Dumps filtered/accepted jobs to CSV (`packages/ingest/intel/accepted_jobs.csv`). |
@@ -95,7 +95,8 @@ All workspace tasks are managed via `bun run <command>`:
 | `bun run intel` | **Market Intelligence** — Runs competitive hiring radar, salary statistics, and company research. |
 | `bun run health` | **Health Diagnostics** — Checks database connections, proxy relays, and container status. |
 | `bun run backup` | **System Backup** — Creates gzipped volume snapshots of PostgreSQL and vector indexes. |
-| `bun run check` | **Full Quality Check** — Runs Ruff formatting, Ruff linting, MyPy type checking, and test suites. |
+| `bun run check` | **Full Quality Check** — Runs Ruff formatting, Ruff linting, oxlint + oxfmt for TS, and test suites. |
+| `bun run check-types` | **Type Checking** — Runs ty (Python) and tsc (TypeScript) across all packages. |
 | `bun run test` | **Test Execution** — Runs unit & benchmark test suites across Python and Node. |
 
 ---
@@ -103,63 +104,71 @@ All workspace tasks are managed via `bun run <command>`:
 ### Command Flags & Detailed Usage
 
 #### 1. `bun run run` (Main Pipeline Runner)
+
 ```bash
 bun run run [FLAGS]
 ```
-* **`--radar-workers <N>`**: Number of parallel candidate discovery and scoring worker procs (default: `32`).
+
+- **`--radar-workers <N>`**: Number of parallel candidate discovery and scoring worker procs (default: `32`).
   ```bash
   bun run run --radar-workers 48
   ```
-* **`--bridge-interval <seconds>`**: Interval in seconds between candidate queue drain cycles (default: `10`).
+- **`--bridge-interval <seconds>`**: Interval in seconds between candidate queue drain cycles (default: `10`).
   ```bash
   bun run run --bridge-interval 5
   ```
-* **`--bridge-batch <N>`**: Maximum candidates processed per drain batch (default: `20`).
+- **`--bridge-batch <N>`**: Maximum candidates processed per drain batch (default: `20`).
   ```bash
   bun run run --bridge-batch 50
   ```
-* **`--max-minutes <N>`**: Hard stop timer after N minutes of continuous operation.
+- **`--max-minutes <N>`**: Hard stop timer after N minutes of continuous operation.
   ```bash
   bun run run --max-minutes 120
   ```
-* **`--no-fill`**: Runs job discovery, dorking, and ranking, but skips the autofill browser worker.
+- **`--no-fill`**: Runs job discovery, dorking, and ranking, but skips the autofill browser worker.
   ```bash
   bun run run --no-fill
   ```
-* **`--dry-run`**: Starts infrastructure services (Postgres, Redis) to verify health without launching sweeps.
+- **`--dry-run`**: Starts infrastructure services (Postgres, Redis) to verify health without launching sweeps.
   ```bash
   bun run run --dry-run
   ```
 
 #### 2. `bun run status` (Live TUI Dashboard)
+
 ```bash
 bun run status [FLAGS]
 ```
-* **`--watch` / `-w`**: *(Default)* Continuously updates the TUI dashboard in real time.
-* **`--once`**: Prints a single static snapshot table and exits immediately.
+
+- **`--watch` / `-w`**: _(Default)_ Continuously updates the TUI dashboard in real time.
+- **`--once`**: Prints a single static snapshot table and exits immediately.
   ```bash
   bun run status --once
   ```
 
 #### 3. `bun run export` (Candidate Exporter)
+
 ```bash
 bun run export [FLAGS]
 ```
-* **`--eligibility <status>`**: Filter candidates by eligibility status (`accepted` [default], `near_miss`, `rejected`, `all`).
+
+- **`--eligibility <status>`**: Filter candidates by eligibility status (`accepted` [default], `near_miss`, `rejected`, `all`).
   ```bash
   bun run export -- --eligibility near_miss
   ```
-* **`--mode <format>`**: Output schema format (`jobs` [default CSV], `outreach` [founder socials/funding], `all` [full JSON dump]).
+- **`--mode <format>`**: Output schema format (`jobs` [default CSV], `outreach` [founder socials/funding], `all` [full JSON dump]).
   ```bash
   bun run export -- --mode outreach
   ```
-* **`--out <path>`**: Specify a custom CSV output file path.
+- **`--out <path>`**: Specify a custom CSV output file path.
   ```bash
   bun run export -- --out ~/Desktop/accepted.csv
   ```
 
 #### 4. `python -m autofill.src.filling.resume <job_id>`
+
 Resumes filing a deferred application waiting on user input or OTP:
+
 ```bash
 python -m autofill.src.filling.resume <job_id>
 ```
@@ -170,11 +179,11 @@ python -m autofill.src.filling.resume <job_id>
 
 Use the following commands directly inside Discord:
 
-* **`/analytics` or `!analytics`**: Generates market intelligence (Pipeline Velocity, Top Companies, Sector Signals, Skill Arbitrage) inside a dedicated thread.
-* **`/status` or `!status`**: Displays active queue status, fill counts, and worker health.
-* **`/memory` or `!memory`**: Shows currently loaded candidate persona context and indexed resume chunks.
-* **`/health` or `!health`**: Runs diagnostic checks on databases and proxy relays.
-* **`/stop` or `!stop`**: Gracefully stops active discovery and browser workers.
+- **`/analytics` or `!analytics`**: Generates market intelligence (Pipeline Velocity, Top Companies, Sector Signals, Skill Arbitrage) inside a dedicated thread.
+- **`/status` or `!status`**: Displays active queue status, fill counts, and worker health.
+- **`/memory` or `!memory`**: Shows currently loaded candidate persona context and indexed resume chunks.
+- **`/health` or `!health`**: Runs diagnostic checks on databases and proxy relays.
+- **`/stop` or `!stop`**: Gracefully stops active discovery and browser workers.
 
 ---
 
@@ -299,7 +308,6 @@ The feedback loop does not assume that every rejection means the underlying job 
 The system flows primarily from top-level infrastructure into discovery, ingestion, intelligence, personalization, execution, and feedback. The lower sections close the learning loop by converting real-world application outcomes into versioned training data and updated policies.
 
 The most important boundary is between **decision-making and execution**: ML determines which opportunities are worth pursuing and how they should be personalized, while deterministic validation controls what is actually submitted externally.
-
 
 ```mermaid
 flowchart TD

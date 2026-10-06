@@ -22,7 +22,10 @@ import type { FormField } from "./greenhouse";
 
 describe("normalizeOptionText", () => {
   it("normalizes case and whitespace", () => {
-    assert.equal(normalizeOptionText("  I am not  a veteran\n "), "i am not a veteran");
+    assert.equal(
+      normalizeOptionText("  I am not  a veteran\n "),
+      "i am not a veteran"
+    );
   });
 });
 
@@ -30,7 +33,10 @@ describe("xpathStringLiteral", () => {
   it("keeps apostrophes unescaped inside a double-quoted literal", () => {
     // Regression: "Bachelor's Degree" was previously escaped with a backslash
     // (bachelor\'s), which XPath treats as a literal backslash and never matches.
-    assert.equal(xpathStringLiteral("bachelor's degree"), '"bachelor\'s degree"');
+    assert.equal(
+      xpathStringLiteral("bachelor's degree"),
+      '"bachelor\'s degree"'
+    );
   });
 
   it("switches to single quotes when the text contains double quotes", () => {
@@ -61,17 +67,26 @@ describe("selectCandidates", () => {
 
 describe("chooseOption", () => {
   it("prefers an unambiguous exact match", () => {
-    const picked = chooseOption(["No"], ["Yes", "No", "I don't wish to answer"]);
+    const picked = chooseOption(
+      ["No"],
+      ["Yes", "No", "I don't wish to answer"]
+    );
     assert.equal(picked, "No");
   });
 
   it("falls back to an unambiguous substring match", () => {
-    const picked = chooseOption(["No"], ["Yes", "No, I don't have a disability"]);
+    const picked = chooseOption(
+      ["No"],
+      ["Yes", "No, I don't have a disability"]
+    );
     assert.equal(picked, "No, I don't have a disability");
   });
 
   it("rejects ambiguous substring matches", () => {
-    const picked = chooseOption(["No"], ["No, I am not a veteran", "No, I am a veteran"]);
+    const picked = chooseOption(
+      ["No"],
+      ["No, I am not a veteran", "No, I am a veteran"]
+    );
     assert.equal(picked, null);
   });
 
@@ -123,7 +138,10 @@ describe("chooseOption", () => {
     const options = ["Bachelor's Degree", "Master's Degree", "PhD"];
     assert.equal(chooseOption(["bachlors"], options), "Bachelor's Degree");
     // A typo that lands near two options must not pick one.
-    assert.equal(chooseOption(["degre"], ["Bachelor's Degree", "Master's Degree"]), null);
+    assert.equal(
+      chooseOption(["degre"], ["Bachelor's Degree", "Master's Degree"]),
+      null
+    );
   });
 
   it("editDistance is symmetric and handles unicode", () => {
@@ -136,19 +154,25 @@ describe("chooseOption", () => {
 
 describe("isLocationAutocomplete (dropdown-typing guard)", () => {
   const mk = (label: string, kind: string, options: string[] = []): any => ({
-    label,
     id: "x",
     kind,
-    required: false,
-    options,
+    label,
     optionTargets: [],
+    options,
+    required: false,
   });
 
   it("accepts a genuine current-city autocomplete (no static options, anchored label)", () => {
     assert.equal(isLocationAutocomplete(mk("Location (City)", "select")), true);
-    assert.equal(isLocationAutocomplete(mk("Candidate Location", "select")), true);
+    assert.equal(
+      isLocationAutocomplete(mk("Candidate Location", "select")),
+      true
+    );
     assert.equal(isLocationAutocomplete(mk("City", "select")), true);
-    assert.equal(isLocationAutocomplete(mk("What is your current location?", "select")), true);
+    assert.equal(
+      isLocationAutocomplete(mk("What is your current location?", "select")),
+      true
+    );
   });
 
   it("rejects a pick-list select that happens to mention location", () => {
@@ -157,15 +181,21 @@ describe("isLocationAutocomplete (dropdown-typing guard)", () => {
     const relocate = mk(
       "Do you currently live or are you willing to relocate to the job’s location?",
       "select",
-      ["I currently live in this job's location.", "I am willing to relocate."],
+      ["I currently live in this job's location.", "I am willing to relocate."]
     );
     assert.equal(isLocationAutocomplete(relocate), false);
     // Any select with static options is a pick-list.
-    assert.equal(isLocationAutocomplete(mk("Location", "select", ["A", "B"])), false);
+    assert.equal(
+      isLocationAutocomplete(mk("Location", "select", ["A", "B"])),
+      false
+    );
   });
 
   it("rejects non-location anchored labels and non-select kinds", () => {
-    assert.equal(isLocationAutocomplete(mk("Where do you work currently?", "select")), false);
+    assert.equal(
+      isLocationAutocomplete(mk("Where do you work currently?", "select")),
+      false
+    );
     assert.equal(isLocationAutocomplete(mk("Location", "text")), false);
     assert.equal(isLocationAutocomplete(mk("Location", "radio")), false);
   });
@@ -173,64 +203,62 @@ describe("isLocationAutocomplete (dropdown-typing guard)", () => {
 
 describe("checkboxAction (structural consent/opt-in semantics, label-agnostic)", () => {
   const mk = (label: string, required: boolean, nTargets: number): any => ({
-    label,
     id: "x",
     kind: "checkbox",
-    required,
-    options: [],
+    label,
     optionTargets: Array.from({ length: nTargets }, (_, i) => ({
       text: `opt ${i}`,
       name: "x[]",
       value: String(i),
     })),
+    options: [],
+    required,
   });
 
   it("accepts a required single-option checkbox (any phrasing)", () => {
     assert.equal(
-      checkboxAction(mk("Please review and acknowledge the Privacy Policy", true, 1)),
-      "accept",
+      checkboxAction(
+        mk("Please review and acknowledge the Privacy Policy", true, 1)
+      ),
+      "accept"
     );
-    assert.equal(checkboxAction(mk("I agree to the Code of Conduct", true, 1)), "accept");
+    assert.equal(
+      checkboxAction(mk("I agree to the Code of Conduct", true, 1)),
+      "accept"
+    );
     assert.equal(checkboxAction(mk("Terms and conditions", true, 1)), "accept");
   });
 
   it("leaves an optional single-option checkbox unchecked (opt-in)", () => {
-    assert.equal(checkboxAction(mk("Send me marketing emails", false, 1)), "leave");
-    assert.equal(checkboxAction(mk("Subscribe to newsletter", false, 1)), "leave");
+    assert.equal(
+      checkboxAction(mk("Send me marketing emails", false, 1)),
+      "leave"
+    );
+    assert.equal(
+      checkboxAction(mk("Subscribe to newsletter", false, 1)),
+      "leave"
+    );
   });
 
   it("asks for a multi-option checkbox (real multi-select question)", () => {
-    assert.equal(checkboxAction(mk("Which teams interest you?", false, 3)), "ask");
-    assert.equal(checkboxAction(mk("Which teams interest you?", true, 3)), "ask");
+    assert.equal(
+      checkboxAction(mk("Which teams interest you?", false, 3)),
+      "ask"
+    );
+    assert.equal(
+      checkboxAction(mk("Which teams interest you?", true, 3)),
+      "ask"
+    );
     // Non-checkbox fields are never auto-handled by these rules.
-    assert.equal(checkboxAction({ ...mk("x", true, 1), kind: "select" }), "ask");
+    assert.equal(
+      checkboxAction({ ...mk("x", true, 1), kind: "select" }),
+      "ask"
+    );
   });
 });
 
 describe("parseRemixQuestionsModel", () => {
   const jobPost = {
-    questions: [
-      {
-        required: true,
-        label: "Preferred First Name",
-        fields: [{ name: "preferred_name", type: "input_text" }],
-      },
-      {
-        required: true,
-        label: "Candidate Location",
-        fields: [{ name: "candidate_location", type: "input_text" }],
-      },
-      {
-        required: false,
-        label: "LinkedIn Profile",
-        fields: [{ name: "question_65822505", type: "input_text" }],
-      },
-      {
-        required: false,
-        label: "Cover Letter",
-        fields: [{ name: "cover_letter", type: "input_file" }],
-      },
-    ],
     eeoc_sections: [
       {
         description: "...",
@@ -253,9 +281,31 @@ describe("parseRemixQuestionsModel", () => {
         ],
       },
     ],
+    questions: [
+      {
+        required: true,
+        label: "Preferred First Name",
+        fields: [{ name: "preferred_name", type: "input_text" }],
+      },
+      {
+        required: true,
+        label: "Candidate Location",
+        fields: [{ name: "candidate_location", type: "input_text" }],
+      },
+      {
+        required: false,
+        label: "LinkedIn Profile",
+        fields: [{ name: "question_65822505", type: "input_text" }],
+      },
+      {
+        required: false,
+        label: "Cover Letter",
+        fields: [{ name: "cover_letter", type: "input_file" }],
+      },
+    ],
   };
   const html = `<html><script>window.__remixContext = {"state":{"loaderData":{"root":{},"route":{"jobPost":${JSON.stringify(
-    jobPost,
+    jobPost
   )}}}}};</script></html>`;
 
   it("extracts core questions with names, types and required flags", () => {
@@ -273,23 +323,31 @@ describe("parseRemixQuestionsModel", () => {
     assert.ok(model);
     const race = model.find((f) => f.name === "race");
     assert.ok(race);
-    assert.deepEqual(race.options, ["Asian", "White", "Decline To Self Identify"]);
+    assert.deepEqual(race.options, [
+      "Asian",
+      "White",
+      "Decline To Self Identify",
+    ]);
     assert.equal(race.kind, "multi_value_single_select");
   });
 
   it("returns null for pages without __remixContext (legacy boards)", () => {
-    assert.equal(parseRemixQuestionsModel("<html><body>legacy form</body></html>"), null);
+    assert.equal(
+      parseRemixQuestionsModel("<html><body>legacy form</body></html>"),
+      null
+    );
   });
 });
 
 describe("parseRemixJobContext", () => {
   const jobPost = {
-    title: "Software Engineer (TypeScript/JavaScript)",
     company_name: "Databento",
-    job_post_location: "Remote / Boston / Salt Lake City / San Francisco / New York",
+    job_post_location:
+      "Remote / Boston / Salt Lake City / San Francisco / New York",
+    title: "Software Engineer (TypeScript/JavaScript)",
   };
   const html = `<html><script>window.__remixContext = {"state":{"loaderData":{"root":{},"route":{"jobPost":${JSON.stringify(
-    jobPost,
+    jobPost
   )}}}}};</script></html>`;
 
   it("extracts title, company and location from the Remix JSON", () => {
@@ -297,36 +355,42 @@ describe("parseRemixJobContext", () => {
     assert.ok(ctx);
     assert.equal(ctx.title, "Software Engineer (TypeScript/JavaScript)");
     assert.equal(ctx.company, "Databento");
-    assert.equal(ctx.location, "Remote / Boston / Salt Lake City / San Francisco / New York");
+    assert.equal(
+      ctx.location,
+      "Remote / Boston / Salt Lake City / San Francisco / New York"
+    );
   });
 
   it("returns null for legacy pages without __remixContext", () => {
-    assert.equal(parseRemixJobContext("<html><body>legacy</body></html>"), null);
+    assert.equal(
+      parseRemixJobContext("<html><body>legacy</body></html>"),
+      null
+    );
   });
 });
 
 describe("mergeFormInventory", () => {
   const jsonFields = [
     {
-      name: "preferred_name",
+      kind: "input_text",
       label: "Preferred First Name",
-      kind: "input_text",
-      required: true,
+      name: "preferred_name",
       options: [],
+      required: true,
     },
     {
-      name: "candidate_location",
+      kind: "input_text",
       label: "Candidate Location",
-      kind: "input_text",
-      required: true,
+      name: "candidate_location",
       options: [],
+      required: true,
     },
     {
-      name: "race",
-      label: "Race",
       kind: "multi_value_single_select",
-      required: false,
+      label: "Race",
+      name: "race",
       options: ["Asian", "White", "Decline To Self Identify"],
+      required: false,
     },
     {
       // Listed by the board JSON but never rendered — must be dropped.
@@ -340,43 +404,43 @@ describe("mergeFormInventory", () => {
 
   const domFields: FormField[] = [
     {
-      label: "Preferred First Name",
       id: "preferred-name",
       kind: "text",
-      required: false,
-      options: [],
-      optionTargets: [],
+      label: "Preferred First Name",
       name: "preferred_name",
+      optionTargets: [],
+      options: [],
+      required: false,
     },
     {
-      label: "Location (City)",
       id: "candidate-location",
       kind: "select",
-      required: false,
-      options: [],
-      optionTargets: [],
+      label: "Location (City)",
       name: "candidate_location",
+      optionTargets: [],
+      options: [],
+      required: false,
     },
     {
-      label: "Country",
       id: "country",
       kind: "select",
-      required: false,
-      options: [],
-      optionTargets: [],
+      label: "Country",
       name: "country",
+      optionTargets: [],
+      options: [],
+      required: false,
     },
     {
-      label: "Race",
       id: "race",
       kind: "radio",
-      required: false,
-      options: ["Asian", "White"],
+      label: "Race",
+      name: "race",
       optionTargets: [
         { text: "Asian", name: "race", value: "2" },
         { text: "White", name: "race", value: "5" },
       ],
-      name: "race",
+      options: ["Asian", "White"],
+      required: false,
     },
   ];
 
@@ -394,7 +458,11 @@ describe("mergeFormInventory", () => {
     const race = merged.find((f) => f.name === "race");
     assert.ok(race);
     assert.equal(race.kind, "radio");
-    assert.deepEqual(race.options, ["Asian", "White", "Decline To Self Identify"]);
+    assert.deepEqual(race.options, [
+      "Asian",
+      "White",
+      "Decline To Self Identify",
+    ]);
     assert.equal(race.optionTargets.length, 2);
   });
 
@@ -420,18 +488,21 @@ describe("mergeFormInventory", () => {
 
 describe("isProfileDrivenField", () => {
   const mk = (label: string, kind: FormField["kind"] = "text"): FormField => ({
-    label,
     id: "x",
     kind,
-    required: false,
-    options: [],
+    label,
     optionTargets: [],
+    options: [],
+    required: false,
   });
 
   it("marks identity fields (first name, email, phone)", () => {
     assert.equal(isProfileDrivenField(mk("First Name")), true);
     assert.equal(isProfileDrivenField(mk("What is your email address?")), true);
-    assert.equal(isProfileDrivenField(mk("Phone (e.g. +91 99999 99999)")), true);
+    assert.equal(
+      isProfileDrivenField(mk("Phone (e.g. +91 99999 99999)")),
+      true
+    );
   });
 
   it("marks profile fields (linkedin, github, website)", () => {
@@ -441,27 +512,36 @@ describe("isProfileDrivenField", () => {
 
   it("does not mark ordinary screener questions", () => {
     assert.equal(isProfileDrivenField(mk("Race", "radio")), false);
-    assert.equal(isProfileDrivenField(mk("Are you currently based in Europe?", "select")), false);
+    assert.equal(
+      isProfileDrivenField(mk("Are you currently based in Europe?", "select")),
+      false
+    );
     assert.equal(isProfileDrivenField(mk("")), false);
   });
 });
 
 describe("isCoverLetterField", () => {
   const mk = (label: string, kind: FormField["kind"] = "text"): FormField => ({
-    label,
     id: "x",
     kind,
-    required: false,
-    options: [],
+    label,
     optionTargets: [],
+    options: [],
+    required: false,
   });
 
   it("marks cover-letter prompts and open blurb textareas", () => {
     assert.equal(isCoverLetterField(mk("Cover Letter")), true);
-    assert.equal(isCoverLetterField(mk("Please add your cover letter below")), true);
+    assert.equal(
+      isCoverLetterField(mk("Please add your cover letter below")),
+      true
+    );
     // "Anything else" / "Tell us about yourself" prompts ARE cover-letter
     // holders — they ask for open prose about the candidate.
-    assert.equal(isCoverLetterField(mk("Anything else you would like us to know?")), true);
+    assert.equal(
+      isCoverLetterField(mk("Anything else you would like us to know?")),
+      true
+    );
     assert.equal(isCoverLetterField(mk("Tell us about yourself")), true);
     // Bare "Additional Information" is a conditional companion to a sourcing
     // select, not a cover-letter field: it must stay blank (the walk never
@@ -470,20 +550,27 @@ describe("isCoverLetterField", () => {
   });
 
   it("never marks structured questions (selects, radios, checkboxes)", () => {
-    assert.equal(isCoverLetterField(mk("Do you need visa sponsorship?", "select")), false);
+    assert.equal(
+      isCoverLetterField(mk("Do you need visa sponsorship?", "select")),
+      false
+    );
     assert.equal(isCoverLetterField(mk("Race", "radio")), false);
     assert.equal(isCoverLetterField(mk("")), false);
   });
 });
 
 describe("fieldKey / unprocessedFields (iterative re-scan walk)", () => {
-  const mk = (label: string, kind: FormField["kind"], id: string): FormField => ({
-    label,
+  const mk = (
+    label: string,
+    kind: FormField["kind"],
+    id: string
+  ): FormField => ({
     id,
     kind,
-    required: false,
-    options: [],
+    label,
     optionTargets: [],
+    options: [],
+    required: false,
   });
 
   it("keys by label + kind + id", () => {
@@ -492,19 +579,25 @@ describe("fieldKey / unprocessedFields (iterative re-scan walk)", () => {
   });
 
   it("returns fields not yet processed and excludes processed ones", () => {
-    const hispanic = mk("Are you Hispanic/Latino?", "select", "hispanic_ethnicity");
+    const hispanic = mk(
+      "Are you Hispanic/Latino?",
+      "select",
+      "hispanic_ethnicity"
+    );
     const race = mk("Race", "radio", "race");
     const processed = new Set([fieldKey(hispanic)]);
     const out = unprocessedFields([hispanic, race], processed);
     assert.deepEqual(
       out.map((f) => f.id),
-      ["race"],
+      ["race"]
     );
   });
 
   it("picks up a field revealed in a later pass (conditional race question)", () => {
     // Pass 1: only hispanic present.
-    const pass1 = [mk("Are you Hispanic/Latino?", "select", "hispanic_ethnicity")];
+    const pass1 = [
+      mk("Are you Hispanic/Latino?", "select", "hispanic_ethnicity"),
+    ];
     const processed = new Set<string>();
     const round1 = unprocessedFields(pass1, processed);
     round1.forEach((f) => processed.add(fieldKey(f)));
@@ -513,7 +606,7 @@ describe("fieldKey / unprocessedFields (iterative re-scan walk)", () => {
     const round2 = unprocessedFields(pass2, processed);
     assert.deepEqual(
       round2.map((f) => f.id),
-      ["race"],
+      ["race"]
     );
     // And once processed it is never returned again.
     round2.forEach((f) => processed.add(fieldKey(f)));

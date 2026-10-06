@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import urllib.request
 from pathlib import Path
+from typing import Any
 
 import httpx
 
@@ -288,7 +289,7 @@ async def index_resume_in_pgvector(
         timeout=httpx.Timeout(120.0, connect=10.0),
         extra_limits={"max_keepalive_connections": 2, "max_connections": 4},
     )
-    indexed: dict[str, int] = {}
+    indexed: dict[str, Any] = {}
     try:
         records: list[dict[str, object]] = []
         current_hashes: set[str] = set()

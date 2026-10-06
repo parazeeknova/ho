@@ -1,0 +1,15 @@
+pre-commit:
+  parallel: true
+  commands:
+    ruff-lint:
+      run: uv run ruff check .
+    ruff-format:
+      run: uv run ruff format --check .
+    oxlint:
+      run: bunx oxlint
+    oxfmt:
+      run: bunx oxfmt --check
+    ty:
+      run: uv run ty check packages/ingest/src packages/ingest/scripts packages/autofill packages/ml
+    tsc:
+      run: bun --cwd packages/node typecheck

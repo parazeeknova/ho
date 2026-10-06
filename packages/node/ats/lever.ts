@@ -1,14 +1,21 @@
-import * as fs from "fs";
+import * as fs from "node:fs";
 
-import { Stagehand } from "@browserbasehq/stagehand";
+import type { Stagehand } from "@browserbasehq/stagehand";
 
-import { type JobPayload, type Profile } from "../types";
+import type { JobPayload, Profile } from "../types";
 import { randomSleep } from "../utils/evasion";
-import { ATSAdapter, type RpcHelper } from "./base";
-import { auditBlanks, finalReverify, type SubmitOutcome } from "./shared/audit";
+import { ATSAdapter } from "./base";
+import type { RpcHelper } from "./base";
+import { auditBlanks, finalReverify } from "./shared/audit";
+import type { SubmitOutcome } from "./shared/audit";
 import { FormControls } from "./shared/controls";
-import { escapePromptValue, normalizeOptionText, pickLocationOption } from "./shared/matching";
-import { fieldKey, type FormField, PRE_FILLED_LABELS } from "./shared/model";
+import {
+  escapePromptValue,
+  normalizeOptionText,
+  pickLocationOption,
+} from "./shared/matching";
+import { fieldKey, PRE_FILLED_LABELS } from "./shared/model";
+import type { FormField } from "./shared/model";
 import { Screener, setBlankedRequiredCount } from "./shared/screener";
 
 /**
@@ -61,17 +68,23 @@ export class LeverAdapter extends ATSAdapter {
     let applied = false;
     for (let i = 0; i < 40; i++) {
       const ready = await page
-        .locator("#application-form input[name='email'], #application-form input[name='name']")
+        .locator(
+          "#application-form input[name='email'], #application-form input[name='name']"
+        )
         .first()
         .isVisible()
         .catch(() => false);
-      if (ready) return;
+      if (ready) {
+        return;
+      }
       // JD pages do not server-render the application form; it only appears
       // (navigating to the /apply URL, or expanding in-page) after the
       // "Apply for this job" link is clicked.
       if (!applied && (await this.clickJdApply())) {
         applied = true;
-        console.log("[Lever] Clicked the JD 'Apply' link to reach the application form.");
+        console.log(
+          "[Lever] Clicked the JD 'Apply' link to reach the application form."
+        );
       }
       await randomSleep(800, 1200);
     }
@@ -82,9 +95,13 @@ export class LeverAdapter extends ATSAdapter {
     // NOTE: never use `:visible` in these CSS selectors — Playwright's engine
     // fails to parse it in a comma-combined selector and matches nothing.
     const link = page
-      .locator('a[data-qa="show-page-apply"], a.template-btn-submit[href$="/apply"]')
+      .locator(
+        'a[data-qa="show-page-apply"], a.template-btn-submit[href$="/apply"]'
+      )
       .first();
-    if (!(await link.isVisible().catch(() => false))) return false;
+    if (!(await link.isVisible().catch(() => false))) {
+      return false;
+    }
     await link.click().catch(() => {});
     return true;
   }
@@ -105,14 +122,15 @@ export class LeverAdapter extends ATSAdapter {
           .first()
           .isVisible()
           .catch(() => false);
-        if (hydrated) break;
+        if (hydrated) {
+          break;
+        }
         await randomSleep(400, 700);
       }
     }
     this.jobCtx = await this.readJobContext();
     console.log(
-      `[Lever] Job context: ${this.jobCtx.title || "?"} @ ${this.jobCtx.company || "?"}` +
-        (this.jobCtx.location ? ` (${this.jobCtx.location})` : ""),
+      `[Lever] Job context: ${this.jobCtx.title || "?"} @ ${this.jobCtx.company || "?"}${this.jobCtx.location ? ` (${this.jobCtx.location})` : ""}`
     );
   }
 
@@ -130,33 +148,37 @@ export class LeverAdapter extends ATSAdapter {
         const [txt, clean] = [
           (sel: string) => {
             const el = document.querySelector(sel);
-            return el ? (el.textContent || "").replace(/\s+/g, " ").trim() : "";
+            return el
+              ? (el.textContent || "").replaceAll(/\s+/g, " ").trim()
+              : "";
           },
           (s: string) =>
             (s || "")
-              .replace(/<[^>]+>/g, " ")
-              .replace(/&nbsp;/g, " ")
-              .replace(/\s+/g, " ")
+              .replaceAll(/<[^>]+>/g, " ")
+              .replaceAll("&nbsp;", " ")
+              .replaceAll(/\s+/g, " ")
               .trim()
               .slice(0, 6000),
         ];
         const ogTitle =
-          document.querySelector('meta[property="og:title"]')?.getAttribute("content") || "";
+          document
+            .querySelector('meta[property="og:title"]')
+            ?.getAttribute("content") || "";
         const docTitle = document.title;
         const title =
           txt(".posting-headline h2, .posting-title h1") ||
           (ogTitle || docTitle).replace(/^.*?\s*[-–|]\s*/, "").trim();
         const company = (ogTitle || docTitle).split(/\s*[-–|]\s*/)[0].trim();
         const location = txt(
-          ".posting-categories .location, [class*='posting-category'][class*='location']",
+          ".posting-categories .location, [class*='posting-category'][class*='location']"
         );
         const descEl = document.querySelector(
-          "[data-qa='job-description'], .posting-description, #posting-description",
+          "[data-qa='job-description'], .posting-description, #posting-description"
         );
         const description = clean(descEl ? descEl.textContent || "" : "");
-        return { title, company, location, description, ogTitle, docTitle };
+        return { company, description, docTitle, location, ogTitle, title };
       });
-      let company = (info?.company ?? "").replace(/\s+/g, " ").trim();
+      let company = (info?.company ?? "").replaceAll(/\s+/g, " ").trim();
       if (!company || company === (info?.docTitle ?? "")) {
         try {
           company = new URL(page.url()).pathname.split("/").find(Boolean) || "";
@@ -165,20 +187,22 @@ export class LeverAdapter extends ATSAdapter {
         }
       }
       return {
-        title: (info?.title ?? "").replace(/\s+/g, " ").trim(),
         company: company.trim(),
-        location: (info?.location ?? "").replace(/\s+/g, " ").trim(),
         description: info?.description ?? "",
+        location: (info?.location ?? "").replace(/\s+/g, " ").trim(),
+        title: (info?.title ?? "").replace(/\s+/g, " ").trim(),
       };
-    } catch (err: any) {
-      console.warn(`[Lever] readJobContext failed: ${err?.message || err}`);
-      return { title: "", company: "", location: "", description: "" };
+    } catch (error: any) {
+      console.warn(`[Lever] readJobContext failed: ${error?.message || error}`);
+      return { company: "", description: "", location: "", title: "" };
     }
   }
 
   private async uploadResume(resumePath: string): Promise<boolean> {
     const page = this.getPage();
-    const input = page.locator('#application-form input[type="file"][name="resume"]').first();
+    const input = page
+      .locator('#application-form input[type="file"][name="resume"]')
+      .first();
     console.log(`[Lever] Uploading resume from ${resumePath}...`);
     for (let attempt = 0; attempt < 3; attempt++) {
       if ((await input.count()) === 0) {
@@ -192,17 +216,19 @@ export class LeverAdapter extends ATSAdapter {
         await this.getPage()
           .evaluate(() => {
             const el = document.querySelector(
-              '#application-form input[type="file"][name="resume"]',
+              '#application-form input[type="file"][name="resume"]'
             );
             const lbl = el ? el.closest("label") : null;
-            if (lbl) (lbl as HTMLElement).click();
+            if (lbl) {
+              (lbl as HTMLElement).click();
+            }
           })
           .catch(() => {});
         await randomSleep(300, 600);
         await input.setInputFiles(resumePath);
-      } catch (err: any) {
+      } catch (error: any) {
         console.warn(
-          `[Lever] Resume setInputFiles threw (attempt ${attempt + 1}): ${err?.message || err}`,
+          `[Lever] Resume setInputFiles threw (attempt ${attempt + 1}): ${error?.message || error}`
         );
       }
       await randomSleep(2500, 3500);
@@ -210,15 +236,20 @@ export class LeverAdapter extends ATSAdapter {
         console.log("[Lever] Resume uploaded and registered.");
         return true;
       }
-      console.warn(`[Lever] Resume upload not confirmed (attempt ${attempt + 1}); retrying...`);
+      console.warn(
+        `[Lever] Resume upload not confirmed (attempt ${attempt + 1}); retrying...`
+      );
     }
     return false;
   }
 
   private async fillLocation(value: string): Promise<boolean> {
     const ok = await this.controls.fillLeverLocation(value);
-    if (ok) console.log(`[Lever] Committed location "${value}".`);
-    else console.warn(`[Lever] Could not commit profile location "${value}".`);
+    if (ok) {
+      console.log(`[Lever] Committed location "${value}".`);
+    } else {
+      console.warn(`[Lever] Could not commit profile location "${value}".`);
+    }
     return ok;
   }
 
@@ -226,29 +257,29 @@ export class LeverAdapter extends ATSAdapter {
     const page = this.getPage();
     try {
       const rows = await page.evaluate(() => {
-        const out: Array<{
+        const out: {
           label: string;
           id: string;
           kind: string;
           required: boolean;
           options: string[];
-          targets: Array<{
+          targets: {
             text: string;
             name: string;
             value: string;
             id?: string;
             button?: boolean;
-          }>;
-        }> = [];
+          }[];
+        }[] = [];
         // WARNING: only anonymous arrows may be defined inside this evaluate
         // (tsx keepNames wraps inferred-name arrows in __name()). Destructure
         // helpers into an array so none gains a name.
         const [norm, isSurvey, VISIBLE] = [
           (t: string) =>
             (t || "")
-              .replace(/\s+/g, " ")
+              .replaceAll(/\s+/g, " ")
               .trim()
-              .replace(/^\*+|\*+$/g, ""),
+              .replaceAll(/^\*+|\*+$/g, ""),
           (el: Element): boolean => {
             // All survey/EEO/geography questions live inside a hidden container.
             let n: Element | null = el;
@@ -256,7 +287,7 @@ export class LeverAdapter extends ATSAdapter {
               const cls = (n.className || "").toString();
               const id = (n.getAttribute && n.getAttribute("id")) || "";
               if (
-                /(survey|eeo|\bonboarding)/i.test(cls + " " + id) ||
+                /(survey|eeo|\bonboarding)/i.test(`${cls} ${id}`) ||
                 n === document.querySelector("#survey-job-questions") ||
                 n === document.querySelector(".application-form.hidden")
               ) {
@@ -273,71 +304,109 @@ export class LeverAdapter extends ATSAdapter {
             return r.height > 0 && r.width > 0;
           },
         ];
-        const entries = Array.from(
-          document.querySelectorAll("#application-form li.application-question"),
-        );
+        const entries = [
+          ...document.querySelectorAll(
+            "#application-form li.application-question"
+          ),
+        ];
         let seq = 0;
         for (const li of entries) {
-          if (!VISIBLE(li)) continue;
-          if (isSurvey(li)) continue;
+          if (!VISIBLE(li)) {
+            continue;
+          }
+          if (isSurvey(li)) {
+            continue;
+          }
           // The async location autocomplete (#location-input) is committed only
           // by picking a dropdown suggestion (fillLeverLocation runs pre-walk);
           // never let the screener type free text into it.
-          if (li.contains(document.getElementById("location-input"))) continue;
+          if (li.contains(document.querySelector("#location-input"))) {
+            continue;
+          }
           const labelEl =
             li.querySelector(":scope > .application-label") ||
             li.querySelector(".application-label");
           const label = norm(labelEl?.textContent || "");
-          if (!label) continue;
-          const nameAttr = li.querySelector("input, textarea, select")?.getAttribute("name") || "";
+          if (!label) {
+            continue;
+          }
+          const nameAttr =
+            li.querySelector("input, textarea, select")?.getAttribute("name") ||
+            "";
           // The EEO / survey / standard-context fields are handled elsewhere or
           // never auto-answered. `location`/`selectedLocation` is the combobox.
-          if (/^(name|resume|phone|email|org|location|selectedLocation)$/.test(nameAttr)) continue;
-          if (/(^|\[)(eeo|surveys?|states?)\[/.test(nameAttr) || nameAttr.startsWith("eeo["))
+          if (
+            /^(name|resume|phone|email|org|location|selectedLocation)$/.test(
+              nameAttr
+            )
+          ) {
             continue;
-          if (nameAttr.startsWith("urls[")) continue;
+          }
+          if (
+            /(^|\[)(eeo|surveys?|states?)\[/.test(nameAttr) ||
+            nameAttr.startsWith("eeo[")
+          ) {
+            continue;
+          }
+          if (nameAttr.startsWith("urls[")) {
+            continue;
+          }
 
           const input = li.querySelector(
-            "input[type='text'], input[type='email'], input[type='tel'], input[type='url'], input[type='number'], input[type='date'], input:not([type])",
+            "input[type='text'], input[type='email'], input[type='tel'], input[type='url'], input[type='number'], input[type='date'], input:not([type])"
           ) as HTMLInputElement | null;
-          const textarea = li.querySelector("textarea") as HTMLTextAreaElement | null;
+          const textarea = li.querySelector(
+            "textarea"
+          ) as HTMLTextAreaElement | null;
           const select = li.querySelector("select") as HTMLSelectElement | null;
-          const radios = Array.from(
-            li.querySelectorAll('input[type="radio"]'),
-          ) as HTMLInputElement[];
-          const checks = Array.from(
-            li.querySelectorAll('input[type="checkbox"]'),
-          ) as HTMLInputElement[];
+          const radios = [
+            ...li.querySelectorAll('input[type="radio"]'),
+          ] as HTMLInputElement[];
+          const checks = [
+            ...li.querySelectorAll('input[type="checkbox"]'),
+          ] as HTMLInputElement[];
 
           const required =
-            !!li.querySelector("input[required], textarea[required], select[required]") ||
-            /aria-required/.test(li.outerHTML);
+            !!li.querySelector(
+              "input[required], textarea[required], select[required]"
+            ) || /aria-required/.test(li.outerHTML);
 
           let kind = "";
-          if (input && !radios.length && !checks.length && !select) kind = "text";
-          else if (textarea) kind = "text";
-          else if (select) kind = "select";
-          else if (radios.length) kind = "radio";
-          else if (checks.length) kind = "checkbox";
-          else continue;
+          if (input && !radios.length && !checks.length && !select) {
+            kind = "text";
+          } else if (textarea) {
+            kind = "text";
+          } else if (select) {
+            kind = "select";
+          } else if (radios.length) {
+            kind = "radio";
+          } else if (checks.length) {
+            kind = "checkbox";
+          } else {
+            continue;
+          }
 
           // Native inputs carry no id; assign a stable synthetic one so the
           // shared locator machinery (#<id>) finds the element deterministically.
           const id = `leverq-${seq++}`;
-          if (input) input.setAttribute("id", id);
-          else if (textarea) textarea.setAttribute("id", id);
-          else if (select) select.setAttribute("id", id);
+          if (input) {
+            input.setAttribute("id", id);
+          } else if (textarea) {
+            textarea.setAttribute("id", id);
+          } else if (select) {
+            select.setAttribute("id", id);
+          }
 
           let options: string[] = [];
-          const targets: Array<{
+          const targets: {
             text: string;
             name: string;
             value: string;
             id?: string;
             button?: boolean;
-          }> = [];
+          }[] = [];
           if (select) {
-            options = Array.from(select.options)
+            options = [...select.options]
               .map((o) => norm(o.textContent || ""))
               .filter((t) => t && t !== "");
             // discard placeholder / "Select..." option (first empty value).
@@ -353,27 +422,40 @@ export class LeverAdapter extends ATSAdapter {
                 ? wrapLabel.textContent || ""
                 : row
                   ? row.textContent || ""
-                  : inEl.getAttribute("aria-label") || "",
+                  : inEl.getAttribute("aria-label") || ""
             );
-            if (!text) continue;
+            if (!text) {
+              continue;
+            }
             targets.push({
-              text,
-              name: inEl.name || "",
-              value: inEl.value || "",
               id: inEl.id || "",
+              name: inEl.name || "",
+              text,
+              value: inEl.value || "",
             });
-            if (!options.includes(text)) options.push(text);
+            if (!options.includes(text)) {
+              options.push(text);
+            }
           }
-          if (kind === "select" && options.length === 0) continue;
-          if ((kind === "radio" || kind === "checkbox") && targets.length === 0) continue;
+          if (kind === "select" && options.length === 0) {
+            continue;
+          }
+          if (
+            (kind === "radio" || kind === "checkbox") &&
+            targets.length === 0
+          ) {
+            continue;
+          }
 
-          out.push({ label, id, kind, required, options, targets });
+          out.push({ id, kind, label, options, required, targets });
         }
         const seen = new Set<string>();
         const uniq: typeof out = [];
         for (const r of out) {
           const key = `${norm(r.label).toLowerCase()}|${r.kind}`;
-          if (seen.has(key)) continue;
+          if (seen.has(key)) {
+            continue;
+          }
           seen.add(key);
           uniq.push(r);
         }
@@ -381,21 +463,23 @@ export class LeverAdapter extends ATSAdapter {
       });
 
       return (rows ?? []).map((r: any): FormField => ({
-        label: r.label,
         id: r.id,
         kind: r.kind as FormField["kind"],
-        required: !!r.required,
-        options: r.options ?? [],
+        label: r.label,
+        name: r.id,
         optionTargets: (r.targets ?? []).map((t: any) => ({
           text: t.text,
           name: t.name,
           value: t.value,
           id: t.id ?? "",
         })),
-        name: r.id,
+        options: r.options ?? [],
+        required: !!r.required,
       }));
-    } catch (err: any) {
-      console.warn(`[Lever] collectQuestions failed: ${err?.message || err}`);
+    } catch (error: any) {
+      console.warn(
+        `[Lever] collectQuestions failed: ${error?.message || error}`
+      );
       return [];
     }
   }
@@ -409,48 +493,52 @@ export class LeverAdapter extends ATSAdapter {
     await this.captureJobContext();
     await this.waitForForm();
 
-    console.log("[Lever] Uploading resume (parseResume autofills standard fields)...");
+    console.log(
+      "[Lever] Uploading resume (parseResume autofills standard fields)..."
+    );
     let resumeAttached = false;
     if (profile.resumePath && fs.existsSync(profile.resumePath)) {
       resumeAttached = await this.uploadResume(profile.resumePath);
     }
 
-    console.log("[Lever] Overriding deterministic profile fields (post-parse)...");
+    console.log(
+      "[Lever] Overriding deterministic profile fields (post-parse)..."
+    );
     await this.controls.fillField(
       'input[name="name"]',
       [profile.firstName, profile.lastName].join(" ").trim(),
       "Type %value% into the Full name input field",
-      "value",
+      "value"
     );
     await this.controls.fillField(
       'input[name="email"]',
       profile.email,
       "Type %value% into the Email input field",
-      "value",
+      "value"
     );
     await this.controls.fillField(
       'input[name="phone"]',
       profile.phone,
       "Type %value% into the Phone input field",
-      "value",
+      "value"
     );
     await this.controls.fillField(
       'input[name="urls[LinkedIn]"]',
       profile.linkedin ?? "",
       "Type %value% into the LinkedIn URL input field",
-      "value",
+      "value"
     );
     await this.controls.fillField(
       'input[name="urls[Portfolio]"]',
       profile.website ?? "",
       "Type %value% into the Portfolio URL input field",
-      "value",
+      "value"
     );
     await this.controls.fillField(
       'input[name="urls[GitHub]"]',
       profile.github ?? "",
       "Type %value% into the GitHub URL input field",
-      "value",
+      "value"
     );
 
     if (profile.location) {
@@ -464,9 +552,14 @@ export class LeverAdapter extends ATSAdapter {
         await rpc("job_context", this.jobCtx);
       }
 
-      const screener = new Screener(this.controls, "LeverAdapter", profile, rpc);
+      const screener = new Screener(
+        this.controls,
+        "LeverAdapter",
+        profile,
+        rpc
+      );
       const filled: string[] = [];
-      const blanked: Array<{ label: string; reason: string }> = [];
+      const blanked: { label: string; reason: string }[] = [];
       const processedKeys = new Set<string>();
       const userSkippedKeys = new Set<string>();
 
@@ -474,7 +567,7 @@ export class LeverAdapter extends ATSAdapter {
         const fields = await this.collectQuestions();
         const fresh = fields.filter((f) => !processedKeys.has(fieldKey(f)));
         console.log(
-          `[Lever] Walk pass ${pass + 1}: ${fresh.length} new question(s) (total ${fields.length}).`,
+          `[Lever] Walk pass ${pass + 1}: ${fresh.length} new question(s) (total ${fields.length}).`
         );
         if (fresh.length === 0) {
           console.log(`[Lever] Walk converged after ${pass + 1} pass(es).`);
@@ -494,38 +587,62 @@ export class LeverAdapter extends ATSAdapter {
         readValue: (f) => this.controls.readFieldValue(f),
         transcript: blanked,
       });
-      console.log(`[Lever] Walk complete: filled ${filled.length}, blank ${blanked.length}.`);
-      for (const b of blanked)
-        console.warn(`[Lever]   blank: ${escapePromptValue(b.label)} (${b.reason})`);
-      for (const rb of requiredBlanks)
-        console.warn(`[Lever]   REQUIRED blank: ${escapePromptValue(rb.label)} (${rb.reason})`);
+      console.log(
+        `[Lever] Walk complete: filled ${filled.length}, blank ${blanked.length}.`
+      );
+      for (const b of blanked) {
+        console.warn(
+          `[Lever]   blank: ${escapePromptValue(b.label)} (${b.reason})`
+        );
+      }
+      for (const rb of requiredBlanks) {
+        console.warn(
+          `[Lever]   REQUIRED blank: ${escapePromptValue(rb.label)} (${rb.reason})`
+        );
+      }
 
       // Final sweep: re-enumerate and fill any remaining empty fields.
       const sweepFilled: string[] = [];
-      const sweepBlanks: Array<{ label: string; reason: string }> = [];
+      const sweepBlanks: { label: string; reason: string }[] = [];
       for (let pass = 0; pass < 3; pass++) {
         const swept = await this.collectQuestions();
         let touched = 0;
         for (const f of swept) {
-          if (PRE_FILLED_LABELS.has(`${f.label}`.replace(/\s+/g, " ").toLowerCase())) continue;
-          if (userSkippedKeys.has(fieldKey(f))) continue;
-          if (await this.hasValue(f)) continue;
+          if (
+            PRE_FILLED_LABELS.has(
+              `${f.label}`.replaceAll(/\s+/g, " ").toLowerCase()
+            )
+          ) {
+            continue;
+          }
+          if (userSkippedKeys.has(fieldKey(f))) {
+            continue;
+          }
+          if (await this.hasValue(f)) {
+            continue;
+          }
           touched += 1;
           await screener.process(f, sweepFilled, sweepBlanks, userSkippedKeys);
         }
-        if (touched === 0) break;
+        if (touched === 0) {
+          break;
+        }
       }
       if (sweepFilled.length) {
-        console.log(`[Lever] Final sweep filled ${sweepFilled.length} field(s):`);
-        for (const l of sweepFilled) console.log(`[Lever]   filled: ${escapePromptValue(l)}`);
+        console.log(
+          `[Lever] Final sweep filled ${sweepFilled.length} field(s):`
+        );
+        for (const l of sweepFilled) {
+          console.log(`[Lever]   filled: ${escapePromptValue(l)}`);
+        }
       }
 
       const stillBlank = await finalReverify({
-        tag: "LeverAdapter",
         collect: () => this.collectQuestions(),
         isEmpty: async (f) => !(await this.hasValue(f)),
-        skippedKeys: userSkippedKeys,
         reasons: [...blanked, ...sweepBlanks],
+        skippedKeys: userSkippedKeys,
+        tag: "LeverAdapter",
       });
       // Surface how many required fields are still blank so the runner can
       // gate auto-submit on an incomplete form.
@@ -534,15 +651,24 @@ export class LeverAdapter extends ATSAdapter {
       // JD-tailored resume attaches at the END of the fill. In fully-deferred
       // mode (profile.resumePath null) no resume was uploaded early, so attach
       // the tailored PDF here; otherwise the base resume already attached stays.
-      if (!resumeAttached && profile.resumePath == null) {
+      if (
+        (!resumeAttached && profile.resumePath === null) ||
+        profile.resumePath === undefined
+      ) {
         const tailored = await this.resolveTailoredResume(rpc);
         if (tailored) {
           resumeAttached = await this.uploadResume(tailored);
         }
       }
 
-      if (profile.resumePath && !resumeAttached && !(await this.controls.isResumeAttached())) {
-        console.warn("[Lever] REVERIFY: resume is NOT attached after the final pass.");
+      if (
+        profile.resumePath &&
+        !resumeAttached &&
+        !(await this.controls.isResumeAttached())
+      ) {
+        console.warn(
+          "[Lever] REVERIFY: resume is NOT attached after the final pass."
+        );
       } else if (profile.resumePath) {
         console.log("[Lever] REVERIFY: resume is attached.");
       }
@@ -572,9 +698,12 @@ export class LeverAdapter extends ATSAdapter {
       const err = await page
         .locator(".error-message:visible")
         .first()
-        .innerText()
+        .textContent()
         .catch(() => "");
-      if (err && !/exceeds? the maximum upload size|too large|100MB/i.test(err)) {
+      if (
+        err &&
+        !/exceeds? the maximum upload size|too large|100MB/i.test(err)
+      ) {
         console.error(`[Lever] Submit error banner: ${escapePromptValue(err)}`);
         return {
           confirmed: false,
@@ -583,11 +712,11 @@ export class LeverAdapter extends ATSAdapter {
         };
       }
       const bodyText = await page
-        .evaluate(() => document.body?.innerText?.slice(0, 4000) ?? "")
+        .evaluate(() => document.body?.textContent?.slice(0, 4000) ?? "")
         .catch(() => "");
       if (
         /application (has been )?(successfully )?submitted|thank (you|u) for applying|your application has been received|we (have )?received your application|application complete/i.test(
-          bodyText,
+          bodyText
         )
       ) {
         console.log("[Lever] Submitted: inline confirmation text detected.");
@@ -598,7 +727,8 @@ export class LeverAdapter extends ATSAdapter {
     console.warn("[Lever] Submit outcome not detected; treating as failed.");
     return {
       confirmed: false,
-      error: "Lever submit: no success or error outcome detected after clicking submit",
+      error:
+        "Lever submit: no success or error outcome detected after clicking submit",
       retryable: false,
     };
   }
@@ -613,24 +743,34 @@ export class LeverAdapter extends ATSAdapter {
     const stillBlank: string[] = [];
     const fields = await this.collectQuestions();
     for (const f of fields) {
-      if (!f.required) continue;
-      if (await this.hasValue(f)) continue;
-      if (PRE_FILLED_LABELS.has(normalizeOptionText(f.label))) continue;
+      if (!f.required) {
+        continue;
+      }
+      if (await this.hasValue(f)) {
+        continue;
+      }
+      if (PRE_FILLED_LABELS.has(normalizeOptionText(f.label))) {
+        continue;
+      }
       const screener = new Screener(
         this.controls,
         "LeverAdapter",
         this.profile,
-        rpc ?? (async () => ({ answer: "" })),
+        rpc ?? (async () => ({ answer: "" }))
       );
       const filled: string[] = [];
       const blanked: { label: string; reason: string }[] = [];
       const skipped = new Set<string>();
       await screener.process(f, filled, blanked, skipped);
-      if (filled.length === 0) stillBlank.push(f.label);
+      if (filled.length === 0) {
+        stillBlank.push(f.label);
+      }
     }
     const remaining = stillBlank.length;
     setBlankedRequiredCount(remaining);
-    console.log(`[Lever] Recheck complete: ${remaining} required field(s) still blank.`);
+    console.log(
+      `[Lever] Recheck complete: ${remaining} required field(s) still blank.`
+    );
     for (const l of stillBlank) {
       console.warn(`[Lever]   still blank: ${escapePromptValue(l)}`);
     }
@@ -652,11 +792,19 @@ export class LeverControlStack extends FormControls {
       const page = this.getPage();
       try {
         return (await page.evaluate((id: string) => {
-          const sel = document.getElementById(id) as HTMLSelectElement | null;
-          if (!sel) return "";
+          const sel = document.querySelector(
+            `#${id}`
+          ) as HTMLSelectElement | null;
+          if (!sel) {
+            return "";
+          }
           const idx = sel.selectedIndex;
-          if (idx < 0) return "";
-          return (sel.options[idx]?.textContent || "").replace(/\s+/g, " ").trim();
+          if (idx < 0) {
+            return "";
+          }
+          return (sel.options[idx]?.textContent || "")
+            .replaceAll(/\s+/g, " ")
+            .trim();
         }, field.id)) as string;
       } catch {
         return "";
@@ -670,12 +818,16 @@ export class LeverControlStack extends FormControls {
     return page
       .evaluate(() => {
         const input = document.querySelector(
-          '#application-form input[type="file"][name="resume"]',
+          '#application-form input[type="file"][name="resume"]'
         ) as HTMLInputElement | null;
-        if (!input) return true; // consumed by the board = attached
-        if (input.files && input.files.length > 0) return true;
+        if (!input) {
+          return true;
+        } // consumed by the board = attached
+        if (input.files && input.files.length > 0) {
+          return true;
+        }
         const zone = document.querySelector(
-          ".file-upload, [class*='upload'], [class*='resume-upload']",
+          ".file-upload, [class*='upload'], [class*='resume-upload']"
         );
         const text = zone ? zone.textContent || "" : "";
         return /attached|uploaded|reading|✓|Added/i.test(text);
@@ -690,7 +842,9 @@ export class LeverControlStack extends FormControls {
     const page = this.getPage();
     try {
       const input = page.locator("#location-input").first();
-      if (!(await input.isVisible().catch(() => false))) return false;
+      if (!(await input.isVisible().catch(() => false))) {
+        return false;
+      }
       await this.closeMenu();
       await randomSleep(150, 300);
       await input.click().catch(() => {});
@@ -703,7 +857,9 @@ export class LeverControlStack extends FormControls {
           await input.fill(value).catch(() => {});
           return false;
         });
-      if (!typed) await input.fill(value).catch(() => {});
+      if (!typed) {
+        await input.fill(value).catch(() => {});
+      }
       let rows: string[] = [];
       for (let i = 0; i < 10 && rows.length === 0; i++) {
         await randomSleep(900, 1200);
@@ -724,15 +880,17 @@ export class LeverControlStack extends FormControls {
         if (picked && (await this.clickLocationOption(picked))) {
           await randomSleep(400, 700);
           const committed = await this.readSelectedLocation();
-          if (committed) return true;
+          if (committed) {
+            return true;
+          }
         }
       }
       // Never commit the raw typed text; blank with a reason.
       await this.closeMenu();
       console.warn(`[L] No location suggestion matched "${value}".`);
       return false;
-    } catch (err: any) {
-      console.warn(`[L] fillLeverLocation failed: ${err?.message || err}`);
+    } catch (error: any) {
+      console.warn(`[L] fillLeverLocation failed: ${error?.message || error}`);
       return false;
     }
   }
@@ -741,7 +899,9 @@ export class LeverControlStack extends FormControls {
     const page = this.getPage();
     try {
       const v = await page.evaluate(() => {
-        const li = document.querySelector("#selected-location") as HTMLInputElement | null;
+        const li = document.querySelector(
+          "#selected-location"
+        ) as HTMLInputElement | null;
         return li ? (li.value || "").trim() : "";
       });
       return (v as string) || "";
@@ -754,9 +914,11 @@ export class LeverControlStack extends FormControls {
     const page = this.getPage();
     return page
       .evaluate((want: string) => {
-        const rows = Array.from(document.querySelectorAll(".dropdown-results .dropdown-location"));
+        const rows = [
+          ...document.querySelectorAll(".dropdown-results .dropdown-location"),
+        ];
         for (const el of rows) {
-          const t = (el.textContent || "").replace(/\s+/g, " ").trim();
+          const t = (el.textContent || "").replaceAll(/\s+/g, " ").trim();
           if (t === want) {
             (el as HTMLElement).click();
             return true;
@@ -772,10 +934,14 @@ export class LeverControlStack extends FormControls {
     try {
       return await page.evaluate(() => {
         const out: string[] = [];
-        for (const el of Array.from(document.querySelectorAll(".dropdown-location"))) {
-          if ((el as HTMLElement).offsetParent === null) continue;
-          const text = (el.textContent || "").replace(/\s+/g, " ").trim();
-          if (text) out.push(text);
+        for (const el of [...document.querySelectorAll(".dropdown-location")]) {
+          if ((el as HTMLElement).offsetParent === null) {
+            continue;
+          }
+          const text = (el.textContent || "").replaceAll(/\s+/g, " ").trim();
+          if (text) {
+            out.push(text);
+          }
         }
         return out;
       });

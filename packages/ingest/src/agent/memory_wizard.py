@@ -37,6 +37,11 @@ for _p in (REPO, ROOT, AUTOFILL, AUTOFILL_SCRIPTS):
 
 os.environ["LOG_LEVEL"] = "WARNING"  # quiet JSON log spam in setup scripts
 
+
+def _len_or_zero(value: object) -> int:
+    return len(value) if isinstance(value, (list, dict)) else 0
+
+
 from build_persona import (  # type: ignore[import-not-found]  # noqa: E402
     embed_chunks,
     render_chunks,
@@ -508,7 +513,11 @@ class MemoryWizard:
             await self.log(
                 f"Prefilled identity defaults from the resume ({len(resume_defaults)} fields)."
             )
-            mismatches = identity_mismatches(data.get("identity", {}), resume_defaults)
+            saved_identity = data.get("identity")
+            mismatches = identity_mismatches(
+                saved_identity if isinstance(saved_identity, dict) else {},
+                resume_defaults,
+            )
             if mismatches:
                 await self.log(
                     "⚠️ Resume disagrees with saved persona:\n"
@@ -522,11 +531,13 @@ class MemoryWizard:
         # Dynamic question set: core application-form questions + LLM-generated
         # follow-ups tailored to the resume and what's already answered.
         try:
+            saved_answers = data.get("answers")
+            saved_identity_for_qs = data.get("identity")
             questions = await build_question_set(
                 self.ctx,
                 str(data.get("resume_summary") or ""),
-                data.get("answers", []),
-                data.get("identity", {}),
+                saved_answers if isinstance(saved_answers, list) else [],
+                saved_identity_for_qs if isinstance(saved_identity_for_qs, dict) else {},
             )
         except Exception:
             questions = list(CORE_QUESTIONS)
@@ -549,6 +560,6 @@ class MemoryWizard:
         return (
             f"Resume: `{counts['resume_chunks']}` chunks · "
             f"Persona: `{counts['persona_chunks']}` chunks · "
-            f"{len(data.get('answers', []))} answers · "
-            f"{len(data.get('identity', {}) or {})} identity fields"
+            f"{_len_or_zero(data.get('answers'))} answers · "
+            f"{_len_or_zero(data.get('identity'))} identity fields"
         )

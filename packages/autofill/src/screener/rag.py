@@ -3962,7 +3962,8 @@ candidate has submitted; never copy phrasing verbatim across applications.
             data = json.loads(PERSONA_JSON.read_text())
         except OSError, json.JSONDecodeError:
             data = {"name": "", "version": 1, "answers": []}
-        data["version"] = int(data.get("version", 1)) + 1
+        raw_version = data.get("version", 1)
+        data["version"] = (int(raw_version) if isinstance(raw_version, (int, str)) else 1) + 1
         entry: dict[str, Any] = {
             "category": category,
             "question": question,
@@ -3970,7 +3971,11 @@ candidate has submitted; never copy phrasing verbatim across applications.
         }
         if country:
             entry["country"] = country
-        answers = data.setdefault("answers", [])
+        answers_raw = data.setdefault("answers", [])
+        answers: list[dict[str, Any]] = (
+            [e for e in answers_raw if isinstance(e, dict)] if isinstance(answers_raw, list) else []
+        )
+        data["answers"] = answers
         norm = _normalise_question(question)
         answers[:] = [
             e

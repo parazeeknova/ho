@@ -94,9 +94,13 @@ describe("verifySubmitOutcome", () => {
   it("does NOT confirm on inline body text alone (success = success-page redirect only)", async () => {
     const page = new FakePage();
     page.evaluate = makeEvaluator(page) as any;
-    page.bodyText = "Thank you for applying. Your application has been submitted.";
+    page.bodyText =
+      "Thank you for applying. Your application has been submitted.";
     page.submitVisible = false;
-    const out = await verifySubmitOutcome(page as any, { tag: "Test", polls: 2 });
+    const out = await verifySubmitOutcome(page as any, {
+      polls: 2,
+      tag: "Test",
+    });
     assert.equal(out.confirmed, false);
     assert.equal(out.retryable, false);
   });
@@ -109,9 +113,9 @@ describe("verifySubmitOutcome", () => {
     page.bodyText = "Your application has been submitted.";
     page.submitVisible = false;
     const out = await verifySubmitOutcome(page as any, {
-      tag: "Test",
-      submitButtonSelector: "button[type='submit']",
       polls: 3,
+      submitButtonSelector: "button[type='submit']",
+      tag: "Test",
     });
     assert.equal(out.confirmed, true);
     assert.equal(out.retryable, false);
@@ -123,8 +127,8 @@ describe("verifySubmitOutcome", () => {
     page.errors = ["Please complete the required field."];
     page.submitVisible = true;
     const out = await verifySubmitOutcome(page as any, {
-      tag: "Test",
       submitButtonSelector: "button[type='submit']",
+      tag: "Test",
     });
     assert.equal(out.confirmed, false);
     assert.equal(out.retryable, true);
@@ -136,9 +140,9 @@ describe("verifySubmitOutcome", () => {
     page.evaluate = makeEvaluator(page) as any;
     page.submitVisible = true;
     const out = await verifySubmitOutcome(page as any, {
-      tag: "Test",
-      submitButtonSelector: "button[type='submit']",
       polls: 3,
+      submitButtonSelector: "button[type='submit']",
+      tag: "Test",
     });
     assert.equal(out.confirmed, false);
     assert.equal(out.retryable, true);
@@ -150,8 +154,8 @@ describe("verifySubmitOutcome", () => {
     page.submitVisible = false;
     page.bodyText = "Some unrelated page";
     const out = await verifySubmitOutcome(page as any, {
-      tag: "Test",
       polls: 2,
+      tag: "Test",
     });
     assert.equal(out.confirmed, false);
     assert.equal(out.retryable, false);
@@ -163,9 +167,9 @@ describe("verifySubmitOutcome", () => {
     page.errors = ["File exceeds the maximum upload size of 100MB"];
     page.submitVisible = false;
     const out = await verifySubmitOutcome(page as any, {
-      tag: "Test",
-      submitButtonSelector: "button[type='submit']",
       polls: 2,
+      submitButtonSelector: "button[type='submit']",
+      tag: "Test",
     });
     assert.equal(out.confirmed, false);
     assert.equal(out.retryable, false);
@@ -181,8 +185,8 @@ describe("verifySubmitOutcome", () => {
     ];
     page.submitVisible = true;
     const out = await verifySubmitOutcome(page as any, {
-      tag: "Ashby",
       submitButtonSelector: "button[type='submit']",
+      tag: "Ashby",
     });
     assert.equal(out.confirmed, false);
     assert.equal(out.retryable, true);
@@ -210,10 +214,14 @@ describe("verifySubmitOutcome — 200-gate", () => {
     page.urlValue = "https://example.com/apply/confirmation";
     page.submitVisible = false;
     const out = await verifySubmitOutcome(page as any, {
-      tag: "Test",
       submitResponse: async () => ({ ok: false, status: 429 }),
+      tag: "Test",
     });
-    assert.equal(out.confirmed, false, "success URL with non-2xx must NOT confirm");
+    assert.equal(
+      out.confirmed,
+      false,
+      "success URL with non-2xx must NOT confirm"
+    );
     assert.equal(out.retryable, true);
   });
 
@@ -223,8 +231,8 @@ describe("verifySubmitOutcome — 200-gate", () => {
     page.urlValue = "https://example.com/apply/confirmation";
     page.submitVisible = false;
     const out = await verifySubmitOutcome(page as any, {
-      tag: "Test",
       submitResponse: async () => ({ ok: true, status: 200 }),
+      tag: "Test",
     });
     assert.equal(out.confirmed, true);
   });
@@ -234,30 +242,45 @@ describe("isSubmitUrl", () => {
   const origin = "https://apply.careers.microsoft.com";
 
   it("accepts a same-origin application POST path", () => {
-    assert.equal(isSubmitUrl(`${origin}/candidate-submission/abc`, origin), true);
+    assert.equal(
+      isSubmitUrl(`${origin}/candidate-submission/abc`, origin),
+      true
+    );
     assert.equal(isSubmitUrl(`${origin}/applications`, origin), true);
   });
 
   it("accepts a cross-host ATS submit URL", () => {
-    assert.equal(isSubmitUrl("https://job-boards.greenhouse.io/applications", origin), true);
+    assert.equal(
+      isSubmitUrl("https://job-boards.greenhouse.io/applications", origin),
+      true
+    );
   });
 
   it("rejects telemetry/analytics hosts even when the path looks submit-like", () => {
     assert.equal(
       isSubmitUrl(
         "https://browser.events.data.microsoft.com/OneCollector/1.0/?content-type=application/x-json-stream",
-        origin,
+        origin
       ),
-      false,
+      false
     );
-    assert.equal(isSubmitUrl("https://analytics.example.com/submit", origin), false);
+    assert.equal(
+      isSubmitUrl("https://analytics.example.com/submit", origin),
+      false
+    );
   });
 
   it("rejects a submit-looking string buried in the query string", () => {
-    assert.equal(isSubmitUrl(`${origin}/track?endpoint=candidate-submission&x=1`, origin), false);
     assert.equal(
-      isSubmitUrl("https://cdn.example.com/app.js?cb=candidate-submission", origin),
-      false,
+      isSubmitUrl(`${origin}/track?endpoint=candidate-submission&x=1`, origin),
+      false
+    );
+    assert.equal(
+      isSubmitUrl(
+        "https://cdn.example.com/app.js?cb=candidate-submission",
+        origin
+      ),
+      false
     );
   });
 });

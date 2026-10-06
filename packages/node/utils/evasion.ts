@@ -1,11 +1,16 @@
-export async function randomSleep(minMs: number = 200, maxMs: number = 600): Promise<void> {
+export async function randomSleep(
+  minMs: number = 200,
+  maxMs: number = 600
+): Promise<void> {
   const duration = Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs;
   // AUTOFILL_PACING scales every sleep so machine-speed fills can be slowed
   // to human-like timing (e.g. 4 => 4x slower). Must be >= 1; ignored otherwise.
-  const pacing = parseFloat(process.env.AUTOFILL_PACING || "1");
+  const pacing = Number.parseFloat(process.env.AUTOFILL_PACING || "1");
   const scale = Number.isFinite(pacing) && pacing >= 1 ? pacing : 1;
   const scaled = Math.round(duration * scale);
-  await new Promise((resolve) => setTimeout(resolve, scaled));
+  await new Promise((resolve) => {
+    setTimeout(resolve, scaled);
+  });
 }
 
 /**
@@ -22,7 +27,7 @@ export function humanTypingEnabled(): boolean {
 }
 
 export function humanTypingMaxLength(): number {
-  const v = parseInt(process.env.AUTOFILL_TYPING_MAX || "600", 10);
+  const v = Number.parseInt(process.env.AUTOFILL_TYPING_MAX || "600", 10);
   return Number.isFinite(v) && v > 0 ? v : 600;
 }
 
@@ -33,11 +38,13 @@ export function humanTypingMaxLength(): number {
  * still emitting real per-keystroke events); 1 = default, ignored below 1.
  */
 export function typingDelayMs(): number {
-  const speed = parseFloat(process.env.AUTOFILL_TYPING_SPEED || "1");
+  const speed = Number.parseFloat(process.env.AUTOFILL_TYPING_SPEED || "1");
   const divisor = Number.isFinite(speed) && speed >= 1 ? speed : 1;
   const base = (40 + Math.floor(Math.random() * 100)) / divisor;
   // ~7% of keys: a longer pause (hand on keyboard, re-reading).
-  return Math.random() < 0.07 ? base + (250 + Math.floor(Math.random() * 350)) / divisor : base;
+  return Math.random() < 0.07
+    ? base + (250 + Math.floor(Math.random() * 350)) / divisor
+    : base;
 }
 
 /**
@@ -47,7 +54,9 @@ export function typingDelayMs(): number {
 export async function thinkPause(): Promise<void> {
   const min = 900 + Math.floor(Math.random() * 1200);
   const jitter = Math.floor(Math.random() * 1500);
-  const pacing = parseFloat(process.env.AUTOFILL_PACING || "1");
+  const pacing = Number.parseFloat(process.env.AUTOFILL_PACING || "1");
   const scale = Number.isFinite(pacing) && pacing >= 1 ? pacing : 1;
-  await new Promise((resolve) => setTimeout(resolve, Math.round((min + jitter) * scale)));
+  await new Promise((resolve) => {
+    setTimeout(resolve, Math.round((min + jitter) * scale));
+  });
 }

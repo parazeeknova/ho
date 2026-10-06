@@ -170,7 +170,11 @@ async def _start_postgres() -> bool:
         if result.returncode != 0:
             logger.warning(
                 "docker compose up failed",
-                stderr=(result.stderr or b"").decode()[-400:],
+                stderr=(
+                    result.stderr.decode()
+                    if isinstance(result.stderr, bytes)
+                    else (result.stderr or "")
+                )[-400:],
             )
             return False
     except Exception as e:

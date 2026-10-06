@@ -16,7 +16,11 @@ export class ActivityWatchdog {
   private readonly onTimeout: () => void;
   private readonly intervalMs: number;
 
-  constructor(timeoutMs: number, onTimeout: () => void, intervalMs: number = 1000) {
+  constructor(
+    timeoutMs: number,
+    onTimeout: () => void,
+    intervalMs: number = 1000
+  ) {
     this.timeoutMs = timeoutMs;
     this.onTimeout = onTimeout;
     this.intervalMs = intervalMs;
@@ -24,7 +28,9 @@ export class ActivityWatchdog {
   }
 
   start(): void {
-    if (this.timer || this.timeoutMs <= 0) return;
+    if (this.timer || this.timeoutMs <= 0) {
+      return;
+    }
     this.touch();
     this.timer = setInterval(() => {
       if (Date.now() - this.lastTouch >= this.timeoutMs) {

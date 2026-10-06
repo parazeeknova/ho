@@ -3,8 +3,8 @@ import { describe, it, beforeEach } from "node:test";
 
 import { valuesConsistent } from "./shared/matching";
 import type { FormField } from "./shared/model";
-import { Screener } from "./shared/screener";
 import {
+  Screener,
   getDeferredFieldCount,
   resetDeferredFieldCount,
   getBlankedRequiredCount,
@@ -13,31 +13,31 @@ import {
 } from "./shared/screener";
 
 const textField = (label: string): FormField => ({
-  label,
   id: "f1",
   kind: "text",
-  required: true,
-  options: [],
+  label,
   optionTargets: [],
+  options: [],
+  required: true,
 });
 
 const fakeControls = () =>
   ({
-    tagName: "Test",
+    closeMenu: async () => {},
+    fillAsyncAutocomplete: async () => true,
     fillByKind: async () => true,
     readFieldValue: async () => "filled",
     readSelectOptions: async () => [],
-    closeMenu: async () => {},
     readSelectValue: async () => "filled",
-    fillAsyncAutocomplete: async () => true,
+    tagName: "Test",
   }) as any;
 
 const profile: any = {
+  email: "jane@example.com",
   firstName: "Jane",
   lastName: "Doe",
-  email: "jane@example.com",
-  phone: "+123",
   location: "Berlin",
+  phone: "+123",
   resumePath: null,
 };
 
@@ -68,8 +68,14 @@ describe("valuesConsistent", () => {
   });
 
   it("accepts the answer as a leading token/phrase of the committed option", () => {
-    assert.equal(valuesConsistent("No", "No, I will require immediate visa sponsorship"), true);
-    assert.equal(valuesConsistent("Yes", "Yes, I am willing to relocate"), true);
+    assert.equal(
+      valuesConsistent("No", "No, I will require immediate visa sponsorship"),
+      true
+    );
+    assert.equal(
+      valuesConsistent("Yes", "Yes, I am willing to relocate"),
+      true
+    );
   });
 
   it("rejects a DIFFERENT option committing (the Clera/Faros/Lio bug)", () => {
@@ -87,25 +93,25 @@ describe("screener commit verification", () => {
   beforeEach(() => resetDeferredFieldCount());
 
   const optionField = (): FormField => ({
-    label: "Work Authorization",
     id: "wa",
     kind: "multi",
-    required: true,
-    options: ["Yes", "No"],
+    label: "Work Authorization",
     optionTargets: [],
+    options: ["Yes", "No"],
+    required: true,
   });
 
   it("blanks the field when the resolved answer is not what committed", async () => {
     // The controls commit "Yes" no matter what answer was resolved: presence
     // is true, but value-consistency must reject it.
     const controls = {
-      tagName: "Test",
+      closeMenu: async () => {},
+      fillAsyncAutocomplete: async () => true,
       fillByKind: async () => true,
       readFieldValue: async () => "Yes",
       readSelectOptions: async () => ["Yes", "No"],
-      closeMenu: async () => {},
       readSelectValue: async () => "Yes",
-      fillAsyncAutocomplete: async () => true,
+      tagName: "Test",
     } as any;
     const rpc = async () => ({ answer: "No", source: "kb" });
     const screener = new Screener(controls, "Test", profile, rpc);
@@ -119,13 +125,13 @@ describe("screener commit verification", () => {
 
   it("accepts the field when the committed value matches the answer", async () => {
     const controls = {
-      tagName: "Test",
+      closeMenu: async () => {},
+      fillAsyncAutocomplete: async () => true,
       fillByKind: async () => true,
       readFieldValue: async () => "No",
       readSelectOptions: async () => ["Yes", "No"],
-      closeMenu: async () => {},
       readSelectValue: async () => "No",
-      fillAsyncAutocomplete: async () => true,
+      tagName: "Test",
     } as any;
     const rpc = async () => ({ answer: "No", source: "kb" });
     const screener = new Screener(controls, "Test", profile, rpc);
@@ -159,24 +165,24 @@ describe("blanked-required counter (screener)", () => {
 
 describe("batch pre-resolve (screener)", () => {
   const selField = (label: string): FormField => ({
-    label,
     id: "s",
     kind: "multi",
-    required: true,
-    options: ["Yes", "No"],
+    label,
     optionTargets: [],
+    options: ["Yes", "No"],
+    required: true,
   });
 
   it("resolves multiple questions in one RPC and fills from cache", async () => {
     let rpcCalls = 0;
     const controls = {
-      tagName: "Test",
+      closeMenu: async () => {},
+      fillAsyncAutocomplete: async () => true,
       fillByKind: async () => true,
       readFieldValue: async () => "Yes",
       readSelectOptions: async () => ["Yes", "No"],
-      closeMenu: async () => {},
       readSelectValue: async () => "Yes",
-      fillAsyncAutocomplete: async () => true,
+      tagName: "Test",
     } as any;
     const rpc = async (method: string, args: any) => {
       rpcCalls += 1;
@@ -199,24 +205,36 @@ describe("batch pre-resolve (screener)", () => {
     // process() fills from cache without another RPC.
     const filled: string[] = [];
     const blanked: { label: string; reason: string }[] = [];
-    await screener.process(selField("Are you authorized to work?"), filled, blanked, new Set());
-    await screener.process(textField("Years of experience?"), filled, blanked, new Set());
+    await screener.process(
+      selField("Are you authorized to work?"),
+      filled,
+      blanked,
+      new Set()
+    );
+    await screener.process(
+      textField("Years of experience?"),
+      filled,
+      blanked,
+      new Set()
+    );
     assert.equal(rpcCalls, 1, "cached answers must not issue a second RPC");
     assert.equal(filled.length, 2);
   });
 
   it("falls back to per-field RPC when batch fails", async () => {
     const controls = {
-      tagName: "Test",
+      closeMenu: async () => {},
+      fillAsyncAutocomplete: async () => true,
       fillByKind: async () => true,
       readFieldValue: async () => "filled",
       readSelectOptions: async () => [],
-      closeMenu: async () => {},
       readSelectValue: async () => "filled",
-      fillAsyncAutocomplete: async () => true,
+      tagName: "Test",
     } as any;
     const rpc = async (method: string) => {
-      if (method === "answer_questions_batch") throw new Error("batch down");
+      if (method === "answer_questions_batch") {
+        throw new Error("batch down");
+      }
       return { answer: "X", source: "kb" };
     };
     const screener = new Screener(controls, "Test", profile, rpc);

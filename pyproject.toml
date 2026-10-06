@@ -4,35 +4,35 @@ version = "0.1.0"
 description = "Thy Job shall be mine"
 requires-python = ">=3.14"
 dependencies = [
-    "asyncpg>=0.30.0",
-    "beautifulsoup4>=4.13.0",
-    "certifi>=2024.0.0",
-    "discord-py>=2.7.0",
-    "fpdf2>=2.8.7",
-    "generalcompute>=0.2.1",
-    "httpx[socks]>=0.28.0",
-    "markitdown[pdf]>=0.1.6",
-    "neo4j>=5.28.0",
-    "numpy>=2.0.0",
-    "pgvector>=0.4.0",
-    "playwright>=1.50.0",
-    "pydantic>=2.0.0",
-    "pymupdf>=1.28.0",
-    "pypdf>=6.14.2",
-    "python-dotenv>=1.2.2",
-    "questionary>=2.1.1",
-    "redis>=5.0",
-    "rich>=15.0.0",
-    # learning system (packages/ml)
-    "lightgbm>=4.5.0",
-    "scikit-learn>=1.6.0",
-    "pandas>=2.2.0",
-    "pyarrow>=17.0.0",
-    "joblib>=1.4.0",
-    "google-api-python-client>=2.140.0",
-    "google-auth>=2.35.0",
-    "google-auth-oauthlib>=1.2.0",
-    "google-cloud-pubsub>=2.27.0",
+  "asyncpg>=0.30.0",
+  "beautifulsoup4>=4.13.0",
+  "certifi>=2024.0.0",
+  "discord-py>=2.7.0",
+  "fpdf2>=2.8.7",
+  "generalcompute>=0.2.1",
+  "httpx[socks]>=0.28.0",
+  "markitdown[pdf]>=0.1.6",
+  "neo4j>=5.28.0",
+  "numpy>=2.0.0",
+  "pgvector>=0.4.0",
+  "playwright>=1.50.0",
+  "pydantic>=2.0.0",
+  "pymupdf>=1.28.0",
+  "pypdf>=6.14.2",
+  "python-dotenv>=1.2.2",
+  "questionary>=2.1.1",
+  "redis>=5.0",
+  "rich>=15.0.0",
+  # learning system (packages/ml)
+  "lightgbm>=4.5.0",
+  "scikit-learn>=1.6.0",
+  "pandas>=2.2.0",
+  "pyarrow>=17.0.0",
+  "joblib>=1.4.0",
+  "google-api-python-client>=2.140.0",
+  "google-auth>=2.35.0",
+  "google-auth-oauthlib>=1.2.0",
+  "google-cloud-pubsub>=2.27.0",
 ]
 
 [tool.ruff]
@@ -41,15 +41,15 @@ target-version = "py314"
 
 [tool.ruff.lint]
 select = [
-    "E",   # pycodestyle errors
-    "W",   # pycodestyle warnings
-    "F",   # pyflakes
-    "I",   # isort
-    "N",   # pep8-naming
-    "UP",  # pyupgrade
-    "B",   # flake8-bugbear
-    "SIM", # flake8-simplify
-    "C4",  # flake8-comprehensions
+  "E", # pycodestyle errors
+  "W", # pycodestyle warnings
+  "F", # pyflakes
+  "I", # isort
+  "N", # pep8-naming
+  "UP", # pyupgrade
+  "B", # flake8-bugbear
+  "SIM", # flake8-simplify
+  "C4", # flake8-comprehensions
 ]
 ignore = []
 
@@ -75,38 +75,28 @@ known-first-party = ["ho"]
 
 [dependency-groups]
 dev = [
-    "mypy>=2.3.0",
-    "pytest>=9.1.1",
-    "pytest-asyncio>=1.4.0",
-    "pytest-mock>=3.15.1",
-    "ruff>=0.16.0",
+  "pytest>=9.1.1",
+  "pytest-asyncio>=1.4.0",
+  "pytest-mock>=3.15.1",
+  "ruff>=0.16.0",
+  "ty>=0.0.84",
 ]
 
-[tool.mypy]
-python_version = "3.14"
-mypy_path = ["packages/ingest", "packages"]
-files = ["packages/ingest/src", "packages/ingest/scripts", "packages/autofill", "packages/ml"]
-exclude = ["test_.*\\.py$", "conftest\\.py$", "/tests/"]
-
-# Optional cloud deps (azure-storage-blob not installed locally) and
-# untyped third-party SDKs (asyncpg, generalcompute, sklearn, google).
-[[tool.mypy.overrides]]
-module = [
-    "azure.*",
-    "asyncpg",
-    "generalcompute",
-    "sklearn.*",
-    "google.*",
-    "googleapiclient.*",
-    "google.auth.*",
-    "google.cloud.*",
-    "google_auth_oauthlib.*",
-    "lightgbm.*",
-    "pandas.*",
-    "pyarrow.*",
-    "joblib.*",
+[tool.ty.environment]
+python-version = "3.14"
+extra-paths = [
+  "packages/ingest",
+  "packages",
+  "packages/autofill/scripts",
+  "packages/ingest/scripts",
 ]
-ignore_missing_imports = true
+
+[tool.ty.src]
+exclude = ["**/test_*.py", "**/conftest.py", "**/tests/**", "**/__pycache__/**"]
+
+[tool.ty.rules]
+# Packages import each other via plain `src.` modules resolved from extra-paths.
+unresolved-import = "warn"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -115,6 +105,4 @@ pythonpath = [".", "packages/ingest", "packages"]
 # (test_queue.py, test_overnight.py) exist in more than one package, so
 # importlib mode loads each by file path and they never collide.
 addopts = "--import-mode=importlib"
-markers = [
-    "asyncio: mark a test as an async test",
-]
+markers = ["asyncio: mark a test as an async test"]

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { loadFingerprint, type BrowserFingerprint } from "./fingerprint";
+import { loadFingerprint } from "./fingerprint";
+import type { BrowserFingerprint } from "./fingerprint";
 
 describe("loadFingerprint", () => {
   it("is deterministic for a given seed", () => {
@@ -21,7 +22,10 @@ describe("loadFingerprint", () => {
     }
     // The OS platform alone will collide by chance, but the UA string across 8
     // seeds must not collapse to a single value (that is the whole point).
-    assert.ok(seen.size > 4, "fingerprint variation must not collapse across seeds");
+    assert.ok(
+      seen.size > 4,
+      "fingerprint variation must not collapse across seeds"
+    );
   });
 
   it("keeps India-consistent locale/timezone/languages", () => {
@@ -36,7 +40,9 @@ describe("loadFingerprint", () => {
 
   it("produces a coherent UA/platform pair", () => {
     const fps: BrowserFingerprint[] = [];
-    for (let i = 0; i < 20; i++) fps.push(loadFingerprint(`ua-${i}`));
+    for (let i = 0; i < 20; i++) {
+      fps.push(loadFingerprint(`ua-${i}`));
+    }
     for (const fp of fps) {
       assert.match(fp.userAgent, /^Mozilla\/5\.0 \(/);
       assert.match(fp.userAgent, /Chrome\/\d+\.0\./);

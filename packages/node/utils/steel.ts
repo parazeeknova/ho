@@ -29,23 +29,31 @@ export interface SteelSessionHandle {
  */
 export async function createSteelSession(
   fingerprint: BrowserFingerprint,
-  opts?: { proxyUrl?: string },
+  opts?: { proxyUrl?: string }
 ): Promise<SteelSessionHandle | null> {
   const baseURL = (process.env.STEEL_BASE_URL || "").trim();
-  if (!baseURL) return null;
+  if (!baseURL) {
+    return null;
+  }
 
   let client: Steel;
   try {
     client = new Steel({ baseURL });
-  } catch (err) {
-    console.warn("[Steel] Client init failed (falling back to direct launch):", err);
+  } catch (error) {
+    console.warn(
+      "[Steel] Client init failed (falling back to direct launch):",
+      error
+    );
     return null;
   }
 
   try {
     const session = await client.sessions.create({
       // Steel's browser-level viewport from the seeded fingerprint.
-      dimensions: { width: fingerprint.viewport.width, height: fingerprint.viewport.height },
+      dimensions: {
+        height: fingerprint.viewport.height,
+        width: fingerprint.viewport.width,
+      },
       userAgent: fingerprint.userAgent,
       proxyUrl: opts?.proxyUrl,
       // Long enough to cover a full fill+submit; released early on clean close.
@@ -53,7 +61,7 @@ export async function createSteelSession(
     });
     if (!session || !session.websocketUrl) {
       console.warn(
-        "[Steel] Session created without a websocket URL; falling back to direct launch.",
+        "[Steel] Session created without a websocket URL; falling back to direct launch."
       );
       return null;
     }
@@ -74,17 +82,20 @@ export async function createSteelSession(
     }
     const handle: SteelSessionHandle = {
       client,
+      proxyUrl: opts?.proxyUrl,
       sessionId: session.id,
       websocketUrl: wsUrl,
-      proxyUrl: opts?.proxyUrl,
     };
     console.log(
       `[Steel] Session ${handle.sessionId} ready (viewport ${fingerprint.viewport.width}x` +
-        `${fingerprint.viewport.height}, proxy: ${opts?.proxyUrl ? "yes" : "none"}).`,
+        `${fingerprint.viewport.height}, proxy: ${opts?.proxyUrl ? "yes" : "none"}).`
     );
     return handle;
-  } catch (err) {
-    console.warn("[Steel] Session create failed (falling back to direct launch):", err);
+  } catch (error) {
+    console.warn(
+      "[Steel] Session create failed (falling back to direct launch):",
+      error
+    );
     return null;
   }
 }
@@ -94,12 +105,19 @@ export async function createSteelSession(
  * self-expire, but releasing immediately frees the browser process and the
  * per-job residential IP so the next job can reuse it. Never throws.
  */
-export async function releaseSteelSession(handle: SteelSessionHandle | null): Promise<void> {
-  if (!handle) return;
+export async function releaseSteelSession(
+  handle: SteelSessionHandle | null
+): Promise<void> {
+  if (!handle) {
+    return;
+  }
   try {
     await handle.client.sessions.release(handle.sessionId);
     console.log(`[Steel] Session ${handle.sessionId} released.`);
-  } catch (err) {
-    console.warn(`[Steel] Session ${handle.sessionId} release failed (will self-expire):`, err);
+  } catch (error) {
+    console.warn(
+      `[Steel] Session ${handle.sessionId} release failed (will self-expire):`,
+      error
+    );
   }
 }

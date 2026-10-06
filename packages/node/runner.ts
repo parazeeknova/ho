@@ -1,11 +1,11 @@
-import * as fs from "fs";
-import * as path from "path";
-import * as readline from "readline";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as readline from "node:readline";
 
 import { Stagehand } from "@browserbasehq/stagehand";
 
 import { AshbyAdapter } from "./ats/ashby";
-import { ATSAdapter, type RpcHelper } from "./ats/base";
+import { type ATSAdapter, type RpcHelper } from "./ats/base";
 import { GenericAdapter } from "./ats/generic";
 import { GreenhouseAdapter } from "./ats/greenhouse";
 import { LeverAdapter } from "./ats/lever";
@@ -16,26 +16,32 @@ import {
   resetDeferredFieldCount,
 } from "./ats/shared/screener";
 import { WorkdayAdapter } from "./ats/workday";
-import { JobPayloadSchema, ActionCallbackSchema, type StatusEvent } from "./types";
+import { JobPayloadSchema, ActionCallbackSchema } from "./types";
+import type { StatusEvent } from "./types";
 import { ActivityWatchdog } from "./utils/activity";
-import { waitForAtsEmail, type AtsEmailResult } from "./utils/atsEmail";
+import { waitForAtsEmail } from "./utils/atsEmail";
+import type { AtsEmailResult } from "./utils/atsEmail";
 import { applyFingerprint, loadFingerprint } from "./utils/fingerprint";
-import { createSteelSession, releaseSteelSession, type SteelSessionHandle } from "./utils/steel";
+import { createSteelSession, releaseSteelSession } from "./utils/steel";
+import type { SteelSessionHandle } from "./utils/steel";
 
 // Rejects when a promise has not settled within `ms`. Used so a best-effort
 // captcha attempt can never stall the run indefinitely.
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`operation timed out after ${ms}ms`)), ms);
+    const timer = setTimeout(
+      () => reject(new Error(`operation timed out after ${ms}ms`)),
+      ms
+    );
     promise.then(
       (v) => {
         clearTimeout(timer);
         resolve(v);
       },
-      (e) => {
+      (error) => {
         clearTimeout(timer);
-        reject(e);
-      },
+        reject(error);
+      }
     );
   });
 }
@@ -46,21 +52,21 @@ interface AdapterRegistration {
 }
 
 const adapterRegistry: AdapterRegistration[] = [
-  { pattern: /greenhouse\.io/, factory: (s) => new GreenhouseAdapter(s) },
+  { factory: (s) => new GreenhouseAdapter(s), pattern: /greenhouse\.io/ },
   // Greenhouse custom domains: companies host their greenhouse board on their
   // own domain (careers.airbnb.com, mongodb.com/careers?gh_jid=, abnormal.ai/
   // careers/jobs/...?gh_jid=). The gh_jid query param is the greenhouse
   // posting id — the form is the greenhouse form and needs the greenhouse
   // adapter (consent checkboxes, OTP handling, submit verification). Without
   // this they fell to the GenericAdapter and failed submit verification.
-  { pattern: /[?&]gh_jid=\d+/, factory: (s) => new GreenhouseAdapter(s) },
-  { pattern: /jobs\.ashbyhq\.com/, factory: (s) => new AshbyAdapter(s) },
-  { pattern: /jobs\.lever\.co/, factory: (s) => new LeverAdapter(s) },
-  { pattern: /myworkdayjobs\.com/, factory: (s) => new WorkdayAdapter(s) },
+  { factory: (s) => new GreenhouseAdapter(s), pattern: /[?&]gh_jid=\d+/ },
+  { factory: (s) => new AshbyAdapter(s), pattern: /jobs\.ashbyhq\.com/ },
+  { factory: (s) => new LeverAdapter(s), pattern: /jobs\.lever\.co/ },
+  { factory: (s) => new WorkdayAdapter(s), pattern: /myworkdayjobs\.com/ },
   // The GenericAdapter is the intelligent fallback for ANY unknown URL: it
   // classifies the form's shape (single form / wizard / JD-page / gate) and
   // drives the shared fill machinery. Known ATS regexes above always win.
-  { pattern: /.*/, factory: (s) => new GenericAdapter(s) },
+  { factory: (s) => new GenericAdapter(s), pattern: /.*/ },
 ];
 
 function getAdapterForUrl(url: string, stagehand: Stagehand): ATSAdapter {
@@ -74,7 +80,9 @@ function getAdapterForUrl(url: string, stagehand: Stagehand): ATSAdapter {
     throw new Error(`Unsupported ATS platform for URL: ${url}`);
   }
   if (entry.pattern.source === ".*") {
-    console.log(`[Runner] No specialized adapter for ${url}; using GenericAdapter.`);
+    console.log(
+      `[Runner] No specialized adapter for ${url}; using GenericAdapter.`
+    );
   }
   return entry.factory(stagehand);
 }
@@ -90,30 +98,40 @@ function emitStatus(statusEvent: StatusEvent) {
  * confirmation alone stands. The result (confirmation/rejection/screening/otp)
  * rides along on the "submitted" status event for the worker to surface.
  */
-async function softAtsEmailFeedback(payload: any): Promise<StatusEvent["emailStatus"]> {
-  if (!process.env.AUTOFILL_EMAIL_FEEDBACK || process.env.AUTOFILL_EMAIL_FEEDBACK === "0") {
+async function softAtsEmailFeedback(
+  payload: any
+): Promise<StatusEvent["emailStatus"]> {
+  if (
+    !process.env.AUTOFILL_EMAIL_FEEDBACK ||
+    process.env.AUTOFILL_EMAIL_FEEDBACK === "0"
+  ) {
     return undefined;
   }
   try {
     // Bounded window (default 45s) so it never meaningfully delays the run.
-    const ms = parseInt(process.env.AUTOFILL_EMAIL_FEEDBACK_TIMEOUT_MS || "45000", 10);
+    const ms = Number.parseInt(
+      process.env.AUTOFILL_EMAIL_FEEDBACK_TIMEOUT_MS || "45000",
+      10
+    );
     const result: AtsEmailResult | null = await withTimeout(
       waitForAtsEmail({
-        timeoutMs: ms,
         context: (payload.company || "").toLowerCase() || undefined,
         log: (m) => console.log(`[Runner] ${m}`),
+        timeoutMs: ms,
       }),
-      ms + 5000,
+      ms + 5000
     );
-    if (!result) return undefined;
+    if (!result) {
+      return undefined;
+    }
     return {
-      kind: result.kind,
       from: result.from,
-      subject: result.subject,
+      kind: result.kind,
       snippet: result.snippet,
+      subject: result.subject,
     };
-  } catch (err: any) {
-    console.warn(`[Runner] Email feedback skipped: ${err?.message || err}`);
+  } catch (error: any) {
+    console.warn(`[Runner] Email feedback skipped: ${error?.message || error}`);
     return undefined;
   }
 }
@@ -130,43 +148,54 @@ async function main() {
     rl.once("line", (line) => {
       try {
         resolve(JSON.parse(line.trim()));
-      } catch (err) {
-        reject(err);
+      } catch (error) {
+        reject(error);
       }
     });
-  }).catch((err) => {
-    console.error("[Runner] Error reading initial JSON payload from stdin:", err);
+  }).catch((error) => {
+    console.error(
+      "[Runner] Error reading initial JSON payload from stdin:",
+      error
+    );
     process.exit(1);
   });
 
   const parseResult = JobPayloadSchema.safeParse(payloadRaw);
   if (!parseResult.success) {
-    console.error("[Runner] Invalid JobPayload schema:", parseResult.error.format());
+    console.error(
+      "[Runner] Invalid JobPayload schema:",
+      parseResult.error.format()
+    );
     process.exit(1);
   }
 
   const payload = parseResult.data;
   console.log(`[Runner] Received job ${payload.jobId} for ${payload.url}`);
-  console.log(`[Runner] DEPLOY-MARKER: consent-fix-v3 (checkCheckboxViaCdpClick)`);
+  console.log(
+    `[Runner] DEPLOY-MARKER: consent-fix-v3 (checkCheckboxViaCdpClick)`
+  );
 
-  const apiKey = process.env.GENERALCOMPUTE_API_KEY || process.env.OPENAI_API_KEY;
+  const apiKey =
+    process.env.GENERALCOMPUTE_API_KEY || process.env.OPENAI_API_KEY;
   if (!apiKey) {
     console.error(
-      "[Runner] Missing API key. Set GENERALCOMPUTE_API_KEY or OPENAI_API_KEY in environment.",
+      "[Runner] Missing API key. Set GENERALCOMPUTE_API_KEY or OPENAI_API_KEY in environment."
     );
     emitStatus({
+      error: "Missing API key. Set GENERALCOMPUTE_API_KEY or OPENAI_API_KEY.",
       jobId: payload.jobId,
       status: "failed",
-      error: "Missing API key. Set GENERALCOMPUTE_API_KEY or OPENAI_API_KEY.",
     });
     process.exit(1);
   }
 
   const modelName = process.env.GENERALCOMPUTE_MODEL || "deepseek-v3.2";
-  const genericModel = modelName.includes("/") ? modelName : `openai/${modelName}`;
+  const genericModel = modelName.includes("/")
+    ? modelName
+    : `openai/${modelName}`;
   if (modelName.includes("/")) {
     console.warn(
-      `[Runner] GENERALCOMPUTE_MODEL "${modelName}" includes a provider prefix; using as-is.`,
+      `[Runner] GENERALCOMPUTE_MODEL "${modelName}" includes a provider prefix; using as-is.`
     );
   }
 
@@ -191,7 +220,7 @@ async function main() {
 
   console.log(
     `[Runner] Initializing Stagehand ${steelHandle ? `via Steel session ${steelHandle.sessionId}` : "LOCAL direct launch"} ` +
-      `with model ${genericModel}...`,
+      `with model ${genericModel}...`
   );
 
   // Stagehand v3 unified model config: modelClientOptions was removed, and the
@@ -200,9 +229,9 @@ async function main() {
   const stagehandConfig: any = {
     env: "LOCAL",
     model: {
-      modelName: genericModel,
-      apiKey: apiKey,
+      apiKey,
       baseURL: "https://api.generalcompute.com/v1",
+      modelName: genericModel,
       openaiEndpointFormat: "chat",
     },
     // Deterministic act(action) fills must never self-heal via an LLM — a
@@ -247,7 +276,9 @@ async function main() {
       // Steel-backed runs pass viewport+UA at session-create instead.
       locale: steelHandle ? undefined : fingerprint.locale,
       viewport: steelHandle ? undefined : fingerprint.viewport,
-      deviceScaleFactor: steelHandle ? undefined : fingerprint.deviceScaleFactor,
+      deviceScaleFactor: steelHandle
+        ? undefined
+        : fingerprint.deviceScaleFactor,
       // Route the whole browser session through a proxy when AUTOFILL_PROXY is
       // set (either the legacy Tor SOCKS5 proxy, or — with a proxy template —
       // a per-job residential IP URL substituted by the worker). Stagehand maps
@@ -274,14 +305,21 @@ async function main() {
   if (steelHandle) {
     const originalClose = stagehand.close.bind(stagehand);
     stagehand.close = async () => {
-      await Promise.allSettled([originalClose(), releaseSteelSession(steelHandle)]);
+      await Promise.allSettled([
+        originalClose(),
+        releaseSteelSession(steelHandle),
+      ]);
     };
   }
 
   // Unified Single Readline Dispatcher for RPC responses and Action Callbacks
   const pendingRpcPromises = new Map<
     string,
-    { resolve: (val: any) => void; reject: (err: any) => void; timer: NodeJS.Timeout }
+    {
+      resolve: (val: any) => void;
+      reject: (err: any) => void;
+      timer: NodeJS.Timeout;
+    }
   >();
   let actionCallbackResolver:
     | ((cb: {
@@ -290,9 +328,19 @@ async function main() {
       }) => void)
     | null = null;
 
+  const waitForDecision = () =>
+    new Promise<{
+      action: "submit" | "skip" | "correct";
+      corrections?: Record<string, string>;
+    }>((resolve) => {
+      actionCallbackResolver = resolve;
+    });
+
   rl.on("line", (line) => {
     const lineStr = line.trim();
-    if (!lineStr.startsWith("{")) return;
+    if (!lineStr.startsWith("{")) {
+      return;
+    }
 
     try {
       const parsed = JSON.parse(lineStr);
@@ -318,26 +366,35 @@ async function main() {
           actionCallbackResolver = null;
         }
       }
-    } catch {}
+    } catch {
+      // best-effort cleanup; ignore failures
+    }
   });
 
-  const rpcTimeoutMs = parseInt(process.env.AUTOFILL_RPC_TIMEOUT_MS || "1800000", 10);
+  const rpcTimeoutMs = Number.parseInt(
+    process.env.AUTOFILL_RPC_TIMEOUT_MS || "1800000",
+    10
+  );
 
-  const askPythonRpc: RpcHelper = (method: string, args: Record<string, any>): Promise<any> => {
-    return new Promise((resolve, reject) => {
-      const id = `rpc-${Math.random().toString(36).substring(2, 9)}`;
+  const askPythonRpc: RpcHelper = (
+    method: string,
+    args: Record<string, any>
+  ): Promise<any> =>
+    new Promise((resolve, reject) => {
+      const id = `rpc-${Math.random().toString(36).slice(2, 9)}`;
 
       const timer = setTimeout(() => {
         pendingRpcPromises.delete(id);
         reject(
-          new Error(`RPC timeout for method "${method}" after ${rpcTimeoutMs / 1000} seconds`),
+          new Error(
+            `RPC timeout for method "${method}" after ${rpcTimeoutMs / 1000} seconds`
+          )
         );
       }, rpcTimeoutMs);
 
       pendingRpcPromises.set(id, { resolve, reject, timer });
       console.log(`RPC_REQUEST:${JSON.stringify({ id, method, args })}`);
     });
-  };
 
   // Overnight safety: an activity watchdog kills a run whose browser stops
   // making progress (stuck fill). The worker enables it (overnight only) via
@@ -345,23 +402,31 @@ async function main() {
   // — status events, RPC traffic, adapter logs — resets the idle timer, so a
   // healthy run is never aborted. A hung Stagehand act/observe emits nothing,
   // so the run dies here instead of hanging until the hour-long DB lease.
-  const activityTimeoutMs = parseInt(process.env.AUTOFILL_ACTIVITY_TIMEOUT_MS || "0", 10);
+  const activityTimeoutMs = Number.parseInt(
+    process.env.AUTOFILL_ACTIVITY_TIMEOUT_MS || "0",
+    10
+  );
   let watchdog: ActivityWatchdog | null = null;
   if (activityTimeoutMs > 0) {
     watchdog = new ActivityWatchdog(activityTimeoutMs, () => {
       const err = new Error(
-        `STUCK_TIMEOUT: no runner/browser activity for ${Math.round(activityTimeoutMs / 1000)}s`,
+        `STUCK_TIMEOUT: no runner/browser activity for ${Math.round(activityTimeoutMs / 1000)}s`
       );
-      console.error("[Runner] Activity watchdog fired; aborting stuck run:", err.message);
+      console.error(
+        "[Runner] Activity watchdog fired; aborting stuck run:",
+        err.message
+      );
       emitStatus({
+        error: err.message,
         jobId: payload.jobId,
         status: "failed",
-        error: err.message,
       });
       watchdog?.stop();
       try {
         rl.close();
-      } catch {}
+      } catch {
+        // best-effort cleanup; ignore failures
+      }
       // Best-effort browser close with a hard fallback: a hung browser must
       // not prevent the process from dying.
       const forceExit = setTimeout(() => process.exit(1), 5000);
@@ -414,10 +479,13 @@ async function main() {
     // throw on its own (the walk just finds no fields), so the fill and submit
     // are raced against an abort signal: an unresolved challenge rejects the
     // race even when the adapter would otherwise "complete" with a blank form.
-    const captchaWatchMs = parseInt(process.env.AUTOFILL_CAPTCHA_WATCH_MS || "8000", 10);
-    const captchaAttemptTimeoutMs = parseInt(
+    const captchaWatchMs = Number.parseInt(
+      process.env.AUTOFILL_CAPTCHA_WATCH_MS || "8000",
+      10
+    );
+    const captchaAttemptTimeoutMs = Number.parseInt(
       process.env.AUTOFILL_CAPTCHA_ATTEMPT_TIMEOUT_MS || "20000",
-      10,
+      10
     );
     let captchaMessage: string | null = null;
     let rejectCaptcha: ((err: Error) => void) | null = null;
@@ -430,7 +498,9 @@ async function main() {
     captchaAbort.catch(() => {});
     let captchaAttempted = false;
     const captchaTimer = setInterval(async () => {
-      if (captchaMessage) return;
+      if (captchaMessage) {
+        return;
+      }
       try {
         const hit = await adapter.detectCaptcha();
         if (!hit) {
@@ -439,18 +509,25 @@ async function main() {
           return;
         }
         // A concurrent tick is already attempting; wait for it to settle.
-        if (captchaAttempted) return;
+        if (captchaAttempted) {
+          return;
+        }
         // First sighting of a challenge: try to solve it once before declaring
         // failure. The fill keeps running in parallel; only a challenge that
         // survives the attempt aborts the run.
         captchaAttempted = true;
         try {
-          const attempted = await withTimeout(adapter.attemptCaptcha(), captchaAttemptTimeoutMs);
-          console.log(`[Runner] Captcha attempt (clicked: ${attempted}); re-checking...`);
-        } catch (attemptErr: any) {
+          const attempted = await withTimeout(
+            adapter.attemptCaptcha(),
+            captchaAttemptTimeoutMs
+          );
+          console.log(
+            `[Runner] Captcha attempt (clicked: ${attempted}); re-checking...`
+          );
+        } catch (error: any) {
           console.warn(
             "[Runner] Captcha attempt failed:",
-            attemptErr?.message || String(attemptErr),
+            error?.message || String(error)
           );
         }
         const after = await adapter.detectCaptcha();
@@ -462,8 +539,12 @@ async function main() {
         }
         captchaMessage = after;
         clearInterval(captchaTimer);
-        rejectCaptcha?.(new Error(`CAPTCHA_DETECTED: ${after} blocked the application form`));
-      } catch {}
+        rejectCaptcha?.(
+          new Error(`CAPTCHA_DETECTED: ${after} blocked the application form`)
+        );
+      } catch {
+        // best-effort cleanup; ignore failures
+      }
     }, captchaWatchMs);
 
     // Execute filling process with RPC helper
@@ -472,9 +553,11 @@ async function main() {
     const fillPromise = adapter.fill(payload, askPythonRpc);
     try {
       await Promise.race([fillPromise, captchaAbort]);
-    } catch (fillErr: any) {
+    } catch (error: any) {
       if (captchaMessage) {
-        const err = new Error(`CAPTCHA_DETECTED: ${captchaMessage} blocked the application form`);
+        const err = new Error(
+          `CAPTCHA_DETECTED: ${captchaMessage} blocked the application form`
+        );
         console.error("[Runner] Captcha detected:", err.message);
         emitStatus({
           jobId: payload.jobId,
@@ -487,10 +570,12 @@ async function main() {
         try {
           rl.close();
           await stagehand.close();
-        } catch {}
+        } catch {
+          // best-effort cleanup; ignore failures
+        }
         process.exit(1);
       }
-      throw fillErr;
+      throw error;
     }
 
     // Save screenshot safely
@@ -511,11 +596,13 @@ async function main() {
       // fill and screenshot). This is not a fill failure — emit a skipped status
       // so the worker records it as such instead of crashing with
       // "Cannot read properties of null (reading 'pages')" and burning a retry.
-      console.warn("[Runner] No browser context for screenshot; treating fill as skipped.");
+      console.warn(
+        "[Runner] No browser context for screenshot; treating fill as skipped."
+      );
       emitStatus({
         jobId: payload.jobId,
-        status: "skipped",
         message: "Browser context lost after fill; nothing submitted.",
+        status: "skipped",
       });
       watchdog?.stop();
       rl.close();
@@ -523,7 +610,7 @@ async function main() {
       process.exit(0);
     }
     const activePage = adapter.getActivePage();
-    await activePage.screenshot({ path: screenshotPath, fullPage: true });
+    await activePage.screenshot({ fullPage: true, path: screenshotPath });
     console.log(`[Runner] Screenshot saved to ${screenshotPath}`);
 
     // Expired/removed posting detection: if the page says the posting is gone
@@ -537,10 +624,10 @@ async function main() {
       if (expiredReason) {
         console.log(`[Runner] Posting appears expired: ${expiredReason}`);
         emitStatus({
-          jobId: payload.jobId,
-          status: "expired",
-          screenshotPath: screenshotPath,
           error: expiredReason,
+          jobId: payload.jobId,
+          screenshotPath,
+          status: "expired",
         });
         watchdog?.stop();
         clearInterval(captchaTimer);
@@ -548,8 +635,10 @@ async function main() {
         await stagehand.close();
         process.exit(0);
       }
-    } catch (expErr: any) {
-      console.warn(`[Runner] Expired-posting check failed: ${expErr?.message || expErr}`);
+    } catch (error: any) {
+      console.warn(
+        `[Runner] Expired-posting check failed: ${error?.message || error}`
+      );
     }
 
     if (!payload.submitAllowed) {
@@ -561,18 +650,23 @@ async function main() {
       clearInterval(captchaTimer);
       console.log(
         "[Runner] Submission disabled — browser window remaining open for review. " +
-          "Any action (or the hold timeout) closes without submitting.",
+          "Any action (or the hold timeout) closes without submitting."
       );
       emitStatus({
-        jobId: payload.jobId,
-        status: "awaiting_review",
-        screenshotPath: screenshotPath,
         filledFields: adapter.filledValues,
-        message: "Form filled successfully. Submission is disabled in this phase.",
+        jobId: payload.jobId,
+        message:
+          "Form filled successfully. Submission is disabled in this phase.",
+        screenshotPath,
+        status: "awaiting_review",
       });
-      const holdMs = parseInt(process.env.AUTOFILL_REVIEW_HOLD_MS || "360000", 10);
+      const holdMs = Number.parseInt(
+        process.env.AUTOFILL_REVIEW_HOLD_MS || "360000",
+        10
+      );
       await new Promise<"submit" | "skip">((resolve) => {
-        actionCallbackResolver = (cb) => resolve(cb.action === "submit" ? "submit" : "skip");
+        actionCallbackResolver = (cb) =>
+          resolve(cb.action === "submit" ? "submit" : "skip");
         if (holdMs > 0) {
           setTimeout(() => resolve("skip"), holdMs);
         }
@@ -581,9 +675,9 @@ async function main() {
       await stagehand.close();
       emitStatus({
         jobId: payload.jobId,
-        status: "skipped",
-        screenshotPath: screenshotPath,
         message: "Application filled but not submitted (submission disabled).",
+        screenshotPath,
+        status: "skipped",
       });
       process.exit(0);
     }
@@ -597,32 +691,35 @@ async function main() {
         // Only if blanks genuinely remain does the job defer instead of
         // submitting an incomplete application.
         console.log(
-          `[Runner] ${getDeferredFieldCount()} deferred + ${getBlankedRequiredCount()} required-blank question(s) remain; re-filling before deciding...`,
+          `[Runner] ${getDeferredFieldCount()} deferred + ${getBlankedRequiredCount()} required-blank question(s) remain; re-filling before deciding...`
         );
         try {
           const stillBlank = await adapter.recheckMissingFields(askPythonRpc);
           if (stillBlank === 0) {
             console.log(
-              "[Runner] Re-fill resolved all blank required fields; proceeding to submit.",
+              "[Runner] Re-fill resolved all blank required fields; proceeding to submit."
             );
           } else {
-            console.warn(`[Runner] ${stillBlank} required field(s) still blank after re-fill.`);
+            console.warn(
+              `[Runner] ${stillBlank} required field(s) still blank after re-fill.`
+            );
           }
-        } catch (recheckErr: any) {
-          console.warn("[Runner] Re-fill failed:", recheckErr?.message || recheckErr);
+        } catch (error: any) {
+          console.warn("[Runner] Re-fill failed:", error?.message || error);
         }
         if (getBlankedRequiredCount() > 0 || getDeferredFieldCount() > 0) {
           // Still incomplete: never submit a half-filled application — abort
           // for the morning digest / resume flow instead.
           console.log(
             `[Runner] ${getDeferredFieldCount()} deferred + ${getBlankedRequiredCount()} required-blank question(s) remain; not submitting. ` +
-              "Job stays deferred for the morning digest / resume flow.",
+              "Job stays deferred for the morning digest / resume flow."
           );
           emitStatus({
             jobId: payload.jobId,
+            message:
+              "Deferred/blank required questions remain; application not submitted.",
+            screenshotPath,
             status: "skipped",
-            screenshotPath: screenshotPath,
-            message: "Deferred/blank required questions remain; application not submitted.",
           });
           watchdog?.stop();
           rl.close();
@@ -630,7 +727,9 @@ async function main() {
           process.exit(0);
         }
       }
-      console.log("[Runner] Auto mode enabled. Submitting application immediately...");
+      console.log(
+        "[Runner] Auto mode enabled. Submitting application immediately..."
+      );
 
       // Non-LLM consistency gate: when enabled, emit the filled fields first
       // and WAIT for the worker's go/no-go before submitting. The worker runs
@@ -652,31 +751,30 @@ async function main() {
         };
         for (let round = 0; round < 3; round++) {
           emitStatus({
-            jobId: payload.jobId,
-            status: "awaiting_review",
-            screenshotPath: screenshotPath,
             filledFields: adapter.filledValues,
+            jobId: payload.jobId,
             message:
               round === 0
                 ? "Form filled; awaiting consistency gate before submission."
                 : `Consistency gate round ${round + 1}: awaiting decision.`,
+            screenshotPath,
+            status: "awaiting_review",
           });
-          decision = await new Promise<{
-            action: "submit" | "skip" | "correct";
-            corrections?: Record<string, string>;
-          }>((resolve) => {
-            actionCallbackResolver = resolve;
-          });
-          if (decision.action === "submit") break;
+          decision = await waitForDecision();
+          if (decision.action === "submit") {
+            break;
+          }
           if (decision.action === "skip") {
-            console.log("[Runner] Consistency gate declined submission; skipping.");
+            console.log(
+              "[Runner] Consistency gate declined submission; skipping."
+            );
             rl.close();
             await stagehand.close();
             emitStatus({
               jobId: payload.jobId,
-              status: "skipped",
-              screenshotPath: screenshotPath,
               message: "Application skipped by pre-submit consistency gate.",
+              screenshotPath,
+              status: "skipped",
             });
             process.exit(0);
           }
@@ -684,33 +782,37 @@ async function main() {
           const corrections = decision.corrections ?? {};
           const keys = Object.keys(corrections);
           if (keys.length === 0) {
-            console.warn("[Runner] Gate requested corrections but none supplied; skipping.");
+            console.warn(
+              "[Runner] Gate requested corrections but none supplied; skipping."
+            );
             rl.close();
             await stagehand.close();
             emitStatus({
               jobId: payload.jobId,
-              status: "skipped",
-              screenshotPath: screenshotPath,
               message: "Application skipped: gate sent no corrections.",
+              screenshotPath,
+              status: "skipped",
             });
             process.exit(0);
           }
           let allApplied = true;
           for (const [label, value] of Object.entries(corrections)) {
             const ok = await adapter.correctField(label, value);
-            if (!ok) allApplied = false;
+            if (!ok) {
+              allApplied = false;
+            }
           }
           if (!allApplied) {
             console.warn(
-              "[Runner] One or more corrections could not be applied; skipping rather than submitting wrong data.",
+              "[Runner] One or more corrections could not be applied; skipping rather than submitting wrong data."
             );
             rl.close();
             await stagehand.close();
             emitStatus({
               jobId: payload.jobId,
-              status: "skipped",
-              screenshotPath: screenshotPath,
               message: "Application skipped: corrections could not be applied.",
+              screenshotPath,
+              status: "skipped",
             });
             process.exit(0);
           }
@@ -721,9 +823,9 @@ async function main() {
           await stagehand.close();
           emitStatus({
             jobId: payload.jobId,
-            status: "skipped",
-            screenshotPath: screenshotPath,
             message: "Application skipped by pre-submit consistency gate.",
+            screenshotPath,
+            status: "skipped",
           });
           process.exit(0);
         }
@@ -732,14 +834,23 @@ async function main() {
         if (activityTimeoutMs > 0) {
           watchdog = new ActivityWatchdog(activityTimeoutMs, () => {
             const err = new Error(
-              `STUCK_TIMEOUT: no runner/browser activity for ${Math.round(activityTimeoutMs / 1000)}s`,
+              `STUCK_TIMEOUT: no runner/browser activity for ${Math.round(activityTimeoutMs / 1000)}s`
             );
-            console.error("[Runner] Activity watchdog fired; aborting stuck run:", err.message);
-            emitStatus({ jobId: payload.jobId, status: "failed", error: err.message });
+            console.error(
+              "[Runner] Activity watchdog fired; aborting stuck run:",
+              err.message
+            );
+            emitStatus({
+              error: err.message,
+              jobId: payload.jobId,
+              status: "failed",
+            });
             watchdog?.stop();
             try {
               rl.close();
-            } catch {}
+            } catch {
+              // best-effort cleanup; ignore failures
+            }
             const forceExit = setTimeout(() => process.exit(1), 5000);
             Promise.resolve(stagehand.close())
               .catch(() => {})
@@ -779,21 +890,25 @@ async function main() {
       // ATS server-side spam flag (Ashby "flagged as possible spam"). We do NOT
       // resubmit from the same session (it is sticky to IP+fingerprint); the
       // worker re-queues for a fresh-session relaunch instead.
-      const SPAM_FLAG_RE = /flagged as possible spam|possible spam|submitted.*spam|spam/i;
+      const SPAM_FLAG_RE =
+        /flagged as possible spam|possible spam|submitted.*spam|spam/i;
       let lastError: string | undefined;
       let rechecked = false;
       for (let attempt = 1; attempt <= MAX_SUBMIT_ATTEMPTS; attempt++) {
         let outcome: any;
         try {
           outcome = await Promise.race([adapter.submit(), captchaAbort]);
-        } catch (submitErr: any) {
+        } catch (error: any) {
           if (captchaMessage) {
             clearInterval(captchaTimer);
-            throw new Error(`CAPTCHA_DETECTED: ${captchaMessage} blocked the application form`, {
-              cause: submitErr,
-            });
+            throw new Error(
+              `CAPTCHA_DETECTED: ${captchaMessage} blocked the application form`,
+              {
+                cause: error,
+              }
+            );
           }
-          throw submitErr;
+          throw error;
         }
 
         if (outcome?.confirmed) {
@@ -804,18 +919,21 @@ async function main() {
           try {
             const confirmPage = adapter.getActivePage();
             confirmShot = screenshotPath.replace(/\.png$/, "-confirm.png");
-            await confirmPage.screenshot({ path: confirmShot, fullPage: true });
-            console.log(`[Runner] Confirmation screenshot saved to ${confirmShot}`);
+            await confirmPage.screenshot({ fullPage: true, path: confirmShot });
+            console.log(
+              `[Runner] Confirmation screenshot saved to ${confirmShot}`
+            );
           } catch {
             console.warn("[Runner] Could not capture confirmation screenshot.");
           }
           emitStatus({
-            jobId: payload.jobId,
-            status: "submitted",
-            screenshotPath: confirmShot,
-            filledFields: adapter.filledValues,
-            message: "Application filled and submitted automatically (confirmation verified).",
             emailStatus: await softAtsEmailFeedback(payload),
+            filledFields: adapter.filledValues,
+            jobId: payload.jobId,
+            message:
+              "Application filled and submitted automatically (confirmation verified).",
+            screenshotPath: confirmShot,
+            status: "submitted",
           });
           watchdog?.stop();
           rl.close();
@@ -836,13 +954,13 @@ async function main() {
           clearInterval(captchaTimer);
           console.warn(
             `[Runner] ATS flagged submit as possible spam (attempt ${attempt}). ` +
-              "Not resubmitting from the same session; worker will relaunch with a fresh IP.",
+              "Not resubmitting from the same session; worker will relaunch with a fresh IP."
           );
           emitStatus({
-            jobId: payload.jobId,
-            status: "failed",
-            screenshotPath: screenshotPath,
             error: `Submit not confirmed: ${lastError}`,
+            jobId: payload.jobId,
+            screenshotPath,
+            status: "failed",
           });
           watchdog?.stop();
           rl.close();
@@ -853,21 +971,27 @@ async function main() {
         // Normal retryable failure (validation): recheck missing fields once.
         if (outcome?.retryable) {
           console.warn(
-            `[Runner] Submit attempt ${attempt}/${MAX_SUBMIT_ATTEMPTS} not confirmed: ${lastError ?? "validation likely failed"}`,
+            `[Runner] Submit attempt ${attempt}/${MAX_SUBMIT_ATTEMPTS} not confirmed: ${lastError ?? "validation likely failed"}`
           );
           if (attempt < MAX_SUBMIT_ATTEMPTS) {
             if (!rechecked) {
               rechecked = true;
-              console.log("[Runner] Rechecking missing required fields before retry...");
+              console.log(
+                "[Runner] Rechecking missing required fields before retry..."
+              );
               try {
-                const stillBlank = await adapter.recheckMissingFields(askPythonRpc);
+                const stillBlank =
+                  await adapter.recheckMissingFields(askPythonRpc);
                 if (stillBlank > 0) {
                   console.warn(
-                    `[Runner] Recheck found ${stillBlank} required field(s) still blank.`,
+                    `[Runner] Recheck found ${stillBlank} required field(s) still blank.`
                   );
                 }
-              } catch (recheckErr: any) {
-                console.warn("[Runner] Recheck failed:", recheckErr?.message || recheckErr);
+              } catch (error: any) {
+                console.warn(
+                  "[Runner] Recheck failed:",
+                  error?.message || error
+                );
               }
             }
             continue;
@@ -881,10 +1005,10 @@ async function main() {
           `submit not confirmed after ${MAX_SUBMIT_ATTEMPTS} attempts (no success or error outcome)`;
         console.error(`[Runner] Submission failed: ${failMsg}`);
         emitStatus({
-          jobId: payload.jobId,
-          status: "failed",
-          screenshotPath: screenshotPath,
           error: `Submit not confirmed: ${failMsg}`,
+          jobId: payload.jobId,
+          screenshotPath,
+          status: "failed",
         });
         watchdog?.stop();
         rl.close();
@@ -894,10 +1018,10 @@ async function main() {
       // Unreachable safety net.
       clearInterval(captchaTimer);
       emitStatus({
-        jobId: payload.jobId,
-        status: "failed",
-        screenshotPath: screenshotPath,
         error: "submit loop exited without a terminal outcome",
+        jobId: payload.jobId,
+        screenshotPath,
+        status: "failed",
       });
       watchdog?.stop();
       rl.close();
@@ -909,17 +1033,18 @@ async function main() {
       clearInterval(captchaTimer);
       emitStatus({
         jobId: payload.jobId,
-        status: "awaiting_review",
-        screenshotPath: screenshotPath,
         message: "Form filled successfully. Awaiting review command.",
+        screenshotPath,
+        status: "awaiting_review",
       });
 
       console.log(
-        "[Runner] Browser window remaining open for review. Waiting for callback on stdin...",
+        "[Runner] Browser window remaining open for review. Waiting for callback on stdin..."
       );
 
       const action = await new Promise<"submit" | "skip">((resolve) => {
-        actionCallbackResolver = (cb) => resolve(cb.action === "submit" ? "submit" : "skip");
+        actionCallbackResolver = (cb) =>
+          resolve(cb.action === "submit" ? "submit" : "skip");
       });
 
       if (action === "submit") {
@@ -927,45 +1052,53 @@ async function main() {
         let outcome: any;
         try {
           outcome = await Promise.race([adapter.submit(), captchaAbort]);
-        } catch (submitErr) {
+        } catch (error) {
           if (captchaMessage) {
             clearInterval(captchaTimer);
-            throw new Error(`CAPTCHA_DETECTED: ${captchaMessage} blocked the application form`, {
-              cause: submitErr,
-            });
+            throw new Error(
+              `CAPTCHA_DETECTED: ${captchaMessage} blocked the application form`,
+              {
+                cause: error,
+              }
+            );
           }
-          throw submitErr;
+          throw error;
         }
         clearInterval(captchaTimer);
         if (!outcome?.confirmed) {
           // The ATS did not reach a confirmation page — never report submitted.
           const failMsg = outcome?.error ?? "submit not confirmed";
-          console.error(`[Runner] Submit not confirmed after user review: ${failMsg}`);
+          console.error(
+            `[Runner] Submit not confirmed after user review: ${failMsg}`
+          );
           emitStatus({
-            jobId: payload.jobId,
-            status: "failed",
-            screenshotPath: screenshotPath,
             error: `Submit not confirmed: ${failMsg}`,
+            jobId: payload.jobId,
+            screenshotPath,
+            status: "failed",
           });
           rl.close();
           await stagehand.close();
           process.exit(1);
         }
         emitStatus({
-          jobId: payload.jobId,
-          status: "submitted",
-          screenshotPath: screenshotPath,
-          message: "Application submitted after user review (confirmation verified).",
           emailStatus: await softAtsEmailFeedback(payload),
+          jobId: payload.jobId,
+          message:
+            "Application submitted after user review (confirmation verified).",
+          screenshotPath,
+          status: "submitted",
         });
       } else {
         clearInterval(captchaTimer);
-        console.log("[Runner] Callback 'skip' received. Skipping submission...");
+        console.log(
+          "[Runner] Callback 'skip' received. Skipping submission..."
+        );
         emitStatus({
           jobId: payload.jobId,
-          status: "skipped",
-          screenshotPath: screenshotPath,
           message: "Application skipped by user.",
+          screenshotPath,
+          status: "skipped",
         });
       }
 
@@ -973,18 +1106,20 @@ async function main() {
       await stagehand.close();
       process.exit(0);
     }
-  } catch (err: any) {
+  } catch (error: any) {
     watchdog?.stop();
-    console.error("[Runner] Execution error:", err);
+    console.error("[Runner] Execution error:", error);
     emitStatus({
       jobId: payload.jobId,
       status: "failed",
-      error: err?.message || String(err),
+      error: error?.message || String(error),
     });
     try {
       rl.close();
       await stagehand.close();
-    } catch {}
+    } catch {
+      // best-effort cleanup; ignore failures
+    }
     process.exit(1);
   }
 }

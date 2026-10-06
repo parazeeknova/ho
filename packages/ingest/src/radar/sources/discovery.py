@@ -98,7 +98,7 @@ async def discover_from_azure(limit: int = 4000) -> list[dict[str, str]]:
         return companies
     container = os.environ.get("AZURE_CONTAINER", "radar-index")
     try:
-        from azure.storage.blob import BlobServiceClient
+        from azure.storage.blob import BlobServiceClient  # ty: ignore[unresolved-import]
 
         svc = BlobServiceClient.from_connection_string(conn)
         cc = svc.get_container_client(container)
@@ -339,8 +339,10 @@ def _extract_portfolio_company_names(html: str, limit: int = 30) -> list[str]:
         r"<p[^>]*>([^<]{2,60})</p>",
     ):
         for m in re.finditer(pat, html, re.IGNORECASE):
-            name = (m.lastindex and m.group(m.lastindex)) or m.group(1)
-            name = _clean_name(name)
+            raw_name = (m.lastindex and m.group(m.lastindex)) or m.group(1)
+            if not isinstance(raw_name, str):
+                continue
+            name = _clean_name(raw_name)
             if (
                 2 < len(name) < 60
                 and name.lower() not in noise

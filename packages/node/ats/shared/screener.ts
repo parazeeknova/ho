@@ -1,17 +1,17 @@
 import type { Profile } from "../../types.js";
 import { randomSleep } from "../../utils/evasion.js";
 import type { RpcHelper } from "../base.js";
-import { FormControls } from "./controls.js";
+import type { FormControls } from "./controls.js";
 import { escapePromptValue, valuesConsistent } from "./matching.js";
 import {
   checkboxAction,
   fieldKey,
-  type FormField,
   IDENTITY_FILLS,
   isCoverLetterField,
   isLocationAutocomplete,
   PROFILE_FILLS,
 } from "./model.js";
+import type { FormField } from "./model.js";
 
 /** A question left blank during resolution, with the reason it was skipped. */
 export interface BlankEntry {
@@ -69,14 +69,14 @@ export class Screener {
    *  the walk — those are generated once via the "cover_letter" RPC. */
   protected skipCoverLetterFields: boolean;
   /** Answers pre-resolved in one batch RPC, keyed by normalized label. */
-  protected batchCache: Map<string, { answer: string; source: string }> = new Map();
+  protected batchCache = new Map<string, { answer: string; source: string }>();
 
   constructor(
     controls: FormControls,
     tagName: string,
     profile: Profile,
     rpc: RpcHelper,
-    skipCoverLetterFields = false,
+    skipCoverLetterFields = false
   ) {
     this.controls = controls;
     this.tagName = tagName;
@@ -94,48 +94,77 @@ export class Screener {
    * the cache before issuing an individual RPC.
    */
   async preResolveBatch(fields: FormField[]): Promise<void> {
-    const specs: Array<{ question: string; kind: string; options: string[]; required: boolean }> =
-      [];
+    const specs: {
+      question: string;
+      kind: string;
+      options: string[];
+      required: boolean;
+    }[] = [];
     for (const field of fields) {
-      if (this.skipCoverLetterFields && isCoverLetterField(field)) continue;
+      if (this.skipCoverLetterFields && isCoverLetterField(field)) {
+        continue;
+      }
       const key = normalizeQuestionLabel(field.label);
       // Already covered deterministically — skip.
       const profileKey = PROFILE_FILLS[key] ?? IDENTITY_FILLS[key];
-      if (profileKey && (this.profile as any)?.[profileKey]) continue;
-      if (field.kind === "checkbox" && checkboxAction(field) !== "ask") continue;
-      if (isLocationAutocomplete(field) && (this.profile as any)?.location) continue;
-      let optionTexts = field.options.slice();
-      if ((field.kind === "select" || field.kind === "multi") && optionTexts.length === 0) {
+      if (profileKey && (this.profile as any)?.[profileKey]) {
+        continue;
+      }
+      if (field.kind === "checkbox" && checkboxAction(field) !== "ask") {
+        continue;
+      }
+      if (isLocationAutocomplete(field) && (this.profile as any)?.location) {
+        continue;
+      }
+      let optionTexts = [...field.options];
+      if (
+        (field.kind === "select" || field.kind === "multi") &&
+        optionTexts.length === 0
+      ) {
         // Read options now so the batch gets the same ground truth a per-field
         // walk would. Best-effort: if reading fails, resolve without them.
-        optionTexts = await this.controls.readSelectOptions(field.id).catch(() => []);
+        optionTexts = await this.controls
+          .readSelectOptions(field.id)
+          .catch(() => []);
       }
       specs.push({
-        question: field.label,
-        kind: field.kind === "radio" ? "select" : field.kind === "checkbox" ? "multi" : field.kind,
+        kind:
+          field.kind === "radio"
+            ? "select"
+            : field.kind === "checkbox"
+              ? "multi"
+              : field.kind,
         options: optionTexts,
+        question: field.label,
         required: !!field.required,
       });
     }
-    if (specs.length === 0) return;
+    if (specs.length === 0) {
+      return;
+    }
     try {
-      const result: any = await this.rpc("answer_questions_batch", { questions: specs });
+      const result: any = await this.rpc("answer_questions_batch", {
+        questions: specs,
+      });
       const answers: Record<string, string> = result?.answers ?? {};
       for (const s of specs) {
         const ans = (answers[s.question] ?? "").toString().trim();
         if (ans && ans !== "__ASK_USER__") {
-          this.batchCache.set(normalizeQuestionLabel(s.question), { answer: ans, source: "kb" });
+          this.batchCache.set(normalizeQuestionLabel(s.question), {
+            answer: ans,
+            source: "kb",
+          });
         }
       }
       console.log(
         `[${this.tagName}] Batch-resolved ${specs.length} question(s) in one RPC ` +
-          `(${this.batchCache.size} answered from cache).`,
+          `(${this.batchCache.size} answered from cache).`
       );
-    } catch (err: any) {
+    } catch (error: any) {
       // Fall back to per-field resolution on any batch failure.
       console.warn(
         `[${this.tagName}] Batch pre-resolve failed; using per-field resolution: ` +
-          `${err?.message || err}`,
+          `${error?.message || error}`
       );
     }
   }
@@ -144,7 +173,7 @@ export class Screener {
     field: FormField,
     filled: string[],
     blanked: BlankEntry[],
-    userSkippedKeys: Set<string>,
+    userSkippedKeys: Set<string>
   ): Promise<void> {
     // Cover-letter prompts are handled by the adapter's dedicated path (PDF
     // upload with text fallback) — never resolved here. Silently skipped: no
@@ -152,7 +181,7 @@ export class Screener {
     if (this.skipCoverLetterFields && isCoverLetterField(field)) {
       console.log(
         `[${this.controls.tagName}] Cover-letter field "${escapePromptValue(field.label)}" ` +
-          "left for the dedicated cover-letter path.",
+          "left for the dedicated cover-letter path."
       );
       return;
     }
@@ -169,7 +198,7 @@ export class Screener {
         if (!ok) {
           const reason = `profile value "${escapePromptValue(String(pv))}" could not be committed`;
           console.warn(
-            `[${this.controls.tagName}] Leaving "${escapePromptValue(field.label)}" blank (${reason})`,
+            `[${this.controls.tagName}] Leaving "${escapePromptValue(field.label)}" blank (${reason})`
           );
           blanked.push({ label: field.label, reason });
           return;
@@ -190,7 +219,7 @@ export class Screener {
       const action = checkboxAction(field);
       if (action === "leave") {
         console.log(
-          `[${this.controls.tagName}] Optional opt-in checkbox "${escapePromptValue(field.label)}" left unchecked.`,
+          `[${this.controls.tagName}] Optional opt-in checkbox "${escapePromptValue(field.label)}" left unchecked.`
         );
         return;
       }
@@ -200,7 +229,7 @@ export class Screener {
         const committed = await this.controls.readFieldValue(field);
         if (ok && committed) {
           console.log(
-            `[${this.controls.tagName}] Accepted required checkbox "${escapePromptValue(field.label)}".`,
+            `[${this.controls.tagName}] Accepted required checkbox "${escapePromptValue(field.label)}".`
           );
           filled.push(field.label);
           await randomSleep(150, 300);
@@ -208,7 +237,7 @@ export class Screener {
         }
         const reason = "required acceptance checkbox could not be checked";
         console.warn(
-          `[${this.controls.tagName}] Leaving "${escapePromptValue(field.label)}" blank (${reason})`,
+          `[${this.controls.tagName}] Leaving "${escapePromptValue(field.label)}" blank (${reason})`
         );
         blanked.push({ label: field.label, reason });
         return;
@@ -229,32 +258,39 @@ export class Screener {
       if (!ok) {
         const reason = `location "${escapePromptValue(ans)}" had no selectable suggestion`;
         console.warn(
-          `[${this.controls.tagName}] Leaving "${escapePromptValue(field.label)}" blank (${reason})`,
+          `[${this.controls.tagName}] Leaving "${escapePromptValue(field.label)}" blank (${reason})`
         );
         blanked.push({ label: field.label, reason });
         return;
       }
       console.log(
-        `[${this.controls.tagName}] Location filled for "${escapePromptValue(field.label)}": "${escapePromptValue(ans)}"`,
+        `[${this.controls.tagName}] Location filled for "${escapePromptValue(field.label)}": "${escapePromptValue(ans)}"`
       );
       filled.push(field.label);
       await randomSleep(150, 300);
       return;
     }
 
-    let optionTexts = field.options.slice();
-    if ((field.kind === "select" || field.kind === "multi") && optionTexts.length === 0) {
+    let optionTexts = [...field.options];
+    if (
+      (field.kind === "select" || field.kind === "multi") &&
+      optionTexts.length === 0
+    ) {
       optionTexts = await this.controls.readSelectOptions(field.id);
       if (optionTexts.length === 0) {
         console.warn(
           `[${this.controls.tagName}] Could not read options for #${field.id} ` +
-            `("${escapePromptValue(field.label)}"); resolving without them.`,
+            `("${escapePromptValue(field.label)}"); resolving without them.`
         );
       }
     }
 
     const rpcKind =
-      field.kind === "radio" ? "select" : field.kind === "checkbox" ? "multi" : field.kind;
+      field.kind === "radio"
+        ? "select"
+        : field.kind === "checkbox"
+          ? "multi"
+          : field.kind;
 
     // Batch cache hit: an answer pre-resolved in one form-wide RPC. Use it
     // directly (fill + verify) without a second per-field RPC round-trip.
@@ -264,14 +300,21 @@ export class Screener {
       if (isAsyncLocation) {
         ok = await this.controls.fillAsyncAutocomplete(field.id, cached.answer);
         if (!ok) {
-          ok = await this.controls.fillAsyncAutocomplete(field.id, cached.answer);
+          ok = await this.controls.fillAsyncAutocomplete(
+            field.id,
+            cached.answer
+          );
         }
         const committed = await this.controls.readSelectValue(field.id);
         ok = ok && !!committed;
       } else {
         ok = await this.controls.fillByKind(field, cached.answer, optionTexts);
         if (!ok) {
-          ok = await this.controls.fillByKind(field, cached.answer, optionTexts);
+          ok = await this.controls.fillByKind(
+            field,
+            cached.answer,
+            optionTexts
+          );
         }
       }
       if (ok) {
@@ -297,16 +340,16 @@ export class Screener {
         // rather than deferred; the Python side decides with this flag.
         required: !!field.required,
       });
-    } catch (rpcErr: any) {
+    } catch (error: any) {
       // A deferred question (overnight, no human) must NOT abort the whole
       // run: the Python side has already recorded it for the morning digest
       // and prompted the user. Skip this field, keep it out of the final
       // sweep, and continue filling the rest of the form.
-      if (/(AUTOFILL_DEFER|DEFER)/.test(rpcErr?.message || String(rpcErr))) {
+      if (/(AUTOFILL_DEFER|DEFER)/.test(error?.message || String(error))) {
         deferredFieldCount += 1;
         console.warn(
           `[${this.controls.tagName}] Question "${escapePromptValue(field.label)}" deferred for user input; ` +
-            "leaving blank and continuing.",
+            "leaving blank and continuing."
         );
         userSkippedKeys.add(fieldKey(field));
         blanked.push({
@@ -319,9 +362,9 @@ export class Screener {
       // filling a form around an unanswered personal question is worse than no fill.
       console.error(
         `[${this.controls.tagName}] RPC answer_question failed for "${escapePromptValue(field.label)}":`,
-        rpcErr?.message || rpcErr,
+        error?.message || error
       );
-      throw rpcErr;
+      throw error;
     }
 
     const answer: string = (result?.answer ?? "").toString().trim();
@@ -360,13 +403,16 @@ export class Screener {
         field.kind === "checkbox" ||
         field.kind === "select" ||
         field.kind === "multi";
-      ok = ok && !!committed && (!isOptionKind || valuesConsistent(answer, committed));
+      ok =
+        ok &&
+        !!committed &&
+        (!isOptionKind || valuesConsistent(answer, committed));
     }
 
     if (!ok) {
       const reason = `answer "${escapePromptValue(answer)}" could not be committed`;
       console.warn(
-        `[${this.controls.tagName}] Leaving "${escapePromptValue(field.label)}" blank (${reason})`,
+        `[${this.controls.tagName}] Leaving "${escapePromptValue(field.label)}" blank (${reason})`
       );
       blanked.push({ label: field.label, reason });
       await this.controls.closeMenu();
@@ -378,5 +424,5 @@ export class Screener {
 }
 
 function normalizeQuestionLabel(label: string): string {
-  return label.replace(/\s+/g, " ").trim().toLowerCase();
+  return label.replaceAll(/\s+/g, " ").trim().toLowerCase();
 }

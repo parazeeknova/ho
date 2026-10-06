@@ -1,4 +1,4 @@
-import { Stagehand } from "@browserbasehq/stagehand";
+import type { Stagehand } from "@browserbasehq/stagehand";
 
 import {
   humanTypingEnabled,
@@ -19,7 +19,7 @@ import {
   translateToDate,
   valuesConsistent,
 } from "./matching";
-import { type FormField } from "./model";
+import type { FormField } from "./model";
 
 /**
  * Coerce an answer for a type=number input to a bare numeric string, or ""
@@ -33,18 +33,24 @@ import { type FormField } from "./model";
  */
 export function sanitizeNumberAnswer(answer: string): string {
   const original = String(answer ?? "").trim();
-  if (!original) return "";
+  if (!original) {
+    return "";
+  }
   // Quantity suffix (K/M/B): only when the magnitude is a STANDALONE token —
   // digit-run + suffix, bounded by non-letters on both sides. This expands
   // "80K INR/month" -> "80000" while never exploding ordinary words like
   // "3 BHK", "8 MB", "5 M&A deals", or the "2B" inside "10 B2B clients".
-  const mul = original.match(/(?<![a-zA-Z0-9])([\d.]+)([kKmMbB])(?=\s|[^a-zA-Z0-9]|$)/);
+  const mul = original.match(
+    /(?<![a-zA-Z0-9])([\d.]+)([kKmMbB])(?=\s|[^a-zA-Z0-9]|$)/
+  );
   if (mul) {
-    const n = parseFloat(mul[1]);
-    const mult: Record<string, number> = { k: 1e3, m: 1e6, b: 1e9 };
-    if (Number.isFinite(n)) return String(Math.round(n * mult[mul[2].toLowerCase()]));
+    const n = Number.parseFloat(mul[1]);
+    const mult: Record<string, number> = { b: 1e9, k: 1e3, m: 1e6 };
+    if (Number.isFinite(n)) {
+      return String(Math.round(n * mult[mul[2].toLowerCase()]));
+    }
   }
-  const m = original.replace(/[,\s]/g, "").match(/-?\d+(?:\.\d+)?/);
+  const m = original.replaceAll(/[,\s]/g, "").match(/-?\d+(?:\.\d+)?/);
   return m ? m[0] : "";
 }
 
@@ -66,7 +72,9 @@ export function cleanPlaceholderValue(value: string): string {
  */
 export function firstUrl(answer: string): string | null {
   const urls = String(answer ?? "").match(/https?:\/\/[^\s,;"']+/g);
-  if (!urls || !urls.length) return null;
+  if (!urls || !urls.length) {
+    return null;
+  }
   return urls[0].replace(/[.,;)\]>]+$/, "").trim() || null;
 }
 
@@ -100,7 +108,7 @@ export class FormControls {
       optionSelector?: string;
       /** XPath tag for dropdown options (default "div"). */
       optionTag?: string;
-    },
+    }
   ) {
     this.stagehand = stagehand;
     this.tagName = options?.tagName ?? "FormControls";
@@ -113,10 +121,14 @@ export class FormControls {
   protected activePage: any = null;
 
   getPage(): any {
-    if (this.activePage) return this.activePage;
+    if (this.activePage) {
+      return this.activePage;
+    }
     try {
       const pages = this.stagehand.context?.pages?.();
-      if (pages && pages.length > 0) return pages[0];
+      if (pages && pages.length > 0) {
+        return pages[0];
+      }
     } catch {
       // fall through
     }
@@ -132,7 +144,7 @@ export class FormControls {
 
   /** Poll the browser context for a page whose URL matches ``match`` and adopt
    *  it. Returns false on timeout — callers fall back to a DOM-based scan. */
-  async focusPage(match: RegExp, timeoutMs = 20000): Promise<boolean> {
+  async focusPage(match: RegExp, timeoutMs = 20_000): Promise<boolean> {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       for (const p of this.stagehand.context.pages()) {
@@ -159,9 +171,11 @@ export class FormControls {
     selector: string,
     value: string | undefined | null,
     _actPrompt: string,
-    variableName: string,
+    variableName: string
   ): Promise<void> {
-    if (!value) return;
+    if (!value) {
+      return;
+    }
     const page = this.getPage();
     const locator = page.locator(selector).first();
     if (await locator.isVisible().catch(() => false)) {
@@ -201,12 +215,16 @@ export class FormControls {
    */
   private async fillLikeHuman(locator: any, value: string): Promise<void> {
     const want = (value ?? "").trim();
-    if (!want) return;
+    if (!want) {
+      return;
+    }
     const current = await locator.inputValue().catch(() => "");
-    if (current.trim() === want) return;
+    if (current.trim() === want) {
+      return;
+    }
     if (humanTypingEnabled() && want.length <= humanTypingMaxLength()) {
       if (current) {
-        await locator.fill("").catch(() => undefined);
+        await locator.fill("").catch(() => {});
       }
       await locator.type(want, { delay: typingDelayMs() });
     } else {
@@ -219,7 +237,7 @@ export class FormControls {
    *  mouse arc before clicking without depending on Locator internals. */
   private async elementCenter(
     page: any,
-    selector: string,
+    selector: string
   ): Promise<{ x: number; y: number } | null> {
     return page
       .evaluate((sel: string) => {
@@ -230,18 +248,22 @@ export class FormControls {
             document,
             null,
             XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
-            null,
+            null
           );
           for (let i = 0; i < snap.snapshotLength; i++) {
             const el = snap.snapshotItem(i);
-            if (el instanceof Element) els.push(el);
+            if (el instanceof Element) {
+              els.push(el);
+            }
           }
         } else {
-          els = Array.from(document.querySelectorAll(sel));
+          els = [...document.querySelectorAll(sel)];
         }
         for (const el of els) {
           const r = (el as HTMLElement).getBoundingClientRect();
-          if (r.width < 1 || r.height < 1) continue;
+          if (r.width < 1 || r.height < 1) {
+            continue;
+          }
           return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
         }
         return null;
@@ -253,33 +275,37 @@ export class FormControls {
    *  via the page's CDP session. Falls back to a no-op when unavailable. */
   private async mouseArc(page: any, x: number, y: number): Promise<void> {
     const session = (page as any).mainSession ?? (page as any).session;
-    if (!session?.send) return;
+    if (!session?.send) {
+      return;
+    }
     try {
       const steps = 5 + Math.floor(Math.random() * 4);
       const sx = x - (30 + Math.random() * 50);
       const sy = y - (15 + Math.random() * 40);
       await session.send("Input.dispatchMouseEvent", {
+        button: "none",
         type: "mouseMoved",
         x: sx,
         y: sy,
-        button: "none",
       });
       for (let i = 1; i <= steps; i++) {
         const t = i / (steps + 1);
-        const e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+        const e = t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2;
         await session.send("Input.dispatchMouseEvent", {
+          button: "none",
           type: "mouseMoved",
           x: sx + (x - sx) * e + (Math.random() - 0.5) * 4,
           y: sy + (y - sy) * e + (Math.random() - 0.5) * 4,
-          button: "none",
         });
-        await new Promise((r) => setTimeout(r, 15 + Math.random() * 35));
+        await new Promise((r) => {
+          setTimeout(r, 15 + Math.random() * 35);
+        });
       }
       await session.send("Input.dispatchMouseEvent", {
+        button: "none",
         type: "mouseMoved",
         x,
         y,
-        button: "none",
       });
       await randomSleep(150, 350); // dwell before the click
     } catch {
@@ -321,7 +347,10 @@ export class FormControls {
    * candidate phrases in order. Works across the whole internet's job boards —
    * no LLM, no Stagehand `act`. Returns true when a click was dispatched.
    */
-  async clickButtonByText(phrases: string[], extraSelectors: string[] = []): Promise<boolean> {
+  async clickButtonByText(
+    phrases: string[],
+    extraSelectors: string[] = []
+  ): Promise<boolean> {
     const page = this.getPage();
     const selectors = [
       ...extraSelectors,
@@ -354,7 +383,9 @@ export class FormControls {
    * Stagehand `act`/`observe`; every step is a plain Playwright locator.
    * Returns true when a click or keypress was dispatched.
    */
-  async clickSubmitButton(options: { preferredSelector?: string } = {}): Promise<boolean> {
+  async clickSubmitButton(
+    options: { preferredSelector?: string } = {}
+  ): Promise<boolean> {
     const page = this.getPage();
     const selectors = [
       options.preferredSelector,
@@ -403,24 +434,32 @@ export class FormControls {
     try {
       const targets = await page
         .evaluate(() => {
-          const nodes = Array.from(
-            document.querySelectorAll(
+          const nodes = [
+            ...document.querySelectorAll(
               "h1, h2, h3, h4, .ashby-application-form-header, " +
-                "section[data-qa='form-section'], [class*='form-header']",
+                "section[data-qa='form-section'], [class*='form-header']"
             ),
-          ) as HTMLElement[];
+          ] as HTMLElement[];
           const pts: { x: number; y: number }[] = [];
           for (const el of nodes) {
-            if (el.querySelector("input, textarea, select, button")) continue;
+            if (el.querySelector("input, textarea, select, button")) {
+              continue;
+            }
             const r = el.getBoundingClientRect();
-            if (r.width < 4 || r.height < 4) continue;
-            if (r.bottom < 0 || r.top > window.innerHeight) continue;
+            if (r.width < 4 || r.height < 4) {
+              continue;
+            }
+            if (r.bottom < 0 || r.top > window.innerHeight) {
+              continue;
+            }
             pts.push({ x: r.left + r.width / 2, y: r.top + r.height / 2 });
           }
           return pts;
         })
         .catch(() => [] as { x: number; y: number }[]);
-      if (!targets.length) return;
+      if (!targets.length) {
+        return;
+      }
       // Pick 1..2 distinct benign targets, shuffled.
       const pick = (() => {
         const n = Math.min(count, targets.length);
@@ -433,31 +472,33 @@ export class FormControls {
         if (session?.send) {
           await session
             .send("Input.dispatchMouseEvent", {
+              button: "left",
+              clickCount: 1,
               type: "mousePressed",
               x: t.x,
               y: t.y,
-              button: "left",
-              clickCount: 1,
             })
             .catch(() => {});
           await randomSleep(60, 150);
           await session
             .send("Input.dispatchMouseEvent", {
+              button: "left",
+              clickCount: 1,
               type: "mouseReleased",
               x: t.x,
               y: t.y,
-              button: "left",
-              clickCount: 1,
             })
             .catch(() => {});
         }
         await randomSleep(350, 800);
       }
-      console.log(`[${this.tagName}] Simulated ${pick.length} human form interaction(s).`);
-    } catch (err: any) {
+      console.log(
+        `[${this.tagName}] Simulated ${pick.length} human form interaction(s).`
+      );
+    } catch (error: any) {
       console.warn(
         `[${this.tagName}] humanFormInteractions failed (continuing):`,
-        err?.message || err,
+        error?.message || error
       );
     }
   }
@@ -481,13 +522,17 @@ export class FormControls {
   async ensureMenuOpen(id: string): Promise<boolean> {
     const page = this.getPage();
     const control = page.locator(this.controlXPathFor(id)).first();
-    if (!(await control.isVisible().catch(() => false))) return false;
+    if (!(await control.isVisible().catch(() => false))) {
+      return false;
+    }
     await this.closeMenu();
     await randomSleep(150, 300);
     for (let attempt = 0; attempt < 3; attempt++) {
       await control.click();
       await randomSleep(300, 500);
-      if (await this.hasVisibleOption()) return true;
+      if (await this.hasVisibleOption()) {
+        return true;
+      }
     }
     return false;
   }
@@ -503,8 +548,9 @@ export class FormControls {
           .nth(i)
           .isVisible()
           .catch(() => false)
-      )
+      ) {
         return true;
+      }
     }
     return false;
   }
@@ -521,7 +567,9 @@ export class FormControls {
       const count = await options.count().catch(() => 0);
       for (let i = 0; i < count; i++) {
         const option = options.nth(i);
-        if (!(await option.isVisible().catch(() => false))) continue;
+        if (!(await option.isVisible().catch(() => false))) {
+          continue;
+        }
         await this.humanClick(option, xpath);
         return true;
       }
@@ -538,8 +586,10 @@ export class FormControls {
       return await page.evaluate((selector: string) => {
         const out: string[] = [];
         const seen = new Set<string>();
-        for (const el of Array.from(document.querySelectorAll(selector))) {
-          const text = ((el as HTMLElement).textContent || "").replace(/\s+/g, " ").trim();
+        for (const el of [...document.querySelectorAll(selector)]) {
+          const text = ((el as HTMLElement).textContent || "")
+            .replaceAll(/\s+/g, " ")
+            .trim();
           if (text && !seen.has(text)) {
             seen.add(text);
             out.push(text);
@@ -559,12 +609,15 @@ export class FormControls {
       return await page.evaluate((selector: string) => {
         const out: string[] = [];
         const seen = new Set<string>();
-        for (const el of Array.from(document.querySelectorAll(selector))) {
+        for (const el of [...document.querySelectorAll(selector)]) {
           const node = el as HTMLElement;
-          if (node.offsetParent === null && node.getBoundingClientRect().height === 0) {
+          if (
+            node.offsetParent === null &&
+            node.getBoundingClientRect().height === 0
+          ) {
             continue; // hidden or detached; only the open menu is visible
           }
-          const text = (node.textContent || "").replace(/\s+/g, " ").trim();
+          const text = (node.textContent || "").replaceAll(/\s+/g, " ").trim();
           if (text && !seen.has(text)) {
             seen.add(text);
             out.push(text);
@@ -593,7 +646,9 @@ export class FormControls {
     try {
       const control = page.locator(this.controlXPathFor(id)).first();
       const input = page.locator(cssIdLocator(id)).first();
-      if (!(await control.isVisible().catch(() => false))) return [];
+      if (!(await control.isVisible().catch(() => false))) {
+        return [];
+      }
       await this.closeMenu();
       await randomSleep(150, 300);
       await control.click();
@@ -617,8 +672,11 @@ export class FormControls {
       }
       await this.closeMenu();
       return opts;
-    } catch (err: any) {
-      console.warn(`[${this.tagName}] readSelectOptions failed for #${id}:`, err?.message || err);
+    } catch (error: any) {
+      console.warn(
+        `[${this.tagName}] readSelectOptions failed for #${id}:`,
+        error?.message || error
+      );
       return [];
     }
   }
@@ -628,21 +686,28 @@ export class FormControls {
     const page = this.getPage();
     try {
       const raw = await page.evaluate((inputId: string) => {
-        const input = document.getElementById(inputId) as HTMLInputElement | null;
-        if (!input) return "";
+        const input = document.querySelector(
+          `#${inputId}`
+        ) as HTMLInputElement | null;
+        if (!input) {
+          return "";
+        }
         const shell =
-          input.closest('[class*="select-shell"]') || input.closest('[class*="select__"]');
+          input.closest('[class*="select-shell"]') ||
+          input.closest('[class*="select__"]');
         if (shell) {
-          const multi = Array.from(shell.querySelectorAll('div[class*="select__multi-value"]'));
+          const multi = [
+            ...shell.querySelectorAll('div[class*="select__multi-value"]'),
+          ];
           if (multi.length > 0) {
             return multi
-              .map((m) => (m.textContent || "").replace(/\s+/g, " ").trim())
+              .map((m) => (m.textContent || "").replaceAll(/\s+/g, " ").trim())
               .filter(Boolean)
               .join(", ");
           }
           const sv = shell.querySelector('div[class*="select__single-value"]');
           if (sv?.textContent) {
-            return (sv.textContent || "").replace(/\s+/g, " ").trim();
+            return (sv.textContent || "").replaceAll(/\s+/g, " ").trim();
           }
         }
         return (input.value || "").trim();
@@ -660,21 +725,27 @@ export class FormControls {
     const page = this.getPage();
     try {
       const raw = await page.evaluate((inputId: string) => {
-        const byId = document.getElementById(inputId) as HTMLInputElement | null;
-        if (byId) return (byId.value || "").trim();
+        const byId = document.querySelector(
+          `#${inputId}`
+        ) as HTMLInputElement | null;
+        if (byId) {
+          return (byId.value || "").trim();
+        }
         const label = document.querySelector(`label[for="${inputId}"]`);
         const control = label ? (label as HTMLLabelElement).control : null;
-        if (control) return ((control as HTMLInputElement).value || "").trim();
+        if (control) {
+          return ((control as HTMLInputElement).value || "").trim();
+        }
         // Last resort: the field's own container (label's `for` may dangle
         // when the input has no id — react-datepicker). Read its first control.
         // The scope itself may BE the control (generic adapter tags the input).
         const scope = document.querySelector(`[data-field-path="${inputId}"]`);
         const scoped = scope?.matches(
-          'input[type="text"], input[type="date"], input[type="email"], input[type="tel"], input[type="url"], input:not([type]), textarea',
+          'input[type="text"], input[type="date"], input[type="email"], input[type="tel"], input[type="url"], input:not([type]), textarea'
         )
           ? scope
           : scope?.querySelector(
-              'input[type="text"], input[type="date"], input[type="email"], input[type="tel"], input[type="url"], input:not([type]), textarea',
+              'input[type="text"], input[type="date"], input[type="email"], input[type="tel"], input[type="url"], input:not([type]), textarea'
             );
         return scoped ? ((scoped as HTMLInputElement).value || "").trim() : "";
       }, id);
@@ -690,18 +761,22 @@ export class FormControls {
     try {
       const raw = await page.evaluate((groupName: string) => {
         const checked = document.querySelector(
-          `input[type="radio"][name="${groupName}"]:checked, input[type="checkbox"][name="${groupName}"]:checked`,
+          `input[type="radio"][name="${groupName}"]:checked, input[type="checkbox"][name="${groupName}"]:checked`
         ) as HTMLInputElement | null;
-        if (!checked) return "";
+        if (!checked) {
+          return "";
+        }
         const wrapLabel = checked.closest("label");
-        const forLabel = checked.id ? document.querySelector(`label[for="${checked.id}"]`) : null;
+        const forLabel = checked.id
+          ? document.querySelector(`label[for="${checked.id}"]`)
+          : null;
         const label = wrapLabel || forLabel;
         return (
           label
             ? label.textContent || ""
             : checked.getAttribute("aria-label") || checked.value || ""
         )
-          .replace(/\s+/g, " ")
+          .replaceAll(/\s+/g, " ")
           .trim();
       }, name);
       return cleanPlaceholderValue(raw);
@@ -723,23 +798,33 @@ export class FormControls {
     try {
       const raw = await page.evaluate((fid: string) => {
         const scope = document.querySelector(`[data-field-path="${fid}"]`);
-        if (!scope) return "";
+        if (!scope) {
+          return "";
+        }
         const checked = scope.querySelector(
-          'input[type="radio"]:checked, input[type="checkbox"]:checked',
+          'input[type="radio"]:checked, input[type="checkbox"]:checked'
         ) as HTMLInputElement | null;
         if (checked) {
           const wrapLabel = checked.closest("label");
-          const forLabel = checked.id ? document.querySelector(`label[for="${checked.id}"]`) : null;
+          const forLabel = checked.id
+            ? document.querySelector(`label[for="${checked.id}"]`)
+            : null;
           const label = wrapLabel || forLabel;
-          const txt = (label ? label.textContent || "" : checked.getAttribute("aria-label") || "")
-            .replace(/\s+/g, " ")
+          const txt = (
+            label
+              ? label.textContent || ""
+              : checked.getAttribute("aria-label") || ""
+          )
+            .replaceAll(/\s+/g, " ")
             .trim();
-          if (txt) return txt;
+          if (txt) {
+            return txt;
+          }
           return checked.value || "";
         }
         // Toggle-button rows: an active/checked button (aria-pressed or a
         // checked/active class) is the committed value.
-        const activeBtn = Array.from(scope.querySelectorAll("button")).find((b) => {
+        const activeBtn = [...scope.querySelectorAll("button")].find((b) => {
           const cls = (b.className || "").toString();
           return (
             b.getAttribute("aria-pressed") === "true" ||
@@ -747,7 +832,7 @@ export class FormControls {
           );
         });
         if (activeBtn) {
-          return (activeBtn.textContent || "").replace(/\s+/g, " ").trim();
+          return (activeBtn.textContent || "").replaceAll(/\s+/g, " ").trim();
         }
         return "";
       }, field.id);
@@ -764,13 +849,18 @@ export class FormControls {
       // boards whose radios share a group name (Greenhouse/Lever).
       return (
         (await this.readScopedGroupValue(field)) ||
-        this.readGroupValue(field.optionTargets[0]?.name || field.name || field.id)
+        this.readGroupValue(
+          field.optionTargets[0]?.name || field.name || field.id
+        )
       );
     }
     if (field.kind === "select" || field.kind === "multi") {
       // Location autocompletes may commit as free text in the input rather
       // than a selected option, so fall back to the raw input value.
-      return (await this.readSelectValue(field.id)) || (await this.readInputValue(field.id));
+      return (
+        (await this.readSelectValue(field.id)) ||
+        (await this.readInputValue(field.id))
+      );
     }
     return this.readInputValue(field.id);
   }
@@ -788,7 +878,7 @@ export class FormControls {
   async clickGroupOption(
     field: FormField,
     answer: string,
-    formSelector = "#application-form",
+    formSelector = "#application-form"
   ): Promise<boolean> {
     const page = this.getPage();
     try {
@@ -800,14 +890,19 @@ export class FormControls {
         // Never match a target whose text is empty: ``nc.includes("")`` is
         // always true, which silently selects the FIRST option in the group
         // (e.g. "Yes") no matter what the answer was.
-        const nonEmptyTargets = targets.filter((t) => normalizeOptionText(t.text).length > 0);
+        const nonEmptyTargets = targets.filter(
+          (t) => normalizeOptionText(t.text).length > 0
+        );
         const target =
           nonEmptyTargets.find((t) => normalizeOptionText(t.text) === nc) ||
           nonEmptyTargets.find(
             (t) =>
-              normalizeOptionText(t.text).includes(nc) || nc.includes(normalizeOptionText(t.text)),
+              normalizeOptionText(t.text).includes(nc) ||
+              nc.includes(normalizeOptionText(t.text))
           );
-        if (!target) continue;
+        if (!target) {
+          continue;
+        }
         // NOTE: do NOT add `[value="..."]` here. For an input without a value
         // attribute, `input.value` (the property, read by the walker) is the
         // browser default "on", but there is NO `value` attribute in the DOM —
@@ -835,21 +930,34 @@ export class FormControls {
                 // WARNING: only anonymous arrows here (tsx keepNames wraps
                 // inferred-name arrows in __name(), which throws in page
                 // context). Destructure the helper so it never gains a name.
-                const [norm] = [(s: string) => (s || "").replace(/\s+/g, " ").trim().toLowerCase()];
-                const inputs = Array.from(
-                  document.querySelectorAll(`input[type="${args.type}"][name="${args.name}"]`),
-                ) as HTMLInputElement[];
+                const [norm] = [
+                  (s: string) =>
+                    (s || "").replaceAll(/\s+/g, " ").trim().toLowerCase(),
+                ];
+                const inputs = [
+                  ...document.querySelectorAll(
+                    `input[type="${args.type}"][name="${args.name}"]`
+                  ),
+                ] as HTMLInputElement[];
                 let best = "";
                 for (const inp of inputs) {
                   const wrapLabel = inp.closest("label");
-                  const forLabel = inp.id ? document.querySelector(`label[for="${inp.id}"]`) : null;
+                  const forLabel = inp.id
+                    ? document.querySelector(`label[for="${inp.id}"]`)
+                    : null;
                   const label = wrapLabel || forLabel;
                   const txt = norm(
-                    label ? label.textContent || "" : inp.getAttribute("aria-label") || "",
+                    label
+                      ? label.textContent || ""
+                      : inp.getAttribute("aria-label") || ""
                   );
-                  if (!txt) continue;
+                  if (!txt) {
+                    continue;
+                  }
                   if (txt === args.want) {
-                    if (inp.id) return inp.id;
+                    if (inp.id) {
+                      return inp.id;
+                    }
                     // Exact match with no id: keep it as best rather than
                     // throwing away a substring-matched sibling.
                     best = inp.id || best;
@@ -863,7 +971,7 @@ export class FormControls {
                 }
                 return best;
               },
-              { name: nameSel, type, want: nc },
+              { name: nameSel, type, want: nc }
             )
             .catch(() => "");
         }
@@ -876,7 +984,9 @@ export class FormControls {
         // immediately; an id-less click must be verified against the intended
         // answer so a "No" answer can never commit a "Yes" first option.
         const verified = async (): Promise<boolean> => {
-          if (optionId) return true;
+          if (optionId) {
+            return true;
+          }
           const committed = await this.readFieldValue(field);
           return !!committed && valuesConsistent(answer, committed);
         };
@@ -886,7 +996,9 @@ export class FormControls {
         if (await wrapLabel.isVisible().catch(() => false)) {
           await wrapLabel.click();
           if (await input.isChecked().catch(() => false)) {
-            if (await verified()) return true;
+            if (await verified()) {
+              return true;
+            }
           }
         }
         // 2) Sibling label[for=<input id>] — label is NOT an ancestor. The
@@ -895,14 +1007,21 @@ export class FormControls {
         //    the clickable element and must be used regardless. Uses the
         //    matched option's OWN id so the precise option is clicked.
         const inputId = await page
-          .evaluate((sel: string) => document.querySelector(sel)?.id || "", base)
+          .evaluate(
+            (sel: string) => document.querySelector(sel)?.id || "",
+            base
+          )
           .catch(() => "");
         if (inputId) {
-          const forLabel = page.locator(`label[for="${cssEscape(inputId)}"]`).first();
+          const forLabel = page
+            .locator(`label[for="${cssEscape(inputId)}"]`)
+            .first();
           if (await forLabel.isVisible().catch(() => false)) {
             await forLabel.click();
             if (await input.isChecked().catch(() => false)) {
-              if (await verified()) return true;
+              if (await verified()) {
+                return true;
+              }
             }
           }
         }
@@ -910,7 +1029,9 @@ export class FormControls {
         //    visibility — the input is often the styled/hidden native control).
         await (input as any).check({ force: true }).catch(() => {});
         if (await input.isChecked().catch(() => false)) {
-          if (await verified()) return true;
+          if (await verified()) {
+            return true;
+          }
         }
       }
 
@@ -920,50 +1041,66 @@ export class FormControls {
       // are clicked (a wrapper whose text spans the whole group can toggle the
       // FIRST option and commit the WRONG value), and an element whose text
       // also contains another option of the group is never a target.
-      const optionTexts = field.options.map((o) => normalizeOptionText(o)).filter(Boolean);
+      const optionTexts = field.options
+        .map((o) => normalizeOptionText(o))
+        .filter(Boolean);
       const scopeClicked = await page
         .evaluate(
           (fid: string, want: string, opts: string[]) => {
             const scope = document.querySelector(`[data-field-path="${fid}"]`);
-            if (!scope) return false;
+            if (!scope) {
+              return false;
+            }
             // WARNING: only anonymous arrows here (tsx keepNames wraps
             // inferred-name arrows in __name(), which throws in page context).
-            const [norm] = [(s: string) => (s || "").replace(/\s+/g, " ").trim().toLowerCase()];
-            const candidates = Array.from(
-              scope.querySelectorAll(
+            const [norm] = [
+              (s: string) =>
+                (s || "").replaceAll(/\s+/g, " ").trim().toLowerCase(),
+            ];
+            const candidates = [
+              ...scope.querySelectorAll(
                 "button, label[for], label:has(input), [role='option'], " +
-                  "[class*='option'], li, span, div[class*='option']",
+                  "[class*='option'], li, span, div[class*='option']"
               ),
-            );
-            const scored: Array<{ el: Element; score: number }> = [];
+            ];
+            const scored: { el: Element; score: number }[] = [];
             for (const el of candidates) {
               const tag = el.tagName;
               const txt = norm((el as HTMLElement).textContent || "");
-              if (!txt) continue;
+              if (!txt) {
+                continue;
+              }
               // A wrapper whose text also contains ANOTHER option of this
               // group (e.g. a "Yes No" row when we want "No") must never be
               // clicked: clicking it can toggle the group's first option.
-              if (opts.some((o) => o && o !== want && txt.includes(o))) continue;
+              if (opts.some((o) => o && o !== want && txt.includes(o))) {
+                continue;
+              }
               const clickableTag = tag === "BUTTON" || tag === "LABEL";
-              const leaf = clickableTag || !el.querySelector("button, [class*='option'], input");
+              const leaf =
+                clickableTag ||
+                !el.querySelector("button, [class*='option'], input");
               const exact = txt === want;
-              const near = leaf && txt.split(/\s+/).length <= 4 && txt.includes(want);
-              if (!exact && !near) continue;
+              const near =
+                leaf && txt.split(/\s+/).length <= 4 && txt.includes(want);
+              if (!exact && !near) {
+                continue;
+              }
               // Exact option rows beat short containment matches; buttons are
               // the most precise target (toggle rows), then labels, then any.
               const score = exact ? (tag === "BUTTON" ? 0 : 1) : 2;
               scored.push({ el, score });
             }
             scored.sort((a, b) => a.score - b.score);
-            for (const s of scored) {
-              (s.el as HTMLElement).click();
+            if (scored.length > 0) {
+              (scored[0].el as HTMLElement).click();
               return true;
             }
             return false;
           },
           field.id,
           normalizeOptionText(answer),
-          optionTexts,
+          optionTexts
         )
         .catch(() => false);
       if (scopeClicked) {
@@ -985,43 +1122,65 @@ export class FormControls {
         const pageWideId = await page
           .evaluate(
             (args: { name: string; type: string; want: string }) => {
-              const [norm] = [(s: string) => (s || "").replace(/\s+/g, " ").trim().toLowerCase()];
-              const inputs = Array.from(
-                document.querySelectorAll(`input[type="${args.type}"][name="${args.name}"]`),
-              ) as HTMLInputElement[];
+              const [norm] = [
+                (s: string) =>
+                  (s || "").replaceAll(/\s+/g, " ").trim().toLowerCase(),
+              ];
+              const inputs = [
+                ...document.querySelectorAll(
+                  `input[type="${args.type}"][name="${args.name}"]`
+                ),
+              ] as HTMLInputElement[];
               let bestId = "";
               let bestScore = 0;
               for (const inp of inputs) {
                 const wrap = inp.closest("label");
-                const forLabel = inp.id ? document.querySelector(`label[for="${inp.id}"]`) : null;
+                const forLabel = inp.id
+                  ? document.querySelector(`label[for="${inp.id}"]`)
+                  : null;
                 const label = wrap || forLabel;
                 const txt = norm(
-                  label ? label.textContent || "" : inp.getAttribute("aria-label") || "",
+                  label
+                    ? label.textContent || ""
+                    : inp.getAttribute("aria-label") || ""
                 );
-                if (!txt) continue;
+                if (!txt) {
+                  continue;
+                }
                 let score = 0;
-                if (txt === args.want) score = 3;
-                else if (txt.includes(args.want) || args.want.includes(txt)) score = 2;
+                if (txt === args.want) {
+                  score = 3;
+                } else if (txt.includes(args.want) || args.want.includes(txt)) {
+                  score = 2;
+                }
                 if (score > bestScore) {
                   bestScore = score;
                   bestId = inp.id || "";
                 }
               }
-              if (!bestId) return "";
-              const target = document.getElementById(bestId);
+              if (!bestId) {
+                return "";
+              }
+              const target = document.querySelector(`#${bestId}`);
               // Scan label[for] manually — interpolating bestId into a CSS
               // selector breaks on ids containing quotes.
-              const targetLabelEl = Array.from(document.querySelectorAll("label[for]")).find(
-                (l) => l.getAttribute("for") === bestId,
-              );
+              const targetLabelEl = [
+                ...document.querySelectorAll("label[for]"),
+              ].find((l) => l.getAttribute("for") === bestId);
               const targetLabel =
                 (target?.closest("label") as HTMLElement | null) ||
                 (targetLabelEl as HTMLElement | null) ||
                 target;
-              if (targetLabel) (targetLabel as HTMLElement).click();
+              if (targetLabel) {
+                (targetLabel as HTMLElement).click();
+              }
               return bestId;
             },
-            { name: cssEscape(groupName), type, want: normalizeOptionText(answer) },
+            {
+              name: cssEscape(groupName),
+              type,
+              want: normalizeOptionText(answer),
+            }
           )
           .catch(() => "");
         if (pageWideId) {
@@ -1032,7 +1191,9 @@ export class FormControls {
           const checked = await clickedInput.isChecked().catch(() => false);
           if (checked) {
             const committed = await this.readFieldValue(field);
-            if (committed && valuesConsistent(answer, committed)) return true;
+            if (committed && valuesConsistent(answer, committed)) {
+              return true;
+            }
           }
         }
       }
@@ -1042,7 +1203,7 @@ export class FormControls {
       // answer is the second (or later) option still clicks the right one.
       const formLabel = page
         .locator(
-          `${formSelector} label:has(input[type='radio'], input[type='checkbox']):has-text("${cssEscape(answer)}")`,
+          `${formSelector} label:has(input[type='radio'], input[type='checkbox']):has-text("${cssEscape(answer)}")`
         )
         .first();
       if (await formLabel.isVisible().catch(() => false)) {
@@ -1082,7 +1243,7 @@ export class FormControls {
    */
   private async resolveTextControl(field: FormField): Promise<any | null> {
     const page = this.getPage();
-    const id = field.id;
+    const { id } = field;
     return page
       .evaluate((fid: string) => {
         // WARNING: only anonymous arrows may be defined here (tsx keepNames
@@ -1092,10 +1253,10 @@ export class FormControls {
           (el: Element): any => {
             const tag = el.tagName.toLowerCase();
             const type = el instanceof HTMLInputElement ? el.type || tag : tag;
-            return { type, tag };
+            return { tag, type };
           },
         ];
-        const byId = document.getElementById(fid);
+        const byId = document.querySelector(`#${fid}`);
         if (
           byId &&
           (byId instanceof HTMLInputElement ||
@@ -1121,13 +1282,16 @@ export class FormControls {
         const scope = document.querySelector(`[data-field-path="${fid}"]`);
         if (scope) {
           const first = scope.matches(
-            'input[type="text"], input[type="date"], input[type="email"], input[type="tel"], input[type="url"], input:not([type]), textarea',
+            'input[type="text"], input[type="date"], input[type="email"], input[type="tel"], input[type="url"], input:not([type]), textarea'
           )
             ? scope
             : scope.querySelector(
-                'input[type="text"], input[type="date"], input[type="email"], input[type="tel"], input[type="url"], input:not([type]), textarea',
+                'input[type="text"], input[type="date"], input[type="email"], input[type="tel"], input[type="url"], input:not([type]), textarea'
               );
-          if (first instanceof HTMLInputElement || first instanceof HTMLTextAreaElement) {
+          if (
+            first instanceof HTMLInputElement ||
+            first instanceof HTMLTextAreaElement
+          ) {
             return { byScope: true, ...describe(first) };
           }
         }
@@ -1146,20 +1310,22 @@ export class FormControls {
   async fillTextById(id: string, answer: string): Promise<void> {
     const page = this.getPage();
     const field: FormField = {
-      label: id,
       id,
       kind: "text",
-      required: false,
-      options: [],
+      label: id,
       optionTargets: [],
+      options: [],
+      required: false,
     };
     const target = await this.resolveTextControl(field);
     if (process.env.DEBUG_FILL) {
       console.log(
-        `[DEBUG_FILL] fillTextById #${id} resolveTextControl=${JSON.stringify(target)} answer="${answer}"`,
+        `[DEBUG_FILL] fillTextById #${id} resolveTextControl=${JSON.stringify(target)} answer="${answer}"`
       );
     }
-    if (!target) return;
+    if (!target) {
+      return;
+    }
 
     // Never commit a framework placeholder (the literal "undefined"/"null"/
     // "NaN" a broken datepicker can render) — leave the field blank instead.
@@ -1167,7 +1333,7 @@ export class FormControls {
     if (!cleaned) {
       console.warn(
         `[${this.tagName}] #${id} got a blank/placeholder answer ` +
-          `("${escapePromptValue(String(answer ?? ""))}"); leaving blank.`,
+          `("${escapePromptValue(String(answer ?? ""))}"); leaving blank.`
       );
       return;
     }
@@ -1192,10 +1358,13 @@ export class FormControls {
         .split(/[\s,;]+/)
         .map((t) => t.trim())
         .filter(Boolean);
-      const allUrls = tokens.length > 0 && tokens.every((t) => /^https?:\/\//i.test(t));
+      const allUrls =
+        tokens.length > 0 && tokens.every((t) => /^https?:\/\//i.test(t));
       if (target.type === "url" || allUrls) {
         const only = firstUrl(cleaned);
-        if (only) valueToFill = only;
+        if (only) {
+          valueToFill = only;
+        }
       }
     }
 
@@ -1207,7 +1376,7 @@ export class FormControls {
       if (!numeric) {
         console.warn(
           `[${this.tagName}] Number field #${id} has non-numeric answer ` +
-            `"${escapePromptValue(valueToFill)}"; leaving blank.`,
+            `"${escapePromptValue(valueToFill)}"; leaving blank.`
         );
         return;
       }
@@ -1224,60 +1393,79 @@ export class FormControls {
             const label = document.querySelector(`label[for="${fid}"]`);
             let control = label ? (label as HTMLLabelElement).control : null;
             const isControl =
-              control instanceof HTMLInputElement || control instanceof HTMLTextAreaElement;
+              control instanceof HTMLInputElement ||
+              control instanceof HTMLTextAreaElement;
             if (!isControl) {
-              const scope = document.querySelector(`[data-field-path="${fid}"]`);
+              const scope = document.querySelector(
+                `[data-field-path="${fid}"]`
+              );
               const inScope = scope?.matches(
-                'input[type="text"], input[type="date"], input[type="email"], input[type="tel"], input[type="url"], input:not([type]), textarea',
+                'input[type="text"], input[type="date"], input[type="email"], input[type="tel"], input[type="url"], input:not([type]), textarea'
               )
                 ? scope
                 : ((scope?.querySelector(
-                    'input[type="text"], input[type="date"], input[type="email"], input[type="tel"], input[type="url"], input:not([type]), textarea',
+                    'input[type="text"], input[type="date"], input[type="email"], input[type="tel"], input[type="url"], input:not([type]), textarea'
                   ) as HTMLElement | null) ?? null);
               control = (inScope as HTMLElement | null) ?? null;
             }
-            if (!control) return false;
-            if ((control as HTMLInputElement).type === "file") return false;
+            if (!control) {
+              return false;
+            }
+            if ((control as HTMLInputElement).type === "file") {
+              return false;
+            }
             const setter = Object.getOwnPropertyDescriptor(
               (control as HTMLInputElement).constructor.prototype,
-              "value",
+              "value"
             )?.set;
-            if (setter) setter.call(control, value);
-            else (control as HTMLInputElement).value = value;
+            if (setter) {
+              setter.call(control, value);
+            } else {
+              (control as HTMLInputElement).value = value;
+            }
             control.dispatchEvent(new Event("input", { bubbles: true }));
             control.dispatchEvent(new Event("change", { bubbles: true }));
             return true;
           },
           id,
-          valueToFill,
+          valueToFill
         )
         .catch(() => {});
       await randomSleep(200, 500);
       return;
     }
     const loc = page.locator(cssIdLocator(id)).first();
-    if (!(await loc.isVisible().catch(() => false))) return;
+    if (!(await loc.isVisible().catch(() => false))) {
+      return;
+    }
     const type = await page
       .evaluate((inputId: string) => {
-        const el = document.getElementById(inputId) as HTMLInputElement | null;
+        const el = document.querySelector(
+          `#${inputId}`
+        ) as HTMLInputElement | null;
         return el?.type ?? null;
       }, id)
       .catch(() => null);
-    if (type === "file") return; // file inputs crash fill(); resume handled elsewhere
+    if (type === "file") {
+      return;
+    } // file inputs crash fill(); resume handled elsewhere
     // Never type into a combobox/select-shell disguised as a text field: a
     // dropdown is answered by selecting an option, not by typing into it.
     const isCombobox = await page
       .evaluate((inputId: string) => {
-        const el = document.getElementById(inputId) as HTMLInputElement | null;
+        const el = document.querySelector(
+          `#${inputId}`
+        ) as HTMLInputElement | null;
         return !!(
           el &&
-          (el.getAttribute("role") === "combobox" || el.closest('[class*="select-shell"]'))
+          (el.getAttribute("role") === "combobox" ||
+            el.closest('[class*="select-shell"]'))
         );
       }, id)
       .catch(() => false);
     if (isCombobox) {
       console.warn(
-        `[${this.tagName}] Refusing to type into combobox #${id}; selecting an option instead.`,
+        `[${this.tagName}] Refusing to type into combobox #${id}; selecting an option instead.`
       );
       return;
     }
@@ -1291,7 +1479,7 @@ export class FormControls {
       if (!numeric) {
         console.warn(
           `[${this.tagName}] Number field #${id} has non-numeric answer ` +
-            `"${escapePromptValue(valueToFill)}"; leaving blank.`,
+            `"${escapePromptValue(valueToFill)}"; leaving blank.`
         );
         return;
       }
@@ -1309,15 +1497,21 @@ export class FormControls {
    * ``readSelectOptions``; the picked option must come from that list so the
    * click is an exact-text match, never a substring guess.
    */
-  async fillSelect(id: string, answer: string, optionTexts: string[]): Promise<boolean> {
+  async fillSelect(
+    id: string,
+    answer: string,
+    optionTexts: string[]
+  ): Promise<boolean> {
     try {
-      if (!(await this.ensureMenuOpen(id))) return false;
+      if (!(await this.ensureMenuOpen(id))) {
+        return false;
+      }
 
       const picked = chooseOption(selectCandidates(answer), optionTexts);
       if (!picked) {
         console.warn(
           `[${this.tagName}] No matching option for #${id} ` +
-            `(answer "${escapePromptValue(answer)}"); leaving blank.`,
+            `(answer "${escapePromptValue(answer)}"); leaving blank.`
         );
         await this.closeMenu();
         return false;
@@ -1328,7 +1522,7 @@ export class FormControls {
         // A stale open menu can satisfy ensureMenuOpen while the real menu
         // is closed; close and reopen deterministically, then retry once.
         console.warn(
-          `[${this.tagName}] Option "${picked}" not visible on first try for #${id}; reopening...`,
+          `[${this.tagName}] Option "${picked}" not visible on first try for #${id}; reopening...`
         );
         await this.closeMenu();
         await randomSleep(150, 300);
@@ -1339,7 +1533,7 @@ export class FormControls {
       if (!clicked) {
         console.warn(
           `[${this.tagName}] Picked option "${picked}" not visible for #${id} ` +
-            `(answer "${escapePromptValue(answer)}")`,
+            `(answer "${escapePromptValue(answer)}")`
         );
         await this.closeMenu();
         return false;
@@ -1347,8 +1541,11 @@ export class FormControls {
       await randomSleep(300, 600);
       console.log(`[${this.tagName}] Selected option "${picked}" for #${id}`);
       return true;
-    } catch (err: any) {
-      console.warn(`[${this.tagName}] fillSelect failed for #${id}:`, err?.message || err);
+    } catch (error: any) {
+      console.warn(
+        `[${this.tagName}] fillSelect failed for #${id}:`,
+        error?.message || error
+      );
       return false;
     }
   }
@@ -1357,9 +1554,15 @@ export class FormControls {
    * Fill a react-select multi-select: one exact match per comma-separated
    * pick, clicking each while the menu stays open.
    */
-  async fillMulti(id: string, answer: string, optionTexts: string[]): Promise<boolean> {
+  async fillMulti(
+    id: string,
+    answer: string,
+    optionTexts: string[]
+  ): Promise<boolean> {
     try {
-      if (!(await this.ensureMenuOpen(id))) return false;
+      if (!(await this.ensureMenuOpen(id))) {
+        return false;
+      }
 
       const picks = answer
         .split(",")
@@ -1371,7 +1574,7 @@ export class FormControls {
         if (!picked) {
           console.warn(
             `[${this.tagName}] No matching multi option for #${id} ` +
-              `(answer "${escapePromptValue(pick)}")`,
+              `(answer "${escapePromptValue(pick)}")`
           );
           continue;
         }
@@ -1379,7 +1582,9 @@ export class FormControls {
           clicked += 1;
           await randomSleep(200, 400);
         } else {
-          console.warn(`[${this.tagName}] Multi option "${picked}" not visible for #${id}`);
+          console.warn(
+            `[${this.tagName}] Multi option "${picked}" not visible for #${id}`
+          );
         }
         // Multi-select menus normally stay open; if a pick closed it, reopen.
         await this.ensureMenuOpen(id);
@@ -1387,8 +1592,11 @@ export class FormControls {
       await this.closeMenu();
       console.log(`[${this.tagName}] Selected ${clicked} option(s) for #${id}`);
       return clicked > 0;
-    } catch (err: any) {
-      console.warn(`[${this.tagName}] fillMulti failed for #${id}:`, err?.message || err);
+    } catch (error: any) {
+      console.warn(
+        `[${this.tagName}] fillMulti failed for #${id}:`,
+        error?.message || error
+      );
       return false;
     }
   }
@@ -1404,7 +1612,9 @@ export class FormControls {
     const page = this.getPage();
     try {
       const input = page.locator(cssIdLocator(id)).first();
-      if (!(await input.isVisible().catch(() => false))) return false;
+      if (!(await input.isVisible().catch(() => false))) {
+        return false;
+      }
       await this.closeMenu();
       await randomSleep(150, 300);
       await input.click();
@@ -1416,7 +1626,9 @@ export class FormControls {
         for (let i = 0; i < 6; i++) {
           await randomSleep(900, 1200);
           opts = await this.readVisibleOptionTexts();
-          if (opts.length) break;
+          if (opts.length) {
+            break;
+          }
         }
         return opts;
       };
@@ -1425,7 +1637,9 @@ export class FormControls {
       if (!opts.length) {
         // Geocoders often return nothing for "City, Country"; retry with the
         // leading city token ("Bhopal, India" -> "Bhopal").
-        const shortQuery = answer.split(/[\s,]+/).find((t) => t && t.length > 1);
+        const shortQuery = answer
+          .split(/[\s,]+/)
+          .find((t) => t && t.length > 1);
         if (shortQuery && shortQuery !== answer.trim()) {
           await input.fill(shortQuery);
           opts = await poll();
@@ -1439,7 +1653,9 @@ export class FormControls {
           // Verify a real option was selected — never the raw typed text.
           const committed = await this.readSelectValue(id);
           if (committed) {
-            console.log(`[${this.tagName}] Picked location suggestion "${picked}" for #${id}`);
+            console.log(
+              `[${this.tagName}] Picked location suggestion "${picked}" for #${id}`
+            );
             return true;
           }
         }
@@ -1448,13 +1664,13 @@ export class FormControls {
       await this.closeMenu();
       console.warn(
         `[${this.tagName}] No selectable location suggestion for #${id} ` +
-          `(answer "${escapePromptValue(answer)}"); leaving blank.`,
+          `(answer "${escapePromptValue(answer)}"); leaving blank.`
       );
       return false;
-    } catch (err: any) {
+    } catch (error: any) {
       console.warn(
         `[${this.tagName}] fillAsyncAutocomplete failed for #${id}:`,
-        err?.message || err,
+        error?.message || error
       );
       return false;
     }
@@ -1465,10 +1681,16 @@ export class FormControls {
    * through the react-select machinery; when that fails and the field has
    * radio/checkbox targets (mis-detected kind), fall back to group clicking.
    */
-  async fillByKind(field: FormField, answer: string, optionTexts?: string[]): Promise<boolean> {
+  async fillByKind(
+    field: FormField,
+    answer: string,
+    optionTexts?: string[]
+  ): Promise<boolean> {
     if (field.kind === "select") {
       const ok = await this.fillSelect(field.id, answer, optionTexts ?? []);
-      if (ok) return true;
+      if (ok) {
+        return true;
+      }
       if (field.optionTargets.length) {
         return this.clickGroupOption({ ...field, kind: "radio" }, answer);
       }
@@ -1479,23 +1701,34 @@ export class FormControls {
       // commit actually stuck before claiming success.
       const page = this.getPage();
       const sel = page
-        .locator(`${cssIdLocator(field.id)} select, select${cssIdLocator(field.id)}`)
+        .locator(
+          `${cssIdLocator(field.id)} select, select${cssIdLocator(field.id)}`
+        )
         .first();
       if (await sel.isVisible().catch(() => false)) {
-        const picked = chooseOption(selectCandidates(answer), optionTexts ?? []);
+        const picked = chooseOption(
+          selectCandidates(answer),
+          optionTexts ?? []
+        );
         if (picked) {
           await (sel as any).selectOption(picked);
           await randomSleep(200, 400);
           const committed = !!(await this.readInputValue(field.id));
-          if (committed) return true;
-          console.warn(`[${this.tagName}] Native select #${field.id} did not commit "${picked}"`);
+          if (committed) {
+            return true;
+          }
+          console.warn(
+            `[${this.tagName}] Native select #${field.id} did not commit "${picked}"`
+          );
         }
       }
       return false;
     }
     if (field.kind === "multi") {
       const ok = await this.fillMulti(field.id, answer, optionTexts ?? []);
-      if (ok) return true;
+      if (ok) {
+        return true;
+      }
       if (field.optionTargets.length) {
         return this.clickGroupMulti({ ...field, kind: "checkbox" }, answer);
       }
@@ -1524,29 +1757,33 @@ export class FormControls {
     const clean = cleanPlaceholderValue(String(answer ?? ""));
     const date = translateToDate(clean);
     // A translated Date can still be invalid (NaN components) — never commit it.
-    if (!date || !Number.isFinite(date.getTime())) return false;
+    if (!date || !Number.isFinite(date.getTime())) {
+      return false;
+    }
     const page = this.getPage();
     const target = await this.resolveTextControl({
-      label: id,
       id,
       kind: "date",
-      required: false,
-      options: [],
+      label: id,
       optionTargets: [],
+      options: [],
+      required: false,
     } as any);
-    if (!target) return false;
+    if (!target) {
+      return false;
+    }
     // Native <input type="date"> requires YYYY-MM-DD; react-datepicker text
     // inputs parse MM/DD/YYYY. Route by the resolved control's type.
     const value =
       target.type === "date"
         ? `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
-            date.getDate(),
+            date.getDate()
           ).padStart(2, "0")}`
         : `${date.getMonth() + 1}/${date.getDate()}/${date.getFullYear()}`;
     const ok = await page
       .evaluate(
         (fid: string, v: string) => {
-          const byId = document.getElementById(fid);
+          const byId = document.querySelector(`#${fid}`);
           let control = byId;
           if (!control) {
             const label = document.querySelector(`label[for="${fid}"]`);
@@ -1558,24 +1795,36 @@ export class FormControls {
               ((scope?.matches('input[type="text"], input:not([type])')
                 ? scope
                 : scope?.querySelector(
-                    'input[type="text"], input:not([type])',
+                    'input[type="text"], input:not([type])'
                   )) as HTMLElement | null) || null;
           }
-          if (!control) return false;
-          const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
-          if (setter) setter.call(control, v);
-          else (control as HTMLInputElement).value = v;
+          if (!control) {
+            return false;
+          }
+          const setter = Object.getOwnPropertyDescriptor(
+            HTMLInputElement.prototype,
+            "value"
+          )?.set;
+          if (setter) {
+            setter.call(control, v);
+          } else {
+            (control as HTMLInputElement).value = v;
+          }
           control.dispatchEvent(new Event("input", { bubbles: true }));
           control.dispatchEvent(new Event("change", { bubbles: true }));
-          control.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+          control.dispatchEvent(
+            new KeyboardEvent("keydown", { bubbles: true, key: "Enter" })
+          );
           return true;
         },
         id,
-        value,
+        value
       )
       .catch(() => false);
     await randomSleep(300, 600);
-    let committed = ok ? cleanPlaceholderValue(await this.readInputValue(id)) : "";
+    let committed = ok
+      ? cleanPlaceholderValue(await this.readInputValue(id))
+      : "";
     // A commit that left a placeholder (e.g. react-datepicker rejected the
     // native setter and re-rendered "undefined") must be re-driven by typing.
     if (!committed || /^[a-z\s]+$/i.test(committed)) {
@@ -1589,8 +1838,12 @@ export class FormControls {
       }
       committed = cleanPlaceholderValue(await this.readInputValue(id));
     }
-    if (committed && /^[a-z\s]+$/i.test(committed)) committed = "";
-    console.log(`[${this.tagName}] Filled date #${id} with "${value}" (from "${answer}")`);
+    if (committed && /^[a-z\s]+$/i.test(committed)) {
+      committed = "";
+    }
+    console.log(
+      `[${this.tagName}] Filled date #${id} with "${value}" (from "${answer}")`
+    );
     return !!committed;
   }
 
@@ -1612,23 +1865,23 @@ export class FormControls {
    */
   async fillObserved(
     action: { selector: string; description: string },
-    answer: string,
+    answer: string
   ): Promise<boolean> {
     try {
       await this.stagehand.act(
         {
-          selector: action.selector,
+          arguments: [String(answer ?? "")],
           description: action.description || "fill the field",
           method: "fill",
-          arguments: [String(answer ?? "")],
+          selector: action.selector,
         },
-        { page: this.getPage() },
+        { page: this.getPage() }
       );
       await randomSleep(300, 600);
       return true;
-    } catch (err: any) {
+    } catch (error: any) {
       console.warn(
-        `[${this.tagName}] fillObserved failed for ${action.selector}: ${err?.message || err}`,
+        `[${this.tagName}] fillObserved failed for ${action.selector}: ${error?.message || error}`
       );
       return false;
     }
@@ -1649,7 +1902,9 @@ export class FormControls {
         const [resolve, readVal] = [
           (): Element | null => {
             const s = String(sel || "").trim();
-            if (!s) return null;
+            if (!s) {
+              return null;
+            }
             if (s.startsWith("xpath=") || s.startsWith("/")) {
               try {
                 const xp = s.replace(/^xpath=/i, "");
@@ -1658,7 +1913,7 @@ export class FormControls {
                   document,
                   null,
                   XPathResult.FIRST_ORDERED_NODE_TYPE,
-                  null,
+                  null
                 ).singleNodeValue;
                 return node instanceof Element ? node : null;
               } catch {
@@ -1676,14 +1931,19 @@ export class FormControls {
               const opt = el.selectedOptions?.[0];
               return opt ? (opt.textContent || opt.value || "").trim() : "";
             }
-            if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+            if (
+              el instanceof HTMLInputElement ||
+              el instanceof HTMLTextAreaElement
+            ) {
               return (el.value || "").trim();
             }
-            return (el.textContent || "").replace(/\s+/g, " ").trim();
+            return (el.textContent || "").replaceAll(/\s+/g, " ").trim();
           },
         ];
         const el = resolve();
-        if (!el) return "";
+        if (!el) {
+          return "";
+        }
         return readVal(el);
       }, selector)) as string;
     } catch {

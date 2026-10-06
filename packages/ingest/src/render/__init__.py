@@ -422,7 +422,7 @@ async def _get_playwright() -> Any:
     if _pw is None:
         async with _pw_lock:
             if _pw is None:
-                from playwright.async_api import async_playwright  # type: ignore
+                from playwright.async_api import async_playwright
 
                 _pw = await async_playwright().start()
     return _pw
@@ -702,7 +702,7 @@ async def _render_with_playwright(url: str, use_proxy: bool = False) -> str:
     Returns '' on any failure.
     """
     try:
-        from playwright.async_api import async_playwright  # type: ignore  # noqa: F401
+        from playwright.async_api import async_playwright  # noqa: F401
 
         _ = async_playwright
     except ImportError:
@@ -748,7 +748,7 @@ async def _render_with_playwright(url: str, use_proxy: bool = False) -> str:
 async def _render_proxied(url: str) -> str:
     """Render through a one-shot SOCKS5-proxied browser (not pooled)."""
     try:
-        from playwright.async_api import async_playwright  # type: ignore  # noqa: F401
+        from playwright.async_api import async_playwright  # noqa: F401
     except ImportError:
         return ""
     proxy_url = _proxy_url()

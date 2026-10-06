@@ -9,12 +9,18 @@ import { z } from "zod";
  * pass instead of breaking the run.
  */
 function toAbsoluteUrl(v: unknown): unknown {
-  if (typeof v !== "string") return v;
+  if (typeof v !== "string") {
+    return v;
+  }
   const s = v.trim();
   // Empty / placeholder values mean "no URL" — null so the .url() check
   // doesn't reject a missing field.
-  if (!s || /^(n\/?a|none|nil|tbd|unknown|-)$/i.test(s)) return null;
-  if (/^https?:\/\//i.test(s)) return s;
+  if (!s || /^(n\/?a|none|nil|tbd|unknown|-)$/i.test(s)) {
+    return null;
+  }
+  if (/^https?:\/\//i.test(s)) {
+    return s;
+  }
   // Only treat "host.tld/..." shapes as bare URLs; don't prepend https://
   // onto plain words or placeholders.
   if (/^[a-z0-9.-]+\.[a-z]{2,}(?:[/?#].*)?$/i.test(s)) {
@@ -24,18 +30,18 @@ function toAbsoluteUrl(v: unknown): unknown {
 }
 
 export const ProfileSchema = z.object({
-  firstName: z.string().default("John"),
-  lastName: z.string().default("Doe"),
-  email: z.string().email().default("john.doe@example.com"),
-  phone: z.string().default("+1234567890"),
-  linkedin: z.preprocess(toAbsoluteUrl, z.string().url().nullable().optional()),
-  github: z.preprocess(toAbsoluteUrl, z.string().url().nullable().optional()),
-  website: z.preprocess(toAbsoluteUrl, z.string().url().nullable().optional()),
-  twitter: z.preprocess(toAbsoluteUrl, z.string().url().nullable().optional()),
-  preferredName: z.string().nullable().optional(),
-  location: z.string().nullable().optional(),
-  resumePath: z.string().nullable().optional(),
   customAnswers: z.record(z.string(), z.string()).default({}),
+  email: z.string().email().default("john.doe@example.com"),
+  firstName: z.string().default("John"),
+  github: z.preprocess(toAbsoluteUrl, z.string().url().nullable().optional()),
+  lastName: z.string().default("Doe"),
+  linkedin: z.preprocess(toAbsoluteUrl, z.string().url().nullable().optional()),
+  location: z.string().nullable().optional(),
+  phone: z.string().default("+1234567890"),
+  preferredName: z.string().nullable().optional(),
+  resumePath: z.string().nullable().optional(),
+  twitter: z.preprocess(toAbsoluteUrl, z.string().url().nullable().optional()),
+  website: z.preprocess(toAbsoluteUrl, z.string().url().nullable().optional()),
 });
 
 export const JobPayloadSchema = z.preprocess(
@@ -43,11 +49,11 @@ export const JobPayloadSchema = z.preprocess(
     if (data && typeof data === "object") {
       return {
         jobId: data.jobId,
-        url: data.url || data.applyLink,
         mode: data.mode || data.applyMode || "review",
         profile: data.profile,
-        submitAllowed: data.submitAllowed,
         siteKnowledge: data.siteKnowledge,
+        submitAllowed: data.submitAllowed,
+        url: data.url || data.applyLink,
       };
     }
     return data;
@@ -64,12 +70,19 @@ export const JobPayloadSchema = z.preprocess(
     // worker so the generic adapter can consult known-good selectors before
     // re-probing the DOM.
     siteKnowledge: z.record(z.string(), z.any()).default({}),
-  }),
+  })
 );
 
 export const StatusEventSchema = z.object({
   jobId: z.string(),
-  status: z.enum(["in_progress", "awaiting_review", "submitted", "failed", "skipped", "expired"]),
+  status: z.enum([
+    "in_progress",
+    "awaiting_review",
+    "submitted",
+    "failed",
+    "skipped",
+    "expired",
+  ]),
   screenshotPath: z.string().optional(),
   filledFields: z.record(z.string(), z.string()).optional(),
   error: z.string().optional(),
@@ -78,10 +91,10 @@ export const StatusEventSchema = z.object({
   // ATS-email poll, surfaced by the worker (confirmation/rejection/screening).
   emailStatus: z
     .object({
-      kind: z.enum(["confirmation", "rejection", "screening", "otp", "other"]),
       from: z.string(),
-      subject: z.string(),
+      kind: z.enum(["confirmation", "rejection", "screening", "otp", "other"]),
       snippet: z.string(),
+      subject: z.string(),
     })
     .optional(),
 });

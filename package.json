@@ -2,11 +2,10 @@
   "name": "ho",
   "version": "0.1.0",
   "private": true,
-  "description": "ho monorepo - ingest radar pipeline (Python) + autofill product (Python + TypeScript)",
+  "description": "ho monorepo - ingest radar pipeline",
   "workspaces": [
     "packages/node"
   ],
-  "packageManager": "bun@1.3.13",
   "scripts": {
     "run": "PYTHONPATH=.:packages/ingest:packages uv run python packages/ingest/scripts/run_all.py",
     "status": "PYTHONPATH=.:packages/ingest:packages uv run python packages/ingest/scripts/run_all.py --status",
@@ -15,7 +14,16 @@
     "export": "PYTHONPATH=.:packages/ingest:packages uv run python packages/ingest/scripts/tools/export_accepted.py",
     "health": "uv run python packages/ingest/scripts/tools/health.py",
     "backup": "uv run python packages/ingest/scripts/backup/checkpoint_backup.py",
-    "check": "uv run ruff format . && uv run ruff check . --fix && uv run mypy && bun run --filter 'autofill-node*' lint && bun run --filter 'autofill-node*' format:check && bun run --filter 'autofill-node*' typecheck",
-    "test": "uv run python -m pytest . -v --ignore=refs && bun run --filter 'autofill-node*' test"
-  }
+    "check": "uv run ruff format . && uv run ruff check . --fix && bunx oxfmt && bunx oxlint --fix",
+    "check-types": "uv run ty check packages/ingest/src packages/ingest/scripts packages/autofill packages/ml && bun --cwd packages/node typecheck",
+    "test": "uv run python -m pytest . -v --ignore=refs && bun run --filter 'autofill-node*' test",
+    "prepare": "lefthook install"
+  },
+  "devDependencies": {
+    "lefthook": "^2.1.17",
+    "oxfmt": "^0.72.0",
+    "oxlint": "^1.87.0",
+    "ultracite": "^7.12.4"
+  },
+  "packageManager": "bun@1.3.13"
 }

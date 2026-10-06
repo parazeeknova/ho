@@ -22,18 +22,24 @@ import * as readline from "node:readline";
 const RUNNER = path.resolve(__dirname, "runner.ts");
 
 async function main(): Promise<void> {
-  const rl = readline.createInterface({ input: process.stdin, terminal: false });
-  const maxJobs = parseInt(process.env.AUTOFILL_DAEMON_MAX_JOBS || "50", 10);
+  const rl = readline.createInterface({
+    input: process.stdin,
+    terminal: false,
+  });
+  const maxJobs = Number.parseInt(
+    process.env.AUTOFILL_DAEMON_MAX_JOBS || "50",
+    10
+  );
   let jobsDone = 0;
 
   const runOne = (payloadRaw: string): Promise<number> =>
     new Promise<number>((resolve) => {
       const child = spawn("npx", ["tsx", RUNNER], {
-        stdio: ["pipe", "pipe", "inherit"],
         env: process.env,
+        stdio: ["pipe", "pipe", "inherit"],
       });
       // Forward the job payload to the child.
-      child.stdin?.write(payloadRaw + "\n");
+      child.stdin?.write(`${payloadRaw}\n`);
       child.stdin?.end();
 
       // Forward the child's stdout (STATUS_EVENT / RPC_REQUEST lines) verbatim.
@@ -44,11 +50,15 @@ async function main(): Promise<void> {
 
   for await (const line of rl) {
     const trimmed = line.trim();
-    if (!trimmed) continue;
+    if (!trimmed) {
+      continue;
+    }
     try {
       JSON.parse(trimmed); // validate it's a real payload line
     } catch {
-      console.error(`[RunnerDaemon] Skipping non-JSON line: ${trimmed.slice(0, 80)}`);
+      console.error(
+        `[RunnerDaemon] Skipping non-JSON line: ${trimmed.slice(0, 80)}`
+      );
       continue;
     }
     await runOne(trimmed);
@@ -61,7 +71,7 @@ async function main(): Promise<void> {
   process.exit(0);
 }
 
-main().catch((err) => {
-  console.error("[RunnerDaemon] Fatal:", err);
+main().catch((error) => {
+  console.error("[RunnerDaemon] Fatal:", error);
   process.exit(1);
 });

@@ -1,11 +1,14 @@
-import * as fs from "fs";
+import * as fs from "node:fs";
 
-import { Stagehand } from "@browserbasehq/stagehand";
+import type { Stagehand } from "@browserbasehq/stagehand";
 
-import { type JobPayload } from "../types";
+import type { JobPayload } from "../types";
 import type { SubmitOutcome } from "./shared/audit";
 
-export type RpcHelper = (method: string, args: Record<string, any>) => Promise<any>;
+export type RpcHelper = (
+  method: string,
+  args: Record<string, any>
+) => Promise<any>;
 
 export abstract class ATSAdapter {
   protected stagehand: Stagehand;
@@ -30,11 +33,15 @@ export abstract class ATSAdapter {
    * was already attached, or attaches none).
    */
   async resolveTailoredResume(rpc?: RpcHelper): Promise<string | null> {
-    if (!rpc) return null;
+    if (!rpc) {
+      return null;
+    }
     try {
       const res = await rpc("tailored_resume", {});
       const p = (res && (res.pdf_path as string | undefined)) || "";
-      if (p && fs.existsSync(p)) return p;
+      if (p && fs.existsSync(p)) {
+        return p;
+      }
       return null;
     } catch {
       return null;
@@ -72,7 +79,9 @@ export abstract class ATSAdapter {
     let page: any;
     try {
       page = this.getActivePage();
-      if (!page) return null;
+      if (!page) {
+        return null;
+      }
     } catch {
       return null;
     }
@@ -93,7 +102,9 @@ export abstract class ATSAdapter {
           (void 0,
           (el: Element): boolean => {
             const r = el.getBoundingClientRect();
-            if (r.width < 200 || r.height < 100) return false;
+            if (r.width < 200 || r.height < 100) {
+              return false;
+            }
             // Must intersect the visible viewport.
             if (
               r.bottom < 0 ||
@@ -106,40 +117,61 @@ export abstract class ATSAdapter {
             let node: Element | null = el;
             while (node) {
               const st = window.getComputedStyle(node);
-              if (st.display === "none" || st.visibility === "hidden") return false;
-              if (node === document.body) break;
+              if (st.display === "none" || st.visibility === "hidden") {
+                return false;
+              }
+              if (node === document.body) {
+                break;
+              }
               node = node.parentElement;
             }
             return true;
           });
-        for (const fr of Array.from(
-          document.querySelectorAll(
+        for (const fr of [
+          ...document.querySelectorAll(
             'iframe[src*="recaptcha"], iframe[src*="hcaptcha"], ' +
-              'iframe[src*="turnstile"], iframe[src*="challenges.cloudflare.com"]',
+              'iframe[src*="turnstile"], iframe[src*="challenges.cloudflare.com"]'
           ),
-        )) {
-          if (blocking(fr)) return "captcha challenge iframe";
+        ]) {
+          if (blocking(fr)) {
+            return "captcha challenge iframe";
+          }
         }
-        for (const el of Array.from(
-          document.querySelectorAll(
+        for (const el of [
+          ...document.querySelectorAll(
             ".g-recaptcha, .h-captcha, .cf-turnstile, " +
-              "#challenge-stage, .cf-challenge, [class*='challenge-error']",
+              "#challenge-stage, .cf-challenge, [class*='challenge-error']"
           ),
-        )) {
-          if (blocking(el)) return "captcha challenge widget";
+        ]) {
+          if (blocking(el)) {
+            return "captcha challenge widget";
+          }
         }
         // FunCaptcha / puzzle-style challenges are rendered inline (not in a
         // recaptcha/turnstile iframe) with a distinctive prompt. Only a LARGE
         // visible widget counts — never the invisible v3 badge. Match the
         // prompt text so legitimate form instructions can't false-positive.
-        for (const el of Array.from(document.querySelectorAll("div, section, form, iframe"))) {
-          if (!blocking(el)) continue;
-          const text = (el.textContent || "").replace(/\s+/g, " ").trim().slice(0, 300);
+        for (const el of [
+          ...document.querySelectorAll("div, section, form, iframe"),
+        ]) {
+          if (!blocking(el)) {
+            continue;
+          }
+          const text = (el.textContent || "")
+            .replaceAll(/\s+/g, " ")
+            .trim()
+            .slice(0, 300);
           if (
-            /place the correct (animal|shape|object|image|character)/i.test(text) ||
+            /place the correct (animal|shape|object|image|character)/i.test(
+              text
+            ) ||
             /complete the pattern/i.test(text) ||
-            /select all (images|pictures|squares|photos) (that contain|with)/i.test(text) ||
-            /enter the text (you see|shown)|type the (characters|letters|text) you see/i.test(text)
+            /select all (images|pictures|squares|photos) (that contain|with)/i.test(
+              text
+            ) ||
+            /enter the text (you see|shown)|type the (characters|letters|text) you see/i.test(
+              text
+            )
           ) {
             return "fun captcha challenge";
           }
@@ -147,7 +179,7 @@ export abstract class ATSAdapter {
         const body = (document.body?.textContent || "").slice(0, 4000);
         if (
           /verify you are human|attention required|checking your browser before accessing/i.test(
-            body,
+            body
           )
         ) {
           return "challenge interstitial page";
@@ -174,16 +206,22 @@ export abstract class ATSAdapter {
     let page: any;
     try {
       page = this.getActivePage();
-      if (!page) return false;
+      if (!page) {
+        return false;
+      }
     } catch {
       return false;
     }
     try {
       const frames = page.frames();
       const captchaFrames = frames.filter((f: any) =>
-        /recaptcha|hcaptcha|turnstile|challenges\.cloudflare\.com/i.test(f.url() || ""),
+        /recaptcha|hcaptcha|turnstile|challenges\.cloudflare\.com/i.test(
+          f.url() || ""
+        )
       );
-      if (captchaFrames.length === 0) return false;
+      if (captchaFrames.length === 0) {
+        return false;
+      }
 
       const clickSelectors = [
         "#recaptcha-anchor",
@@ -200,16 +238,22 @@ export abstract class ATSAdapter {
         for (const sel of clickSelectors) {
           try {
             const loc = frame.locator(sel).first();
-            if (!(await loc.isVisible())) continue;
+            if (!(await loc.isVisible())) {
+              continue;
+            }
             await loc.click({ timeout: 3000 });
             attempted = true;
-            console.log(`[Adapter] Captcha attempt: clicked ${sel} in ${frame.url()}`);
+            console.log(
+              `[Adapter] Captcha attempt: clicked ${sel} in ${frame.url()}`
+            );
             break;
           } catch {
             continue;
           }
         }
-        if (attempted) break;
+        if (attempted) {
+          break;
+        }
       }
 
       if (attempted) {
@@ -268,16 +312,18 @@ export abstract class ATSAdapter {
     let page: any;
     try {
       page = this.getActivePage();
-      if (!page) return null;
+      if (!page) {
+        return null;
+      }
     } catch {
       return null;
     }
     try {
       const url = typeof page.url === "function" ? await page.url() : "";
       const hit = (await page.evaluate(() => {
-        const text = (document.body?.innerText || "")
+        const text = (document.body?.textContent || "")
           .slice(0, 8000)
-          .replace(/\s+/g, " ")
+          .replaceAll(/\s+/g, " ")
           .toLowerCase();
         const markers = [
           "no longer available",
@@ -298,12 +344,18 @@ export abstract class ATSAdapter {
           "position not found",
         ];
         for (const m of markers) {
-          if (text.includes(m)) return m;
+          if (text.includes(m)) {
+            return m;
+          }
         }
         return null;
       })) as string | null;
-      if (hit) return `expired posting (${hit})`;
-      if (url && /\/404\/?$/i.test(url)) return `expired posting (404 url)`;
+      if (hit) {
+        return `expired posting (${hit})`;
+      }
+      if (url && /\/404\/?$/i.test(url)) {
+        return `expired posting (404 url)`;
+      }
       return null;
     } catch {
       return null;

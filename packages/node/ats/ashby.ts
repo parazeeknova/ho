@@ -1,19 +1,20 @@
-import * as fs from "fs";
+import * as fs from "node:fs";
 
-import { Stagehand } from "@browserbasehq/stagehand";
+import type { Stagehand } from "@browserbasehq/stagehand";
 
-import { type JobPayload, type Profile } from "../types.js";
+import type { JobPayload, Profile } from "../types.js";
 import { setFileInputViaDataTransfer } from "../utils/cdp.js";
 import { randomSleep } from "../utils/evasion.js";
-import { ATSAdapter, type RpcHelper } from "./base.js";
+import { ATSAdapter } from "./base.js";
+import type { RpcHelper } from "./base.js";
 import {
   auditBlanks,
   finalReverify,
   isSubmitUrl,
-  type SubmitOutcome,
   trackSubmitResponse,
   verifySubmitOutcome,
 } from "./shared/audit.js";
+import type { SubmitOutcome } from "./shared/audit.js";
 import { FormControls } from "./shared/controls.js";
 import {
   chooseOption,
@@ -21,7 +22,8 @@ import {
   pickLocationOption,
   selectCandidates,
 } from "./shared/matching.js";
-import { fieldKey, type FormField, PRE_FILLED_LABELS } from "./shared/model.js";
+import { fieldKey, PRE_FILLED_LABELS } from "./shared/model.js";
+import type { FormField } from "./shared/model.js";
 import { Screener, setBlankedRequiredCount } from "./shared/screener.js";
 
 const SYSTEM_SKIP = new Set([
@@ -62,8 +64,12 @@ const SYSTEM_SKIP = new Set([
  */
 export class AshbyAdapter extends ATSAdapter {
   protected controls!: AshbyControlStack;
-  private jobCtx: { title: string; company: string; location: string; description: string } | null =
-    null;
+  private jobCtx: {
+    title: string;
+    company: string;
+    location: string;
+    description: string;
+  } | null = null;
   protected profile!: Profile;
 
   constructor(stagehand: Stagehand) {
@@ -99,11 +105,13 @@ export class AshbyAdapter extends ATSAdapter {
         .evaluate(() => (window as any).__appData ?? null)
         .catch(() => null);
       const posting = appData?.posting ?? appData?.job ?? null;
-      const html = (posting?.descriptionHtml || posting?.description || "") as string;
+      const html = (posting?.descriptionHtml ||
+        posting?.description ||
+        "") as string;
       const description = html
-        .replace(/<[^>]+>/g, " ")
-        .replace(/&nbsp;/g, " ")
-        .replace(/\s+/g, " ")
+        .replaceAll(/<[^>]+>/g, " ")
+        .replaceAll("&nbsp;", " ")
+        .replaceAll(/\s+/g, " ")
         .trim()
         .slice(0, 6000);
       const title =
@@ -111,7 +119,7 @@ export class AshbyAdapter extends ATSAdapter {
         (await page
           .locator("h1, [data-qa='posting-title']")
           .first()
-          .innerText()
+          .textContent()
           .catch(() => "")) ||
         (await page.title()).replace(/\s*[|–-].*$/, "").trim();
       const company =
@@ -120,7 +128,7 @@ export class AshbyAdapter extends ATSAdapter {
         (await page
           .locator("[data-qa='company-name'], .company-name")
           .first()
-          .innerText()
+          .textContent()
           .catch(() => "")) ||
         (() => {
           try {
@@ -134,17 +142,17 @@ export class AshbyAdapter extends ATSAdapter {
         (await page
           .locator("[data-qa='posting-location'], .location")
           .first()
-          .innerText()
+          .textContent()
           .catch(() => ""));
       return {
-        title: title.replace(/\s+/g, " ").trim(),
         company: company.replace(/\s+/g, " ").trim(),
-        location: location.replace(/\s+/g, " ").trim(),
         description,
+        location: location.replace(/\s+/g, " ").trim(),
+        title: title.replace(/\s+/g, " ").trim(),
       };
-    } catch (err: any) {
-      console.warn(`[Ashby] readJobContext failed: ${err?.message || err}`);
-      return { title: "", company: "", location: "", description: "" };
+    } catch (error: any) {
+      console.warn(`[Ashby] readJobContext failed: ${error?.message || error}`);
+      return { company: "", description: "", location: "", title: "" };
     }
   }
 
@@ -156,24 +164,28 @@ export class AshbyAdapter extends ATSAdapter {
       // setInputFiles silently targets nothing and the resume never attaches.
       const ready = await page
         .evaluate(() => {
-          const rows = Array.from(document.querySelectorAll("[data-field-path]"));
+          const rows = [...document.querySelectorAll("[data-field-path]")];
           const anyVisible = rows.some(
             (el) =>
               (el as HTMLElement).offsetParent !== null ||
-              (el as HTMLElement).getBoundingClientRect().height > 0,
+              (el as HTMLElement).getBoundingClientRect().height > 0
           );
           return (
             anyVisible ||
             !!document.querySelector("#_systemfield_resume[type='file']") ||
-            !!document.querySelector("button.ashby-application-form-submit-button")
+            !!document.querySelector(
+              "button.ashby-application-form-submit-button"
+            )
           );
         })
         .catch(() => false);
-      if (ready) return;
+      if (ready) {
+        return;
+      }
       await randomSleep(800, 1200);
     }
     throw new Error(
-      "Ashby application form never appeared (no [data-field-path] elements visible)",
+      "Ashby application form never appeared (no [data-field-path] elements visible)"
     );
   }
 
@@ -189,7 +201,9 @@ export class AshbyAdapter extends ATSAdapter {
     const page = this.getPage();
     const cur = page.url();
     try {
-      if (/\/application(?:\/|$)/.test(new URL(cur).pathname)) return;
+      if (/\/application(?:\/|$)/.test(new URL(cur).pathname)) {
+        return;
+      }
     } catch {
       // Unparseable URL; fall through to the DOM check.
     }
@@ -208,7 +222,7 @@ export class AshbyAdapter extends ATSAdapter {
 
     await this.controls.clickButtonByText(
       ["Apply now", "Apply for this job", "Apply"],
-      ["button:has-text('Apply')", "a:has-text('Apply')"],
+      ["button:has-text('Apply')", "a:has-text('Apply')"]
     );
     if (!(await this.controls.focusPage(/\/application(?:\/|$)/))) {
       // The tab may not carry /application (custom embeds); adopt any page
@@ -232,8 +246,10 @@ export class AshbyAdapter extends ATSAdapter {
         // Last resort: Ashby deterministically serves the form at <posting>/application.
         try {
           const applyUrl = new URL(cur);
-          applyUrl.pathname = applyUrl.pathname.replace(/\/+$/, "") + "/application";
-          await page.goto(applyUrl, { waitUntil: "domcontentloaded" }).catch(() => {});
+          applyUrl.pathname = `${applyUrl.pathname.replace(/\/+$/, "")}/application`;
+          await page
+            .goto(applyUrl, { waitUntil: "domcontentloaded" })
+            .catch(() => {});
         } catch {
           // Never throw here; waitForForm reports the failure.
         }
@@ -263,8 +279,13 @@ export class AshbyAdapter extends ATSAdapter {
 
     if (profile.location) {
       const ok = await this.controls.fillLocation(String(profile.location));
-      if (ok) console.log(`[Ashby] Committed location "${profile.location}".`);
-      else console.warn(`[Ashby] Could not commit profile location "${profile.location}".`);
+      if (ok) {
+        console.log(`[Ashby] Committed location "${profile.location}".`);
+      } else {
+        console.warn(
+          `[Ashby] Could not commit profile location "${profile.location}".`
+        );
+      }
     }
 
     if (rpc) {
@@ -274,13 +295,18 @@ export class AshbyAdapter extends ATSAdapter {
       const jobCtx = this.jobCtx ?? (await this.readJobContext());
       await rpc("job_context", jobCtx);
       console.log(
-        `[Ashby] Job context: ${jobCtx.title || "?"} @ ${jobCtx.company || "?"}` +
-          (jobCtx.location ? ` (${jobCtx.location})` : ""),
+        `[Ashby] Job context: ${jobCtx.title || "?"} @ ${jobCtx.company || "?"}${jobCtx.location ? ` (${jobCtx.location})` : ""}`
       );
 
-      const screener = new Screener(this.controls, "AshbyAdapter", profile, rpc, true);
+      const screener = new Screener(
+        this.controls,
+        "AshbyAdapter",
+        profile,
+        rpc,
+        true
+      );
       const filled: string[] = [];
-      const blanked: Array<{ label: string; reason: string }> = [];
+      const blanked: { label: string; reason: string }[] = [];
       const processedKeys = new Set<string>();
       const userSkippedKeys = new Set<string>();
 
@@ -288,7 +314,7 @@ export class AshbyAdapter extends ATSAdapter {
         const fields = await this.collectQuestions();
         const fresh = fields.filter((f) => !processedKeys.has(fieldKey(f)));
         console.log(
-          `[Ashby] Walk pass ${pass + 1}: ${fresh.length} new question(s) (total ${fields.length}).`,
+          `[Ashby] Walk pass ${pass + 1}: ${fresh.length} new question(s) (total ${fields.length}).`
         );
         if (fresh.length === 0) {
           console.log(`[Ashby] Walk converged after ${pass + 1} pass(es).`);
@@ -327,37 +353,57 @@ export class AshbyAdapter extends ATSAdapter {
         readValue: (f) => this.controls.readFieldValue(f),
         transcript: blanked,
       });
-      console.log(`[Ashby] Walk complete: filled ${filled.length}, blank ${blanked.length}.`);
-      for (const b of blanked)
-        console.warn(`[Ashby]   blank: ${escapePromptValue(b.label)} (${b.reason})`);
-      for (const rb of requiredBlanks)
-        console.warn(`[Ashby]   REQUIRED blank: ${escapePromptValue(rb.label)} (${rb.reason})`);
+      console.log(
+        `[Ashby] Walk complete: filled ${filled.length}, blank ${blanked.length}.`
+      );
+      for (const b of blanked) {
+        console.warn(
+          `[Ashby]   blank: ${escapePromptValue(b.label)} (${b.reason})`
+        );
+      }
+      for (const rb of requiredBlanks) {
+        console.warn(
+          `[Ashby]   REQUIRED blank: ${escapePromptValue(rb.label)} (${rb.reason})`
+        );
+      }
 
       const sweepFilled: string[] = [];
-      const sweepBlanks: Array<{ label: string; reason: string }> = [];
+      const sweepBlanks: { label: string; reason: string }[] = [];
       for (let pass = 0; pass < 3; pass++) {
         const swept = await this.collectQuestions();
         let touched = 0;
         for (const f of swept) {
-          if (PRE_FILLED_LABELS.has(norm(f.label))) continue;
-          if (userSkippedKeys.has(fieldKey(f))) continue;
-          if (await this.hasValue(f)) continue;
+          if (PRE_FILLED_LABELS.has(norm(f.label))) {
+            continue;
+          }
+          if (userSkippedKeys.has(fieldKey(f))) {
+            continue;
+          }
+          if (await this.hasValue(f)) {
+            continue;
+          }
           touched += 1;
           await screener.process(f, sweepFilled, sweepBlanks, userSkippedKeys);
         }
-        if (touched === 0) break;
+        if (touched === 0) {
+          break;
+        }
       }
       if (sweepFilled.length) {
-        console.log(`[Ashby] Final sweep filled ${sweepFilled.length} field(s):`);
-        for (const l of sweepFilled) console.log(`[Ashby]   filled: ${escapePromptValue(l)}`);
+        console.log(
+          `[Ashby] Final sweep filled ${sweepFilled.length} field(s):`
+        );
+        for (const l of sweepFilled) {
+          console.log(`[Ashby]   filled: ${escapePromptValue(l)}`);
+        }
       }
 
       await finalReverify({
-        tag: "AshbyAdapter",
         collect: () => this.collectQuestions(),
         isEmpty: async (f) => !(await this.hasValue(f)),
-        skippedKeys: userSkippedKeys,
         reasons: [...blanked, ...sweepBlanks],
+        skippedKeys: userSkippedKeys,
+        tag: "AshbyAdapter",
       });
       // Surface how many required fields are still blank so the runner can
       // gate auto-submit on an incomplete form.
@@ -369,7 +415,9 @@ export class AshbyAdapter extends ATSAdapter {
         !resumeAttached &&
         !(await this.controls.isResumeAttached(resumeBase))
       ) {
-        console.warn("[Ashby] REVERIFY: resume is NOT attached after the final pass.");
+        console.warn(
+          "[Ashby] REVERIFY: resume is NOT attached after the final pass."
+        );
       } else if (profile.resumePath) {
         console.log("[Ashby] REVERIFY: resume is attached.");
       }
@@ -394,14 +442,22 @@ export class AshbyAdapter extends ATSAdapter {
     // Stagehand v3 pages do NOT support page.on("response"); hook CDP
     // Network.responseReceived on the page's main session instead.
     const origin = page.url().split("/").slice(0, 3).join("/");
-    const submitTracker = trackSubmitResponse(page, (u) => isSubmitUrl(u, origin));
+    const submitTracker = trackSubmitResponse(page, (u) =>
+      isSubmitUrl(u, origin)
+    );
     // Drain the captured response right before verifying.
-    const submitResponse = async (): Promise<{ ok: boolean; status?: number } | undefined> =>
-      submitTracker.get();
+    const submitResponse = async (): Promise<
+      { ok: boolean; status?: number } | undefined
+    > => submitTracker.get();
 
-    const submitBtn = page.locator("button.ashby-application-form-submit-button").first();
+    const submitBtn = page
+      .locator("button.ashby-application-form-submit-button")
+      .first();
     if (await submitBtn.isVisible().catch(() => false)) {
-      await this.controls.humanClick(submitBtn, "button.ashby-application-form-submit-button");
+      await this.controls.humanClick(
+        submitBtn,
+        "button.ashby-application-form-submit-button"
+      );
     } else {
       await this.controls.clickSubmitButton({
         preferredSelector: "button.ashby-application-form-submit-button",
@@ -411,15 +467,15 @@ export class AshbyAdapter extends ATSAdapter {
 
     try {
       const outcome = await verifySubmitOutcome(page, {
-        tag: "Ashby",
         submitButtonSelector: "button.ashby-application-form-submit-button",
         submitResponse,
+        tag: "Ashby",
       });
       submitTracker.detach();
       return outcome;
-    } catch (err) {
+    } catch (error) {
       submitTracker.detach();
-      throw err;
+      throw error;
     }
   }
 
@@ -439,9 +495,11 @@ export class AshbyAdapter extends ATSAdapter {
       //    fall back to navigating to the base posting URL (strip /application).
       const clicked = await page
         .evaluate(() => {
-          const nodes = Array.from(
-            document.querySelectorAll("a, button, [role='button'], nav a, nav button, li a"),
-          );
+          const nodes = [
+            ...document.querySelectorAll(
+              "a, button, [role='button'], nav a, nav button, li a"
+            ),
+          ];
           for (const el of nodes) {
             const t = ((el as HTMLElement).textContent || "").trim();
             if (t.toLowerCase() === "overview") {
@@ -458,10 +516,16 @@ export class AshbyAdapter extends ATSAdapter {
       try {
         const base = new URL(cur);
         if (!clicked || /\/application(?:\/|$)/.test(base.pathname)) {
-          base.pathname = base.pathname.replace(/\/application(?:\/|$)/, "").replace(/\/+$/, "");
+          base.pathname = base.pathname
+            .replace(/\/application(?:\/|$)/, "")
+            .replace(/\/+$/, "");
           if (base.pathname !== new URL(cur).pathname) {
-            console.log(`[Ashby] Spam retry: navigating to overview ${base.href}`);
-            await page.goto(base, { waitUntil: "domcontentloaded" }).catch(() => {});
+            console.log(
+              `[Ashby] Spam retry: navigating to overview ${base.href}`
+            );
+            await page
+              .goto(base, { waitUntil: "domcontentloaded" })
+              .catch(() => {});
             await randomSleep(1200, 2000);
           }
         }
@@ -478,7 +542,9 @@ export class AshbyAdapter extends ATSAdapter {
             (direct as HTMLElement).click();
             return true;
           }
-          const nodes = Array.from(document.querySelectorAll("a, button, [role='button']"));
+          const nodes = [
+            ...document.querySelectorAll("a, button, [role='button']"),
+          ];
           for (const el of nodes) {
             const t = ((el as HTMLElement).textContent || "").trim();
             if (t.toLowerCase() === "apply") {
@@ -495,8 +561,10 @@ export class AshbyAdapter extends ATSAdapter {
         try {
           const base = new URL(page.url());
           if (!/\/application(?:\/|$)/.test(base.pathname)) {
-            base.pathname = base.pathname.replace(/\/+$/, "") + "/application";
-            await page.goto(base, { waitUntil: "domcontentloaded" }).catch(() => {});
+            base.pathname = `${base.pathname.replace(/\/+$/, "")}/application`;
+            await page
+              .goto(base, { waitUntil: "domcontentloaded" })
+              .catch(() => {});
           }
         } catch {
           // Give up on navigation; the form may already be embedded.
@@ -530,10 +598,14 @@ export class AshbyAdapter extends ATSAdapter {
         .first()
         .isVisible()
         .catch(() => false);
-      console.log(`[Ashby] Back on the application form after spam retry (ready=${ready})`);
+      console.log(
+        `[Ashby] Back on the application form after spam retry (ready=${ready})`
+      );
       return ready;
-    } catch (err: any) {
-      console.warn(`[Ashby] retryAfterSpamFlag failed: ${err?.message || err}`);
+    } catch (error: any) {
+      console.warn(
+        `[Ashby] retryAfterSpamFlag failed: ${error?.message || error}`
+      );
       return false;
     }
   }
@@ -549,9 +621,15 @@ export class AshbyAdapter extends ATSAdapter {
     const stillBlank: string[] = [];
     const fields = await this.collectQuestions();
     for (const f of fields) {
-      if (!f.required) continue;
-      if (await this.hasValue(f)) continue;
-      if (PRE_FILLED_LABELS.has(norm(f.label))) continue;
+      if (!f.required) {
+        continue;
+      }
+      if (await this.hasValue(f)) {
+        continue;
+      }
+      if (PRE_FILLED_LABELS.has(norm(f.label))) {
+        continue;
+      }
       // Try to resolve it via the screener machinery (may itself fail to
       // commit — that is recorded and re-audited below).
       const screener = new Screener(
@@ -559,7 +637,7 @@ export class AshbyAdapter extends ATSAdapter {
         "AshbyAdapter",
         this.profile,
         rpc ?? (async () => ({ answer: "" })),
-        true,
+        true
       );
       const filled: string[] = [];
       const blanked: { label: string; reason: string }[] = [];
@@ -571,8 +649,12 @@ export class AshbyAdapter extends ATSAdapter {
     }
     const remaining = stillBlank.length;
     setBlankedRequiredCount(remaining);
-    console.log(`[Ashby] Recheck complete: ${remaining} required field(s) still blank.`);
-    for (const l of stillBlank) console.warn(`[Ashby]   still blank: ${escapePromptValue(l)}`);
+    console.log(
+      `[Ashby] Recheck complete: ${remaining} required field(s) still blank.`
+    );
+    for (const l of stillBlank) {
+      console.warn(`[Ashby]   still blank: ${escapePromptValue(l)}`);
+    }
     return remaining;
   }
 
@@ -586,7 +668,9 @@ export class AshbyAdapter extends ATSAdapter {
       // no-ops and the resume is never attached.
       const input = page.locator('#_systemfield_resume[type="file"]').first();
       for (let i = 0; i < 12; i++) {
-        if ((await input.count()) > 0) break;
+        if ((await input.count()) > 0) {
+          break;
+        }
         await randomSleep(500, 800);
       }
       if ((await input.count()) === 0) {
@@ -594,10 +678,14 @@ export class AshbyAdapter extends ATSAdapter {
         // attempt — only count that as attached when a rendered attachment
         // chip actually shows the resume file name.
         if (await this.controls.isResumeAttached(baseName)) {
-          console.log("[Ashby] Resume already registered (attachment visible).");
+          console.log(
+            "[Ashby] Resume already registered (attachment visible)."
+          );
           return true;
         }
-        console.warn(`[Ashby] Resume input not present (attempt ${attempt + 1}); retrying...`);
+        console.warn(
+          `[Ashby] Resume input not present (attempt ${attempt + 1}); retrying...`
+        );
         continue;
       }
       try {
@@ -608,11 +696,11 @@ export class AshbyAdapter extends ATSAdapter {
           page,
           '#_systemfield_resume[type="file"]',
           resumePath,
-          baseName,
+          baseName
         );
-      } catch (err: any) {
+      } catch (error: any) {
         console.warn(
-          `[Ashby] Resume setInputFiles threw (attempt ${attempt + 1}): ${err?.message || err}`,
+          `[Ashby] Resume setInputFiles threw (attempt ${attempt + 1}): ${error?.message || error}`
         );
       }
       await randomSleep(1500, 2200);
@@ -620,7 +708,9 @@ export class AshbyAdapter extends ATSAdapter {
         console.log("[Ashby] Resume uploaded and registered.");
         return true;
       }
-      console.warn(`[Ashby] Resume upload not confirmed (attempt ${attempt + 1}); retrying...`);
+      console.warn(
+        `[Ashby] Resume upload not confirmed (attempt ${attempt + 1}); retrying...`
+      );
     }
     return false;
   }
@@ -641,7 +731,9 @@ export class AshbyAdapter extends ATSAdapter {
     const text = (result?.answer ?? "").toString().trim();
 
     if (!pdfPath && !text) {
-      console.log("[Ashby] Cover letter skipped: RPC had nothing to ground it on.");
+      console.log(
+        "[Ashby] Cover letter skipped: RPC had nothing to ground it on."
+      );
       return;
     }
 
@@ -650,35 +742,44 @@ export class AshbyAdapter extends ATSAdapter {
     // subtree/label logic the walker uses.
     const rows = await page
       .evaluate(() => {
-        const out: Array<{ id: string; label: string; hasFile: boolean; hasTextarea: boolean }> =
-          [];
+        const out: {
+          id: string;
+          label: string;
+          hasFile: boolean;
+          hasTextarea: boolean;
+        }[] = [];
         const [strip] = [
           (t: string) =>
             (t || "")
-              .replace(/\s+/g, " ")
+              .replaceAll(/\s+/g, " ")
               .trim()
-              .replace(/^\*+|\*+$/g, ""),
+              .replaceAll(/^\*+|\*+$/g, ""),
         ];
-        const entries = Array.from(document.querySelectorAll("div[data-field-path]"));
+        const entries = [...document.querySelectorAll("div[data-field-path]")];
         for (const entryEl of entries) {
           const el = entryEl as HTMLElement;
-          if (el.closest(".ashby-survey-form-container, [class*='survey-form']")) continue;
+          if (
+            el.closest(".ashby-survey-form-container, [class*='survey-form']")
+          ) {
+            continue;
+          }
           const labelRaw = strip(
             (
-              el.querySelector('label[class*="question"], label')?.textContent ||
+              el.querySelector('label[class*="question"], label')
+                ?.textContent ||
               el.getAttribute("aria-label") ||
               ""
-            ).toString(),
+            ).toString()
           );
           const lower = labelRaw.toLowerCase();
           if (!/cover letter|cover_letter/.test(lower)) {
             continue;
           }
           out.push({
-            id: (el.getAttribute("data-field-path") || "").trim(),
-            label: labelRaw,
             hasFile: !!el.querySelector('input[type="file"]'),
             hasTextarea: !!el.querySelector("textarea"),
+            id: ((el as HTMLElement).dataset.fieldPath || "").trim(),
+            label: labelRaw,
           });
         }
         return out;
@@ -686,7 +787,9 @@ export class AshbyAdapter extends ATSAdapter {
       .catch(() => []);
 
     if (rows.length === 0) {
-      console.log("[Ashby] No cover-letter question in the DOM; nothing committed.");
+      console.log(
+        "[Ashby] No cover-letter question in the DOM; nothing committed."
+      );
       return;
     }
 
@@ -702,39 +805,56 @@ export class AshbyAdapter extends ATSAdapter {
             const baseName = pdfPath.split(/[\\/]/).pop() || "";
             const attached = await page
               .evaluate((fileName: string) => {
-                const i = Array.from(
-                  document.querySelectorAll('div[data-field-path] input[type="file"]'),
-                ).find(
-                  (x) => (x as HTMLInputElement).files && (x as HTMLInputElement).files!.length > 0,
+                const i = [
+                  ...document.querySelectorAll(
+                    'div[data-field-path] input[type="file"]'
+                  ),
+                ].find(
+                  (x) =>
+                    (x as HTMLInputElement).files &&
+                    (x as HTMLInputElement).files!.length > 0
                 ) as HTMLInputElement | null;
                 if (i && i.files && i.files.length > 0) {
                   const n = (i.files[0].name || "").toLowerCase();
-                  if (n.includes("cover") || n.includes(fileName.toLowerCase())) return true;
+                  if (
+                    n.includes("cover") ||
+                    n.includes(fileName.toLowerCase())
+                  ) {
+                    return true;
+                  }
                 }
-                const chip = Array.from(document.querySelectorAll("div[data-field-path]"))
+                const chip = [
+                  ...document.querySelectorAll("div[data-field-path]"),
+                ]
                   .map((x) => (x as HTMLElement).textContent || "")
-                  .find((t) => t.toLowerCase().includes(fileName.toLowerCase()));
+                  .find((t) =>
+                    t.toLowerCase().includes(fileName.toLowerCase())
+                  );
                 return !!chip;
               }, baseName)
               .catch(() => false);
             if (attached) {
-              console.log(`[Ashby] Cover letter PDF attached to "${row.label}".`);
+              console.log(
+                `[Ashby] Cover letter PDF attached to "${row.label}".`
+              );
               committed = true;
               continue;
             }
             console.warn(
-              `[Ashby] Cover letter PDF upload not confirmed for "${row.label}"; falling back to text.`,
+              `[Ashby] Cover letter PDF upload not confirmed for "${row.label}"; falling back to text.`
             );
-          } catch (e: any) {
+          } catch (error: any) {
             console.warn(
-              `[Ashby] Cover letter PDF attach failed: ${e?.message || e}; falling back to text.`,
+              `[Ashby] Cover letter PDF attach failed: ${error?.message || error}; falling back to text.`
             );
           }
         }
       }
 
       if (row.hasTextarea && text && !committed) {
-        const ta = page.locator(`div[data-field-path="${row.id}"] textarea`).first();
+        const ta = page
+          .locator(`div[data-field-path="${row.id}"] textarea`)
+          .first();
         if ((await ta.count().catch(() => 0)) > 0) {
           await ta.fill(text);
           let value = await ta.inputValue().catch(() => "");
@@ -743,10 +863,14 @@ export class AshbyAdapter extends ATSAdapter {
             value = await ta.inputValue().catch(() => "");
           }
           if (value) {
-            console.log("[Ashby] Cover letter filled as text (long-answer field).");
+            console.log(
+              "[Ashby] Cover letter filled as text (long-answer field)."
+            );
             committed = true;
           } else {
-            console.warn("[Ashby] Cover letter text did not commit to the textarea; left blank.");
+            console.warn(
+              "[Ashby] Cover letter text did not commit to the textarea; left blank."
+            );
           }
         }
       }
@@ -770,20 +894,20 @@ export class AshbyAdapter extends ATSAdapter {
     try {
       const rows = await page.evaluate(
         (skipNames: string[]) => {
-          const out: Array<{
+          const out: {
             label: string;
             id: string;
             kind: string;
             required: boolean;
             options: string[];
-            targets: Array<{
+            targets: {
               text: string;
               name: string;
               value: string;
               id?: string;
               button?: boolean;
-            }>;
-          }> = [];
+            }[];
+          }[] = [];
           // WARNING: only anonymous arrows may be defined inside this evaluate.
           // tsx's keepNames wraps any arrow with an inferred name in __name(),
           // and the identifier then throws when the function is stringified into
@@ -791,36 +915,54 @@ export class AshbyAdapter extends ATSAdapter {
           const [strip, collect] = [
             (t: string) =>
               (t || "")
-                .replace(/\s+/g, " ")
+                .replaceAll(/\s+/g, " ")
                 .trim()
-                .replace(/^\*+|\*+$/g, ""),
+                .replaceAll(/^\*+|\*+$/g, ""),
             (row: Element | null): string => {
-              const t = row ? strip((row as HTMLElement).textContent || "") : "";
+              const t = row
+                ? strip((row as HTMLElement).textContent || "")
+                : "";
               return t;
             },
           ];
-          const entries = Array.from(document.querySelectorAll("div[data-field-path]"));
+          const entries = [
+            ...document.querySelectorAll("div[data-field-path]"),
+          ];
           for (const entryEl of entries) {
             const el = entryEl as HTMLElement;
-            if (el.closest(".ashby-survey-form-container, [class*='survey-form']")) continue;
-            const id = (el.getAttribute("data-field-path") || "").trim();
-            if (!id) continue;
-            if (skipNames.includes(id)) continue;
-            if (el.querySelector('input[type="file"]')) continue;
+            if (
+              el.closest(".ashby-survey-form-container, [class*='survey-form']")
+            ) {
+              continue;
+            }
+            const id = ((el as HTMLElement).dataset.fieldPath || "").trim();
+            if (!id) {
+              continue;
+            }
+            if (skipNames.includes(id)) {
+              continue;
+            }
+            if (el.querySelector('input[type="file"]')) {
+              continue;
+            }
 
             const labelEl = el.querySelector('label[class*="question"], label');
-            const label = strip(labelEl?.textContent || el.getAttribute("aria-label") || "");
-            if (!label) continue;
+            const label = strip(
+              labelEl?.textContent || el.getAttribute("aria-label") || ""
+            );
+            if (!label) {
+              continue;
+            }
 
             const textInput = el.querySelector(
-              'input[type="text"], input[type="email"], input[type="tel"], input[type="url"], input:not([type]), input[type="number"]',
+              'input[type="text"], input[type="email"], input[type="tel"], input[type="url"], input:not([type]), input[type="number"]'
             );
             const textarea = el.querySelector("textarea");
             const combobox = el.querySelector(
-              'input[role="combobox"], input[aria-autocomplete], input[type="text"][aria-autocomplete]',
+              'input[role="combobox"], input[aria-autocomplete], input[type="text"][aria-autocomplete]'
             );
-            const radios = Array.from(el.querySelectorAll('input[type="radio"]'));
-            const checks = Array.from(el.querySelectorAll('input[type="checkbox"]'));
+            const radios = [...el.querySelectorAll('input[type="radio"]')];
+            const checks = [...el.querySelectorAll('input[type="checkbox"]')];
 
             const required =
               !!el.querySelector("input[required], textarea[required]") ||
@@ -828,20 +970,28 @@ export class AshbyAdapter extends ATSAdapter {
               !!el.querySelector('[aria-required="true"]');
 
             let kind = "";
-            if (combobox && !radios.length && !checks.length) kind = "combobox";
-            else if (textInput || textarea) {
+            if (combobox && !radios.length && !checks.length) {
+              kind = "combobox";
+            } else if (textInput || textarea) {
               // A react-datepicker (custom calendar) is a date field, not free
               // text: free-form answers like "immediately" must be translated to
               // a real date before filling.
-              kind = el.querySelector(".react-datepicker-wrapper, .react-datepicker")
+              kind = el.querySelector(
+                ".react-datepicker-wrapper, .react-datepicker"
+              )
                 ? "date"
                 : "text";
-            } else if (radios.length) kind = "radio";
-            else if (checks.length) kind = "checkbox";
-            if (!kind) continue;
+            } else if (radios.length) {
+              kind = "radio";
+            } else if (checks.length) {
+              kind = "checkbox";
+            }
+            if (!kind) {
+              continue;
+            }
 
             if (kind === "combobox" || kind === "text" || kind === "date") {
-              out.push({ label, id, kind, required, options: [], targets: [] });
+              out.push({ id, kind, label, options: [], required, targets: [] });
               continue;
             }
 
@@ -850,27 +1000,36 @@ export class AshbyAdapter extends ATSAdapter {
             // render as buttons); read the option text from a wrapping or
             // sibling label, an option row, an li, or an aria-label.
             const options: string[] = [];
-            const targets: Array<{
+            const targets: {
               text: string;
               name: string;
               value: string;
               id?: string;
               button?: boolean;
-            }> = [];
+            }[] = [];
             for (const inEl of [...radios, ...checks]) {
               const input = inEl as HTMLInputElement;
               const row =
-                input.closest("label") || input.closest("[class*='option']") || input.closest("li");
+                input.closest("label") ||
+                input.closest("[class*='option']") ||
+                input.closest("li");
               const labFor = input.id
-                ? (document.querySelector(`label[for="${input.id}"]`)?.textContent || "").trim()
+                ? (
+                    document.querySelector(`label[for="${input.id}"]`)
+                      ?.textContent || ""
+                  ).trim()
                 : "";
-              const text = collect(row) || labFor || input.getAttribute("aria-label") || "";
+              const text =
+                collect(row) ||
+                labFor ||
+                input.getAttribute("aria-label") ||
+                "";
               if (text && !targets.some((t) => t.text === text)) {
                 targets.push({
-                  text,
-                  name: input.name || "",
-                  value: input.value || "",
                   id: input.id || "",
+                  name: input.name || "",
+                  text,
+                  value: input.value || "",
                 });
               }
             }
@@ -878,47 +1037,63 @@ export class AshbyAdapter extends ATSAdapter {
             // yes/no toggle rows (a hidden checkbox rendered as Yes/No BUTTONS)
             // have no input text — record each button as a clickable target.
             if (targets.length === 0) {
-              for (const row of Array.from(
-                el.querySelectorAll(
-                  "[class*='option'] label, [class*='option'] span, li, button[class*='option']",
+              for (const row of [
+                ...el.querySelectorAll(
+                  "[class*='option'] label, [class*='option'] span, li, button[class*='option']"
                 ),
-              )) {
+              ]) {
                 const t = collect(row as HTMLElement);
-                if (!t || options.includes(t)) continue;
+                if (!t || options.includes(t)) {
+                  continue;
+                }
                 options.push(t);
                 const isBtn = (row as HTMLElement).tagName === "BUTTON";
                 if (isBtn) {
-                  targets.push({ text: t, name: "", value: "", id: "", button: true });
+                  targets.push({
+                    button: true,
+                    id: "",
+                    name: "",
+                    text: t,
+                    value: "",
+                  });
                 }
               }
             }
-            if ((kind === "radio" || kind === "checkbox") && !targets.length && !options.length)
+            if (
+              (kind === "radio" || kind === "checkbox") &&
+              !targets.length &&
+              !options.length
+            ) {
               continue;
+            }
             for (const t of targets) {
-              if (!options.includes(t.text)) options.push(t.text);
+              if (!options.includes(t.text)) {
+                options.push(t.text);
+              }
             }
 
-            out.push({ label, id, kind, required, options, targets });
+            out.push({ id, kind, label, options, required, targets });
           }
           const seen = new Set<string>();
           const uniq: typeof out = [];
           for (const r of out) {
-            const key = strip(r.label).toLowerCase() + "|" + r.kind;
-            if (seen.has(key)) continue;
+            const key = `${strip(r.label).toLowerCase()}|${r.kind}`;
+            if (seen.has(key)) {
+              continue;
+            }
             seen.add(key);
             uniq.push(r);
           }
           return uniq;
         },
-        [...SYSTEM_SKIP],
+        [...SYSTEM_SKIP]
       );
 
       return (rows ?? []).map((r: any): FormField => ({
-        label: r.label,
         id: r.id,
         kind: r.kind as FormField["kind"],
-        required: !!r.required,
-        options: r.options ?? [],
+        label: r.label,
+        name: r.id,
         optionTargets: (r.targets ?? []).map((t: any) => ({
           text: t.text,
           name: t.name,
@@ -926,17 +1101,20 @@ export class AshbyAdapter extends ATSAdapter {
           id: t.id ?? "",
           button: !!t.button,
         })),
-        name: r.id,
+        options: r.options ?? [],
+        required: !!r.required,
       }));
-    } catch (err: any) {
-      console.warn(`[Ashby] collectQuestions failed: ${err?.message || err}`);
+    } catch (error: any) {
+      console.warn(
+        `[Ashby] collectQuestions failed: ${error?.message || error}`
+      );
       return [];
     }
   }
 }
 
 function norm(label: string): string {
-  return label.replace(/\s+/g, " ").trim().toLowerCase();
+  return label.replaceAll(/\s+/g, " ").trim().toLowerCase();
 }
 
 // ---------------------------------------------------------------------------
@@ -960,9 +1138,11 @@ export class AshbyControlStack extends FormControls {
   override async clickGroupOption(
     field: FormField,
     answer: string,
-    formSelector = "#application-form",
+    formSelector = "#application-form"
   ): Promise<boolean> {
-    if (await super.clickGroupOption(field, answer, formSelector)) return true;
+    if (await super.clickGroupOption(field, answer, formSelector)) {
+      return true;
+    }
     // Fallback: a lone underlying checkbox (consent gates) with no issue UI
     // row. Only safe when there is exactly ONE — never with a multi-select.
     const page = this.getPage();
@@ -970,11 +1150,17 @@ export class AshbyControlStack extends FormControls {
       return page
         .evaluate((fid: string) => {
           const scope = document.querySelector(`div[data-field-path="${fid}"]`);
-          if (!scope) return false;
+          if (!scope) {
+            return false;
+          }
           const lone = scope.querySelectorAll('input[type="checkbox"]');
-          if (lone.length !== 1) return false;
+          if (lone.length !== 1) {
+            return false;
+          }
           const box = lone[0] as HTMLInputElement;
-          if (box.checked) return true;
+          if (box.checked) {
+            return true;
+          }
           box.click();
           return box.checked;
         }, field.id)
@@ -991,7 +1177,9 @@ export class AshbyControlStack extends FormControls {
       .split(",")
       .map((p) => p.trim())
       .filter(Boolean)) {
-      if (await this.clickGroupOption({ ...field }, pick)) clicked++;
+      if (await this.clickGroupOption({ ...field }, pick)) {
+        clicked++;
+      }
     }
     return clicked > 0;
   }
@@ -1003,9 +1191,11 @@ export class AshbyControlStack extends FormControls {
       try {
         const v = await page.evaluate((fid: string) => {
           const scope = document.querySelector(`div[data-field-path="${fid}"]`);
-          if (!scope) return "";
+          if (!scope) {
+            return "";
+          }
           const combo = scope.querySelector(
-            'input[role="combobox"], input[aria-autocomplete]',
+            'input[role="combobox"], input[aria-autocomplete]'
           ) as HTMLInputElement | null;
           return combo ? (combo.value || "").trim() : "";
         }, field.id);
@@ -1029,7 +1219,7 @@ export class AshbyControlStack extends FormControls {
   override async fillByKind(
     field: FormField,
     answer: string,
-    optionTexts?: string[],
+    optionTexts?: string[]
   ): Promise<boolean> {
     if (field.kind === "combobox") {
       return this.fillCombobox(field, answer, optionTexts ?? []);
@@ -1052,19 +1242,21 @@ export class AshbyControlStack extends FormControls {
   async fillCombobox(
     field: FormField,
     answer: string,
-    optionTexts: string[] = [],
+    optionTexts: string[] = []
   ): Promise<boolean> {
     const page = this.getPage();
     const comboLocator = `${this.scope(field)} input[role="combobox"], ${this.scope(field)} input[aria-autocomplete]`;
     try {
       const input = page.locator(comboLocator).first();
-      if (!(await input.isVisible().catch(() => false))) return false;
+      if (!(await input.isVisible().catch(() => false))) {
+        return false;
+      }
       await this.closeMenu();
       await randomSleep(150, 300);
       await input.click();
       await randomSleep(200, 350);
 
-      let opts = optionTexts.length ? optionTexts.slice() : [];
+      let opts = optionTexts.length ? [...optionTexts] : [];
       if (opts.length === 0) {
         await input.fill(answer);
         for (let i = 0; i < 8 && opts.length === 0; i++) {
@@ -1086,21 +1278,26 @@ export class AshbyControlStack extends FormControls {
       }
       if (opts.length) {
         const picked =
-          chooseOption(selectCandidates(answer), opts) ?? pickLocationOption(answer, opts);
+          chooseOption(selectCandidates(answer), opts) ??
+          pickLocationOption(answer, opts);
         if (picked && (await this.clickVisibleOption(picked))) {
           await this.closeMenu();
           await randomSleep(300, 500);
-          if (await this.readFieldValue(field)) return true;
+          if (await this.readFieldValue(field)) {
+            return true;
+          }
           return false;
         }
       }
       await this.closeMenu();
       console.warn(
-        `[${this.tagName}] No selectable suggestion for "${answer}" (${this.scope(field)}).`,
+        `[${this.tagName}] No selectable suggestion for "${answer}" (${this.scope(field)}).`
       );
       return false;
-    } catch (err: any) {
-      console.warn(`[${this.tagName}] fillCombobox failed: ${err?.message || err}`);
+    } catch (error: any) {
+      console.warn(
+        `[${this.tagName}] fillCombobox failed: ${error?.message || error}`
+      );
       return false;
     }
   }
@@ -1114,26 +1311,36 @@ export class AshbyControlStack extends FormControls {
     return page
       .evaluate((name: string) => {
         const input = document.querySelector(
-          '#_systemfield_resume[type="file"]',
+          '#_systemfield_resume[type="file"]'
         ) as HTMLInputElement | null;
-        if (input) return !!(input.files && input.files.length > 0);
+        if (input) {
+          return !!(input.files && input.files.length > 0);
+        }
         // No file input in the DOM: attached ONLY when a rendered file chip
         // (upload/attachment area) shows the resume name — never the generic
         // "Upload your resume" hint, which would false-positive an empty form.
-        if (!name) return false;
-        const areas = Array.from(
-          document.querySelectorAll(
-            '[class*="file"], [class*="upload"], [class*="attachment"], [id^="upload-"], [class*="resume"]',
+        if (!name) {
+          return false;
+        }
+        const areas = [
+          ...document.querySelectorAll(
+            '[class*="file"], [class*="upload"], [class*="attachment"], [id^="upload-"], [class*="resume"]'
           ),
-        );
+        ];
         for (const a of areas) {
-          const t = (a.textContent || "").replace(/\s+/g, " ").trim();
+          const t = (a.textContent || "").replaceAll(/\s+/g, " ").trim();
           // The resume name in a chip wins even when the chip also carries
           // the upload hint ("resume.pdf · Upload a different file").
-          if (t.includes(name)) return true;
+          if (t.includes(name)) {
+            return true;
+          }
           const stem = name.length > 16 ? name.slice(0, 20) : "";
-          if (stem && t.includes(stem)) return true;
-          if (/upload|drag|drop/i.test(t)) continue; // the upload hint, not a chip
+          if (stem && t.includes(stem)) {
+            return true;
+          }
+          if (/upload|drag|drop/i.test(t)) {
+            continue;
+          } // the upload hint, not a chip
         }
         return false;
       }, fileName)
@@ -1141,8 +1348,13 @@ export class AshbyControlStack extends FormControls {
   }
 
   /** Fill an identity/short text input by its data-field name. */
-  async fillSystemText(name: string, value: string | null | undefined): Promise<void> {
-    if (!value) return;
+  async fillSystemText(
+    name: string,
+    value: string | null | undefined
+  ): Promise<void> {
+    if (!value) {
+      return;
+    }
     const input = this.getPage().locator(`input[name="${name}"]`).first();
     if (await input.isVisible().catch(() => false)) {
       await input.fill(value);
@@ -1156,10 +1368,13 @@ export class AshbyControlStack extends FormControls {
    */
   async fillLocation(value: string): Promise<boolean> {
     const page = this.getPage();
-    const locator = 'div[data-field-path="_systemfield_location"] input[role="combobox"]';
+    const locator =
+      'div[data-field-path="_systemfield_location"] input[role="combobox"]';
     try {
       const input = page.locator(locator).first();
-      if (!(await input.isVisible().catch(() => false))) return false;
+      if (!(await input.isVisible().catch(() => false))) {
+        return false;
+      }
       await this.closeMenu();
       await randomSleep(150, 300);
       await input.click();
@@ -1187,18 +1402,26 @@ export class AshbyControlStack extends FormControls {
           await randomSleep(300, 500);
           const committed = await page
             .evaluate(() => {
-              const c = document.querySelector(locator) as HTMLInputElement | null;
+              const c = document.querySelector(
+                locator
+              ) as HTMLInputElement | null;
               return c ? c.value.trim() : "";
             })
             .catch(() => "");
-          if (committed) return true;
+          if (committed) {
+            return true;
+          }
         }
       }
       await this.closeMenu();
-      console.warn(`[${this.tagName}] No selectable location suggestion for "${value}".`);
+      console.warn(
+        `[${this.tagName}] No selectable location suggestion for "${value}".`
+      );
       return false;
-    } catch (err: any) {
-      console.warn(`[${this.tagName}] fillLocation failed: ${err?.message || err}`);
+    } catch (error: any) {
+      console.warn(
+        `[${this.tagName}] fillLocation failed: ${error?.message || error}`
+      );
       return false;
     }
   }

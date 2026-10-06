@@ -1,19 +1,20 @@
-import * as fs from "fs";
+import * as fs from "node:fs";
 
-import { Stagehand, type Action } from "@browserbasehq/stagehand";
+import { type Stagehand, type Action } from "@browserbasehq/stagehand";
 
-import { type JobPayload, type Profile } from "../types.js";
+import type { JobPayload, Profile } from "../types.js";
 import { setFileInputViaDataTransfer } from "../utils/cdp.js";
 import { randomSleep } from "../utils/evasion.js";
-import { ATSAdapter, type RpcHelper } from "./base.js";
+import { ATSAdapter } from "./base.js";
+import type { RpcHelper } from "./base.js";
 import {
   auditBlanks,
   finalReverify,
   isSubmitUrl,
-  type SubmitOutcome,
   trackSubmitResponse,
   verifySubmitOutcome,
 } from "./shared/audit.js";
+import type { SubmitOutcome } from "./shared/audit.js";
 import { FormControls, sanitizeNumberAnswer } from "./shared/controls.js";
 import {
   chooseOption,
@@ -25,13 +26,13 @@ import {
 } from "./shared/matching.js";
 import {
   fieldKey,
-  type FormField,
   isLocationAutocomplete,
-  type JsonFieldSource,
   mergeFormInventory,
   PRE_FILLED_LABELS,
 } from "./shared/model.js";
-import { type BlankEntry, Screener, setBlankedRequiredCount } from "./shared/screener.js";
+import type { FormField, JsonFieldSource } from "./shared/model.js";
+import { Screener, setBlankedRequiredCount } from "./shared/screener.js";
+import type { BlankEntry } from "./shared/screener.js";
 
 /**
  * GenericAdapter — the intelligent fallback for ANY job application form.
@@ -81,10 +82,18 @@ export interface FlowProbe {
 /** Pure flow classification — unit-testable in isolation. Gate wins, then
  *  wizard (multi-step), then a live form, then a JD page asking us to apply. */
 export function classifyFlow(p: FlowProbe): FlowKind {
-  if (p.gateDetected) return "gate";
-  if (p.wizardDetected) return "wizard";
-  if (p.formDetected) return "form";
-  if (p.applyDetected) return "apply";
+  if (p.gateDetected) {
+    return "gate";
+  }
+  if (p.wizardDetected) {
+    return "wizard";
+  }
+  if (p.formDetected) {
+    return "form";
+  }
+  if (p.applyDetected) {
+    return "apply";
+  }
   return "form"; // nothing detected — the walker's zero-field result decides
 }
 
@@ -92,10 +101,10 @@ export function classifyFlow(p: FlowProbe): FlowKind {
  *  so it reads as a question label ("fill the First Name field" → "First
  *  Name"). Pure and unit-testable. */
 export function cleanObserveLabel(description: string): string {
-  let d = (description || "").replace(/\s+/g, " ").trim();
+  let d = (description || "").replaceAll(/\s+/g, " ").trim();
   d = d.replace(
     /^(?:please\s+)?(?:fill\s+(?:(?:in|out|the)\s+)+|fill\s+|type\s+|enter\s+|input\s+|set\s+|provide\s+)/i,
-    "",
+    ""
   );
   d = d.replace(/\s+(?:field|input|box|dropdown|textbox)\s*$/i, "");
   d = d.replace(/^(?:the|your|my|a|an)\s+/i, "").trim();
@@ -104,34 +113,51 @@ export function cleanObserveLabel(description: string): string {
 
 /** Pure test of voluntary-disclosure (EEOC-style) screen text. */
 export function isVoluntaryText(text: string): boolean {
-  return /voluntary|self[- ]identif|demographic|eeoc|diversity|equal opportunity/i.test(text || "");
+  return /voluntary|self[- ]identif|demographic|eeoc|diversity|equal opportunity/i.test(
+    text || ""
+  );
 }
 
 /**
  * Extract the first balanced `{...}` JSON object from `html` starting at the
  * first occurrence of `marker`. Returns the raw JSON substring or null.
  */
-export function extractBalancedObject(html: string, marker: RegExp): string | null {
+export function extractBalancedObject(
+  html: string,
+  marker: RegExp
+): string | null {
   const m = html.match(marker);
-  if (!m || m.index === undefined) return null;
+  if (!m || m.index === undefined) {
+    return null;
+  }
   const start = html.indexOf("{", m.index + m[0].length);
-  if (start < 0) return null;
+  if (start === -1) {
+    return null;
+  }
   let depth = 0;
   let inStr = false;
   let esc = false;
   for (let i = start; i < html.length; i++) {
     const c = html[i];
     if (inStr) {
-      if (esc) esc = false;
-      else if (c === "\\") esc = true;
-      else if (c === '"') inStr = false;
+      if (esc) {
+        esc = false;
+      } else if (c === "\\") {
+        esc = true;
+      } else if (c === '"') {
+        inStr = false;
+      }
       continue;
     }
-    if (c === '"') inStr = true;
-    else if (c === "{") depth++;
-    else if (c === "}") {
+    if (c === '"') {
+      inStr = true;
+    } else if (c === "{") {
+      depth++;
+    } else if (c === "}") {
       depth--;
-      if (depth === 0) return html.slice(start, i + 1);
+      if (depth === 0) {
+        return html.slice(start, i + 1);
+      }
     }
   }
   return null;
@@ -148,46 +174,66 @@ export function extractQuestionsFromJsonObject(root: any): JsonFieldSource[] {
   const out: JsonFieldSource[] = [];
   const seen = new Set<string>();
   const visit = (obj: any): void => {
-    if (!obj || typeof obj !== "object") return;
+    if (!obj || typeof obj !== "object") {
+      return;
+    }
     if (Array.isArray(obj)) {
-      for (const it of obj) visit(it);
+      for (const it of obj) {
+        visit(it);
+      }
       return;
     }
     const qs = Array.isArray(obj.questions) ? obj.questions : null;
     if (qs && qs.length) {
       const looksLikeQuestions = qs.every(
-        (q: any) => q && typeof q === "object" && (q.label !== undefined || q.name !== undefined),
+        (q: any) =>
+          q &&
+          typeof q === "object" &&
+          (q.label !== undefined || q.name !== undefined)
       );
       if (looksLikeQuestions) {
         for (const q of qs) {
           const label = String(q?.label || "")
-            .replace(/\s+/g, " ")
+            .replaceAll(/\s+/g, " ")
             .trim();
-          if (!label) continue;
-          const fields = Array.isArray(q?.fields) && q.fields.length ? q.fields : [q];
+          if (!label) {
+            continue;
+          }
+          const fields =
+            Array.isArray(q?.fields) && q.fields.length ? q.fields : [q];
           for (const f of fields) {
             const name = String(f?.name || q?.name || "");
             const kind = String(f?.type || q?.type || "input_text");
-            if (/^(input_file|file|signature)$/i.test(kind)) continue;
-            if (/^resume(_text)?$|^cover_letter(_text)?$/.test(name)) continue;
+            if (/^(input_file|file|signature)$/i.test(kind)) {
+              continue;
+            }
+            if (/^resume(_text)?$|^cover_letter(_text)?$/.test(name)) {
+              continue;
+            }
             const key = `${name}|${label}`;
-            if (seen.has(key)) continue;
+            if (seen.has(key)) {
+              continue;
+            }
             seen.add(key);
             out.push({
-              name,
-              label,
               kind,
-              required: !!q?.required,
+              label,
+              name,
               options: (f?.values ?? [])
-                .map((v: any) => (v?.label ?? v?.name ?? v?.value ?? "").toString().trim())
+                .map((v: any) =>
+                  (v?.label ?? v?.name ?? v?.value ?? "").toString().trim()
+                )
                 .filter(Boolean),
+              required: !!q?.required,
             });
           }
         }
       }
     }
     for (const k of Object.keys(obj)) {
-      if (k === "questions" && qs?.length) continue; // already handled above
+      if (k === "questions" && qs?.length) {
+        continue;
+      } // already handled above
       visit(obj[k]);
     }
   };
@@ -212,10 +258,16 @@ function collectJsonBlobs(html: string): string[] {
   const blobs: string[] = [];
   for (const marker of JSON_MARKERS) {
     const raw = extractBalancedObject(html, marker);
-    if (raw) blobs.push(raw);
+    if (raw) {
+      blobs.push(raw);
+    }
   }
-  const script = html.match(/<script[^>]*__NEXT_DATA__[^>]*>([\s\S]*?)<\/script>/i);
-  if (script && script[1] && script[1].trim()) blobs.push(script[1].trim());
+  const script = html.match(
+    /<script[^>]*__NEXT_DATA__[^>]*>([\s\S]*?)<\/script>/i
+  );
+  if (script && script[1] && script[1].trim()) {
+    blobs.push(script[1].trim());
+  }
   return blobs;
 }
 
@@ -229,7 +281,9 @@ export function parseJsonQuestions(html: string): JsonFieldSource[] {
   const add = (list: JsonFieldSource[]) => {
     for (const f of list) {
       const key = `${f.name}|${f.label}`;
-      if (seenKey.has(key)) continue;
+      if (seenKey.has(key)) {
+        continue;
+      }
       seenKey.add(key);
       out.push(f);
     }
@@ -246,9 +300,12 @@ export function parseJsonQuestions(html: string): JsonFieldSource[] {
 
 /** Best-effort job context (title/company/location/description) from embedded
  *  JSON blobs. Pure and unit-testable. */
-export function extractJsonJobContext(
-  html: string,
-): { title: string; company: string; location: string; description: string } | null {
+export function extractJsonJobContext(html: string): {
+  title: string;
+  company: string;
+  location: string;
+  description: string;
+} | null {
   for (const raw of collectJsonBlobs(html)) {
     try {
       const found: {
@@ -258,36 +315,53 @@ export function extractJsonJobContext(
         description: string;
       } | null = (() => {
         const walk = (obj: any): any => {
-          if (!obj || typeof obj !== "object") return null;
-          if (obj.jobPost && (obj.jobPost.title || obj.jobPost.company_name)) return obj.jobPost;
-          if (obj.posting && obj.posting.title) return obj.posting;
-          if (obj.job && obj.job.title) return obj.job;
+          if (!obj || typeof obj !== "object") {
+            return null;
+          }
+          if (obj.jobPost && (obj.jobPost.title || obj.jobPost.company_name)) {
+            return obj.jobPost;
+          }
+          if (obj.posting && obj.posting.title) {
+            return obj.posting;
+          }
+          if (obj.job && obj.job.title) {
+            return obj.job;
+          }
           for (const k of Object.keys(obj)) {
             const r = walk(obj[k]);
-            if (r) return r;
+            if (r) {
+              return r;
+            }
           }
           return null;
         };
         const jp = walk(JSON.parse(raw));
-        if (!jp) return null;
-        const htmlDesc = String(jp?.descriptionHtml || jp?.description || "").replace(
-          /<[^>]+>/g,
-          " ",
-        );
+        if (!jp) {
+          return null;
+        }
+        const htmlDesc = String(
+          jp?.descriptionHtml || jp?.description || ""
+        ).replaceAll(/<[^>]+>/g, " ");
         return {
-          title: String(jp?.title || "")
-            .replace(/\s+/g, " ")
-            .trim(),
-          company: String(jp?.company_name || jp?.company || jp?.companyName || "")
-            .replace(/\s+/g, " ")
-            .trim(),
-          location: String(jp?.job_post_location || jp?.location || jp?.locationName || "")
+          company: String(
+            jp?.company_name || jp?.company || jp?.companyName || ""
+          )
             .replace(/\s+/g, " ")
             .trim(),
           description: htmlDesc.replace(/\s+/g, " ").trim().slice(0, 6000),
+          location: String(
+            jp?.job_post_location || jp?.location || jp?.locationName || ""
+          )
+            .replace(/\s+/g, " ")
+            .trim(),
+          title: String(jp?.title || "")
+            .replace(/\s+/g, " ")
+            .trim(),
         };
       })();
-      if (found && (found.title || found.description)) return found;
+      if (found && (found.title || found.description)) {
+        return found;
+      }
     } catch {
       // keep probing
     }
@@ -301,9 +375,12 @@ export function extractJsonJobContext(
  * the raw HTML — this is the "grounded JD" the answerer needs before filling.
  * Returns null when no ATS API match exists.
  */
-export async function atsApiJobContext(
-  url: string,
-): Promise<{ title: string; company: string; location: string; description: string } | null> {
+export async function atsApiJobContext(url: string): Promise<{
+  title: string;
+  company: string;
+  location: string;
+  description: string;
+} | null> {
   try {
     const u = new URL(url);
     const host = u.hostname.toLowerCase();
@@ -315,21 +392,23 @@ export async function atsApiJobContext(
         const jobId = m[2];
         const res = await fetch(
           `https://api.ashbyhq.com/posting-api/job-board/${slug}?includeCompensation=true`,
-          { headers: { "user-agent": "Mozilla/5.0" } },
+          { headers: { "user-agent": "Mozilla/5.0" } }
         );
         if (res.ok) {
           const data: any = await res.json();
           const job = (data?.jobs || []).find((j: any) => j?.id === jobId);
           if (job) {
             return {
-              title: String(job.title || "").trim(),
               company: String(job.team || slug || "").trim(),
-              location: String(job.locationName || job.location || "").trim(),
-              description: String(job.descriptionHtml || job.descriptionPlain || "")
+              description: String(
+                job.descriptionHtml || job.descriptionPlain || ""
+              )
                 .replace(/<[^>]+>/g, " ")
                 .replace(/\s+/g, " ")
                 .trim()
                 .slice(0, 6000),
+              location: String(job.locationName || job.location || "").trim(),
+              title: String(job.title || "").trim(),
             };
           }
         }
@@ -342,19 +421,19 @@ export async function atsApiJobContext(
       if (m && board) {
         const res = await fetch(
           `https://boards-api.greenhouse.io/v1/boards/${board}/jobs/${m[1]}`,
-          { headers: { "user-agent": "Mozilla/5.0" } },
+          { headers: { "user-agent": "Mozilla/5.0" } }
         );
         if (res.ok) {
           const j: any = await res.json();
           return {
-            title: String(j?.title || "").trim(),
             company: String(j?.company_name || board || "").trim(),
-            location: String(j?.location?.name || "").trim(),
             description: String(j?.content || "")
               .replace(/<[^>]+>/g, " ")
               .replace(/\s+/g, " ")
               .trim()
               .slice(0, 6000),
+            location: String(j?.location?.name || "").trim(),
+            title: String(j?.title || "").trim(),
           };
         }
       }
@@ -363,19 +442,23 @@ export async function atsApiJobContext(
     if (host.endsWith("lever.co")) {
       const m = u.pathname.match(/^\/([^/]+)\/([^/]+)/);
       if (m) {
-        const res = await fetch(`https://api.lever.co/v0/postings/${m[1]}/${m[2]}`);
+        const res = await fetch(
+          `https://api.lever.co/v0/postings/${m[1]}/${m[2]}`
+        );
         if (res.ok) {
           const j: any = await res.json();
           const cats = j?.categories || {};
           return {
-            title: String(j?.text || "").trim(),
             company: String(j?.team || m[1] || "").trim(),
-            location: String(cats?.location || cats?.allLocations?.join(", ") || "").trim(),
             description: String(j?.descriptionPlain || j?.description || "")
               .replace(/<[^>]+>/g, " ")
               .replace(/\s+/g, " ")
               .trim()
               .slice(0, 6000),
+            location: String(
+              cats?.location || cats?.allLocations?.join(", ") || ""
+            ).trim(),
+            title: String(j?.text || "").trim(),
           };
         }
       }
@@ -432,26 +515,39 @@ export class GenericAdapter extends ATSAdapter {
       return (await page.evaluate(() => {
         const [visible, hasText] = [
           (el: Element | null): boolean => {
-            if (!el) return false;
+            if (!el) {
+              return false;
+            }
             const e = el as HTMLElement;
             const r = e.getBoundingClientRect();
-            if (r.width === 0 && r.height === 0) return false;
-            const cs = getComputedStyle(e);
-            if (cs.display === "none" || cs.visibility === "hidden" || cs.opacity === "0")
+            if (r.width === 0 && r.height === 0) {
               return false;
+            }
+            const cs = getComputedStyle(e);
+            if (
+              cs.display === "none" ||
+              cs.visibility === "hidden" ||
+              cs.opacity === "0"
+            ) {
+              return false;
+            }
             return true;
           },
           (re: RegExp) => buttons.some((t) => re.test(t)),
         ];
-        const buttons = Array.from(
-          document.querySelectorAll(
-            "a, button, [role='button'], input[type='button'], input[type='submit']",
+        const buttons = [
+          ...document.querySelectorAll(
+            "a, button, [role='button'], input[type='button'], input[type='submit']"
           ),
-        )
+        ]
           .filter((el) => visible(el))
           .map((el) => {
-            const t = ((el as HTMLElement).textContent || (el as HTMLInputElement).value || "")
-              .replace(/\s+/g, " ")
+            const t = (
+              (el as HTMLElement).textContent ||
+              (el as HTMLInputElement).value ||
+              ""
+            )
+              .replaceAll(/\s+/g, " ")
               .trim()
               .toLowerCase();
             return t;
@@ -461,52 +557,66 @@ export class GenericAdapter extends ATSAdapter {
         // as form controls. A JD page's header/nav search box is neither — if
         // it counted, formDetected would suppress the Apply click and the walk
         // would treat the JD page as the form.
-        const controls = Array.from(
-          document.querySelectorAll(
+        const controls = [
+          ...document.querySelectorAll(
             "form input, form select, form textarea, " +
               "main input, main select, main textarea, " +
-              "[role='main'] input, [role='main'] select, [role='main'] textarea",
+              "[role='main'] input, [role='main'] select, [role='main'] textarea"
           ),
-        ).filter((el) => {
+        ].filter((el) => {
           const e = el as HTMLInputElement;
-          if (e.type === "hidden" || e.type === "file") return false;
-          if (!visible(el)) return false;
+          if (e.type === "hidden" || e.type === "file") {
+            return false;
+          }
+          if (!visible(el)) {
+            return false;
+          }
           return true;
         });
-        const passwordFields = Array.from(
-          document.querySelectorAll('input[type="password"]'),
-        ).filter((el) => visible(el)).length;
+        const passwordFields = [
+          ...document.querySelectorAll('input[type="password"]'),
+        ].filter((el) => visible(el)).length;
         const formDetected = controls.length > 0;
         const stepIndicator = /step\s*\d+\s+of\s+\d+/i.test(
-          (document.body?.innerText || "").slice(0, 3000),
+          (document.body?.textContent || "").slice(0, 3000)
         );
         const gateDetected =
           passwordFields > 0 &&
-          (hasText(/sign\s*in|log\s*in|create\s*account|account/) || controls.length === 1);
+          (hasText(/sign\s*in|log\s*in|create\s*account|account/) ||
+            controls.length === 1);
         const applyText =
           hasText(
-            /^(apply|apply now|apply for this job|apply for this position|start application|apply here|apply online)$/i,
-          ) || hasText(/apply\s*(now|for this job|for this position|online|here|to this job)$/i);
+            /^(apply|apply now|apply for this job|apply for this position|start application|apply here|apply online)$/i
+          ) ||
+          hasText(
+            /apply\s*(now|for this job|for this position|online|here|to this job)$/i
+          );
         const applyHref =
           !formDetected &&
-          !!document.querySelector("a[href*='apply' i], [role='button'][href*='apply' i]");
+          !!document.querySelector(
+            "a[href*='apply' i], [role='button'][href*='apply' i]"
+          );
         const wizardDetected =
           stepIndicator ||
-          hasText(/^(continue|next|next step|save and continue|proceed|continue application)$/i) ||
-          !!document.querySelector("[role='tablist'], [class*='stepper'], [class*='progress']");
+          hasText(
+            /^(continue|next|next step|save and continue|proceed|continue application)$/i
+          ) ||
+          !!document.querySelector(
+            "[role='tablist'], [class*='stepper'], [class*='progress']"
+          );
         return {
-          formDetected,
           applyDetected: !formDetected && (applyText || applyHref),
-          wizardDetected,
+          formDetected,
           gateDetected,
+          wizardDetected,
         };
       })) as FlowProbe;
     } catch {
       return {
-        formDetected: false,
         applyDetected: false,
-        wizardDetected: false,
+        formDetected: false,
         gateDetected: false,
+        wizardDetected: false,
       };
     }
   }
@@ -515,7 +625,9 @@ export class GenericAdapter extends ATSAdapter {
     for (let i = 0; i < 40; i++) {
       const probe = await this.probeFlow();
       const kind = classifyFlow(probe);
-      if (kind === "form" || kind === "wizard" || kind === "gate") return;
+      if (kind === "form" || kind === "wizard" || kind === "gate") {
+        return;
+      }
       await randomSleep(800, 1200);
     }
   }
@@ -525,7 +637,7 @@ export class GenericAdapter extends ATSAdapter {
     const apply = page
       .locator(
         "a[href*='apply' i], button:has-text('Apply'), a:has-text('Apply'), " +
-          "[role='button']:has-text('Apply'), input[value*='Apply' i]",
+          "[role='button']:has-text('Apply'), input[value*='Apply' i]"
       )
       .first();
     if (await apply.isVisible().catch(() => false)) {
@@ -533,7 +645,11 @@ export class GenericAdapter extends ATSAdapter {
       await randomSleep(1500, 2500);
       return;
     }
-    await this.controls.clickButtonByText(["Apply", "Apply now", "Apply for this job"]);
+    await this.controls.clickButtonByText([
+      "Apply",
+      "Apply now",
+      "Apply for this job",
+    ]);
   }
 
   /**
@@ -558,7 +674,9 @@ export class GenericAdapter extends ATSAdapter {
         const previous = this.getPage();
         const ctxPages = this.stagehand.context?.pages?.() ?? [];
         for (const p of ctxPages) {
-          if (p === previous) continue;
+          if (p === previous) {
+            continue;
+          }
           this.controls.adoptPage(p);
           const kind = classifyFlow(await this.probeFlow());
           if (kind === "form" || kind === "wizard" || kind === "gate") {
@@ -568,13 +686,17 @@ export class GenericAdapter extends ATSAdapter {
         }
         if (!adopted) {
           this.controls.adoptPage(previous);
-          console.warn("[Generic] Apply click did not reveal a form; proceeding to the walk.");
+          console.warn(
+            "[Generic] Apply click did not reveal a form; proceeding to the walk."
+          );
         }
       }
     }
     probe = await this.probeFlow();
     if (classifyFlow(probe) === "gate") {
-      console.log("[Generic] Sign-in/account gate detected; attempting to pass it.");
+      console.log(
+        "[Generic] Sign-in/account gate detected; attempting to pass it."
+      );
       await this.handleGate();
       await this.waitForFormOrWizard();
     }
@@ -588,7 +710,7 @@ export class GenericAdapter extends ATSAdapter {
       .locator(
         "button:has-text('Continue without signing in'), button:has-text('Continue as guest'), " +
           "button:has-text('Apply without signing in'), button:has-text('Skip for now'), " +
-          "a:has-text('Continue without signing in')",
+          "a:has-text('Continue without signing in')"
       )
       .first();
     if (await guest.isVisible().catch(() => false)) {
@@ -599,13 +721,17 @@ export class GenericAdapter extends ATSAdapter {
     const user = process.env.WORKDAY_EMAIL;
     const pw = process.env.WORKDAY_PASSWORD;
     if (user && pw) {
-      const email = page.locator('input[type="email"], input[name*="email" i]').first();
+      const email = page
+        .locator('input[type="email"], input[name*="email" i]')
+        .first();
       if (await email.isVisible().catch(() => false)) {
         await email.fill(user);
         const password = page.locator('input[type="password"]').first();
         await password.fill(pw).catch(() => {});
         const submit = page
-          .locator("button[type='submit'], button:has-text('Sign in'), button:has-text('Log in')")
+          .locator(
+            "button[type='submit'], button:has-text('Sign in'), button:has-text('Log in')"
+          )
           .first();
         if (await submit.isVisible().catch(() => false)) {
           await submit.click();
@@ -618,7 +744,7 @@ export class GenericAdapter extends ATSAdapter {
     this.warn(
       "Sign-in/account gate cannot be passed automatically (no guest path and " +
         "WORKDAY_EMAIL/WORKDAY_PASSWORD not usable). Form fields will be reported " +
-        "as deferred for manual completion.",
+        "as deferred for manual completion."
     );
   }
 
@@ -628,7 +754,7 @@ export class GenericAdapter extends ATSAdapter {
       .locator(
         "button:has-text('Submit Application'), button:has-text('Submit'), " +
           "input[type='submit'], button[type='submit'], a:has-text('Submit Application'), " +
-          "[data-automation-id*='submit' i]",
+          "[data-automation-id*='submit' i]"
       )
       .first();
     return await b.isVisible().catch(() => false);
@@ -640,10 +766,12 @@ export class GenericAdapter extends ATSAdapter {
       .locator(
         "button:has-text('Save and Continue'), button:has-text('Continue'), " +
           "button:has-text('Next Step'), button:has-text('Next'), button:has-text('Proceed'), " +
-          "[role='button']:has-text('Continue'), [data-automation-id*='continue' i]",
+          "[role='button']:has-text('Continue'), [data-automation-id*='continue' i]"
       )
       .first();
-    if (!(await btn.isVisible().catch(() => false))) return false;
+    if (!(await btn.isVisible().catch(() => false))) {
+      return false;
+    }
     await btn.click();
     await randomSleep(2000, 3000);
     return true;
@@ -655,13 +783,17 @@ export class GenericAdapter extends ATSAdapter {
    *  past. A body-wide phrase is never enough (ubiquitous "Equal Opportunity
    *  Employer" footers would wrongly skip ordinary steps). */
   private async isVoluntaryStep(fields: FormField[]): Promise<boolean> {
-    if (fields.some((f) => f.required)) return false;
+    if (fields.some((f) => f.required)) {
+      return false;
+    }
     const surveyLabels = fields.some((f) =>
       /race|ethnic|gender|sex|veteran|disability|orientation|military|self[- ]identif|voluntary|diversity/i.test(
-        f.label,
-      ),
+        f.label
+      )
     );
-    if (surveyLabels) return true;
+    if (surveyLabels) {
+      return true;
+    }
     // Heading/legend-level marker only — never body footer text.
     const page = this.getPage();
     const heading: string = await page
@@ -669,9 +801,11 @@ export class GenericAdapter extends ATSAdapter {
         const main = document.querySelector("main, [role='main']");
         const scope = main || document.body;
         const cand = scope.querySelector(
-          "h1, h2, h3, legend, [data-automation-label], [class*='title']",
+          "h1, h2, h3, legend, [data-automation-label], [class*='title']"
         );
-        return (cand ? cand.textContent || "" : "").replace(/\s+/g, " ").trim();
+        return (cand ? cand.textContent || "" : "")
+          .replaceAll(/\s+/g, " ")
+          .trim();
       })
       .catch(() => "");
     return isVoluntaryText(heading);
@@ -701,30 +835,36 @@ export class GenericAdapter extends ATSAdapter {
         const [txt, meta] = [
           (sel: string): string => {
             const el = document.querySelector(sel);
-            return el ? (el.textContent || "").replace(/\s+/g, " ").trim() : "";
+            return el
+              ? (el.textContent || "").replaceAll(/\s+/g, " ").trim()
+              : "";
           },
           (p: string): string =>
-            document.querySelector(`meta[property="${p}"]`)?.getAttribute("content") || "",
+            document
+              .querySelector(`meta[property="${p}"]`)
+              ?.getAttribute("content") || "",
         ];
         return {
-          h1: txt("h1"),
-          title: txt(
-            "[class*='job-title'], [class*='jobTitle'], [data-automation-id='jobPostingHeader']",
-          ),
-          location: txt(
-            "[data-automation-id='locations'], [class*='location'], [class*='job-location'], [class*='posting-location']",
-          ),
           desc: txt(
             "#job-description, [class*='job-description'], [class*='job__description'], " +
-              "[data-automation-id='jobPostingDescription']",
+              "[data-automation-id='jobPostingDescription']"
           ),
-          ogTitle: meta("og:title"),
+          h1: txt("h1"),
+          location: txt(
+            "[data-automation-id='locations'], [class*='location'], [class*='job-location'], [class*='posting-location']"
+          ),
           ogDesc: meta("og:description"),
+          ogTitle: meta("og:title"),
+          title: txt(
+            "[class*='job-title'], [class*='jobTitle'], [data-automation-id='jobPostingHeader']"
+          ),
         };
       });
-      let title = (live?.title || live?.ogTitle || live?.h1 || "").replace(/\s+/g, " ").trim();
+      let title = (live?.title || live?.ogTitle || live?.h1 || "")
+        .replaceAll(/\s+/g, " ")
+        .trim();
       let description = (live?.desc || live?.ogDesc || "").slice(0, 6000);
-      let location = (live?.location || "").replace(/\s+/g, " ").trim();
+      let location = (live?.location || "").replaceAll(/\s+/g, " ").trim();
 
       try {
         const fetched = await fetch(page.url(), {
@@ -738,9 +878,12 @@ export class GenericAdapter extends ATSAdapter {
           description = description || json.description;
         }
         const ogTitle =
-          (html.match(/<meta[^>]*property="og:title"[^>]*content="([^"]*)"/i) || [])[1] || "";
+          (html.match(/<meta[^>]*property="og:title"[^>]*content="([^"]*)"/i) ||
+            [])[1] || "";
         const ogDesc =
-          (html.match(/<meta[^>]*property="og:description"[^>]*content="([^"]*)"/i) || [])[1] || "";
+          (html.match(
+            /<meta[^>]*property="og:description"[^>]*content="([^"]*)"/i
+          ) || [])[1] || "";
         title = title || ogTitle;
         description = description || ogDesc;
       } catch {
@@ -750,9 +893,12 @@ export class GenericAdapter extends ATSAdapter {
       let company = "";
       try {
         const u = new URL(page.url());
-        company = u.hostname.replace(/^(www|careers|jobs)\./, "").split(".")[0] || "";
+        company =
+          u.hostname.replace(/^(www|careers|jobs)\./, "").split(".")[0] || "";
         const pathToken = u.pathname.split("/").find(Boolean) || "";
-        if (!company) company = pathToken;
+        if (!company) {
+          company = pathToken;
+        }
       } catch {
         // fall through
       }
@@ -771,18 +917,18 @@ export class GenericAdapter extends ATSAdapter {
       }
 
       return {
-        title: title.replace(/\s+/g, " ").trim(),
         company: company.replace(/[-_]+/g, " ").trim(),
-        location,
         description: description
           .replace(/<[^>]+>/g, " ")
           .replace(/\s+/g, " ")
           .trim()
           .slice(0, 6000),
+        location,
+        title: title.replace(/\s+/g, " ").trim(),
       };
-    } catch (err: any) {
-      this.warn(`readJobContext failed: ${err?.message || err}`);
-      return { title: "", company: "", location: "", description: "" };
+    } catch (error: any) {
+      this.warn(`readJobContext failed: ${error?.message || error}`);
+      return { company: "", description: "", location: "", title: "" };
     }
   }
 
@@ -795,11 +941,13 @@ export class GenericAdapter extends ATSAdapter {
       const html = await res.text();
       const out = parseJsonQuestions(html);
       if (out.length) {
-        console.log(`[Generic] Embedded JSON question model found (${out.length} question(s)).`);
+        console.log(
+          `[Generic] Embedded JSON question model found (${out.length} question(s)).`
+        );
       }
       return out.length ? out : null;
-    } catch (err: any) {
-      this.warn(`fetchJsonQuestions failed: ${err?.message || err}`);
+    } catch (error: any) {
+      this.warn(`fetchJsonQuestions failed: ${error?.message || error}`);
       return null;
     }
   }
@@ -820,161 +968,216 @@ export class GenericAdapter extends ATSAdapter {
     const page = this.getPage();
     try {
       const rows = await page.evaluate(() => {
-        const out: Array<{
+        const out: {
           label: string;
           id: string;
           name: string;
           kind: string;
           required: boolean;
           options: string[];
-          targets: Array<{ text: string; name: string; value: string; id?: string }>;
-        }> = [];
+          targets: { text: string; name: string; value: string; id?: string }[];
+        }[] = [];
         // WARNING: anonymous arrows only (tsx keepNames stringifies functions
         // into the page; a named arrow's __name wrapper would throw).
         // `nextGenericId` is monotonic and persisted on <html> so synthetic
         // data-field-path ids stay UNIQUE and STABLE across the re-scan walks
         // (a conditional field revealed in pass 2 must not collide with a
         // field tagged in pass 1 — that would mis-fill/mis-read).
-        const [norm, visible, inNav, labelOf, hasAsterisk, qesc, nextGenericId, singlePath, push] =
-          [
-            (t: string) =>
-              (t || "")
-                .replace(/\s+/g, " ")
-                .trim()
-                .replace(/^\*+|\*+$/g, ""),
-            (el: Element): boolean => {
-              const e = el as HTMLElement;
-              const r = e.getBoundingClientRect();
-              if (r.width === 0 && r.height === 0) return false;
-              // Honeypot guard: off-viewport-to-the-top/left (position:absolute;
-              // left:-9999px) fields are traps, never real questions.
-              if (r.right < 0 || r.bottom < 0) return false;
-              if (e.getAttribute && e.getAttribute("tabindex") === "-1") return false;
-              const cs = getComputedStyle(e);
-              if (cs.display === "none" || cs.visibility === "hidden" || cs.opacity === "0")
+        const [
+          norm,
+          visible,
+          inNav,
+          labelOf,
+          hasAsterisk,
+          qesc,
+          nextGenericId,
+          singlePath,
+          push,
+        ] = [
+          (t: string) =>
+            (t || "")
+              .replaceAll(/\s+/g, " ")
+              .trim()
+              .replaceAll(/^\*+|\*+$/g, ""),
+          (el: Element): boolean => {
+            const e = el as HTMLElement;
+            const r = e.getBoundingClientRect();
+            if (r.width === 0 && r.height === 0) {
+              return false;
+            }
+            // Honeypot guard: off-viewport-to-the-top/left (position:absolute;
+            // left:-9999px) fields are traps, never real questions.
+            if (r.right < 0 || r.bottom < 0) {
+              return false;
+            }
+            if (e.getAttribute && e.getAttribute("tabindex") === "-1") {
+              return false;
+            }
+            const cs = getComputedStyle(e);
+            if (
+              cs.display === "none" ||
+              cs.visibility === "hidden" ||
+              cs.opacity === "0"
+            ) {
+              return false;
+            }
+            let n: Element | null = e;
+            while (n && n !== document.body) {
+              if (n.getAttribute && n.getAttribute("hidden") !== null) {
                 return false;
-              let n: Element | null = e;
-              while (n && n !== document.body) {
-                if (n.getAttribute && n.getAttribute("hidden") != null) return false;
-                n = n.parentElement;
               }
+              n = n.parentElement;
+            }
+            return true;
+          },
+          (el: Element): boolean => {
+            let n: Element | null = el;
+            while (n && n !== document.body) {
+              const tag = n.tagName.toLowerCase();
+              const role = n.getAttribute && n.getAttribute("role");
+              if (
+                tag === "header" ||
+                tag === "nav" ||
+                tag === "footer" ||
+                role === "banner" ||
+                role === "navigation"
+              ) {
+                return true;
+              }
+              n = n.parentElement;
+            }
+            return false;
+          },
+          (el: Element): string => {
+            const labelledby =
+              el.getAttribute && el.getAttribute("aria-labelledby");
+            if (labelledby) {
+              const l = document.querySelector(`#${labelledby}`);
+              if (l) {
+                const t = norm(l.textContent || "");
+                if (t) {
+                  return t;
+                }
+              }
+            }
+            const aria = el.getAttribute && el.getAttribute("aria-label");
+            if (aria) {
+              const t = norm(aria);
+              if (t && !/robots only/i.test(t)) {
+                return t;
+              }
+            }
+            const wrap = el.closest("label");
+            if (wrap) {
+              const t = norm(wrap.textContent || "");
+              if (t) {
+                return t;
+              }
+            }
+            const id = el.getAttribute && el.getAttribute("id");
+            if (id) {
+              const fl = document.querySelector(`label[for="${qesc(id)}"]`);
+              if (fl) {
+                const t = norm(fl.textContent || "");
+                if (t) {
+                  return t;
+                }
+              }
+            }
+            let n = el.parentElement;
+            for (let i = 0; n && i < 4; i++, n = n.parentElement) {
+              const cand = n.querySelector(
+                ':scope > label, :scope > legend, :scope > [class*="label"], ' +
+                  ":scope > [data-automation-label], :scope > h1, :scope > h2, :scope > h3"
+              );
+              if (cand) {
+                const t = norm(cand.textContent || "");
+                if (t && t.length < 160) {
+                  return t;
+                }
+              }
+            }
+            return "";
+          },
+          (el: Element): boolean => {
+            const test = (t: string | null): boolean => !!t && /\*/.test(t);
+            const wrap = el.closest("label");
+            if (test(wrap ? wrap.textContent : "")) {
               return true;
-            },
-            (el: Element): boolean => {
-              let n: Element | null = el;
-              while (n && n !== document.body) {
-                const tag = n.tagName.toLowerCase();
-                const role = n.getAttribute && n.getAttribute("role");
-                if (
-                  tag === "header" ||
-                  tag === "nav" ||
-                  tag === "footer" ||
-                  role === "banner" ||
-                  role === "navigation"
-                ) {
-                  return true;
-                }
-                n = n.parentElement;
+            }
+            const id = el.getAttribute && el.getAttribute("id");
+            if (id) {
+              const fl = document.querySelector(`label[for="${qesc(id)}"]`);
+              if (test(fl ? fl.textContent : "")) {
+                return true;
               }
-              return false;
-            },
-            (el: Element): string => {
-              const labelledby = el.getAttribute && el.getAttribute("aria-labelledby");
-              if (labelledby) {
-                const l = document.getElementById(labelledby);
-                if (l) {
-                  const t = norm(l.textContent || "");
-                  if (t) return t;
-                }
+            }
+            if (test(el.getAttribute && el.getAttribute("aria-label"))) {
+              return true;
+            }
+            const p = el.parentElement;
+            if (p) {
+              const l = p.querySelector(
+                ":scope > label, :scope > legend, :scope > [data-automation-label]"
+              );
+              if (test(l ? l.textContent : "")) {
+                return true;
               }
-              const aria = el.getAttribute && el.getAttribute("aria-label");
-              if (aria) {
-                const t = norm(aria);
-                if (t && !/robots only/i.test(t)) return t;
-              }
-              const wrap = el.closest("label");
-              if (wrap) {
-                const t = norm(wrap.textContent || "");
-                if (t) return t;
-              }
-              const id = el.getAttribute && el.getAttribute("id");
-              if (id) {
-                const fl = document.querySelector(`label[for="${qesc(id)}"]`);
-                if (fl) {
-                  const t = norm(fl.textContent || "");
-                  if (t) return t;
-                }
-              }
-              let n = el.parentElement;
-              for (let i = 0; n && i < 4; i++, n = n.parentElement) {
-                const cand = n.querySelector(
-                  ':scope > label, :scope > legend, :scope > [class*="label"], ' +
-                    ":scope > [data-automation-label], :scope > h1, :scope > h2, :scope > h3",
-                );
-                if (cand) {
-                  const t = norm(cand.textContent || "");
-                  if (t && t.length < 160) return t;
-                }
-              }
-              return "";
-            },
-            (el: Element): boolean => {
-              const test = (t: string | null): boolean => !!t && /\*/.test(t);
-              const wrap = el.closest("label");
-              if (test(wrap ? wrap.textContent : "")) return true;
-              const id = el.getAttribute && el.getAttribute("id");
-              if (id) {
-                const fl = document.querySelector(`label[for="${qesc(id)}"]`);
-                if (test(fl ? fl.textContent : "")) return true;
-              }
-              if (test(el.getAttribute && el.getAttribute("aria-label"))) return true;
-              const p = el.parentElement;
-              if (p) {
-                const l = p.querySelector(
-                  ":scope > label, :scope > legend, :scope > [data-automation-label]",
-                );
-                if (test(l ? l.textContent : "")) return true;
-              }
-              return false;
-            },
-            (s: string): string => (s || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"'),
-            (): string => {
-              // Monotonic AND persisted on <html> so synthetic ids never collide
-              // between re-scan walks (a conditional field revealed in pass 2
-              // must not reuse an id already assigned in pass 1).
-              const root = document.documentElement;
-              const n = (parseInt(root.getAttribute("data-generic-id") || "0", 10) || 0) + 1;
-              root.setAttribute("data-generic-id", String(n));
-              return "generic-field-" + n;
-            },
-            (el: Element): string => {
-              // A stable per-control scope id. Reuses the nearest existing
-              // [data-field-path] (self-inclusive), else tags THIS element —
-              // never a shared ancestor container (two id-less inputs in one
-              // row must not collapse onto a single scope, which would
-              // mis-fill/mis-read the second field).
-              if (el.matches && el.matches("[data-field-path]")) {
-                return el.getAttribute("data-field-path") || "";
-              }
-              const existing = el.closest("[data-field-path]");
-              if (existing) return existing.getAttribute("data-field-path") || "";
-              const fresh = nextGenericId();
-              el.setAttribute("data-field-path", fresh);
-              return fresh;
-            },
-            (
-              label: string,
-              id: string,
-              name: string,
-              kind: string,
-              required: boolean,
-              options: string[] = [],
-              targets: Array<{ text: string; name: string; value: string; id?: string }> = [],
-            ): void => {
-              if (!label) return;
-              out.push({ label, id, name, kind, required, options, targets });
-            },
-          ];
+            }
+            return false;
+          },
+          (s: string): string =>
+            (s || "").replaceAll("\\", "\\\\").replaceAll('"', '\\"'),
+          (): string => {
+            // Monotonic AND persisted on <html> so synthetic ids never collide
+            // between re-scan walks (a conditional field revealed in pass 2
+            // must not reuse an id already assigned in pass 1).
+            const root = document.documentElement;
+            const n =
+              (Number.parseInt(
+                (root as HTMLElement).dataset.genericId || "0",
+                10
+              ) || 0) + 1;
+            (root as HTMLElement).dataset.genericId = String(n);
+            return `generic-field-${n}`;
+          },
+          (el: Element): string => {
+            // A stable per-control scope id. Reuses the nearest existing
+            // [data-field-path] (self-inclusive), else tags THIS element —
+            // never a shared ancestor container (two id-less inputs in one
+            // row must not collapse onto a single scope, which would
+            // mis-fill/mis-read the second field).
+            if (el.matches && el.matches("[data-field-path]")) {
+              return (el as HTMLElement).dataset.fieldPath || "";
+            }
+            const existing = el.closest("[data-field-path]");
+            if (existing) {
+              return (existing as HTMLElement).dataset.fieldPath || "";
+            }
+            const fresh = nextGenericId();
+            (el as HTMLElement).dataset.fieldPath = fresh;
+            return fresh;
+          },
+          (
+            label: string,
+            id: string,
+            name: string,
+            kind: string,
+            required: boolean,
+            options: string[] = [],
+            targets: {
+              text: string;
+              name: string;
+              value: string;
+              id?: string;
+            }[] = []
+          ): void => {
+            if (!label) {
+              return;
+            }
+            out.push({ id, kind, label, name, options, required, targets });
+          },
+        ];
 
         // Text-like controls (input[type=text/email/tel/number/url/date],
         // bare inputs, textareas). Comboboxes (role=combobox / aria-autocomplete
@@ -983,47 +1186,80 @@ export class GenericAdapter extends ATSAdapter {
           'input[type="text"], input[type="email"], input[type="tel"], input[type="number"], ' +
           'input[type="url"], input[type="date"], input:not([type]), textarea';
         const seenText = new Set<string>();
-        for (const el of Array.from(document.querySelectorAll(textSel))) {
+        for (const el of [...document.querySelectorAll(textSel)]) {
           const e = el as HTMLInputElement;
-          if (e.type === "password" || e.type === "hidden" || e.type === "file") continue;
-          if (!visible(e) || inNav(e)) continue;
+          if (
+            e.type === "password" ||
+            e.type === "hidden" ||
+            e.type === "file"
+          ) {
+            continue;
+          }
+          if (!visible(e) || inNav(e)) {
+            continue;
+          }
           const label = labelOf(e);
-          if (!label) continue;
+          if (!label) {
+            continue;
+          }
           const combo =
             e.getAttribute("role") === "combobox" ||
             !!e.getAttribute("aria-autocomplete") ||
             !!e.closest('[class*="select-shell"], [class*="react-select"]');
           const dateish = !!e.closest(
-            ".react-datepicker-wrapper, .react-datepicker, [class*='datepicker']",
+            ".react-datepicker-wrapper, .react-datepicker, [class*='datepicker']"
           );
           let kind: string;
-          if (combo) kind = "combobox";
-          else if (dateish) kind = "date";
-          else kind = "text";
-          const key = norm(label).toLowerCase() + "|" + kind;
-          if (seenText.has(key)) continue;
+          if (combo) {
+            kind = "combobox";
+          } else if (dateish) {
+            kind = "date";
+          } else {
+            kind = "text";
+          }
+          const key = `${norm(label).toLowerCase()}|${kind}`;
+          if (seenText.has(key)) {
+            continue;
+          }
           seenText.add(key);
           const required =
-            !!e.getAttribute("aria-required") || e.hasAttribute("required") || hasAsterisk(e);
+            !!e.getAttribute("aria-required") ||
+            e.hasAttribute("required") ||
+            hasAsterisk(e);
           push(label, e.id || singlePath(e), e.name || "", kind, required);
         }
 
         // Native selects.
         const seenSel = new Set<string>();
-        for (const el of Array.from(document.querySelectorAll("select"))) {
+        for (const el of [...document.querySelectorAll("select")]) {
           const e = el as HTMLSelectElement;
-          if (!visible(e) || inNav(e)) continue;
+          if (!visible(e) || inNav(e)) {
+            continue;
+          }
           const label = labelOf(e);
-          if (!label) continue;
-          const options = Array.from(e.options)
+          if (!label) {
+            continue;
+          }
+          const options = [...e.options]
             .map((o) => norm(o.textContent || ""))
             .filter(Boolean);
-          const key = norm(label).toLowerCase() + "|select";
-          if (seenSel.has(key)) continue;
+          const key = `${norm(label).toLowerCase()}|select`;
+          if (seenSel.has(key)) {
+            continue;
+          }
           seenSel.add(key);
           const required =
-            !!e.getAttribute("aria-required") || e.hasAttribute("required") || /\*/.test(label);
-          push(label, e.id || e.name || singlePath(e), e.name || "", "select", required, options);
+            !!e.getAttribute("aria-required") ||
+            e.hasAttribute("required") ||
+            /\*/.test(label);
+          push(
+            label,
+            e.id || e.name || singlePath(e),
+            e.name || "",
+            "select",
+            required,
+            options
+          );
         }
 
         // Radio/checkbox groups grouped by input name. Unnamed radios/checks
@@ -1032,99 +1268,157 @@ export class GenericAdapter extends ATSAdapter {
         // group keyed by its element path, so the structural accept/leave logic
         // still sees it instead of silently losing a required gate.
         const seenGroups = new Set<string>();
-        for (const el of Array.from(
-          document.querySelectorAll('input[type="radio"], input[type="checkbox"]'),
-        )) {
+        for (const el of [
+          ...document.querySelectorAll(
+            'input[type="radio"], input[type="checkbox"]'
+          ),
+        ]) {
           const e = el as HTMLInputElement;
-          if (inNav(e)) continue;
-          const type = e.type;
+          if (inNav(e)) {
+            continue;
+          }
+          const { type } = e;
           const name = e.name || "";
-          if (name && seenGroups.has(name)) continue;
-          if (name) seenGroups.add(name);
+          if (name && seenGroups.has(name)) {
+            continue;
+          }
+          if (name) {
+            seenGroups.add(name);
+          }
           const group: HTMLInputElement[] = name
-            ? (Array.from(
-                document.querySelectorAll(`input[type="${type}"][name="${qesc(name)}"]`),
-              ) as HTMLInputElement[])
+            ? ([
+                ...document.querySelectorAll(
+                  `input[type="${type}"][name="${qesc(name)}"]`
+                ),
+              ] as HTMLInputElement[])
             : [e];
-          const targets: Array<{ text: string; name: string; value: string; id?: string }> = [];
+          const targets: {
+            text: string;
+            name: string;
+            value: string;
+            id?: string;
+          }[] = [];
           const options: string[] = [];
           let anyVisible = false;
           for (const g of group) {
             const wrapLabel = g.closest("label");
-            const row = g.closest("[role='radio'], [role='checkbox'], [class*='option'], li");
+            const row = g.closest(
+              "[role='radio'], [role='checkbox'], [class*='option'], li"
+            );
             const gVisible =
               visible(g) ||
-              (wrapLabel != null && visible(wrapLabel)) ||
-              (row != null && visible(row));
-            if (!gVisible) continue;
+              (wrapLabel !== null && visible(wrapLabel)) ||
+              (row !== null && visible(row));
+            if (!gVisible) {
+              continue;
+            }
             anyVisible = true;
             const gid = g.getAttribute("id") || "";
             const labFor = gid
-              ? document.querySelector(`label[for="${qesc(gid)}"]`)?.textContent || ""
+              ? document.querySelector(`label[for="${qesc(gid)}"]`)
+                  ?.textContent || ""
               : "";
             const text = norm(
               wrapLabel
                 ? wrapLabel.textContent || ""
-                : labFor || g.getAttribute("aria-label") || (row ? row.textContent || "" : ""),
+                : labFor ||
+                    g.getAttribute("aria-label") ||
+                    (row ? row.textContent || "" : "")
             );
-            if (!text) continue;
-            if (!targets.some((t) => t.text === text)) {
-              targets.push({ text, name, value: g.value || "", id: gid });
+            if (!text) {
+              continue;
             }
-            if (!options.includes(text)) options.push(text);
+            if (!targets.some((t) => t.text === text)) {
+              targets.push({ id: gid, name, text, value: g.value || "" });
+            }
+            if (!options.includes(text)) {
+              options.push(text);
+            }
           }
-          if (!anyVisible || !targets.length) continue;
+          if (!anyVisible || !targets.length) {
+            continue;
+          }
 
           // Group label from the container's legend/aria/heading — never an
           // option's own text.
           const container = e.closest(
             "[data-automation-id], fieldset, [role='radiogroup'], [role='group'], " +
-              "[role='checkbox'], [class*='form-control'], [class*='field']",
+              "[role='checkbox'], [class*='form-control'], [class*='field']"
           );
           let groupLabel = "";
           if (container) {
-            const cb = container.getAttribute && container.getAttribute("aria-labelledby");
+            const cb =
+              container.getAttribute &&
+              container.getAttribute("aria-labelledby");
             if (cb) {
-              const l = document.getElementById(cb);
-              if (l) groupLabel = norm(l.textContent || "");
+              const l = document.querySelector(`#${cb}`);
+              if (l) {
+                groupLabel = norm(l.textContent || "");
+              }
             }
             if (!groupLabel) {
-              for (const cand of Array.from(
-                container.querySelectorAll(
+              for (const cand of [
+                ...container.querySelectorAll(
                   ':scope > legend, :scope > [class*="label"], :scope > label, ' +
-                    ":scope > h1, :scope > h2, :scope > h3, :scope > span",
+                    ":scope > h1, :scope > h2, :scope > h3, :scope > span"
                 ),
-              )) {
+              ]) {
                 const t = norm(cand.textContent || "");
-                if (!t || t.length > 160) continue;
-                if (targets.some((tg) => tg.text === t)) continue;
-                if (cand.querySelector('input[type="radio"], input[type="checkbox"]')) continue;
+                if (!t || t.length > 160) {
+                  continue;
+                }
+                if (targets.some((tg) => tg.text === t)) {
+                  continue;
+                }
+                if (
+                  cand.querySelector(
+                    'input[type="radio"], input[type="checkbox"]'
+                  )
+                ) {
+                  continue;
+                }
                 groupLabel = t;
                 break;
               }
             }
           }
-          if (!groupLabel) groupLabel = labelOf(e);
-          if (!groupLabel) continue;
+          if (!groupLabel) {
+            groupLabel = labelOf(e);
+          }
+          if (!groupLabel) {
+            continue;
+          }
           const kind = type === "radio" ? "radio" : "checkbox";
           const required =
             group.some(
-              (g) => g.hasAttribute("required") || g.getAttribute("aria-required") === "true",
+              (g) =>
+                g.hasAttribute("required") ||
+                g.getAttribute("aria-required") === "true"
             ) ||
             /\*/.test(groupLabel) ||
             hasAsterisk(e);
           // Group scope: prefer the container (scoped reads find checked
           // inputs inside it), else the first option input itself.
           const groupScope = container ? singlePath(container) : singlePath(e);
-          push(groupLabel, name || groupScope, name, kind, required, options, targets);
+          push(
+            groupLabel,
+            name || groupScope,
+            name,
+            kind,
+            required,
+            options,
+            targets
+          );
         }
 
         // De-dup by normalized label + kind, keep the first.
         const uniq: typeof out = [];
         const seen = new Set<string>();
         for (const r of out) {
-          const key = norm(r.label).toLowerCase() + "|" + r.kind;
-          if (seen.has(key)) continue;
+          const key = `${norm(r.label).toLowerCase()}|${r.kind}`;
+          if (seen.has(key)) {
+            continue;
+          }
           seen.add(key);
           uniq.push(r);
         }
@@ -1132,21 +1426,21 @@ export class GenericAdapter extends ATSAdapter {
       });
 
       return (rows ?? []).map((r: any): FormField => ({
-        label: r.label,
         id: r.id,
         kind: r.kind as FormField["kind"],
-        required: !!r.required,
-        options: r.options ?? [],
+        label: r.label,
+        name: r.name || undefined,
         optionTargets: (r.targets ?? []).map((t: any) => ({
           text: t.text,
           name: t.name,
           value: t.value,
           id: t.id ?? "",
         })),
-        name: r.name || undefined,
+        options: r.options ?? [],
+        required: !!r.required,
       }));
-    } catch (err: any) {
-      this.warn(`collectQuestions failed: ${err?.message || err}`);
+    } catch (error: any) {
+      this.warn(`collectQuestions failed: ${error?.message || error}`);
       return [];
     }
   }
@@ -1163,15 +1457,19 @@ export class GenericAdapter extends ATSAdapter {
    * attempt.
    */
   private async uploadResumeIfVisible(resumePath: string): Promise<boolean> {
-    if (!resumePath || !fs.existsSync(resumePath)) return false;
+    if (!resumePath || !fs.existsSync(resumePath)) {
+      return false;
+    }
     const page = this.getPage();
     const baseName = resumePath.split(/[\\/]/).pop() || "";
     const target = await page
       .evaluate(() => {
-        const inputs = Array.from(
-          document.querySelectorAll('input[type="file"]'),
-        ) as HTMLInputElement[];
-        if (!inputs.length) return { index: -1, label: "" };
+        const inputs = [
+          ...document.querySelectorAll('input[type="file"]'),
+        ] as HTMLInputElement[];
+        if (!inputs.length) {
+          return { index: -1, label: "" };
+        }
         let resume: { index: number; label: string } | null = null;
         for (let i = 0; i < inputs.length; i++) {
           const e = inputs[i];
@@ -1182,12 +1480,17 @@ export class GenericAdapter extends ATSAdapter {
             : "";
           const wrap = e.closest("label")?.textContent || "";
           const txt = `${aria} ${forLabel} ${wrap}`.toLowerCase();
-          if (/cover letter|cover_letter|transcript|portfolio/.test(txt)) continue;
+          if (/cover letter|cover_letter|transcript|portfolio/.test(txt)) {
+            continue;
+          }
           if (
             /resume|cv|curriculum|attach your|upload your/.test(txt) ||
             /resume|cv/i.test(e.name)
           ) {
-            resume = { index: i, label: txt.replace(/\s+/g, " ").trim().slice(0, 80) };
+            resume = {
+              index: i,
+              label: txt.replaceAll(/\s+/g, " ").trim().slice(0, 80),
+            };
             break;
           }
         }
@@ -1198,16 +1501,22 @@ export class GenericAdapter extends ATSAdapter {
           const e = inputs[0];
           const id = e.id || "";
           const txt = `${e.getAttribute("aria-label") || ""} ${
-            id ? document.querySelector(`label[for="${id}"]`)?.textContent || "" : ""
+            id
+              ? document.querySelector(`label[for="${id}"]`)?.textContent || ""
+              : ""
           } ${e.closest("label")?.textContent || ""}`.toLowerCase();
-          if (!/transcript|portfolio|cover letter|id card|identity/i.test(txt)) {
+          if (
+            !/transcript|portfolio|cover letter|id card|identity/i.test(txt)
+          ) {
             resume = { index: 0, label: "" };
           }
         }
         return resume ?? { index: -1, label: "" };
       })
       .catch(() => ({ index: -1, label: "" }));
-    if (target.index < 0) return false;
+    if (target.index < 0) {
+      return false;
+    }
 
     const input = page.locator('input[type="file"]').nth(target.index);
     // The nth-indexed input can't be addressed by a stable selector for
@@ -1217,19 +1526,29 @@ export class GenericAdapter extends ATSAdapter {
     let fileSel = 'input[type="file"]';
     try {
       const id = await input.getAttribute("id").catch(() => null);
-      if (id) fileSel = `input[type="file"]#${id.replace(/[^\w-]/g, "\\$&")}`;
-    } catch {}
+      if (id) {
+        fileSel = `input[type="file"]#${id.replace(/[^\w-]/g, "\\$&")}`;
+      }
+    } catch {
+      // best-effort cleanup; ignore failures
+    }
     for (let attempt = 0; attempt < 3; attempt++) {
-      if (await this.controls.isResumeAttached()) return true;
+      if (await this.controls.isResumeAttached()) {
+        return true;
+      }
       try {
         await setFileInputViaDataTransfer(page, fileSel, resumePath);
-      } catch (err: any) {
-        this.warn(`Resume setInputFiles threw (attempt ${attempt + 1}): ${err?.message || err}`);
+      } catch (error: any) {
+        this.warn(
+          `Resume setInputFiles threw (attempt ${attempt + 1}): ${error?.message || error}`
+        );
       }
       await randomSleep(2000, 3000);
       const attached = await this.controls.isResumeAttached();
       if (attached) {
-        console.log(`[Generic] Resume uploaded and registered (attempt ${attempt + 1}).`);
+        console.log(
+          `[Generic] Resume uploaded and registered (attempt ${attempt + 1}).`
+        );
         return true;
       }
       // Some forms need an explicit Upload button after attach.
@@ -1239,13 +1558,13 @@ export class GenericAdapter extends ATSAdapter {
         await randomSleep(1500, 2200);
         if (await this.controls.isResumeAttached()) {
           console.log(
-            `[Generic] Resume uploaded and registered after Upload (attempt ${attempt + 1}).`,
+            `[Generic] Resume uploaded and registered after Upload (attempt ${attempt + 1}).`
           );
           return true;
         }
       }
       this.warn(
-        `Resume upload not confirmed for ${baseName} (attempt ${attempt + 1}); retrying...`,
+        `Resume upload not confirmed for ${baseName} (attempt ${attempt + 1}); retrying...`
       );
     }
     return false;
@@ -1256,28 +1575,33 @@ export class GenericAdapter extends ATSAdapter {
   private async fillCoverLetter(
     rpc: RpcHelper,
     filled: string[],
-    blanked: BlankEntry[],
+    blanked: BlankEntry[]
   ): Promise<void> {
     const page = this.getPage();
     const target: { index: number; label: string } | null = await page
       .evaluate(() => {
-        const out: Array<{ index: number; label: string }> = [];
-        const areas = Array.from(document.querySelectorAll("textarea"));
+        const out: { index: number; label: string }[] = [];
+        const areas = [...document.querySelectorAll("textarea")];
         areas.forEach((el, i) => {
           const e = el as HTMLTextAreaElement;
-          if (e.offsetParent === null) return;
+          if (e.offsetParent === null) {
+            return;
+          }
           const aria = e.getAttribute("aria-label") || "";
           const id = e.getAttribute("id") || "";
           const forLabel = id
             ? document.querySelector(`label[for="${id}"]`)?.textContent || ""
             : "";
           const wrap = e.closest("label")?.textContent || "";
-          const label = (aria || forLabel || wrap).replace(/\s+/g, " ").trim();
+          const label = (aria || forLabel || wrap)
+            .replaceAll(/\s+/g, " ")
+            .trim();
           out.push({ index: i, label });
         });
         const match = out.find(
           (c) =>
-            /cover letter/i.test(c.label) && !(areas[c.index] as HTMLTextAreaElement).value.trim(),
+            /cover letter/i.test(c.label) &&
+            !(areas[c.index] as HTMLTextAreaElement).value.trim()
         );
         return match ?? null;
       })
@@ -1295,7 +1619,10 @@ export class GenericAdapter extends ATSAdapter {
       ];
       for (const sel of clFileInputs) {
         const fileInput = page.locator(sel).first();
-        if ((await fileInput.isVisible().catch(() => false)) || (await fileInput.count()) > 0) {
+        if (
+          (await fileInput.isVisible().catch(() => false)) ||
+          (await fileInput.count()) > 0
+        ) {
           try {
             await setFileInputViaDataTransfer(page, sel, pdfPath);
             console.log("[Generic] Cover letter PDF uploaded successfully.");
@@ -1310,14 +1637,18 @@ export class GenericAdapter extends ATSAdapter {
 
     if (!attached && target) {
       const coverLetter = (result?.answer ?? "").toString().trim();
-      if (!coverLetter) return;
+      if (!coverLetter) {
+        return;
+      }
       const ta = page.locator("textarea").nth(target.index);
       await ta.fill(coverLetter);
       await randomSleep(200, 400);
       const committed = await ta.inputValue().catch(() => "");
       if (committed) {
         filled.push(target.label || "Cover Letter");
-        console.log("[Generic] Cover letter filled (LLM-generated, JD-personalized).");
+        console.log(
+          "[Generic] Cover letter filled (LLM-generated, JD-personalized)."
+        );
       } else {
         blanked.push({
           label: target.label || "Cover Letter",
@@ -1344,7 +1675,7 @@ export class GenericAdapter extends ATSAdapter {
     filled: string[],
     blanked: BlankEntry[],
     userSkippedKeys: Set<string>,
-    processedKeys: Set<string>,
+    processedKeys: Set<string>
   ): Promise<number> {
     let filledCount = 0;
     try {
@@ -1355,55 +1686,83 @@ export class GenericAdapter extends ATSAdapter {
       let counter = 0;
       for (const action of actions) {
         const label = cleanObserveLabel(action.description);
-        if (!label) continue;
+        if (!label) {
+          continue;
+        }
         const id = `observe:${counter++}`;
         this.controls.registerObservedAction(id, action);
         const field: FormField = {
-          label,
           id,
           kind: "text",
-          required: false,
-          options: [],
+          label,
           optionTargets: [],
+          options: [],
+          required: false,
         };
         processedKeys.add(fieldKey(field));
         await screener.process(field, filled, blanked, userSkippedKeys);
-        if (await this.controls.readFieldValue(field)) filledCount += 1;
+        if (await this.controls.readFieldValue(field)) {
+          filledCount += 1;
+        }
       }
-    } catch (err: any) {
-      this.warn(`observeFallback failed: ${err?.message || err}`);
+    } catch (error: any) {
+      this.warn(`observeFallback failed: ${error?.message || error}`);
     }
     return filledCount;
   }
 
   /** Enumerate every visible free-text input/textarea with a nearby label via
    *  the DOM — the deterministic replacement for Stagehand's LLM observe(). */
-  private async scanFreeTextActions(): Promise<Array<{ selector: string; description: string }>> {
+  private async scanFreeTextActions(): Promise<
+    { selector: string; description: string }[]
+  > {
     const page = this.getPage();
     const nodes = await page.evaluate(() => {
       // WARNING: only anonymous arrows may be defined inside this evaluate
       // (tsx keepNames stringifies the callback into the page).
-      const clean = (s: string) => (s || "").replace(/\s+/g, " ").trim().slice(0, 60);
-      const escAttr = (s: string) => (s || "").replace(/["\\]/g, "\\$&");
+      const clean = (s: string) =>
+        (s || "").replaceAll(/\s+/g, " ").trim().slice(0, 60);
+      const escAttr = (s: string) => (s || "").replaceAll(/["\\]/g, "\\$&");
       const labelFor = (el: Element): string => {
         const id = el.getAttribute("id");
         if (id) {
           const lab = document.querySelector(`label[for="${escAttr(id)}"]`);
-          if (lab?.textContent) return clean(lab.textContent);
+          if (lab?.textContent) {
+            return clean(lab.textContent);
+          }
         }
         const wrap = el.closest("label");
-        if (wrap?.textContent) return clean(wrap.textContent);
+        if (wrap?.textContent) {
+          return clean(wrap.textContent);
+        }
         const aria = el.getAttribute("aria-label");
-        if (aria) return clean(aria);
+        if (aria) {
+          return clean(aria);
+        }
         const placeholder = el.getAttribute("placeholder");
-        if (placeholder) return clean(placeholder);
+        if (placeholder) {
+          return clean(placeholder);
+        }
         const name = el.getAttribute("name");
-        if (name) return clean(name.replace(/[_-]/g, " "));
+        if (name) {
+          return clean(name.replace(/[_-]/g, " "));
+        }
         return "";
       };
       const isTextish = (el: Element): boolean => {
         const t = (el.getAttribute("type") || "").toLowerCase();
-        if (t && !["text", "email", "tel", "url", "number", "password", "date"].includes(t)) {
+        if (
+          t &&
+          ![
+            "text",
+            "email",
+            "tel",
+            "url",
+            "number",
+            "password",
+            "date",
+          ].includes(t)
+        ) {
           return false;
         }
         return true;
@@ -1411,17 +1770,34 @@ export class GenericAdapter extends ATSAdapter {
       const visible = (el: Element): boolean => {
         const r = (el as HTMLElement).getBoundingClientRect();
         const st = window.getComputedStyle(el);
-        return r.width > 0 && r.height > 0 && st.visibility !== "hidden" && st.display !== "none";
+        return (
+          r.width > 0 &&
+          r.height > 0 &&
+          st.visibility !== "hidden" &&
+          st.display !== "none"
+        );
       };
       const out: { selector: string; description: string }[] = [];
-      const els: Element[] = Array.from(document.querySelectorAll("input, textarea")) as Element[];
+      const els: Element[] = [
+        ...document.querySelectorAll("input, textarea"),
+      ] as Element[];
       for (const el of els) {
-        if (el.tagName === "INPUT" && !isTextish(el)) continue;
-        if (!visible(el)) continue;
-        if ((el as HTMLInputElement).disabled) continue;
-        if ((el as HTMLInputElement).readOnly) continue;
+        if (el.tagName === "INPUT" && !isTextish(el)) {
+          continue;
+        }
+        if (!visible(el)) {
+          continue;
+        }
+        if ((el as HTMLInputElement).disabled) {
+          continue;
+        }
+        if ((el as HTMLInputElement).readOnly) {
+          continue;
+        }
         const label = labelFor(el);
-        if (!label) continue;
+        if (!label) {
+          continue;
+        }
         // Build a selector that identifies exactly this field.
         const attrs = el.getAttributeNames().filter((n) => n !== "class");
         const id = el.getAttribute("id");
@@ -1439,14 +1815,21 @@ export class GenericAdapter extends ATSAdapter {
         if (!selector && attrs.length === 0) {
           selector = `${el.tagName.toLowerCase()}:not([type='checkbox']):not([type='radio'])`;
         }
-        if (!selector) continue;
+        if (!selector) {
+          continue;
+        }
         // Dedupe by element identity.
-        if (out.some((o) => o.selector === selector)) continue;
-        out.push({ selector, description: `fill the ${label || "field"} field` });
+        if (out.some((o) => o.selector === selector)) {
+          continue;
+        }
+        out.push({
+          description: `fill the ${label || "field"} field`,
+          selector,
+        });
       }
       return out;
     });
-    return (nodes ?? []) as Array<{ selector: string; description: string }>;
+    return (nodes ?? []) as { selector: string; description: string }[];
   }
 
   // --------------------------------------------------------------------------
@@ -1459,7 +1842,7 @@ export class GenericAdapter extends ATSAdapter {
     if (this.siteKnowledge && Object.keys(this.siteKnowledge).length > 0) {
       console.log(
         `[Generic] Consulting learned site knowledge: ` +
-          `${JSON.stringify(this.siteKnowledge).slice(0, 200)}`,
+          `${JSON.stringify(this.siteKnowledge).slice(0, 200)}`
       );
     }
     console.log(`[Generic] Navigating to ${url}...`);
@@ -1483,14 +1866,19 @@ export class GenericAdapter extends ATSAdapter {
     const jobCtx = this.jobCtx ?? (await this.readJobContext());
     await rpc("job_context", jobCtx);
     console.log(
-      `[Generic] Job context: ${jobCtx.title || "?"} @ ${jobCtx.company || "?"}` +
-        (jobCtx.location ? ` (${jobCtx.location})` : ""),
+      `[Generic] Job context: ${jobCtx.title || "?"} @ ${jobCtx.company || "?"}${jobCtx.location ? ` (${jobCtx.location})` : ""}`
     );
 
     const jsonModel = await this.fetchJsonQuestions();
     this._jsonModel = jsonModel;
     this.profile = profile;
-    const screener = new Screener(this.controls, "GenericAdapter", profile, rpc, true);
+    const screener = new Screener(
+      this.controls,
+      "GenericAdapter",
+      profile,
+      rpc,
+      true
+    );
     const filled: string[] = [];
     const blanked: BlankEntry[] = [];
     const processedKeys = new Set<string>();
@@ -1504,8 +1892,10 @@ export class GenericAdapter extends ATSAdapter {
       if (firstInventory.length > 0) {
         await screener.preResolveBatch(firstInventory);
       }
-    } catch (err: any) {
-      console.warn(`[Generic] Batch pre-resolve skipped: ${err?.message || err}`);
+    } catch (error: any) {
+      console.warn(
+        `[Generic] Batch pre-resolve skipped: ${error?.message || error}`
+      );
     }
 
     const MAX_STEPS = 12;
@@ -1514,7 +1904,9 @@ export class GenericAdapter extends ATSAdapter {
 
       const probe = await this.probeFlow();
       if (classifyFlow(probe) === "gate") {
-        console.log("[Generic] Sign-in gate reached mid-flow; attempting to pass it.");
+        console.log(
+          "[Generic] Sign-in gate reached mid-flow; attempting to pass it."
+        );
         await this.handleGate();
         await randomSleep(1500, 2500);
       }
@@ -1525,12 +1917,17 @@ export class GenericAdapter extends ATSAdapter {
       }
 
       if (await this.isVoluntaryStep(inventory)) {
-        console.log("[Generic] Voluntary disclosure step detected (all-optional); skipping.");
+        console.log(
+          "[Generic] Voluntary disclosure step detected (all-optional); skipping."
+        );
         for (const f of inventory) {
           // Mark skipped so the final reverify never flags these as unfilled.
           userSkippedKeys.add(fieldKey(f));
           processedKeys.add(fieldKey(f));
-          blanked.push({ label: f.label, reason: "voluntary disclosure step (left unchecked)" });
+          blanked.push({
+            label: f.label,
+            reason: "voluntary disclosure step (left unchecked)",
+          });
         }
       } else {
         // Converging re-scan walk over the visible fields (conditional
@@ -1542,11 +1939,13 @@ export class GenericAdapter extends ATSAdapter {
           if (pass === 0) {
             console.log(
               `[Generic] Step ${step + 1} inventory: ${fields.length} question(s) ` +
-                `(json: ${jsonModel?.length ?? 0}, dom: ${domFields.length}).`,
+                `(json: ${jsonModel?.length ?? 0}, dom: ${domFields.length}).`
             );
           }
           if (fresh.length === 0) {
-            console.log(`[Generic] Step ${step + 1} walk converged after ${pass + 1} pass(es).`);
+            console.log(
+              `[Generic] Step ${step + 1} walk converged after ${pass + 1} pass(es).`
+            );
             break;
           }
           for (const f of fresh) {
@@ -1559,7 +1958,9 @@ export class GenericAdapter extends ATSAdapter {
 
         // Uploads / cover letter on this step.
         if (!resumeAttached) {
-          resumeAttached = await this.uploadResumeIfVisible(profile.resumePath ?? "");
+          resumeAttached = await this.uploadResumeIfVisible(
+            profile.resumePath ?? ""
+          );
         }
         await this.fillCoverLetter(rpc, filled, blanked);
         // JD-tailored resume (background-generated) attaches at the END of the
@@ -1584,11 +1985,11 @@ export class GenericAdapter extends ATSAdapter {
         });
         if (requiredBlanks.length > 0) {
           console.warn(
-            `[Generic] ${requiredBlanks.length} REQUIRED field(s) blank after step ${step + 1}:`,
+            `[Generic] ${requiredBlanks.length} REQUIRED field(s) blank after step ${step + 1}:`
           );
           for (const rb of requiredBlanks) {
             console.warn(
-              `[Generic]   REQUIRED blank: ${escapePromptValue(rb.label)} (${rb.reason})`,
+              `[Generic]   REQUIRED blank: ${escapePromptValue(rb.label)} (${rb.reason})`
             );
           }
         }
@@ -1602,7 +2003,7 @@ export class GenericAdapter extends ATSAdapter {
       if (!advanced) {
         console.warn(
           "[Generic] No Continue/Submit button found, or the step did not advance after " +
-            "clicking. If required fields were left blank, the form may block progression.",
+            "clicking. If required fields were left blank, the form may block progression."
         );
         break;
       }
@@ -1612,16 +2013,18 @@ export class GenericAdapter extends ATSAdapter {
     // recognizable field (a truly non-standard form renderer).
     if (processedKeys.size === 0) {
       console.warn(
-        "[Generic] DOM walker found no recognizable fields — falling back to observe().",
+        "[Generic] DOM walker found no recognizable fields — falling back to observe()."
       );
       const observed = await this.observeFallback(
         screener,
         filled,
         blanked,
         userSkippedKeys,
-        processedKeys,
+        processedKeys
       );
-      console.log(`[Generic] Observe fallback filled ${observed} free-text field(s).`);
+      console.log(
+        `[Generic] Observe fallback filled ${observed} free-text field(s).`
+      );
     }
 
     // Final sweep over visible fields.
@@ -1632,17 +2035,29 @@ export class GenericAdapter extends ATSAdapter {
       const swept = mergeFormInventory(jsonModel, sweptDom);
       let touched = 0;
       for (const f of swept) {
-        if (PRE_FILLED_LABELS.has(normalizeLabel(f.label))) continue;
-        if (userSkippedKeys.has(fieldKey(f))) continue;
-        if (await this.controls.readFieldValue(f)) continue;
+        if (PRE_FILLED_LABELS.has(normalizeLabel(f.label))) {
+          continue;
+        }
+        if (userSkippedKeys.has(fieldKey(f))) {
+          continue;
+        }
+        if (await this.controls.readFieldValue(f)) {
+          continue;
+        }
         touched += 1;
         await screener.process(f, sweepFilled, sweepBlanks, userSkippedKeys);
       }
-      if (touched === 0) break;
+      if (touched === 0) {
+        break;
+      }
     }
     if (sweepFilled.length) {
-      console.log(`[Generic] Final sweep filled ${sweepFilled.length} field(s):`);
-      for (const l of sweepFilled) console.log(`[Generic]   filled: ${escapePromptValue(l)}`);
+      console.log(
+        `[Generic] Final sweep filled ${sweepFilled.length} field(s):`
+      );
+      for (const l of sweepFilled) {
+        console.log(`[Generic]   filled: ${escapePromptValue(l)}`);
+      }
     }
 
     if (this.gateDeferred) {
@@ -1656,14 +2071,14 @@ export class GenericAdapter extends ATSAdapter {
     // Definitive reverify of every still-empty field (required/optional, minus
     // identity fields and manual skips). This is the pre-completion checkpoint.
     const stillBlank = await finalReverify({
-      tag: "GenericAdapter",
       collect: async () => {
         const dom = await this.collectQuestions();
         return mergeFormInventory(jsonModel, dom);
       },
       isEmpty: async (f) => !(await this.controls.readFieldValue(f)),
-      skippedKeys: userSkippedKeys,
       reasons: [...blanked, ...sweepBlanks],
+      skippedKeys: userSkippedKeys,
+      tag: "GenericAdapter",
     });
     // Surface how many required fields are still blank so the runner can gate
     // auto-submit on an incomplete form. finalReverify excludes manual skips,
@@ -1682,25 +2097,37 @@ export class GenericAdapter extends ATSAdapter {
       const readback = mergeFormInventory(jsonModel, domReadback);
       const reported = new Set<string>();
       for (const f of readback) {
-        if (PRE_FILLED_LABELS.has(normalizeLabel(f.label))) continue;
+        if (PRE_FILLED_LABELS.has(normalizeLabel(f.label))) {
+          continue;
+        }
         const key = fieldKey(f);
-        if (reported.has(key)) continue;
+        if (reported.has(key)) {
+          continue;
+        }
         reported.add(key);
         const val = await this.controls.readFieldValue(f).catch(() => "");
         if (val) {
           this.filledValues[f.label] = String(val);
           console.log(
             `[Generic] Pre-submit value [${f.kind}] "${escapePromptValue(f.label)}" = ` +
-              `"${escapePromptValue(String(val).slice(0, 120))}"`,
+              `"${escapePromptValue(String(val).slice(0, 120))}"`
           );
         }
       }
-    } catch (readbackErr: any) {
-      console.warn(`[Generic] Pre-submit readback failed: ${readbackErr?.message || readbackErr}`);
+    } catch (error: any) {
+      console.warn(
+        `[Generic] Pre-submit readback failed: ${error?.message || error}`
+      );
     }
 
-    if (profile.resumePath && !resumeAttached && !(await this.controls.isResumeAttached())) {
-      console.warn("[Generic] REVERIFY: resume is NOT attached after the final pass.");
+    if (
+      profile.resumePath &&
+      !resumeAttached &&
+      !(await this.controls.isResumeAttached())
+    ) {
+      console.warn(
+        "[Generic] REVERIFY: resume is NOT attached after the final pass."
+      );
     } else if (profile.resumePath) {
       console.log("[Generic] REVERIFY: resume is attached.");
     }
@@ -1724,39 +2151,56 @@ export class GenericAdapter extends ATSAdapter {
         fields.find(
           (f) =>
             normLabel.includes(normalizeLabel(f.label)) ||
-            normalizeLabel(f.label).includes(normLabel),
+            normalizeLabel(f.label).includes(normLabel)
         );
       if (!match) {
-        console.warn(`[Generic] Could not find field "${escapePromptValue(label)}" to correct.`);
+        console.warn(
+          `[Generic] Could not find field "${escapePromptValue(label)}" to correct.`
+        );
         return false;
       }
       let ok: boolean;
       if (isLocationAutocomplete(match) && (this.profile as any)?.location) {
         ok = await this.controls.fillAsyncAutocomplete(match.id, String(value));
         if (!ok) {
-          ok = await this.controls.fillAsyncAutocomplete(match.id, String(value));
+          ok = await this.controls.fillAsyncAutocomplete(
+            match.id,
+            String(value)
+          );
         }
       } else {
-        ok = await this.controls.fillByKind(match, String(value), match.options);
+        ok = await this.controls.fillByKind(
+          match,
+          String(value),
+          match.options
+        );
         if (!ok) {
-          ok = await this.controls.fillByKind(match, String(value), match.options);
+          ok = await this.controls.fillByKind(
+            match,
+            String(value),
+            match.options
+          );
         }
       }
-      const committed = await this.controls.readFieldValue(match).catch(() => "");
+      const committed = await this.controls
+        .readFieldValue(match)
+        .catch(() => "");
       if (ok && committed) {
         this.filledValues[label] = String(committed);
         console.log(
           `[Generic] Corrected "${escapePromptValue(label)}" to ` +
-            `"${escapePromptValue(String(committed).slice(0, 120))}"`,
+            `"${escapePromptValue(String(committed).slice(0, 120))}"`
         );
         return true;
       }
-      console.warn(`[Generic] Correction of "${escapePromptValue(label)}" not committed.`);
+      console.warn(
+        `[Generic] Correction of "${escapePromptValue(label)}" not committed.`
+      );
       return false;
-    } catch (err: any) {
+    } catch (error: any) {
       console.warn(
         `[Generic] correctField failed for "${escapePromptValue(label)}": ` +
-          `${err?.message || err}`,
+          `${error?.message || error}`
       );
       return false;
     }
@@ -1772,12 +2216,14 @@ export class GenericAdapter extends ATSAdapter {
     // Stagehand v3 pages do NOT support page.on("response"); hook CDP
     // Network.responseReceived on the page's main session instead.
     const origin = page.url().split("/").slice(0, 3).join("/");
-    const submitTracker = trackSubmitResponse(page, (u) => isSubmitUrl(u, origin));
+    const submitTracker = trackSubmitResponse(page, (u) =>
+      isSubmitUrl(u, origin)
+    );
 
     const submitBtn = page
       .locator(
         "button[type='submit'], input[type='submit'], button:has-text('Submit Application'), " +
-          "button:has-text('Submit'), a:has-text('Submit Application'), [data-automation-id*='submit' i]",
+          "button:has-text('Submit'), a:has-text('Submit Application'), [data-automation-id*='submit' i]"
       )
       .first();
     if (await submitBtn.isVisible().catch(() => false)) {
@@ -1799,7 +2245,7 @@ export class GenericAdapter extends ATSAdapter {
     // watchdog never sees 5 minutes of silence and kills a healthy submit.
     for (let confirmPass = 0; confirmPass < 2; confirmPass++) {
       console.log(
-        `[Generic] Submit confirm pass ${confirmPass + 1}: waiting for review/final button...`,
+        `[Generic] Submit confirm pass ${confirmPass + 1}: waiting for review/final button...`
       );
       await randomSleep(1500, 2500);
       const finalBtn = page
@@ -1807,7 +2253,7 @@ export class GenericAdapter extends ATSAdapter {
           "button:has-text('Submit Application'), button:has-text('Submit'), " +
             "button[type='submit'], [data-automation-id*='submit' i], " +
             "button:has-text('Confirm'), button:has-text('Confirm Submission'), " +
-            "button:has-text('Submit Application')",
+            "button:has-text('Submit Application')"
         )
         .first();
       const visible = await finalBtn.isVisible().catch(() => false);
@@ -1815,10 +2261,12 @@ export class GenericAdapter extends ATSAdapter {
       // clicking the SAME submit button again on a still-processing page just
       // double-submits. Check the page isn't the identical pre-click state.
       if (visible && confirmPass === 0) {
-        console.log("[Generic] Review/final Submit button present; clicking it.");
+        console.log(
+          "[Generic] Review/final Submit button present; clicking it."
+        );
         await this.controls.humanClick(
           finalBtn,
-          "button[type='submit'], button:has-text('Submit Application'), [data-automation-id*='submit' i], button:has-text('Confirm')",
+          "button[type='submit'], button:has-text('Submit Application'), [data-automation-id*='submit' i], button:has-text('Confirm')"
         );
         await randomSleep(1200, 2000);
       } else if (visible) {
@@ -1826,22 +2274,23 @@ export class GenericAdapter extends ATSAdapter {
       }
     }
 
-    const submitResponse = async (): Promise<{ ok: boolean; status?: number } | undefined> =>
-      submitTracker.get();
+    const submitResponse = async (): Promise<
+      { ok: boolean; status?: number } | undefined
+    > => submitTracker.get();
 
     try {
       const outcome = await verifySubmitOutcome(page, {
-        tag: "Generic",
         submitButtonSelector:
           "button[type='submit'], input[type='submit'], button:has-text('Submit Application'), " +
           "button:has-text('Submit'), a:has-text('Submit Application')",
         submitResponse,
+        tag: "Generic",
       });
       submitTracker.detach();
       return outcome;
-    } catch (e) {
+    } catch (error) {
       submitTracker.detach();
-      throw e;
+      throw error;
     }
   }
 
@@ -1856,25 +2305,35 @@ export class GenericAdapter extends ATSAdapter {
     const dom = await this.collectQuestions();
     const fields = mergeFormInventory(this._jsonModel ?? null, dom);
     for (const f of fields) {
-      if (!f.required) continue;
-      if (await this.controls.readFieldValue(f)) continue;
-      if (PRE_FILLED_LABELS.has(normalizeLabel(f.label))) continue;
+      if (!f.required) {
+        continue;
+      }
+      if (await this.controls.readFieldValue(f)) {
+        continue;
+      }
+      if (PRE_FILLED_LABELS.has(normalizeLabel(f.label))) {
+        continue;
+      }
       const screener = new Screener(
         this.controls,
         "GenericAdapter",
         this.profile,
         rpc ?? (async () => ({ answer: "" })),
-        true,
+        true
       );
       const filled: string[] = [];
       const blanked: { label: string; reason: string }[] = [];
       const skipped = new Set<string>();
       await screener.process(f, filled, blanked, skipped);
-      if (filled.length === 0) stillBlank.push(f.label);
+      if (filled.length === 0) {
+        stillBlank.push(f.label);
+      }
     }
     const remaining = stillBlank.length;
     setBlankedRequiredCount(remaining);
-    console.log(`[Generic] Recheck complete: ${remaining} required field(s) still blank.`);
+    console.log(
+      `[Generic] Recheck complete: ${remaining} required field(s) still blank.`
+    );
     for (const l of stillBlank) {
       console.warn(`[Generic]   still blank: ${escapePromptValue(l)}`);
     }
@@ -1883,7 +2342,7 @@ export class GenericAdapter extends ATSAdapter {
 }
 
 function normalizeLabel(label: string): string {
-  return label.replace(/\s+/g, " ").trim().toLowerCase();
+  return label.replaceAll(/\s+/g, " ").trim().toLowerCase();
 }
 
 // ---------------------------------------------------------------------------
@@ -1900,9 +2359,9 @@ export class GenericControls extends FormControls {
     // role="option" — a workday-style li menu must be visible to the shared
     // option reader, not hard-wired to div[role="option"].
     super(stagehand, {
-      tagName: tag,
       optionSelector: '[role="option"]',
       optionTag: "*",
+      tagName: tag,
     });
   }
 
@@ -1918,11 +2377,13 @@ export class GenericControls extends FormControls {
   override async fillByKind(
     field: FormField,
     answer: string,
-    optionTexts?: string[],
+    optionTexts?: string[]
   ): Promise<boolean> {
     if (field.id.startsWith("observe:")) {
       const action = this.observedActions.get(field.id);
-      if (!action) return false;
+      if (!action) {
+        return false;
+      }
       return this.fillObserved(action, answer);
     }
     if (field.kind === "combobox") {
@@ -1933,28 +2394,34 @@ export class GenericControls extends FormControls {
     }
     if (field.kind === "text" || field.kind === "date") {
       const ok = await super.fillByKind(field, answer, optionTexts);
-      if (ok) return true;
+      if (ok) {
+        return true;
+      }
       // Fallback: name-based fill for inputs the scope machinery could not
       // resolve (no id, no data-field-path wrapper).
       if (field.name) {
         const page = this.getPage();
         const input = page
           .locator(
-            `input[name="${cssEscape(field.name)}"], textarea[name="${cssEscape(field.name)}"]`,
+            `input[name="${cssEscape(field.name)}"], textarea[name="${cssEscape(field.name)}"]`
           )
           .first();
         if (await input.isVisible().catch(() => false)) {
           const tagType = await page
             .evaluate(
               (n: string) =>
-                document.querySelector(`input[name="${n}"]`)?.getAttribute("type") ?? null,
-              field.name,
+                document
+                  .querySelector(`input[name="${n}"]`)
+                  ?.getAttribute("type") ?? null,
+              field.name
             )
             .catch(() => null);
           let value = String(answer ?? "");
           if (tagType === "number") {
             value = sanitizeNumberAnswer(value);
-            if (!value) return false;
+            if (!value) {
+              return false;
+            }
           }
           await input.fill(value).catch(() => {});
           await randomSleep(200, 400);
@@ -1981,21 +2448,29 @@ export class GenericControls extends FormControls {
           // Destructure the helper so it never gains a name.
           const [find] = [
             (root: Element | null): string => {
-              if (!root) return "";
+              if (!root) {
+                return "";
+              }
               const sv = root.querySelector('[class*="select__single-value"]');
               if (sv && (sv.textContent || "").trim()) {
-                return (sv.textContent || "").replace(/\s+/g, " ").trim();
+                return (sv.textContent || "").replaceAll(/\s+/g, " ").trim();
               }
-              const multi = Array.from(root.querySelectorAll('[class*="select__multi-value"]'));
+              const multi = [
+                ...root.querySelectorAll('[class*="select__multi-value"]'),
+              ];
               if (multi.length) {
                 return multi
-                  .map((m) => (m.textContent || "").replace(/\s+/g, " ").trim())
+                  .map((m) =>
+                    (m.textContent || "").replaceAll(/\s+/g, " ").trim()
+                  )
                   .filter(Boolean)
                   .join(", ");
               }
               const selected = root.querySelector('[aria-selected="true"]');
               if (selected && (selected.textContent || "").trim()) {
-                return (selected.textContent || "").replace(/\s+/g, " ").trim();
+                return (selected.textContent || "")
+                  .replaceAll(/\s+/g, " ")
+                  .trim();
               }
               // NO raw input.value fallback: a dropdown is only "committed" when
               // a real suggestion was picked (which renders a committed marker).
@@ -2007,24 +2482,32 @@ export class GenericControls extends FormControls {
           const scope = document.querySelector(`[data-field-path="${fid}"]`);
           if (scope) {
             const direct = find(scope);
-            if (direct) return direct;
+            if (direct) {
+              return direct;
+            }
             // The scope may BE the combobox input (walker tags id-less inputs
             // with the path on themselves) — its committed value lives in the
             // surrounding select shell.
             if (scope.matches && scope.matches("input, textarea")) {
               const shell = scope.closest(
-                '[class*="select-shell"], [class*="react-select"], [class*="select__"]',
+                '[class*="select-shell"], [class*="react-select"], [class*="select__"]'
               );
-              if (shell) return find(shell);
+              if (shell) {
+                return find(shell);
+              }
             }
             return "";
           }
-          const byId = document.getElementById(fid) as HTMLInputElement | null;
+          const byId = document.querySelector(
+            `#${fid}`
+          ) as HTMLInputElement | null;
           if (byId) {
             const shell = byId.closest(
-              '[class*="select-shell"], [class*="react-select"], [class*="select__"]',
+              '[class*="select-shell"], [class*="react-select"], [class*="select__"]'
             );
-            if (shell) return find(shell);
+            if (shell) {
+              return find(shell);
+            }
             return "";
           }
           return "";
@@ -2042,25 +2525,31 @@ export class GenericControls extends FormControls {
       try {
         const v = await page.evaluate(
           (args: { id: string; name: string }) => {
-            const byId = document.getElementById(args.id) as HTMLSelectElement | null;
+            const byId = document.getElementById(
+              args.id
+            ) as HTMLSelectElement | null;
             const byName = document.querySelector(
-              `select[name="${args.name}"]`,
+              `select[name="${args.name}"]`
             ) as HTMLSelectElement | null;
             const byPath = document.querySelector(
-              `[data-field-path="${args.id}"]`,
+              `[data-field-path="${args.id}"]`
             ) as HTMLSelectElement | null;
             const sel = byId || byName || byPath;
             if (sel) {
               const idx = sel.selectedIndex;
               if (idx >= 0) {
-                return (sel.options[idx]?.textContent || "").replace(/\s+/g, " ").trim();
+                return (sel.options[idx]?.textContent || "")
+                  .replaceAll(/\s+/g, " ")
+                  .trim();
               }
             }
             return "";
           },
-          { id: field.id, name: field.name || "" },
+          { id: field.id, name: field.name || "" }
         );
-        if (v) return (v as string) || "";
+        if (v) {
+          return (v as string) || "";
+        }
       } catch {
         // fall through to the shared machinery
       }
@@ -2079,7 +2568,7 @@ export class GenericControls extends FormControls {
   async fillGenericCombobox(
     field: FormField,
     answer: string,
-    optionTexts: string[] = [],
+    optionTexts: string[] = []
   ): Promise<boolean> {
     const page = this.getPage();
     // Only a genuine async location autocomplete may fall back to a ranked
@@ -2096,15 +2585,20 @@ export class GenericControls extends FormControls {
           `[data-field-path="${cssEscape(field.id)}"]:is(input[role="combobox"], input[aria-autocomplete], input), ` +
             `[data-field-path="${cssEscape(field.id)}"] input[role="combobox"], ` +
             `[data-field-path="${cssEscape(field.id)}"] input[aria-autocomplete], ` +
-            `[data-field-path="${cssEscape(field.id)}"] input, ` +
-            cssIdLocator(field.id),
+            `[data-field-path="${cssEscape(field.id)}"] input, ${cssIdLocator(
+              field.id
+            )}`
         )
         .first();
-      if (!(await input.isVisible().catch(() => false))) return false;
+      if (!(await input.isVisible().catch(() => false))) {
+        return false;
+      }
 
       const pickFor = (pick: string, opts: string[]): string | null => {
         const chosen = chooseOption(selectCandidates(pick), opts);
-        if (chosen) return chosen;
+        if (chosen) {
+          return chosen;
+        }
         return isLocation ? pickLocationOption(pick, opts) : null;
       };
 
@@ -2113,7 +2607,7 @@ export class GenericControls extends FormControls {
       const loadOptsFor = async (query: string): Promise<string[]> => {
         if (optionTexts.length) {
           await this.ensureGenericMenuOpen(input);
-          return optionTexts.slice();
+          return [...optionTexts];
         }
         await this.closeMenu();
         await randomSleep(150, 300);
@@ -2145,29 +2639,37 @@ export class GenericControls extends FormControls {
       let clicked = 0;
       for (const pick of picks) {
         const opts = await loadOptsFor(pick);
-        if (!opts.length) continue;
+        if (!opts.length) {
+          continue;
+        }
         const picked = pickFor(pick, opts);
         if (picked && (await this.clickVisibleOption(picked))) {
           clicked += 1;
           await randomSleep(200, 400);
           await this.ensureGenericMenuOpen(input);
         } else if (picked) {
-          console.warn(`[${this.tagName}] Option "${picked}" not visible for #${field.id}`);
+          console.warn(
+            `[${this.tagName}] Option "${picked}" not visible for #${field.id}`
+          );
         } else {
           console.warn(
-            `[${this.tagName}] No confident option for pick "${pick}" (${escapePromptValue(field.label)}); leaving it blank.`,
+            `[${this.tagName}] No confident option for pick "${pick}" (${escapePromptValue(field.label)}); leaving it blank.`
           );
         }
       }
       await this.closeMenu();
       await randomSleep(300, 500);
-      if (clicked > 0 && (await this.readFieldValue(field))) return true;
+      if (clicked > 0 && (await this.readFieldValue(field))) {
+        return true;
+      }
       console.warn(
-        `[${this.tagName}] Could not commit a suggestion for "${answer}" (${escapePromptValue(field.label)}).`,
+        `[${this.tagName}] Could not commit a suggestion for "${answer}" (${escapePromptValue(field.label)}).`
       );
       return false;
-    } catch (err: any) {
-      console.warn(`[${this.tagName}] fillGenericCombobox failed: ${err?.message || err}`);
+    } catch (error: any) {
+      console.warn(
+        `[${this.tagName}] fillGenericCombobox failed: ${error?.message || error}`
+      );
       return false;
     }
   }
@@ -2175,7 +2677,9 @@ export class GenericControls extends FormControls {
   /** Reopen a combobox menu after a pick closed it (multi-selects). */
   private async ensureGenericMenuOpen(input: any): Promise<void> {
     for (let i = 0; i < 3; i++) {
-      if (await this.hasVisibleOption()) return;
+      if (await this.hasVisibleOption()) {
+        return;
+      }
       await input.click().catch(() => {});
       await randomSleep(300, 500);
     }
@@ -2185,26 +2689,35 @@ export class GenericControls extends FormControls {
   async fillGenericSelect(
     field: FormField,
     answer: string,
-    optionTexts: string[] = [],
+    optionTexts: string[] = []
   ): Promise<boolean> {
     const page = this.getPage();
     try {
       const sel = page
         .locator(
           `select${cssIdLocator(field.id)}, select[name="${cssEscape(field.name || field.id)}"], ` +
-            `[data-field-path="${cssEscape(field.id)}"]`,
+            `[data-field-path="${cssEscape(field.id)}"]`
         )
         .first();
       if (!(await sel.isVisible().catch(() => false))) {
         // Possibly a styled dropdown mis-walked as native — delegate to base.
-        return super.fillByKind({ ...field, kind: "select" }, answer, optionTexts);
+        return super.fillByKind(
+          { ...field, kind: "select" },
+          answer,
+          optionTexts
+        );
       }
       const isNative =
-        (await sel.evaluate((el: Element) => el.tagName).catch(() => "DIV")) === "SELECT";
+        (await sel.evaluate((el: Element) => el.tagName).catch(() => "DIV")) ===
+        "SELECT";
       if (!isNative) {
         // The data-field-path scope resolved to a container (or the styled
         // dropdown) rather than the <select> — delegate to the shared machinery.
-        return super.fillByKind({ ...field, kind: "select" }, answer, optionTexts);
+        return super.fillByKind(
+          { ...field, kind: "select" },
+          answer,
+          optionTexts
+        );
       }
       const opts =
         optionTexts.length > 0
@@ -2216,7 +2729,7 @@ export class GenericControls extends FormControls {
       const picked = chooseOption(selectCandidates(answer), opts);
       if (!picked) {
         console.warn(
-          `[${this.tagName}] No matching option for #${field.id} (answer "${escapePromptValue(answer)}"); leaving blank.`,
+          `[${this.tagName}] No matching option for #${field.id} (answer "${escapePromptValue(answer)}"); leaving blank.`
         );
         return false;
       }
@@ -2224,17 +2737,21 @@ export class GenericControls extends FormControls {
       await randomSleep(200, 400);
       const committed = !!(await page
         .evaluate((fid: string) => {
-          const el = document.getElementById(fid) as HTMLSelectElement | null;
+          const el = document.querySelector(
+            `#${fid}`
+          ) as HTMLSelectElement | null;
           return el ? String(el.value ?? "") : "";
         }, field.id)
         .catch(() => ""));
       if (!committed) {
-        console.warn(`[${this.tagName}] Native select #${field.id} did not commit "${picked}"`);
+        console.warn(
+          `[${this.tagName}] Native select #${field.id} did not commit "${picked}"`
+        );
       }
       return committed;
-    } catch (err: any) {
+    } catch (error: any) {
       console.warn(
-        `[${this.tagName}] fillGenericSelect failed for #${field.id}: ${err?.message || err}`,
+        `[${this.tagName}] fillGenericSelect failed for #${field.id}: ${error?.message || error}`
       );
       return false;
     }
@@ -2246,13 +2763,17 @@ export class GenericControls extends FormControls {
     const page = this.getPage();
     return page
       .evaluate(() => {
-        const inputs = Array.from(
-          document.querySelectorAll('input[type="file"]'),
-        ) as HTMLInputElement[];
-        if (inputs.length === 0) return true; // consumed by the form = attached
-        if (inputs.some((i) => i.files && i.files.length > 0)) return true;
+        const inputs = [
+          ...document.querySelectorAll('input[type="file"]'),
+        ] as HTMLInputElement[];
+        if (inputs.length === 0) {
+          return true;
+        } // consumed by the form = attached
+        if (inputs.some((i) => i.files && i.files.length > 0)) {
+          return true;
+        }
         const zone = document.querySelector(
-          "[class*='resume'], [class*='upload'], [id*='resume' i]",
+          "[class*='resume'], [class*='upload'], [id*='resume' i]"
         );
         const text = zone ? zone.textContent || "" : "";
         return /attached|uploaded|added|done|✓/i.test(text);

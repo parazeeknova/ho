@@ -358,7 +358,7 @@ def _parse_degree_into_education(degree_text: str, edu: dict) -> None:
     #   discipline = "Computer Science and Engineering" (CSE expanded)
     #   specialization = "AI & ML"
     rest = text
-    if degree:
+    if degree and m:
         rest = text[len(m.group(0)) :].strip()
     # Split on " in " / " with specialization in " / " - ".
     parts = re.split(r"\s+(?:in|with speciali[sz]ation in|majoring in|-\s*)\s+", rest, maxsplit=1)

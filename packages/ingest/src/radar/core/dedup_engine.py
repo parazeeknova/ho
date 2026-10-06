@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from collections.abc import Sequence
+from typing import Any
 
 from src.logging import get_logger
 
@@ -33,7 +34,7 @@ class FastDeduplicationEngine:
         self.redis_url = redis_url
         self.enable_redis = enable_redis
         self.cache_ttl_seconds = cache_ttl_seconds
-        self._redis: aioredis.Redis | None = None
+        self._redis: Any | None = None
         self._redis_connected = False
 
         # Sub-microsecond local in-memory fallback caches
