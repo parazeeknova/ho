@@ -1,6 +1,6 @@
 {
   "name": "ho",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "ho monorepo - ingest radar pipeline",
   "workspaces": [
@@ -16,6 +16,8 @@
     "backup": "uv run python packages/ingest/scripts/backup/checkpoint_backup.py",
     "check": "uv run ruff format . && uv run ruff check . --fix && bunx oxfmt && bunx oxlint --fix",
     "check-types": "uv run ty check packages/ingest/src packages/ingest/scripts packages/autofill packages/ml && bun --cwd packages/node typecheck",
+    "bump": "uv run python scripts/version_manager.py",
+    "bump:dry": "uv run python scripts/version_manager.py --dry-run",
     "test": "uv run python -m pytest . -v --ignore=refs && bun run --filter 'autofill-node*' test",
     "prepare": "lefthook install"
   },
