@@ -8,7 +8,6 @@ import re
 from pathlib import Path
 from typing import Any
 
-import httpx
 from src.configuration import get_config
 from src.llm.context import ContextManager
 from src.logging import get_logger
@@ -2053,21 +2052,10 @@ def _normalise_question(text: str) -> str:
 
 
 async def _embed_text(text: str) -> list[float] | None:
-    """Embed a single text via the configured local embedding server."""
-    cfg = get_config().embed
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
-            resp = await client.post(
-                f"{cfg.url}/embeddings",
-                json={"model": cfg.model, "input": [text[:2000]]},
-            )
-            resp.raise_for_status()
-            emb = resp.json()["data"][0]["embedding"]
-            if isinstance(emb, list) and len(emb) > 0:
-                return [float(v) for v in emb]
-    except Exception as e:
-        logger.warning("Embedding lookup failed", error=str(e))
-    return None
+    """Embed a single text via the configured embed provider."""
+    from src.llm.embed_client import embed_one
+
+    return await embed_one(text[:2000])
 
 
 class ScreenerRAG:
@@ -3962,7 +3950,8 @@ candidate has submitted; never copy phrasing verbatim across applications.
             data = json.loads(PERSONA_JSON.read_text())
         except OSError, json.JSONDecodeError:
             data = {"name": "", "version": 1, "answers": []}
-        data["version"] = int(data.get("version", 1)) + 1
+        raw_version = data.get("version", 1)
+        data["version"] = (int(raw_version) if isinstance(raw_version, (int, str)) else 1) + 1
         entry: dict[str, Any] = {
             "category": category,
             "question": question,
@@ -3970,7 +3959,11 @@ candidate has submitted; never copy phrasing verbatim across applications.
         }
         if country:
             entry["country"] = country
-        answers = data.setdefault("answers", [])
+        answers_raw = data.setdefault("answers", [])
+        answers: list[dict[str, Any]] = (
+            [e for e in answers_raw if isinstance(e, dict)] if isinstance(answers_raw, list) else []
+        )
+        data["answers"] = answers
         norm = _normalise_question(question)
         answers[:] = [
             e

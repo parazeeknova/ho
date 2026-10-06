@@ -248,7 +248,6 @@ def get_system_metrics() -> dict[str, str]:
 
 async def run_health_checks() -> str:
     checks = [
-        ("llama-server (Embed)", _check_http("http://localhost:8900/health")),
         ("SearXNG", _check_http("http://localhost:8080")),
         ("agent-memory-db (pgvector)", _check_port("localhost", 5433)),
         ("Neo4j Graph Store", _check_port("localhost", 7687)),
@@ -552,7 +551,9 @@ class DiscordAgent:
             # on a REST call that could hang and delay every first message.
             with contextlib.suppress(Exception):
                 if self.channel_id:
-                    self._channel = await client.fetch_channel(int(self.channel_id))  # type: ignore[assignment]
+                    channel = await client.fetch_channel(int(self.channel_id))
+                    if isinstance(channel, discord.abc.Messageable):
+                        self._channel = channel
             await self._sync_app_commands()
 
         async def on_message(message: discord.Message) -> None:
@@ -646,7 +647,9 @@ class DiscordAgent:
                 await asyncio.sleep(1)
             if self._client.is_ready() and self.channel_id:
                 with contextlib.suppress(Exception):
-                    self._channel = await self._client.fetch_channel(int(self.channel_id))  # type: ignore[assignment]
+                    channel = await self._client.fetch_channel(int(self.channel_id))
+                    if isinstance(channel, discord.abc.Messageable):
+                        self._channel = channel
         return self._channel
 
     # ── sending ────────────────────────────────────────────────────────
@@ -1321,7 +1324,11 @@ class DiscordAgent:
         deleted alongside plain messages so the channel returns to a clean slate
         (the user's "filled with mess" case).
         """  # type: ignore[union-attr]
-        if self.is_configured and message.channel.id != int(self.channel_id):  # type: ignore[union-attr,arg-type]
+        if (
+            self.is_configured
+            and self.channel_id is not None
+            and message.channel.id != int(self.channel_id)
+        ):
             return
         parts = (message.content or "").split()
         n = 25

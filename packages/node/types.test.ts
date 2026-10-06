@@ -7,22 +7,22 @@ describe("JobPayloadSchema", () => {
   it("accepts a payload with learned site knowledge", () => {
     const r = JobPayloadSchema.safeParse({
       jobId: "job-1",
-      url: "https://boards.greenhouse.io/neo4j/jobs/123",
       mode: "auto",
-      submitAllowed: true,
       profile: {
+        email: "harsh@example.com",
         firstName: "Harsh",
         lastName: "Sahu",
-        email: "harsh@example.com",
         phone: "+917000000000",
       },
       siteKnowledge: {
-        host: "boards.greenhouse.io",
+        flow: "wizard",
         form_signature: "greenhouse:boards.greenhouse.io",
+        host: "boards.greenhouse.io",
         platform: "greenhouse",
         selectors: { location: 'input[role="combobox"]' },
-        flow: "wizard",
       },
+      submitAllowed: true,
+      url: "https://boards.greenhouse.io/neo4j/jobs/123",
     });
     assert.equal(r.success, true, JSON.stringify(r.error));
     const data = r.success ? r.data : null;
@@ -33,10 +33,10 @@ describe("JobPayloadSchema", () => {
   it("defaults site knowledge to empty when absent", () => {
     const r = JobPayloadSchema.safeParse({
       jobId: "job-2",
-      url: "https://jobs.ashbyhq.com/replit/abc",
       mode: "auto",
+      profile: { email: "a@b.com", firstName: "A", lastName: "B", phone: "+1" },
       submitAllowed: true,
-      profile: { firstName: "A", lastName: "B", email: "a@b.com", phone: "+1" },
+      url: "https://jobs.ashbyhq.com/replit/abc",
     });
     assert.equal(r.success, true, JSON.stringify(r.error));
     assert.deepEqual(r.success ? r.data?.siteKnowledge : null, {});
@@ -47,17 +47,17 @@ describe("JobPayloadSchema URL normalization (user-input prevention)", () => {
   it("accepts scheme-less linkedin/github/website by prepending https://", () => {
     const r = JobPayloadSchema.safeParse({
       jobId: "job-3",
-      url: "https://jobs.lever.co/acme/1",
       mode: "auto",
       profile: {
-        firstName: "A",
-        lastName: "B",
         email: "a@b.com",
-        phone: "+1",
-        linkedin: "linkedin.com/in/foo",
+        firstName: "A",
         github: "github.com/bar",
+        lastName: "B",
+        linkedin: "linkedin.com/in/foo",
+        phone: "+1",
         website: "example.com",
       },
+      url: "https://jobs.lever.co/acme/1",
     });
     assert.equal(r.success, true, JSON.stringify(r.error));
     const d = r.success ? r.data : null;
@@ -69,34 +69,37 @@ describe("JobPayloadSchema URL normalization (user-input prevention)", () => {
   it("keeps already-absolute URLs untouched", () => {
     const r = JobPayloadSchema.safeParse({
       jobId: "job-4",
-      url: "https://boards.greenhouse.io/x/jobs/1",
       mode: "auto",
       profile: {
+        email: "a@b.com",
         firstName: "A",
         lastName: "B",
-        email: "a@b.com",
-        phone: "+1",
         linkedin: "https://linkedin.com/in/foo",
+        phone: "+1",
       },
+      url: "https://boards.greenhouse.io/x/jobs/1",
     });
     assert.equal(r.success, true, JSON.stringify(r.error));
-    assert.equal(r.success ? r.data?.profile.linkedin : null, "https://linkedin.com/in/foo");
+    assert.equal(
+      r.success ? r.data?.profile.linkedin : null,
+      "https://linkedin.com/in/foo"
+    );
   });
 
   it("accepts null/empty profile URLs without prepending", () => {
     const r = JobPayloadSchema.safeParse({
       jobId: "job-5",
-      url: "https://boards.greenhouse.io/x/jobs/1",
       mode: "auto",
       profile: {
-        firstName: "A",
-        lastName: "B",
         email: "a@b.com",
-        phone: "+1",
-        linkedin: null,
+        firstName: "A",
         github: "",
+        lastName: "B",
+        linkedin: null,
+        phone: "+1",
         website: "N/A",
       },
+      url: "https://boards.greenhouse.io/x/jobs/1",
     });
     assert.equal(r.success, true, JSON.stringify(r.error));
   });

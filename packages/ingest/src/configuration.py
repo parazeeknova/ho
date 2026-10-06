@@ -225,11 +225,11 @@ class RenderConfig:
 
 @dataclass
 class EmbedConfig:
-    """Embedding server settings."""
+    """Embedding provider settings (external API; no local server)."""
 
-    url: str = field(default_factory=lambda: _env_str("EMBED_URL", "http://127.0.0.1:8900/v1"))
-    model: str = field(default_factory=lambda: _env_str("EMBED_MODEL", "Qwen/Qwen3-Embedding-0.6B"))
-    timeout: float = field(default_factory=lambda: _env_float("EMBED_TIMEOUT", 4.0))
+    url: str = field(default_factory=lambda: _env_str("EMBED_URL", ""))
+    model: str = field(default_factory=lambda: _env_str("EMBED_MODEL", "gemini-embedding-001"))
+    timeout: float = field(default_factory=lambda: _env_float("EMBED_TIMEOUT", 30.0))
 
 
 @dataclass

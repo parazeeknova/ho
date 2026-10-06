@@ -32,7 +32,7 @@ for _p in (REPO, REPO / "packages" / "ingest", REPO / "packages"):
 load_dotenv()
 os.environ["LOG_LEVEL"] = "WARNING"  # quiet JSON log spam in setup scripts
 
-from src.configuration import get_config  # noqa: E402
+from src.llm.embed_client import embed_one  # noqa: E402
 from src.logging import get_logger  # noqa: E402
 from src.memory.pgvector_store import MemoryStore  # noqa: E402
 
@@ -126,11 +126,8 @@ async def resume_summary(store: MemoryStore) -> str:
     only surfaces chunks semantically close to that phrase (the heading and
     intro), silently dropping the specific project bullets the matcher needs.
     """
-    cfg = get_config().embed
     parts: list[str] = []
     seen: set[str] = set()
-    # Query per section so the retrieval covers all of them, not just the
-    # chunks closest to "resume summary".
     section_queries = {
         "header": "candidate contact information name",
         "skills": "candidate technical skills technologies",
@@ -140,14 +137,12 @@ async def resume_summary(store: MemoryStore) -> str:
         "education": "candidate education university degree",
         "achievements": "candidate achievements awards publications hackathons",
     }
-    async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0)) as client:
+    client = httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0))
+    try:
         for _sec, query in section_queries.items():
-            resp = await client.post(
-                f"{cfg.url}/embeddings",
-                json={"model": cfg.model, "input": [query]},
-            )
-            resp.raise_for_status()
-            emb = resp.json()["data"][0]["embedding"]
+            emb = await embed_one(query, task_type="RETRIEVAL_QUERY", timeout=120.0, client=client)
+            if emb is None:
+                continue
             # Pull the top chunks for this query across ALL sections and label
             # each by its own section. The old strict "rsec == sec" filter
             # dropped real content: e.g. hackathon/buildspace live under
@@ -174,34 +169,41 @@ async def resume_summary(store: MemoryStore) -> str:
                     parts.append(f"- Portfolio: {cleaned}")
                 else:
                     parts.append(f"- {cleaned}")
+    finally:
+        await client.aclose()
     return "\n".join(parts[:60])
 
 
 async def embed_chunks(
     chunks: list[dict[str, str]],
 ) -> list[dict[str, Any]]:
-    """Embed each chunk content via the local embedding server."""
-    cfg = get_config().embed
+    """Embed each chunk content via the configured embed provider."""
     records: list[dict[str, Any]] = []
-    async with httpx.AsyncClient(
+    client = httpx.AsyncClient(
         timeout=httpx.Timeout(120.0, connect=10.0),
         limits=httpx.Limits(max_keepalive_connections=2, max_connections=4),
-    ) as client:
+    )
+    try:
         for chunk in chunks:
-            resp = await client.post(
-                f"{cfg.url}/embeddings",
-                json={"model": cfg.model, "input": [chunk["content"]]},
+            vector = await embed_one(
+                chunk["content"],
+                task_type="RETRIEVAL_DOCUMENT",
+                timeout=120.0,
+                client=client,
             )
-            resp.raise_for_status()
+            if vector is None:
+                continue
             records.append(
                 {
                     "category": chunk["category"],
                     "question": chunk["question"],
                     "answer": chunk["answer"],
                     "content": chunk["content"],
-                    "embedding": resp.json()["data"][0]["embedding"],
+                    "embedding": vector,
                 }
             )
+    finally:
+        await client.aclose()
     return records
 
 

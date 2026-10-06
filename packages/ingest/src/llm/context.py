@@ -106,6 +106,7 @@ class ContextManager:
             }
             if schema is not None:
                 kwargs["response_format"] = {"type": "json_object"}
+            assert self._client is not None
             resp = self._client.chat.completions.create(**kwargs)
             msg = resp.choices[0].message
             return msg.content or ""

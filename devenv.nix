@@ -7,7 +7,6 @@
     pkgs.python314
     pkgs.stdenv.cc.cc.lib
     pkgs.zlib
-    # LaTeX compiler for the JD-tailored resume (resume.tex -> tailored PDF).
     pkgs.tectonic
   ];
 

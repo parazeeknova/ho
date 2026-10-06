@@ -13,15 +13,15 @@ import {
  * fill/type calls so tests can assert exactly how a value was committed.
  */
 function makeControls(initialValue: string) {
-  const calls: Array<{ op: string; value: string }> = [];
+  const calls: { op: string; value: string }[] = [];
   let value = initialValue;
   const locator = {
-    isVisible: async () => true,
-    inputValue: async () => value,
     fill: async (v: string) => {
       calls.push({ op: "fill", value: v });
       value = v;
     },
+    inputValue: async () => value,
+    isVisible: async () => true,
     type: async (v: string) => {
       calls.push({ op: "type", value: v });
       value = v;
@@ -30,7 +30,7 @@ function makeControls(initialValue: string) {
   const page = { locator: () => ({ first: () => locator }) };
   const stagehand = { context: { pages: () => [page] } };
   const controls = new FormControls(stagehand as any);
-  return { controls, calls, readValue: () => value };
+  return { calls, controls, readValue: () => value };
 }
 
 describe("fillField / fillLikeHuman (no-append typing)", () => {
@@ -46,7 +46,7 @@ describe("fillField / fillLikeHuman (no-append typing)", () => {
     // The wrong/partial value must be cleared first, then typed fresh.
     assert.deepEqual(
       calls.map((c) => `${c.op}:${c.value}`),
-      ["fill:", "type:Aman"],
+      ["fill:", "type:Aman"]
     );
     assert.equal(readValue(), "Aman");
   });
@@ -56,7 +56,7 @@ describe("fillField / fillLikeHuman (no-append typing)", () => {
     await controls.fillField("#email", "aman@example.com", "", "email");
     assert.deepEqual(
       calls.map((c) => `${c.op}:${c.value}`),
-      ["type:aman@example.com"],
+      ["type:aman@example.com"]
     );
     assert.equal(readValue(), "aman@example.com");
   });
@@ -67,7 +67,7 @@ describe("fillField / fillLikeHuman (no-append typing)", () => {
     await controls.fillField("#desc", long, "", "desc");
     assert.deepEqual(
       calls.map((c) => `${c.op}:${c.value.length}`),
-      ["fill:700"],
+      ["fill:700"]
     );
     assert.equal(readValue(), long);
   });
@@ -130,8 +130,10 @@ describe("cleanPlaceholderValue", () => {
 describe("firstUrl", () => {
   it("extracts the first URL from a comma-separated list", () => {
     assert.equal(
-      firstUrl("https://linkedin.com/in/me, https://github.com/me, https://me.dev"),
-      "https://linkedin.com/in/me",
+      firstUrl(
+        "https://linkedin.com/in/me, https://github.com/me, https://me.dev"
+      ),
+      "https://linkedin.com/in/me"
     );
   });
 
@@ -140,7 +142,10 @@ describe("firstUrl", () => {
   });
 
   it("strips trailing sentence punctuation from a URL", () => {
-    assert.equal(firstUrl("See https://github.com/me."), "https://github.com/me");
+    assert.equal(
+      firstUrl("See https://github.com/me."),
+      "https://github.com/me"
+    );
   });
 
   it("returns null when there is no URL", () => {

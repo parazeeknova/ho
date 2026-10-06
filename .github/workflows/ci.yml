@@ -1,0 +1,16 @@
+# PR gate: every PR into main must pass the shared checks before it can merge
+# (mark `checks / lint`, `checks / format`, `checks / typecheck` and
+# `checks / test` as required in the main branch protection rules).
+name: ci
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.head_ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    uses: ./.github/workflows/checks.yml

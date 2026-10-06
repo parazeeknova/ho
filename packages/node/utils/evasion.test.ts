@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { humanTypingEnabled, humanTypingMaxLength, typingDelayMs } from "./evasion";
+import {
+  humanTypingEnabled,
+  humanTypingMaxLength,
+  typingDelayMs,
+} from "./evasion";
 
 describe("human typing knobs", () => {
   it("is enabled by default and disabled by AUTOFILL_TYPING=0", () => {
@@ -12,8 +16,11 @@ describe("human typing knobs", () => {
     assert.equal(humanTypingEnabled(), false);
     process.env.AUTOFILL_TYPING = "1";
     assert.equal(humanTypingEnabled(), true);
-    if (prev === undefined) delete process.env.AUTOFILL_TYPING;
-    else process.env.AUTOFILL_TYPING = prev;
+    if (prev === undefined) {
+      delete process.env.AUTOFILL_TYPING;
+    } else {
+      process.env.AUTOFILL_TYPING = prev;
+    }
   });
 
   it("caps typing length with a sane default and honors the env override", () => {
@@ -24,8 +31,11 @@ describe("human typing knobs", () => {
     assert.equal(humanTypingMaxLength(), 80);
     process.env.AUTOFILL_TYPING_MAX = "junk";
     assert.equal(humanTypingMaxLength(), 600);
-    if (prev === undefined) delete process.env.AUTOFILL_TYPING_MAX;
-    else process.env.AUTOFILL_TYPING_MAX = prev;
+    if (prev === undefined) {
+      delete process.env.AUTOFILL_TYPING_MAX;
+    } else {
+      process.env.AUTOFILL_TYPING_MAX = prev;
+    }
   });
 
   it("yields a positive per-keystroke delay", () => {

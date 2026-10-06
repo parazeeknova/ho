@@ -24,7 +24,6 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import httpx  # noqa: E402
 import ux  # noqa: E402
 from dotenv import load_dotenv  # noqa: E402
 
@@ -35,18 +34,6 @@ from src.memory.pgvector_store import MemoryStore  # noqa: E402
 from src.rag.loader import index_resume_in_pgvector, load_resume  # noqa: E402
 
 logger = get_logger("index_resume")
-
-
-async def embed_server_ready() -> bool:
-    from src.configuration import get_config
-
-    base = get_config().embed.url.rsplit("/v1", 1)[0]
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=2.0)) as client:
-            resp = await client.get(f"{base}/health")
-            return resp.status_code == 200
-    except Exception:
-        return False
 
 
 async def main() -> None:
@@ -85,14 +72,6 @@ async def main() -> None:
     if args.dry_run:
         ux.chip("info", "Dry run: not writing to the database.")
         return
-
-    if not await embed_server_ready():
-        ux.chip(
-            "err",
-            "Embedding server not reachable. "
-            "Start it with `uv run python scripts/serve.py` (needs llama-server installed).",
-        )
-        sys.exit(1)
 
     ux.divider()
     store = await MemoryStore.create()

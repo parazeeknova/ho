@@ -1,7 +1,8 @@
 import { randomSleep } from "../../utils/evasion.js";
 import { normalizeOptionText, escapePromptValue } from "./matching.js";
-import { type FormField, PRE_FILLED_LABELS, fieldKey, isCoverLetterField } from "./model.js";
-import { type BlankEntry } from "./screener.js";
+import { PRE_FILLED_LABELS, fieldKey, isCoverLetterField } from "./model.js";
+import type { FormField } from "./model.js";
+import type { BlankEntry } from "./screener.js";
 
 /**
  * Adaptive-form audit machinery shared by all adapters. The key insight that
@@ -17,7 +18,7 @@ import { type BlankEntry } from "./screener.js";
  */
 export function blankReason(
   label: string,
-  reasons: ReadonlyArray<BlankEntry> | undefined,
+  reasons: readonly BlankEntry[] | undefined
 ): string | undefined {
   const key = normalizeOptionText(label);
   return reasons?.find((b) => normalizeOptionText(b.label) === key)?.reason;
@@ -29,19 +30,25 @@ export function blankReason(
  * resolver left no reason. This is pure computation; callers own the logging.
  * Returns the required-blank report.
  */
-export async function auditBlanks<T extends { label: string; required: boolean }>(params: {
+export async function auditBlanks<
+  T extends { label: string; required: boolean },
+>(params: {
   fields: T[];
   readValue: (field: T) => Promise<string>;
   transcript: BlankEntry[];
 }): Promise<BlankEntry[]> {
-  const transcript = params.transcript;
+  const { transcript } = params;
   const required: BlankEntry[] = [];
   for (const field of params.fields) {
     // Cover-letter prompts are handled by the adapter's dedicated path (PDF
     // upload with text fallback), which runs after the walk — never count a
     // still-empty cover-letter textarea as a required blank here.
-    if (isCoverLetterField(field)) continue;
-    if (await params.readValue(field)) continue;
+    if (isCoverLetterField(field)) {
+      continue;
+    }
+    if (await params.readValue(field)) {
+      continue;
+    }
     const reason = blankReason(field.label, transcript);
     if (field.required) {
       required.push({
@@ -51,7 +58,10 @@ export async function auditBlanks<T extends { label: string; required: boolean }
       continue;
     }
     if (!reason) {
-      transcript.push({ label: field.label, reason: "blank after walk (no answer committed)" });
+      transcript.push({
+        label: field.label,
+        reason: "blank after walk (no answer committed)",
+      });
     }
   }
   return required;
@@ -69,16 +79,24 @@ export async function finalReverify(params: {
   collect: () => Promise<FormField[]>;
   isEmpty: (field: FormField) => Promise<boolean>;
   skippedKeys?: ReadonlySet<string>;
-  reasons?: ReadonlyArray<BlankEntry>;
+  reasons?: readonly BlankEntry[];
 }): Promise<BlankEntry[]> {
   const { tag } = params;
   const fields = await params.collect();
   const stillBlank: BlankEntry[] = [];
   for (const field of fields) {
-    if (PRE_FILLED_LABELS.has(normalizeOptionText(field.label))) continue;
-    if (isCoverLetterField(field)) continue; // dedicated cover-letter path owns it
-    if (params.skippedKeys?.has(fieldKey(field))) continue;
-    if (!(await params.isEmpty(field))) continue;
+    if (PRE_FILLED_LABELS.has(normalizeOptionText(field.label))) {
+      continue;
+    }
+    if (isCoverLetterField(field)) {
+      continue;
+    } // dedicated cover-letter path owns it
+    if (params.skippedKeys?.has(fieldKey(field))) {
+      continue;
+    }
+    if (!(await params.isEmpty(field))) {
+      continue;
+    }
     stillBlank.push({
       label: field.label,
       reason:
@@ -88,19 +106,23 @@ export async function finalReverify(params: {
   }
   if (stillBlank.length > 0) {
     console.warn(
-      `[${tag}] REVERIFY: ${stillBlank.length} field(s) still unfilled after completion:`,
+      `[${tag}] REVERIFY: ${stillBlank.length} field(s) still unfilled after completion:`
     );
     for (const sb of stillBlank) {
-      console.warn(`[${tag}]   unfilled: ${escapeLog(sb.label)} (${sb.reason})`);
+      console.warn(
+        `[${tag}]   unfilled: ${escapeLog(sb.label)} (${sb.reason})`
+      );
     }
   } else {
-    console.log(`[${tag}] REVERIFY: every field is filled (only manual skips excluded).`);
+    console.log(
+      `[${tag}] REVERIFY: every field is filled (only manual skips excluded).`
+    );
   }
   return stillBlank;
 }
 
 function escapeLog(val: string): string {
-  return val.replace(/"/g, '\\"');
+  return val.replaceAll('"', '\\"');
 }
 
 /**
@@ -124,7 +146,7 @@ function escapeLog(val: string): string {
  */
 export function trackSubmitResponse(
   page: any,
-  matcher: (url: string) => boolean,
+  matcher: (url: string) => boolean
 ): {
   get: () => { ok: boolean; status?: number } | undefined;
   detach: () => void;
@@ -136,14 +158,16 @@ export function trackSubmitResponse(
     try {
       const resp = params?.response ?? {};
       const u = String(resp?.url ?? "");
-      if (!u || !matcher(u)) return;
+      if (!u || !matcher(u)) {
+        return;
+      }
       const status = typeof resp?.status === "number" ? resp.status : undefined;
       // status >= 400 is a failure; anything else that returned is ok.
       const ok = typeof status === "number" ? status < 400 : false;
       last = { ok, status };
       console.log(
         `[audit] Submit response: ${status ?? "?"} ${u.slice(0, 120)}` +
-          ` (${ok ? "ok" : "FAILED"})`,
+          ` (${ok ? "ok" : "FAILED"})`
       );
     } catch {
       // Ignore responses we can't read.
@@ -151,7 +175,11 @@ export function trackSubmitResponse(
   };
 
   let attached = false;
-  if (session && typeof session.on === "function" && typeof session.send === "function") {
+  if (
+    session &&
+    typeof session.on === "function" &&
+    typeof session.send === "function"
+  ) {
     try {
       session.on("Network.responseReceived", onResponse);
       attached = true;
@@ -163,11 +191,12 @@ export function trackSubmitResponse(
     }
   }
   if (!attached) {
-    console.warn("[audit] No CDP session available for submit-response tracking.");
+    console.warn(
+      "[audit] No CDP session available for submit-response tracking."
+    );
   }
 
   return {
-    get: () => last,
     detach: () => {
       if (attached && session && typeof session.off === "function") {
         try {
@@ -177,6 +206,7 @@ export function trackSubmitResponse(
         }
       }
     },
+    get: () => last,
   };
 }
 
@@ -188,7 +218,9 @@ export function trackSubmitResponse(
  */
 export function isSubmitUrl(url: string, origin: string): boolean {
   const u = String(url ?? "");
-  if (!u) return false;
+  if (!u) {
+    return false;
+  }
   let uo: URL;
   try {
     uo = new URL(u);
@@ -202,7 +234,7 @@ export function isSubmitUrl(url: string, origin: string): boolean {
   const host = uo.hostname.toLowerCase();
   if (
     /(telemetry|analytics|collector|events|metrics|sentry|mixpanel|amplitude|segment|hotjar|fullstory|clarity|msedge|browser\.events)/.test(
-      host,
+      host
     )
   ) {
     return false;
@@ -210,12 +242,14 @@ export function isSubmitUrl(url: string, origin: string): boolean {
   const path = uo.pathname.toLowerCase();
   if (
     uo.origin === origin &&
-    /applications?|submission|apply|submit|candidate|job_application|create_application/.test(path)
+    /applications?|submission|apply|submit|candidate|job_application|create_application/.test(
+      path
+    )
   ) {
     return true;
   }
   return /candidate-submissions|job_application|create_application|applications?(\/|$|\?)/.test(
-    path,
+    path
   );
 }
 
@@ -241,7 +275,8 @@ export interface SubmitOutcome {
 }
 
 /** Success-URL tokens shared across ATS confirmation pages. */
-const SUCCESS_URL_RE = /thanks|submitted|confirmation|success|applied|complete|received/i;
+const SUCCESS_URL_RE =
+  /thanks|submitted|confirmation|success|applied|complete|received/i;
 
 /** Inline success phrases. Only trusted as confirmation when the form has
  *  structurally left the submission state (submit button gone) — see
@@ -278,8 +313,10 @@ export async function verifySubmitOutcome(
      *  before declaring the submission confirmed. When provided, `confirmed`
      *  is only true if BOTH a 2xx submit response AND the page-level success
      *  signal (redirect / success text) are observed. */
-    submitResponse?: () => Promise<{ ok: boolean; status?: number } | undefined>;
-  },
+    submitResponse?: () => Promise<
+      { ok: boolean; status?: number } | undefined
+    >;
+  }
 ): Promise<SubmitOutcome> {
   const { tag } = opts;
   const urlRe = opts.successUrlRe ?? SUCCESS_URL_RE;
@@ -296,10 +333,12 @@ export async function verifySubmitOutcome(
       // itself succeeded (2xx). If we cannot observe the response (no hook),
       // the redirect alone stands (backwards compatible).
       if (opts.submitResponse) {
-        const resp = await opts.submitResponse().catch(() => undefined);
-        if (resp && resp.status >= 400) {
+        const resp = await opts.submitResponse().catch(() => {});
+        if (resp && resp.status !== undefined && resp.status >= 400) {
           const code = resp.status;
-          console.error(`[${tag}] Success URL reached but submit response returned error (${code}).`);
+          console.error(
+            `[${tag}] Success URL reached but submit response returned error (${code}).`
+          );
           return {
             confirmed: false,
             error: `submit response error (${code}) despite success-page redirect`,
@@ -307,7 +346,9 @@ export async function verifySubmitOutcome(
           };
         }
       }
-      console.log(`[${tag}] Submitted: success-page redirect confirmed (${url}).`);
+      console.log(
+        `[${tag}] Submitted: success-page redirect confirmed (${url}).`
+      );
       return { confirmed: true, retryable: false };
     }
 
@@ -316,15 +357,27 @@ export async function verifySubmitOutcome(
       const err = await page
         .locator(sel)
         .first()
-        .innerText()
+        .textContent()
         .catch(() => "");
       const clean = (err || "").trim();
       // Ignore benign upload-size errors that are really an upload hint, not a
       // submission blocker.
-      if (clean && !/exceeds? the maximum upload size|too large|100MB/i.test(clean)) {
-        console.error(`[${tag}] Submit error banner: ${escapePromptValue(clean)}`);
-        const isCooldown = /90 days|already applied|applied recently|applied within|cooldown|application limit|previously applied/i.test(clean);
-        return { confirmed: false, error: isCooldown ? `cooldown: ${clean}` : clean, retryable: !isCooldown };
+      if (
+        clean &&
+        !/exceeds? the maximum upload size|too large|100MB/i.test(clean)
+      ) {
+        console.error(
+          `[${tag}] Submit error banner: ${escapePromptValue(clean)}`
+        );
+        const isCooldown =
+          /90 days|already applied|applied recently|applied within|cooldown|application limit|previously applied/i.test(
+            clean
+          );
+        return {
+          confirmed: false,
+          error: isCooldown ? `cooldown: ${clean}` : clean,
+          retryable: !isCooldown,
+        };
       }
     }
 
@@ -341,10 +394,12 @@ export async function verifySubmitOutcome(
       // Gated on i >= 1 so a slow re-render right after the click isn't misread.
       if (!stillVisible && i >= 1) {
         const bodyText = await page
-          .evaluate(() => document.body?.innerText?.slice(0, 4000) ?? "")
+          .evaluate(() => document.body?.textContent?.slice(0, 4000) ?? "")
           .catch(() => "");
         if (CONFIRM_TEXT_RE.test(bodyText)) {
-          console.log(`[${tag}] Submitted: form gone + inline confirmation text detected.`);
+          console.log(
+            `[${tag}] Submitted: form gone + inline confirmation text detected.`
+          );
           return { confirmed: true, retryable: false };
         }
       }
@@ -356,18 +411,21 @@ export async function verifySubmitOutcome(
         // the button being visible again is not a failure). Only call it a
         // retryable failure when we have NO 2xx POST.
         const resp = opts.submitResponse
-          ? await opts.submitResponse().catch(() => undefined)
+          ? await opts.submitResponse().catch(() => {})
           : undefined;
         if (resp && resp.ok) {
           console.log(
-            `[${tag}] Submitted: submit POST 2xx + re-rendered form (SPA) — treated as confirmed.`,
+            `[${tag}] Submitted: submit POST 2xx + re-rendered form (SPA) — treated as confirmed.`
           );
           return { confirmed: true, retryable: false };
         }
-        console.warn(`[${tag}] Submit button still visible after click; validation likely failed.`);
+        console.warn(
+          `[${tag}] Submit button still visible after click; validation likely failed.`
+        );
         return {
           confirmed: false,
-          error: "submit button still visible after submit (validation blocked it)",
+          error:
+            "submit button still visible after submit (validation blocked it)",
           retryable: true,
         };
       }
@@ -380,10 +438,10 @@ export async function verifySubmitOutcome(
   // only swap content). A captured 2xx submit response IS the confirmation —
   // do not mark a successful submission as failed.
   if (opts.submitResponse) {
-    const resp = await opts.submitResponse().catch(() => undefined);
+    const resp = await opts.submitResponse().catch(() => {});
     if (resp && resp.ok) {
       console.log(
-        `[${tag}] Submitted: submit POST returned ${resp.status} (no page change; treated as confirmed).`,
+        `[${tag}] Submitted: submit POST returned ${resp.status} (no page change; treated as confirmed).`
       );
       return { confirmed: true, retryable: false };
     }
@@ -392,11 +450,10 @@ export async function verifySubmitOutcome(
   const lastUrl = page.url();
   // Keep the error diagnostic short (and avoid dumping the applicant's own
   // form answers — name/email/work history — into the persisted job error).
-  const bodySnip = (
-    await page.evaluate(() => document.body?.innerText?.slice(0, 120) ?? "").catch(() => "")
-  )
-    .replace(/\s+/g, " ")
-    .trim();
+  const bodyText = await page
+    .evaluate(() => document.body?.textContent?.slice(0, 120) ?? "")
+    .catch(() => "");
+  const bodySnip = bodyText.replaceAll(/\s+/g, " ").trim();
   return {
     confirmed: false,
     error: `no success-page redirect or error outcome detected after clicking submit (final url: ${lastUrl}; body: ${escapePromptValue(bodySnip)})`,

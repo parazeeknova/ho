@@ -58,9 +58,13 @@ export interface JsonFieldSource {
 export type CheckboxAction = "accept" | "leave" | "ask";
 
 export function checkboxAction(field: FormField): CheckboxAction {
-  if (field.kind !== "checkbox") return "ask";
+  if (field.kind !== "checkbox") {
+    return "ask";
+  }
   const single = field.optionTargets.length <= 1;
-  if (!single) return "ask"; // multi-option = real multi-select question
+  if (!single) {
+    return "ask";
+  } // multi-option = real multi-select question
   return field.required ? "accept" : "leave";
 }
 
@@ -73,20 +77,34 @@ export function checkboxAction(field: FormField): CheckboxAction {
  * and must be answered by selecting, never by typing.
  */
 export function isLocationAutocomplete(field: FormField): boolean {
-  if (field.kind === "radio" || field.kind === "checkbox") return false;
-  if (field.kind !== "select" && field.kind !== "multi") return false;
-  if (field.options.length > 0) return false; // static pick-list
-  if (field.optionTargets.length > 0) return false;
+  if (field.kind === "radio" || field.kind === "checkbox") {
+    return false;
+  }
+  if (field.kind !== "select" && field.kind !== "multi") {
+    return false;
+  }
+  if (field.options.length > 0) {
+    return false;
+  } // static pick-list
+  if (field.optionTargets.length > 0) {
+    return false;
+  }
   const label = normalizeOptionText(field.label);
   const isLocationSubject =
     /\bcurrent location\b/.test(label) ||
     /\bcandidate location\b/.test(label) ||
     /\b(?:city|location)\b/.test(label);
-  if (!isLocationSubject) return false;
+  if (!isLocationSubject) {
+    return false;
+  }
   // A willingness/relocation question ("…willing to relocate to the job's
   // location?", "Are you currently living in…") is NOT a city autocomplete —
   // it is a yes/no pick-list.
-  if (/relocat|willing|are you currently|are you open|job's location|job’s location/.test(label)) {
+  if (
+    /relocat|willing|are you currently|are you open|job's location|job’s location/.test(
+      label
+    )
+  ) {
     return false;
   }
   return true;
@@ -106,7 +124,7 @@ export function fieldKey(f: FormField): string {
  */
 export function unprocessedFields(
   fields: FormField[],
-  processedKeys: ReadonlySet<string>,
+  processedKeys: ReadonlySet<string>
 ): FormField[] {
   return fields.filter((f) => !processedKeys.has(fieldKey(f)));
 }
@@ -123,13 +141,15 @@ export function unprocessedFields(
  */
 export function mergeFormInventory(
   jsonFields: JsonFieldSource[] | null,
-  domFields: FormField[],
+  domFields: FormField[]
 ): FormField[] {
   const out: FormField[] = [];
   const seen = new Set<string>();
   const add = (f: FormField) => {
     const key = `${normalizeOptionText(f.label)}|${f.kind}`;
-    if (seen.has(key)) return;
+    if (seen.has(key)) {
+      return;
+    }
     seen.add(key);
     out.push(f);
   };
@@ -137,21 +157,26 @@ export function mergeFormInventory(
   const jsonByName = new Map<string, JsonFieldSource>();
   const jsonByLabel = new Map<string, JsonFieldSource>();
   for (const jf of jsonFields ?? []) {
-    if (jf.kind === "input_file") continue; // uploads handled by dedicated paths
-    if (/^resume(_text)?$|^cover_letter(_text)?$/.test(jf.name)) continue;
+    if (jf.kind === "input_file") {
+      continue;
+    } // uploads handled by dedicated paths
+    if (/^resume(_text)?$|^cover_letter(_text)?$/.test(jf.name)) {
+      continue;
+    }
     jsonByName.set(jf.name, jf);
     jsonByLabel.set(normalizeLabel(jf.label), jf);
   }
 
   for (const df of domFields) {
     const jf =
-      (df.name ? jsonByName.get(df.name) : undefined) || jsonByLabel.get(normalizeLabel(df.label));
+      (df.name ? jsonByName.get(df.name) : undefined) ||
+      jsonByLabel.get(normalizeLabel(df.label));
     if (jf) {
       add({
         ...df,
-        required: df.required || jf.required,
-        options: jf.options.length ? jf.options : df.options,
         name: jf.name,
+        options: jf.options.length ? jf.options : df.options,
+        required: df.required || jf.required,
       });
     } else {
       add(df);
@@ -166,58 +191,63 @@ function normalizeLabel(label: string): string {
 
 /** Deterministic profile-driven fills keyed by normalized question label. */
 export const PROFILE_FILLS: Record<string, keyof Profile> = {
-  "preferred first name": "preferredName",
-  linkedin: "linkedin",
-  "linkedin profile": "linkedin",
-  "linkedin url": "linkedin",
   github: "github",
   "github profile": "github",
   "github url": "github",
-  website: "website",
+  linkedin: "linkedin",
+  "linkedin profile": "linkedin",
+  "linkedin url": "linkedin",
   portfolio: "website",
   "portfolio url": "website",
+  "preferred first name": "preferredName",
+  website: "website",
   "your website": "website",
 };
 
 /** Identity fields filled deterministically from the profile (never asked). */
 export const IDENTITY_FILLS: Record<string, keyof Profile> = {
+  "cell phone": "phone",
+  "contact number": "phone",
+  "e-mail address": "email",
+  email: "email",
+  "email address": "email",
+  "email address (username)": "email",
+  "email id": "email",
+  "family name": "lastName",
+  "family name(s)": "lastName",
+  "family names": "lastName",
   "first name": "firstName",
-  "legal first name": "firstName",
   firstname: "firstName",
   "given name": "firstName",
   "given name(s)": "firstName",
   "given names": "firstName",
   "last name": "lastName",
-  "legal last name": "lastName",
   lastname: "lastName",
-  surname: "lastName",
-  "family name": "lastName",
-  "family name(s)": "lastName",
-  "family names": "lastName",
+  "legal first name": "firstName",
+  "legal last name": "lastName",
   "legal name": "lastName",
-  "local given name(s)": "firstName",
-  "local given name": "firstName",
-  "local family name(s)": "lastName",
   "local family name": "lastName",
-  email: "email",
-  "email address": "email",
-  "email address (username)": "email",
-  "e-mail address": "email",
-  "email id": "email",
-  "your email": "email",
-  "what is your email address?": "email",
-  phone: "phone",
-  "phone number": "phone",
+  "local family name(s)": "lastName",
+  "local given name": "firstName",
+  "local given name(s)": "firstName",
   "mobile phone": "phone",
   "mobile phone number": "phone",
-  "cell phone": "phone",
-  "contact number": "phone",
-  "primary phone number": "phone",
+  phone: "phone",
   "phone (e.g. +91 99999 99999)": "phone",
+  "phone number": "phone",
+  "primary phone number": "phone",
+  surname: "lastName",
+  "what is your email address?": "email",
+  "your email": "email",
 };
 
 /** Questions answered by the fixed deterministic identity fills before the walk. */
-export const PRE_FILLED_LABELS = new Set(["first name", "last name", "email", "phone"]);
+export const PRE_FILLED_LABELS = new Set([
+  "first name",
+  "last name",
+  "email",
+  "phone",
+]);
 
 /**
  * True when a field is driven deterministically from the profile (identity /
@@ -237,9 +267,17 @@ export function isProfileDrivenField(f: FormField): boolean {
  * must never resolve these via "answer_question", which would both burn a
  * second LLM generation and pre-fill the textarea before the PDF path runs.
  */
-export function isCoverLetterField(f: { label: string; kind?: string }): boolean {
+export function isCoverLetterField(f: {
+  label: string;
+  kind?: string;
+}): boolean {
   const kind = f.kind ?? "text";
-  if (kind === "select" || kind === "multi" || kind === "radio" || kind === "checkbox") {
+  if (
+    kind === "select" ||
+    kind === "multi" ||
+    kind === "radio" ||
+    kind === "checkbox"
+  ) {
     return false;
   }
   const label = normalizeBlankLabel(f.label);
@@ -253,10 +291,12 @@ export function isCoverLetterField(f: { label: string; kind?: string }): boolean
   }
   return (
     /cover letter|cover_letter/.test(label) ||
-    /anything else you|more about you|tell us about yourself|anything you would like/.test(label)
+    /anything else you|more about you|tell us about yourself|anything you would like/.test(
+      label
+    )
   );
 }
 
 function normalizeBlankLabel(label: string): string {
-  return (label || "").replace(/\s+/g, " ").trim().toLowerCase();
+  return (label || "").replaceAll(/\s+/g, " ").trim().toLowerCase();
 }

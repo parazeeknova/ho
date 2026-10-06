@@ -4,7 +4,7 @@ The LLM metadata extraction (company_description, role_summary, location, salary
 now lives exclusively in node_matcher. This agent ONLY handles vector rescoring.
 
 Embeddings are cached by content hash in ``embed_cache`` so identical JD text
-is never re-sent to the (shared) llama-server across sweeps.
+is never re-sent to the embedding provider across sweeps.
 """  # noqa: E501
 
 from __future__ import annotations
@@ -15,24 +15,20 @@ import hashlib
 from typing import TYPE_CHECKING, Any
 
 from src.configuration import get_config
-from src.http_client import get_client
-from src.logging import get_logger
 
 if TYPE_CHECKING:
     from src.memory.pgvector_store import MemoryStore
-
-logger = get_logger("enrichment_agent")
 
 EMBED_TEXT_CAP = 2000
 
 
 def _embed_text_hash(text: str) -> str:
-    """Content hash for the exact text sent to the embed server."""
+    """Content hash for the exact text sent to the embedding provider."""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 async def _get_embedding(text: str, store: MemoryStore | None = None) -> list[float] | None:
-    """Fetch text embedding from local llama-server. Returns None on failure.
+    """Fetch text embedding from the configured embed provider. Returns None on failure.
 
     When *store* is given, embeddings are cached by content hash so identical
     text is fetched once and replayed from Postgres afterwards.
@@ -45,29 +41,16 @@ async def _get_embedding(text: str, store: MemoryStore | None = None) -> list[fl
         cached = await store.get_cached_embedding(text_hash)
         if cached is not None:
             return cached
-    cfg = get_config().embed
-    try:
-        client = await get_client("enrichment_agent", timeout=cfg.timeout)
-        resp = await client.post(
-            f"{cfg.url}/embeddings",
-            json={"input": text},
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            emb = data.get("data", [{}])[0].get("embedding", [])
-            if isinstance(emb, list) and len(emb) > 0:
-                embedding = [float(v) for v in emb]
-                if store is not None:
-                    with contextlib.suppress(Exception):
-                        # cache is best-effort; never break embedding
-                        await store.put_cached_embedding(text_hash, embedding)
-                return embedding
-    except Exception as e:
-        logger.error(
-            "Embedding fetch failed, returning None",
-            exception=str(e),
-        )
-    return None
+    from src.llm.embed_client import embed_one
+
+    embedding = await embed_one(text, timeout=get_config().embed.timeout)
+    if embedding is None:
+        return None
+    if store is not None:
+        with contextlib.suppress(Exception):
+            # cache is best-effort; never break embedding
+            await store.put_cached_embedding(text_hash, embedding)
+    return embedding
 
 
 class EnrichmentAgent:

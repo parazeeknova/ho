@@ -281,7 +281,7 @@ async def test_status_includes_last_error() -> None:
 @pytest.mark.asyncio
 async def test_health_reports_services(monkeypatch) -> None:
     async def fake_health() -> str:
-        return "**System Health Check**\n\n✅ llama-server (Embed)\n✅ agent-memory-db (pgvector)"
+        return "**System Health Check**\n\n✅ agent-memory-db (pgvector)"
 
     from src.agent import discord_agent
 
@@ -513,12 +513,27 @@ async def test_memory_wizard_failure_reported_in_thread() -> None:
 
 
 @pytest.mark.asyncio
+class _DmChannel(FakeChannel):
+    """DM channels cannot host threads. FakeChannel models a server channel
+    (it has create_thread), so DM behavior needs the attribute absent."""
+
+    create_thread = None  # type: ignore[assignment]
+
+
 async def test_memory_requires_server_channel() -> None:
     agent = make_agent()
-    # DM channel: FakeChannel has no create_thread
-    msg = FakeMessage(content="/memory", channel=FakeChannel(id=1))
+    msg = FakeMessage(content="/memory", channel=_DmChannel(id=1))
     await agent._handle_memory(msg)
-    assert any("server text channel" in (c or "") for c, _ in msg.channel.sent)
+    # _reply sends embed-only payloads, so collect the embed descriptions too
+    # (same approach as the sent_text helper below).
+    texts = []
+    for c, kw in msg.channel.sent:
+        if c:
+            texts.append(c)
+        embed = kw.get("embed")
+        if embed is not None:
+            texts.append(str(getattr(embed, "description", "") or ""))
+    assert any("server text channel" in t for t in texts)
 
 
 # ── memory answer routing ──────────────────────────────────────────────

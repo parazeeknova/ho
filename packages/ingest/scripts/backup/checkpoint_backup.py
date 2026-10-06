@@ -9,7 +9,7 @@ a raw-copy fallback via ``cp -a`` of the volume's ``_data`` directory.
 
 Run:
     uv run python scripts/backup/checkpoint_backup.py            # all ho volumes
-    uv run python scripts/backup/checkpoint_backup.py --vol firecrawl_agent_memory_data
+    uv run python scripts/backup/checkpoint_backup.py --vol ho_agent_memory_data
 """
 
 from __future__ import annotations
@@ -26,9 +26,9 @@ CHECKPOINT_DIR = PROJECT / "checkpoints"
 
 # Default ho-stack named volumes.
 HO_VOLUMES = [
-    "firecrawl_agent_memory_data",
-    "firecrawl_neo4j_data",
-    "firecrawl_neo4j_logs",
+    "ho_agent_memory_data",
+    "ho_neo4j_data",
+    "ho_neo4j_logs",
 ]
 
 

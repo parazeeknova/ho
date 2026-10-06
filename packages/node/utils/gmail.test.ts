@@ -1,23 +1,42 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { extractCodeFromEmail, extractVerificationCode, gmailConfigured } from "./gmail.js";
+import {
+  extractCodeFromEmail,
+  extractVerificationCode,
+  gmailConfigured,
+} from "./gmail.js";
 
 describe("extractVerificationCode", () => {
   it("extracts a keyword-anchored 6-digit code", () => {
-    assert.equal(extractVerificationCode("Your verification code is 482913."), "482913");
+    assert.equal(
+      extractVerificationCode("Your verification code is 482913."),
+      "482913"
+    );
     assert.equal(extractVerificationCode("Security code: 482913"), "482913");
-    assert.equal(extractVerificationCode("Enter the code 482913 below"), "482913");
-    assert.equal(extractVerificationCode("Your one-time pin is 482913"), "482913");
+    assert.equal(
+      extractVerificationCode("Enter the code 482913 below"),
+      "482913"
+    );
+    assert.equal(
+      extractVerificationCode("Your one-time pin is 482913"),
+      "482913"
+    );
   });
 
   it("extracts a code in the '482913 is your code' phrasing", () => {
     assert.equal(extractVerificationCode("482913 is your code"), "482913");
-    assert.equal(extractVerificationCode("482913 is your verification code."), "482913");
+    assert.equal(
+      extractVerificationCode("482913 is your verification code."),
+      "482913"
+    );
   });
 
   it("falls back to any standalone 6-digit number", () => {
-    assert.equal(extractVerificationCode("Here is the number: 123456"), "123456");
+    assert.equal(
+      extractVerificationCode("Here is the number: 123456"),
+      "123456"
+    );
   });
 
   it("prefers the code anchored to a keyword over other 6-digit numbers", () => {
@@ -26,7 +45,10 @@ describe("extractVerificationCode", () => {
   });
 
   it("returns null when no 6-digit number exists", () => {
-    assert.equal(extractVerificationCode("No code here, just 123 and 4567."), null);
+    assert.equal(
+      extractVerificationCode("No code here, just 123 and 4567."),
+      null
+    );
     assert.equal(extractVerificationCode(""), null);
     assert.equal(extractVerificationCode("   "), null);
   });
@@ -36,7 +58,10 @@ describe("extractVerificationCode", () => {
   });
 
   it("normalizes whitespace across the body", () => {
-    assert.equal(extractVerificationCode("Your\nverification\ncode\nis\n482913"), "482913");
+    assert.equal(
+      extractVerificationCode("Your\nverification\ncode\nis\n482913"),
+      "482913"
+    );
   });
 
   it("extracts the modern alphanumeric code shape (greenhouse-mail.io)", () => {
@@ -62,7 +87,8 @@ describe("extractVerificationCode", () => {
   });
 
   it("does not mistake words or bare numbers for alphanumeric codes", () => {
-    const text = "Security code field on your application:  application  After you enter the code";
+    const text =
+      "Security code field on your application:  application  After you enter the code";
     assert.equal(extractVerificationCode(text), null);
   });
 
@@ -171,10 +197,16 @@ describe("gmailConfigured", () => {
       process.env.GMAIL_APP_PASSWORD = "abcd efgh ijkl mnop";
       assert.equal(gmailConfigured(), true);
     } finally {
-      if (prevEmail === undefined) delete process.env.GMAIL_EMAIL;
-      else process.env.GMAIL_EMAIL = prevEmail;
-      if (prevPass === undefined) delete process.env.GMAIL_APP_PASSWORD;
-      else process.env.GMAIL_APP_PASSWORD = prevPass;
+      if (prevEmail === undefined) {
+        delete process.env.GMAIL_EMAIL;
+      } else {
+        process.env.GMAIL_EMAIL = prevEmail;
+      }
+      if (prevPass === undefined) {
+        delete process.env.GMAIL_APP_PASSWORD;
+      } else {
+        process.env.GMAIL_APP_PASSWORD = prevPass;
+      }
     }
   });
 });

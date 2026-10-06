@@ -6,11 +6,14 @@ import subprocess
 import tempfile
 import urllib.request
 from pathlib import Path
+from typing import Any
 
 import httpx
 
-from src.configuration import get_config
-from src.http_client import get_client
+from src.llm.embed_client import embed as embed_texts
+
+# Document-side embedding task type (query side uses RETRIEVAL_QUERY).
+_RETRIEVAL_DOCUMENT = "RETRIEVAL_DOCUMENT"
 
 
 def _chunk_hash(content: str) -> str:
@@ -282,13 +285,11 @@ async def index_resume_in_pgvector(
         except Exception:
             pass
 
-    cfg = get_config().embed
-    embed_client = await get_client(
-        "rag_embedder",
+    embed_client = httpx.AsyncClient(
         timeout=httpx.Timeout(120.0, connect=10.0),
-        extra_limits={"max_keepalive_connections": 2, "max_connections": 4},
+        limits=httpx.Limits(max_keepalive_connections=2, max_connections=4),
     )
-    indexed: dict[str, int] = {}
+    indexed: dict[str, Any] = {}
     try:
         records: list[dict[str, object]] = []
         current_hashes: set[str] = set()
@@ -313,19 +314,19 @@ async def index_resume_in_pgvector(
             missing = [c for c in batch if _chunk_hash(c) not in existing]
             if not missing:
                 continue
-            resp = await embed_client.post(
-                f"{cfg.url}/embeddings",
-                json={"model": cfg.model, "input": missing},
+            vectors = await embed_texts(
+                missing,
+                task_type=_RETRIEVAL_DOCUMENT,
+                timeout=120.0,
+                client=embed_client,
             )
-            resp.raise_for_status()
-            data = resp.json()
-            for item, content in zip(data["data"], missing, strict=True):
+            for vector, content in zip(vectors, missing, strict=True):
                 records.append(
                     {
                         "section": section,
                         "content": content,
                         "content_hash": _chunk_hash(content),
-                        "embedding": item["embedding"],
+                        "embedding": vector,
                     }
                 )
         if records:

@@ -22,11 +22,13 @@ export async function setFileInputViaDataTransfer(
   page: any,
   selector: string,
   filePath: string,
-  fileName?: string,
+  fileName?: string
 ): Promise<boolean> {
   try {
-    const fs = await import("fs");
-    if (!fs.existsSync(filePath)) return false;
+    const fs = await import("node:fs");
+    if (!fs.existsSync(filePath)) {
+      return false;
+    }
     const buf = fs.readFileSync(filePath);
     const name = fileName || filePath.split(/[\\/]/).pop() || "resume.pdf";
     const mime = name.toLowerCase().endsWith(".pdf")
@@ -46,23 +48,29 @@ export async function setFileInputViaDataTransfer(
         sel: string;
       }) => {
         const input = document.querySelector(sel) as HTMLInputElement | null;
-        if (!input) return "NO_INPUT";
+        if (!input) {
+          return "NO_INPUT";
+        }
         const bin = atob(b64);
         const bytes = new Uint8Array(bin.length);
-        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        for (let i = 0; i < bin.length; i++) {
+          bytes[i] = bin.codePointAt(i) ?? 0;
+        }
         const file = new File([bytes], fname, { type: mtype });
         const dt = new DataTransfer();
         dt.items.add(file);
         input.files = dt.files;
         input.dispatchEvent(new Event("change", { bubbles: true }));
         input.dispatchEvent(new Event("input", { bubbles: true }));
-        await new Promise((r) => setTimeout(r, 1500));
+        await new Promise((r) => {
+          setTimeout(r, 1500);
+        });
         return JSON.stringify({
           files: input.files.length,
           first: input.files[0]?.name ?? null,
         });
       },
-      { b64: buf.toString("base64"), fname: name, mtype: mime, sel: selector },
+      { b64: buf.toString("base64"), fname: name, mtype: mime, sel: selector }
     );
 
     if (typeof result === "string" && result.startsWith("{")) {
@@ -86,9 +94,14 @@ export async function setFileInputViaDataTransfer(
  * exactly like a user's click, toggles `checked`, and fires React's onChange.
  * Returns true when the checkbox is checked afterwards.
  */
-export async function checkCheckboxViaCdpClick(page: any, selector: string): Promise<boolean> {
+export async function checkCheckboxViaCdpClick(
+  page: any,
+  selector: string
+): Promise<boolean> {
   const session = page?.mainSession ?? page?.session ?? null;
-  if (!session || typeof session.send !== "function") return false;
+  if (!session || typeof session.send !== "function") {
+    return false;
+  }
   try {
     await session.send("DOM.enable").catch(() => {});
     await session.send("Runtime.enable").catch(() => {});
@@ -101,31 +114,43 @@ export async function checkCheckboxViaCdpClick(page: any, selector: string): Pro
     // overlay, so click the nearest clickable visual/label element instead.
     const scrolled = await page.evaluate((sel: string) => {
       const cb = document.querySelector(sel) as HTMLInputElement | null;
-      if (!cb) return false;
+      if (!cb) {
+        return false;
+      }
       const parent = cb.parentElement;
       const vis = parent?.querySelector(
-        '.checkbox__visual, [class*="visual"], [class*="box"], [class*="checkmark"]',
+        '.checkbox__visual, [class*="visual"], [class*="box"], [class*="checkmark"]'
       ) as HTMLElement | null;
       const el: HTMLElement = vis || (parent as HTMLElement) || cb;
       el.scrollIntoView({ block: "center", inline: "center" });
       return true;
     }, selector);
-    if (!scrolled) return false;
-    await new Promise((r) => setTimeout(r, 1500));
+    if (!scrolled) {
+      return false;
+    }
+    await new Promise((r) => {
+      setTimeout(r, 1500);
+    });
 
     const target = await page.evaluate((sel: string) => {
       const cb = document.querySelector(sel) as HTMLInputElement | null;
-      if (!cb) return null;
+      if (!cb) {
+        return null;
+      }
       const parent = cb.parentElement;
       const vis = parent?.querySelector(
-        '.checkbox__visual, [class*="visual"], [class*="box"], [class*="checkmark"]',
+        '.checkbox__visual, [class*="visual"], [class*="box"], [class*="checkmark"]'
       ) as HTMLElement | null;
       const el: HTMLElement = vis || (parent as HTMLElement) || cb;
       const r = el.getBoundingClientRect();
-      if (r.width < 2 || r.height < 2) return null;
+      if (r.width < 2 || r.height < 2) {
+        return null;
+      }
       return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
     }, selector);
-    if (!target) return false;
+    if (!target) {
+      return false;
+    }
 
     await session.send("Input.dispatchMouseEvent", {
       type: "mouseMoved",
@@ -133,18 +158,18 @@ export async function checkCheckboxViaCdpClick(page: any, selector: string): Pro
       y: target.y,
     });
     await session.send("Input.dispatchMouseEvent", {
+      button: "left",
+      clickCount: 1,
       type: "mousePressed",
       x: target.x,
       y: target.y,
-      button: "left",
-      clickCount: 1,
     });
     await session.send("Input.dispatchMouseEvent", {
+      button: "left",
+      clickCount: 1,
       type: "mouseReleased",
       x: target.x,
       y: target.y,
-      button: "left",
-      clickCount: 1,
     });
 
     const checked = await page.evaluate((sel: string) => {
@@ -153,8 +178,10 @@ export async function checkCheckboxViaCdpClick(page: any, selector: string): Pro
     }, selector);
     console.log(`[cdp] checkCheckboxViaCdpClick(${selector}) => ${checked}`);
     return checked === true;
-  } catch (err: any) {
-    console.warn(`[cdp] checkCheckboxViaCdpClick(${selector}) threw: ${err?.message || err}`);
+  } catch (error: any) {
+    console.warn(
+      `[cdp] checkCheckboxViaCdpClick(${selector}) threw: ${error?.message || error}`
+    );
     return false;
   }
 }

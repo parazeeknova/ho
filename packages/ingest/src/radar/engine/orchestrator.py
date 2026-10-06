@@ -2471,10 +2471,12 @@ async def _run_radar_pipeline() -> None:
                         logger.warning("Company discovery failed", exc_info=True)
 
                 task = asyncio.create_task(_run_discovery())
-                if not hasattr(asyncio, "_bg_tasks"):
-                    asyncio._bg_tasks = set()
-                asyncio._bg_tasks.add(task)
-                task.add_done_callback(asyncio._bg_tasks.discard)
+                bg_tasks = getattr(asyncio, "_bg_tasks", None)
+                if bg_tasks is None:
+                    bg_tasks = set()
+                    asyncio._bg_tasks = bg_tasks  # ty: ignore[unresolved-attribute]
+                bg_tasks.add(task)
+                task.add_done_callback(bg_tasks.discard)
 
             # 5. Periodic graph metrics (embeddings, PageRank, WCC, betweenness)
             if not is_worker and time.monotonic() - last_graph_metrics > _graph_metrics_interval:

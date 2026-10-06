@@ -12,7 +12,9 @@ describe("ActivityWatchdog", () => {
     let fired = 0;
     const wd = new ActivityWatchdog(60, () => (fired += 1), 20);
     wd.start();
-    await new Promise((r) => setTimeout(r, 120));
+    await new Promise((r) => {
+      setTimeout(r, 120);
+    });
     assert.equal(fired, 1, "watchdog should fire exactly once");
     wd.stop();
   });
@@ -22,7 +24,9 @@ describe("ActivityWatchdog", () => {
     const wd = new ActivityWatchdog(80, () => (fired += 1), 20);
     wd.start();
     for (let i = 0; i < 6; i++) {
-      await new Promise((r) => setTimeout(r, 40));
+      await new Promise((r) => {
+        setTimeout(r, 40);
+      });
       wd.touch();
     }
     assert.equal(fired, 0, "activity must keep the watchdog from firing");
@@ -33,7 +37,9 @@ describe("ActivityWatchdog", () => {
     let fired = 0;
     const wd = new ActivityWatchdog(0, () => (fired += 1), 20);
     wd.start();
-    await new Promise((r) => setTimeout(r, 60));
+    await new Promise((r) => {
+      setTimeout(r, 60);
+    });
     assert.equal(fired, 0);
   });
 
@@ -41,9 +47,13 @@ describe("ActivityWatchdog", () => {
     let fired = 0;
     const wd = new ActivityWatchdog(40, () => (fired += 1), 10);
     wd.start();
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => {
+      setTimeout(r, 100);
+    });
     assert.equal(fired, 1, "fires once");
-    await new Promise((r) => setTimeout(r, 60));
+    await new Promise((r) => {
+      setTimeout(r, 60);
+    });
     assert.equal(fired, 1, "must not fire again after stop");
   });
 });

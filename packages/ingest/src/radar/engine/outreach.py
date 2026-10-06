@@ -131,7 +131,7 @@ def _build_role_relevance(candidate: JobCandidate) -> str:
         parts.append(f"Skills match: {', '.join(skills)}")
     if candidate.match_percent > 0:
         parts.append(f"Match score: {candidate.match_percent}%")
-    if candidate.role_family:
+    if candidate.role_family is not None:
         parts.append(f"Role family: {candidate.role_family.value}")
     return ". ".join(parts) if parts else "Relevant technical background"
 

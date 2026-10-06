@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
-"""One-command full-stack runner: infra + embed + radar + bridge + autofill.
+"""One-command full-stack runner: infra + radar + bridge + autofill.
 
 Everything ho offers, from a single invocation:
 
   1. docker compose up the ingest stack (searxng, neo4j, agent-memory-db) and
      wait for health;
-  2. start the local embedding server (:8900);
-  3. if persona.json is missing, seed memory (resume + persona) non-interactively;
-  4. run the end-to-end loop: radar pipeline (master + workers) discovers and
+  2. if persona.json is missing, seed memory (resume + persona) non-interactively;
+  3. run the end-to-end loop: radar pipeline (master + workers) discovers and
      LLM-matches jobs, the bridge drains accepted roles into the autofill
      queue, and the autofill worker (1 concurrent browser) auto-applies.
      Crashed children are restarted; the run continues overnight until stopped.
+
+Embeddings are served by an external provider configured through EMBED_URL /
+EMBED_MODEL; there is no local embedding server to start.
 
 Local-only by default: company discovery uses the local adapters (yc, dealroom,
 hn, remoteok, ...), not the Azure relic. Set AZURE=1 to re-enable relic discovery.
@@ -46,10 +48,6 @@ DOCKER_SERVICES = [
     "neo4j",
     "agent-memory-db",
     "redis",
-    # Steel browser backend: only needed when STEEL_BASE_URL is set, but the
-    # compose `up -d` below is what pulls the image on first run, so it is
-    # always part of the infra bring-up (harmless when unused).
-    "steel",
 ]
 
 # Infra readiness probes (host, port).
@@ -58,8 +56,6 @@ HOST_PROBES = {
     "neo4j": (7687, 15),
     "agent-memory-db": (5433, 20),
     "redis": (6379, 15),
-    "steel": (3000, 60),
-    "embed": (8900, 60),
 }
 
 
@@ -89,8 +85,6 @@ async def _wait_for(name: str, timeout: float) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if name == "searxng" and _http_ok("http://localhost:8080/"):
-            return True
-        if name == "embed" and _http_ok("http://localhost:8900/health"):
             return True
         probe = HOST_PROBES.get(name)
         if probe and _port_open("localhost", probe[0]):
@@ -144,40 +138,15 @@ async def _ensure_infra() -> bool:
     if not _compose_up():
         return False
     ok = True
-    for name in ("agent-memory-db", "neo4j", "searxng", "redis", "steel", "embed"):
-        # embed is started below; if already up, great.
-        if name == "embed" and not _http_ok("http://localhost:8900/health"):
-            continue
+    for name in ("agent-memory-db", "neo4j", "searxng", "redis"):
         if not await _wait_for(name, HOST_PROBES.get(name, (0, 15))[1]):
             print(f"[ho] WARNING: {name} not ready", flush=True)
-            # Steel is optional infra: the runner falls back to a direct
-            # browser launch when STEEL_BASE_URL is unreachable, so a Steel
-            # that never comes up must warn, not abort the pipeline. All the
-            # other services (pg/neo4j/searxng/redis) are required.
-            if name != "steel":
-                ok = False
+            ok = False
         else:
             print(f"[ho] ✓ {name} ready", flush=True)
     # Pre-run backup once infra is confirmed
     _preflight_backup()
     return ok
-
-
-def _ensure_embed_server() -> None:
-    if _http_ok("http://localhost:8900/health"):
-        print("[ho] embedding server already up", flush=True)
-        return
-    print("[ho] starting embedding server...", flush=True)
-    log = REPO / "logs"
-    log.mkdir(exist_ok=True)
-    with (log / "embed_server.log").open("ab") as out:
-        subprocess.Popen(
-            [sys.executable, str(PROJECT / "scripts" / "serve.py")],
-            cwd=str(PROJECT),
-            stdout=out,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
 
 
 def _memory_status() -> str:
@@ -426,7 +395,7 @@ def _status_report(watch: bool = False) -> int:
     """`bun run run --status`: a full read-only snapshot of every counter the
     pipeline tracks — DB, graph, RAG, ML, autofill, epochs, sources, and
     whether anything is currently running. No side effects: does not touch
-    containers, the lock, or the embed server."""
+    containers or the lock."""
     import asyncio
     import os as _os
     from typing import Any
@@ -1160,14 +1129,8 @@ def main() -> int:
         if not await _ensure_infra():
             print("[ho] infra failed; aborting", flush=True)
             return 1
-        # Autoheal: if containers exist but are Exited, restart before embed
+        # Autoheal: if containers exist but are Exited, restart them
         _autoheal_containers()
-        _ensure_embed_server()
-        await asyncio.sleep(8)
-        if not await _wait_for("embed", HOST_PROBES["embed"][1]):
-            print("[ho] embedding server not ready; continuing anyway", flush=True)
-        else:
-            print("[ho] embed server ✓ (:8900)", flush=True)
         _ensure_memory()
         _gmail_check()
         # Startup snapshot: DB / graph / RAG / ML / Discord.
@@ -1274,7 +1237,6 @@ def _autoheal_containers() -> None:
         "ho_agent-memory-db_1",
         "ho_neo4j_1",
         "ho_redis_1",
-        "ho_steel_1",
     ):
         try:
             r = _sp.run(

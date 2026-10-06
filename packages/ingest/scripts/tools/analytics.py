@@ -1,7 +1,7 @@
 """Local analytics: storage + container + DB numbers for the ho project.
 
 Reports:
-  - Disk usage of the project, azure_dump, intel, logs
+  - Disk usage of the project, intel, logs
   - Container list + status + volume mounts + memory
   - Named volumes used by the ingest stack (size on disk)
   - Database row counts (observations, candidates, companies, embeddings)
@@ -27,9 +27,9 @@ logger = get_logger("analytics")
 PROJECT = Path(__file__).resolve().parents[2]
 
 CONTAINER_VOLUME_MAP = {
-    "firecrawl_agent-memory-db_1": "firecrawl_agent_memory_data",
-    "firecrawl_neo4j_1": "firecrawl_neo4j_data",
-    "firecrawl_searxng_1": None,
+    "ho_agent-memory-db_1": "ho_agent_memory_data",
+    "ho_neo4j_1": "ho_neo4j_data",
+    "ho_searxng_1": None,
 }
 
 
@@ -86,9 +86,9 @@ def _volume_sizes() -> dict[str, str]:
     measure inside the mounting container with `du` for accuracy."""
     # container -> (volume, path-in-container)
     known: list[tuple[str, str, str]] = [
-        ("firecrawl_agent-memory-db_1", "firecrawl_agent_memory_data", "/var/lib/postgresql"),
-        ("firecrawl_neo4j_1", "firecrawl_neo4j_data", "/data"),
-        ("firecrawl_neo4j_1", "firecrawl_neo4j_logs", "/logs"),
+        ("ho_agent-memory-db_1", "ho_agent_memory_data", "/var/lib/postgresql"),
+        ("ho_neo4j_1", "ho_neo4j_data", "/data"),
+        ("ho_neo4j_1", "ho_neo4j_logs", "/logs"),
     ]
     sizes: dict[str, str] = {}
     for container, vol, dest in known:
@@ -100,7 +100,7 @@ def _volume_sizes() -> dict[str, str]:
             except ValueError, IndexError:
                 pass
         # fallback to raw path
-        p = Path(f"/home/parazeeknova/.local/share/containers/storage/volumes/{vol}/_data")
+        p = Path.home() / ".local/share/containers/storage/volumes" / vol / "_data"
         if p.exists():
             sizes[vol] = _fmt(_dir_size(p))
     return sizes
@@ -140,7 +140,6 @@ def main() -> None:
     print("\n-- Disk Usage --")
     for name, path in (
         ("project (excluding venv/dump)", PROJECT),
-        ("azure_dump", PROJECT / "azure_dump"),
         ("intel", PROJECT / "intel"),
         ("logs", PROJECT / "logs"),
     ):
@@ -148,7 +147,6 @@ def main() -> None:
         if name.startswith("project"):
             size = _dir_size(PROJECT)
             for excl in (
-                PROJECT / "azure_dump",
                 PROJECT / ".venv",
                 PROJECT / ".devenv",
                 PROJECT / "checkpoints",
@@ -168,7 +166,7 @@ def main() -> None:
 
     print("\n-- Named Volumes (size on disk) --")
     vsizes = _volume_sizes()
-    for vol in ("firecrawl_agent_memory_data", "firecrawl_neo4j_data", "firecrawl_neo4j_logs"):
+    for vol in ("ho_agent_memory_data", "ho_neo4j_data", "ho_neo4j_logs"):
         if vol in vsizes:
             print(f"  {vol}: {vsizes[vol]}")
 

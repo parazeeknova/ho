@@ -15,19 +15,25 @@ import type { FlowProbe } from "./generic";
 
 describe("classifyFlow", () => {
   const probe = (p: Partial<FlowProbe>): FlowProbe => ({
-    formDetected: false,
     applyDetected: false,
-    wizardDetected: false,
+    formDetected: false,
     gateDetected: false,
+    wizardDetected: false,
     ...p,
   });
 
   it("gate wins over everything else (password + account form)", () => {
-    assert.equal(classifyFlow(probe({ gateDetected: true, formDetected: true })), "gate");
+    assert.equal(
+      classifyFlow(probe({ formDetected: true, gateDetected: true })),
+      "gate"
+    );
   });
 
   it("wizard wins over a live form (multi-step with Continue)", () => {
-    assert.equal(classifyFlow(probe({ wizardDetected: true, formDetected: true })), "wizard");
+    assert.equal(
+      classifyFlow(probe({ formDetected: true, wizardDetected: true })),
+      "wizard"
+    );
   });
 
   it("a live form without navigation is just a form", () => {
@@ -48,7 +54,10 @@ describe("cleanObserveLabel", () => {
     assert.equal(cleanObserveLabel("fill the First Name field"), "First Name");
     assert.equal(cleanObserveLabel("Type your email address"), "email address");
     assert.equal(cleanObserveLabel("enter the Company input"), "Company");
-    assert.equal(cleanObserveLabel("Please fill in the phone number textbox"), "phone number");
+    assert.equal(
+      cleanObserveLabel("Please fill in the phone number textbox"),
+      "phone number"
+    );
   });
 
   it("passes already-clean labels through", () => {
@@ -59,13 +68,19 @@ describe("cleanObserveLabel", () => {
 
 describe("isVoluntaryText", () => {
   it("flags voluntary / demographic / EEOC text", () => {
-    assert.equal(isVoluntaryText("Voluntary Self-Identification Continue"), true);
+    assert.equal(
+      isVoluntaryText("Voluntary Self-Identification Continue"),
+      true
+    );
     assert.equal(isVoluntaryText("Demographic Information (optional)"), true);
     assert.equal(isVoluntaryText("Equal Opportunity Employer Statement"), true);
   });
 
   it("does not flag ordinary step text", () => {
-    assert.equal(isVoluntaryText("Personal Information First Name * Last Name *"), false);
+    assert.equal(
+      isVoluntaryText("Personal Information First Name * Last Name *"),
+      false
+    );
     assert.equal(isVoluntaryText(""), false);
   });
 });
@@ -73,19 +88,31 @@ describe("isVoluntaryText", () => {
 describe("extractBalancedObject", () => {
   it("extracts a balanced JSON object after the marker", () => {
     const html = '<script>window.__remixContext = {"a":{"b":[1,2]}};</script>';
-    assert.equal(extractBalancedObject(html, /window\.__remixContext\s*=\s*/), '{"a":{"b":[1,2]}}');
+    assert.equal(
+      extractBalancedObject(html, /window\.__remixContext\s*=\s*/),
+      '{"a":{"b":[1,2]}}'
+    );
   });
 
   it("handles strings containing braces and escaped quotes", () => {
     const html = 'x = {"s":"}{ \\"quoted\\" ","n":1};';
-    assert.equal(extractBalancedObject(html, /x\s*=\s*/), '{"s":"}{ \\"quoted\\" ","n":1}');
+    assert.equal(
+      extractBalancedObject(html, /x\s*=\s*/),
+      '{"s":"}{ \\"quoted\\" ","n":1}'
+    );
   });
 
   it("returns null when no marker or no object", () => {
-    assert.equal(extractBalancedObject("<html></html>", /window\.__remixContext/), null);
     assert.equal(
-      extractBalancedObject("window.__remixContext = nope;", /window\.__remixContext\s*=\s*/),
-      null,
+      extractBalancedObject("<html></html>", /window\.__remixContext/),
+      null
+    );
+    assert.equal(
+      extractBalancedObject(
+        "window.__remixContext = nope;",
+        /window\.__remixContext\s*=\s*/
+      ),
+      null
     );
   });
 });
@@ -96,15 +123,29 @@ describe("extractQuestionsFromJsonObject", () => {
       state: {
         loaderData: {
           jobPost: {
+            eeoc_sections: [
+              {
+                questions: [
+                  {
+                    fields: [
+                      {
+                        name: "veteran_status",
+                        type: "multi_value_single_select",
+                      },
+                    ],
+                    label: "Veteran Status",
+                    required: false,
+                  },
+                ],
+              },
+            ],
             questions: [
               {
-                required: true,
-                label: "Preferred First Name",
                 fields: [{ name: "preferred_name", type: "input_text" }],
+                label: "Preferred First Name",
+                required: true,
               },
               {
-                required: false,
-                label: "Race",
                 fields: [
                   {
                     name: "race",
@@ -115,17 +156,8 @@ describe("extractQuestionsFromJsonObject", () => {
                     ],
                   },
                 ],
-              },
-            ],
-            eeoc_sections: [
-              {
-                questions: [
-                  {
-                    required: false,
-                    label: "Veteran Status",
-                    fields: [{ name: "veteran_status", type: "multi_value_single_select" }],
-                  },
-                ],
+                label: "Race",
+                required: false,
               },
             ],
           },
@@ -147,13 +179,21 @@ describe("extractQuestionsFromJsonObject", () => {
   it("drops file / resume / cover-letter entries", () => {
     const obj = {
       questions: [
-        { required: true, label: "Resume", fields: [{ name: "resume", type: "input_file" }] },
         {
-          required: false,
-          label: "Cover Letter",
-          fields: [{ name: "cover_letter", type: "input_file" }],
+          fields: [{ name: "resume", type: "input_file" }],
+          label: "Resume",
+          required: true,
         },
-        { required: false, label: "LinkedIn", fields: [{ name: "linkedin", type: "input_text" }] },
+        {
+          fields: [{ name: "cover_letter", type: "input_file" }],
+          label: "Cover Letter",
+          required: false,
+        },
+        {
+          fields: [{ name: "linkedin", type: "input_text" }],
+          label: "LinkedIn",
+          required: false,
+        },
       ],
     };
     const out = extractQuestionsFromJsonObject(obj);
@@ -211,24 +251,26 @@ describe("atsApiJobContext", () => {
     const origFetch = globalThis.fetch;
     // Mock the fetch so the test is hermetic (no network).
     (globalThis as any).fetch = async (_url: string) => ({
-      ok: true,
-      status: 200,
       async json() {
         return {
           jobs: [
             {
+              descriptionHtml: "<h2>About</h2><p>Build AI infra.</p>",
               id: "abc-123",
-              title: "AI Platform Engineer",
               locationName: "Remote",
               team: "Platform",
-              descriptionHtml: "<h2>About</h2><p>Build AI infra.</p>",
+              title: "AI Platform Engineer",
             },
           ],
         };
       },
+      ok: true,
+      status: 200,
     });
     try {
-      const ctx = await atsApiJobContext("https://jobs.ashbyhq.com/supabase/abc-123");
+      const ctx = await atsApiJobContext(
+        "https://jobs.ashbyhq.com/supabase/abc-123"
+      );
       assert.ok(ctx);
       assert.equal(ctx?.title, "AI Platform Engineer");
       assert.equal(ctx?.location, "Remote");

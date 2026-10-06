@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """One-command setup of the user memory base for a fresh checkout.
 
-Checks Postgres + the embedding server (starting it if needed), indexes the
-resume into resume_embeddings, builds the persona into persona_embeddings +
-resume_summary (grilling interactively when persona.json is missing), and prints
-a summary of what is now in memory.
+Checks Postgres, indexes the resume into resume_embeddings, builds the persona
+into persona_embeddings + resume_summary (grilling interactively when
+persona.json is missing), and prints a summary of what is now in memory.
+Embeddings come from the external provider configured via EMBED_URL/EMBED_MODEL.
 
 Usage:
     uv run python scripts/init_memory.py                       # full setup
@@ -22,10 +22,8 @@ import os
 import shutil
 import subprocess
 import sys
-import time
 from pathlib import Path
 
-import httpx
 from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent  # packages/autofill
@@ -38,7 +36,6 @@ load_dotenv()
 os.environ["LOG_LEVEL"] = "WARNING"  # quiet JSON log spam in setup scripts
 
 import ux  # noqa: E402
-from src.configuration import get_config  # noqa: E402
 from src.logging import get_logger  # noqa: E402
 from src.memory.pgvector_store import MemoryStore  # noqa: E402
 
@@ -56,59 +53,6 @@ def _input(prompt: str = "") -> str:
         return input(prompt)
     except EOFError, KeyboardInterrupt:
         raise SystemExit(_INPUT_ABORT) from None
-
-
-def _embed_health_url() -> str:
-    return get_config().embed.url.rsplit("/v1", 1)[0] + "/health"
-
-
-async def embed_server_ready() -> bool:
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=2.0)) as client:
-            resp = await client.get(_embed_health_url())
-            return resp.status_code == 200
-    except Exception:
-        return False
-
-
-async def ensure_embed_server(auto_start: bool) -> bool:
-    if await embed_server_ready():
-        ux.chip("ok", "Embedding server up on :8900 (Qwen3-Embedding-0.6B)")
-        return True
-    ux.chip("err", f"Embedding server DOWN at {_embed_health_url()}")
-    if not shutil.which("llama-server"):
-        ux.bullet("Install llama.cpp (the llama-server binary) first, e.g. via:")
-        ux.bullet("  brew install llama.cpp        # macos", style="cyan")
-        ux.bullet(
-            "  pip install llama-cpp-python  # alternative, see scripts/serve.py",
-            style="cyan",
-        )
-        return False
-    if not auto_start:
-        ux.bullet("Start it with `uv run python scripts/serve.py` and re-run init_memory.")
-        return False
-    ux.bullet("Start it now via scripts/serve.py? [Y/n]", style="white")
-    answer = _input("").strip().lower()
-    if answer not in ("", "y", "yes"):
-        return False
-    log = Path("/tmp/opencode") if Path("/tmp/opencode").exists() else Path("/tmp")
-    log = log / "embed_server.log"
-    with open(log, "a") as out:
-        proc = subprocess.Popen(
-            [sys.executable, str(REPO / "packages" / "ingest" / "scripts" / "serve.py")],
-            stdout=out,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
-    ux.chip("info", f"Spawned embed server (pid {proc.pid}); waiting for health...")
-    with ux.console.status("Waiting for embedding server...", spinner="dots"):
-        for _ in range(60):
-            if await embed_server_ready():
-                ux.chip("ok", "Embedding server is up.")
-                return True
-            time.sleep(1)
-    ux.chip("err", f"Embed server did not become healthy; check {log}")
-    return False
 
 
 async def index_resume(resume_url: str | None, resume_path: str | None) -> None:
@@ -146,7 +90,6 @@ async def _start_postgres() -> bool:
     up because the LLM governor uses it as the shared token/RPM budget store —
     without it every LLM call logs "Redis budget unavailable, local-only".
     """
-    import shutil
 
     if not shutil.which("docker"):
         return False
@@ -170,7 +113,11 @@ async def _start_postgres() -> bool:
         if result.returncode != 0:
             logger.warning(
                 "docker compose up failed",
-                stderr=(result.stderr or b"").decode()[-400:],
+                stderr=(
+                    result.stderr.decode()
+                    if isinstance(result.stderr, bytes)
+                    else (result.stderr or "")
+                )[-400:],
             )
             return False
     except Exception as e:
@@ -253,11 +200,6 @@ async def main() -> None:
         action="store_true",
         help="Force the interactive wizard even if persona.json exists",
     )
-    parser.add_argument(
-        "--no-embed-start",
-        action="store_true",
-        help="Never auto-spawn the embed server",
-    )
     args = parser.parse_args()
 
     ux.chip("info", "USER MEMORY INITIALIZATION  -  resume + persona RAG base")
@@ -291,11 +233,8 @@ async def main() -> None:
     ux.chip("ok", "Postgres connected (localhost:5433/agent_memory)")
     await _ensure_redis()
 
-    # 2. Embedding server
-    ux.section(2, 4, "Embedding server")
-    if not await ensure_embed_server(auto_start=not args.no_embed_start):
-        ux.chip("err", "Aborting: memory build needs the embedding server.")
-        sys.exit(1)
+    # 2. Embedding provider
+    ux.section(2, 4, "Embeddings")
 
     # 3. Resume -> resume_embeddings
     ux.section(3, 4, "Resume")

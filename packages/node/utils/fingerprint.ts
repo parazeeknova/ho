@@ -38,19 +38,19 @@ export interface BrowserFingerprint {
 function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
   return () => {
-    a |= 0;
-    a = (a + 0x6d2b79f5) | 0;
+    a = Math.trunc(a);
+    a = Math.trunc(a + 0x6d_2b_79_f5);
     let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    t ^= t + Math.imul(t ^ (t >>> 7), 61 | t);
+    return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
   };
 }
 
 function hashString(str: string): number {
-  let h = 2166136261;
+  let h = 2_166_136_261;
   for (let i = 0; i < str.length; i++) {
-    h ^= str.charCodeAt(i);
-    h = Math.imul(h, 16777619);
+    h ^= str.codePointAt(i) ?? 0;
+    h = Math.imul(h, 16_777_619);
   }
   return h >>> 0;
 }
@@ -60,14 +60,14 @@ function pick<T>(rng: () => number, arr: readonly T[]): T {
 }
 
 const VIEWPORTS: readonly { width: number; height: number }[] = [
-  { width: 1920, height: 1080 },
-  { width: 1536, height: 864 },
-  { width: 1440, height: 900 },
-  { width: 1366, height: 768 },
-  { width: 1280, height: 800 },
-  { width: 1600, height: 900 },
-  { width: 1280, height: 720 },
-  { width: 1680, height: 1050 },
+  { height: 1080, width: 1920 },
+  { height: 864, width: 1536 },
+  { height: 900, width: 1440 },
+  { height: 768, width: 1366 },
+  { height: 800, width: 1280 },
+  { height: 900, width: 1600 },
+  { height: 720, width: 1280 },
+  { height: 1050, width: 1680 },
 ];
 
 const MAC_VERSIONS = ["10_15_7", "11_7_10", "12_7_6", "13_6_9", "14_7_1"];
@@ -84,24 +84,27 @@ const LANGUAGE_SETS: readonly string[][] = [
   ["en-IN", "hi-IN", "en-US"],
 ];
 
-function buildUserAgent(rng: () => number): { userAgent: string; platform: string } {
+function buildUserAgent(rng: () => number): {
+  userAgent: string;
+  platform: string;
+} {
   const version = `${pick(rng, CHROME_MAJORS)}.0.${pick(rng, CHROME_BUILDS)}.${pick(rng, CHROME_PATCHES)}`;
   const os = pick(rng, ["windows", "macos", "linux"] as const);
   if (os === "windows") {
     return {
-      userAgent: `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${version} Safari/537.36`,
       platform: "Win32",
+      userAgent: `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${version} Safari/537.36`,
     };
   }
   if (os === "macos") {
     return {
-      userAgent: `Mozilla/5.0 (Macintosh; Intel Mac OS X ${pick(rng, MAC_VERSIONS)}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${version} Safari/537.36`,
       platform: "MacIntel",
+      userAgent: `Mozilla/5.0 (Macintosh; Intel Mac OS X ${pick(rng, MAC_VERSIONS)}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${version} Safari/537.36`,
     };
   }
   return {
-    userAgent: `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${version} Safari/537.36`,
     platform: "Linux x86_64",
+    userAgent: `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${version} Safari/537.36`,
   };
 }
 
@@ -115,17 +118,17 @@ export function loadFingerprint(seedOverride?: string): BrowserFingerprint {
   const { userAgent, platform } = buildUserAgent(rng);
   const languages = pick(rng, LANGUAGE_SETS);
   const fp: BrowserFingerprint = {
-    seed,
-    userAgent,
-    platform,
     acceptLanguage: `en-IN,${languages[1] || "en-US"};q=0.9,hi;q=0.8,en;q=0.7`,
-    locale: LOCALE,
-    timezoneId: TIMEZONE,
-    viewport: pick(rng, VIEWPORTS),
+    deviceMemory: pick(rng, [4, 8, 8, 16]),
     deviceScaleFactor: platform === "MacIntel" && rng() < 0.35 ? 2 : 1,
     hardwareConcurrency: pick(rng, [4, 8, 8, 12, 16]),
-    deviceMemory: pick(rng, [4, 8, 8, 16]),
     languages,
+    locale: LOCALE,
+    platform,
+    seed,
+    timezoneId: TIMEZONE,
+    userAgent,
+    viewport: pick(rng, VIEWPORTS),
   };
   // Hard overrides for human-in-the-loop runs (e.g. the user manually submits
   // a filled form, so the window must render at a NORMAL scale and size — a
@@ -134,16 +137,16 @@ export function loadFingerprint(seedOverride?: string): BrowserFingerprint {
   // win over the seeded values when set.
   const dsf = process.env.AUTOFILL_DEVICE_SCALE_FACTOR;
   if (dsf && /^\d+(\.\d+)?$/.test(dsf.trim())) {
-    fp.deviceScaleFactor = parseFloat(dsf.trim());
+    fp.deviceScaleFactor = Number.parseFloat(dsf.trim());
   }
   const vp = process.env.AUTOFILL_VIEWPORT;
   if (vp) {
     const m = vp.trim().match(/^(\d{3,5})\s*[xX]\s*(\d{3,5})$/);
     if (m) {
-      const w = parseInt(m[1], 10);
-      const h = parseInt(m[2], 10);
+      const w = Number.parseInt(m[1], 10);
+      const h = Number.parseInt(m[2], 10);
       if (w >= 800 && w <= 2560 && h >= 600 && h <= 1600) {
-        fp.viewport = { width: w, height: h };
+        fp.viewport = { height: h, width: w };
       }
     }
   }
@@ -178,7 +181,10 @@ function initScriptSource(fp: BrowserFingerprint): string {
  * re-run on every document start. Every failure is logged and swallowed so
  * fingerprinting can never abort a fill.
  */
-export async function applyFingerprint(stagehand: any, fp: BrowserFingerprint): Promise<void> {
+export async function applyFingerprint(
+  stagehand: any,
+  fp: BrowserFingerprint
+): Promise<void> {
   let page: any = stagehand?.context?.pages?.()[0];
   if (!page && typeof stagehand?.context?.newPage === "function") {
     page = await stagehand.context.newPage();
@@ -193,9 +199,9 @@ export async function applyFingerprint(stagehand: any, fp: BrowserFingerprint): 
   if (session && typeof session.send === "function") {
     try {
       await session.send("Emulation.setUserAgentOverride", {
-        userAgent: fp.userAgent,
-        platform: fp.platform,
         acceptLanguage: fp.acceptLanguage,
+        platform: fp.platform,
+        userAgent: fp.userAgent,
       });
       await session.send("Emulation.setTimezoneOverride", {
         timezoneId: fp.timezoneId,
@@ -203,10 +209,13 @@ export async function applyFingerprint(stagehand: any, fp: BrowserFingerprint): 
       console.log(
         `[Fingerprint] seed=${fp.seed} platform=${fp.platform} tz=${fp.timezoneId} ` +
           `viewport=${fp.viewport.width}x${fp.viewport.height} dpr=${fp.deviceScaleFactor} ` +
-          `cores=${fp.hardwareConcurrency} mem=${fp.deviceMemory} langs=${fp.languages.join(",")}`,
+          `cores=${fp.hardwareConcurrency} mem=${fp.deviceMemory} langs=${fp.languages.join(",")}`
       );
-    } catch (err: any) {
-      console.warn("[Fingerprint] CDP emulation failed (continuing):", err?.message || err);
+    } catch (error: any) {
+      console.warn(
+        "[Fingerprint] CDP emulation failed (continuing):",
+        error?.message || error
+      );
     }
   } else {
     console.warn("[Fingerprint] No CDP session on the initial page.");
@@ -215,8 +224,11 @@ export async function applyFingerprint(stagehand: any, fp: BrowserFingerprint): 
   if (typeof page.registerInitScript === "function") {
     try {
       await page.registerInitScript(initScriptSource(fp));
-    } catch (err: any) {
-      console.warn("[Fingerprint] init script failed (continuing):", err?.message || err);
+    } catch (error: any) {
+      console.warn(
+        "[Fingerprint] init script failed (continuing):",
+        error?.message || error
+      );
     }
   }
 }

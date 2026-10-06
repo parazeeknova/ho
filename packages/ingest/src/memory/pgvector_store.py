@@ -1011,7 +1011,7 @@ class MemoryStore:
         return [r["url_hash"] for r in rows]
 
     # embed_cache: content-hash-keyed embedding cache so identical text is
-    # never re-sent to the (shared) llama-server.
+    # never re-sent to the embedding provider.
 
     async def get_cached_embedding(self, text_hash: str) -> list[float] | None:
         """Return the cached embedding for a text hash, or None on miss."""

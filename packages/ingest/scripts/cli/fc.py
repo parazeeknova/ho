@@ -10,7 +10,7 @@ Usage:
     uv run python scripts/cli/fc.py logs                      # tail compose logs
     uv run python scripts/cli/fc.py status                    # compose ps
     uv run python scripts/cli/fc.py clean                     # down -v
-    uv run python scripts/cli/fc.py dev-down                  # infra + llama-server
+    uv run python scripts/cli/fc.py dev-down                  # stop infra
     uv run python scripts/cli/fc.py tor-up
     uv run python scripts/cli/fc.py graph-up|graph-stop|graph-reset|graph-shell
 """
@@ -54,7 +54,6 @@ def clean() -> None:
 
 def dev_down() -> None:
     down()
-    subprocess.run(["killall", "llama-server"], check=False)
 
 
 def tor_up() -> None:

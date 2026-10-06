@@ -74,7 +74,7 @@ def run(cmd: str, silent: bool = True, timeout: int = 30) -> tuple[int, str]:
 def check_neo4j_ready() -> bool:
     """Verify Neo4j is actually serving queries, not just TCP accepting."""
     raw = _docker_exec(
-        "firecrawl-neo4j-1",
+        "ho_neo4j_1",
         "cypher-shell -u neo4j -p password 'RETURN 1 AS ready' 2>/dev/null",
     )
     return "ready" in raw.lower() and "1" in raw
@@ -108,7 +108,6 @@ def row(t: Table, name: str, status: str, port: str = "") -> None:
 
 def stop_all() -> None:
     console.print("\n[yellow]Stopping all services...[/yellow]")
-    run("killall llama-server 2>/dev/null", silent=True)
     # Stop pipeline containers but leave the sync stack (agent-memory-db,
     # the ingest's Postgres) untouched so azure sync keeps running.
     run(f"{DOCKER_COMPOSE} stop searxng neo4j 2>/dev/null", silent=True)
@@ -131,7 +130,7 @@ def deep_stats() -> dict[str, Any]:
     # Neo4j node count
     if check_port("localhost", 7687):
         raw = _docker_exec(
-            "firecrawl-neo4j-1",
+            "ho_neo4j_1",
             "cypher-shell -u neo4j -p password 'MATCH (n) RETURN count(n) AS nodes' 2>/dev/null",
         )
         for line in raw.split("\n"):
@@ -143,7 +142,7 @@ def deep_stats() -> dict[str, Any]:
     if check_port("localhost", 5433):
         for table in ("job_observations", "job_candidates", "discovered_sources"):
             raw = _docker_exec(
-                "firecrawl-agent-memory-db-1",
+                "ho_agent-memory-db_1",
                 f"psql -U postgres -d agent_memory -t "
                 f"-c 'SELECT COUNT(*) FROM {table}' 2>/dev/null",
             )
@@ -153,31 +152,12 @@ def deep_stats() -> dict[str, Any]:
 
     # RabbitMQ is gone with Firecrawl; the ingest no longer uses a queue.
 
-    # Embedding model info
-    if check_http("http://localhost:8900/health"):
-        try:
-            import json as _json
-            import urllib.request
-
-            r = urllib.request.urlopen("http://localhost:8900/v1/models", timeout=5)
-            data = _json.loads(r.read())
-            # llama.cpp returns {"data": [...]} or {"models": [...]} depending on version
-            models_list = data.get("data", data.get("models", []))
-            if models_list and isinstance(models_list, list):
-                first = models_list[0]
-                name = first.get("name", first.get("id", "?"))
-                if name:
-                    info["embed_model"] = name
-                info["embed_slots"] = len(models_list)
-        except Exception:
-            pass
-
     # Container CPU/mem
     try:
         r = subprocess.run(
             "docker stats --no-stream "
             "--format '{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}' "
-            "firecrawl-neo4j-1 2>/dev/null",
+            "ho_neo4j_1 2>/dev/null",
             shell=True,
             capture_output=True,
             text=True,
@@ -187,7 +167,7 @@ def deep_stats() -> dict[str, Any]:
             for line in r.stdout.strip().split("\n"):
                 parts = line.split("\t")
                 if len(parts) >= 4:
-                    name = parts[0].replace("firecrawl_", "")
+                    name = parts[0].replace("ho_", "")
                     info[f"cpu_{name}"] = parts[1]
                     info[f"mem_{name}"] = parts[2]
     except Exception:
@@ -219,10 +199,6 @@ def format_stats(info: dict[str, Any]) -> str:
     ]:
         if key in info:
             parts.append(f"{label}={info[key]}")
-
-    # Embed
-    if "embed_model" in info:
-        parts.append(f"embed={info['embed_model']}")
 
     return "[infra] " + " | ".join(parts) if parts else ""
 
@@ -316,19 +292,12 @@ def main() -> None:
 
     # Define services
     services: list[tuple[str, Any, str]] = [
-        ("llama-server (Embed)", lambda: check_http("http://localhost:8900/health"), ":8900"),
         ("searxng", lambda: check_http("http://localhost:8080"), ":8080"),
         ("neo4j", check_neo4j_ready, ":7687"),
         ("agent-memory-db", lambda: check_port("localhost", 5433), ":5433"),
     ]
 
     # Kick off startup in background
-    subprocess.Popen(
-        [sys.executable, f"{PROJECT}/scripts/serve.py"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-
     run(f"{DOCKER_COMPOSE} up -d searxng neo4j agent-memory-db", silent=True)
 
     # Live status table while containers come up
