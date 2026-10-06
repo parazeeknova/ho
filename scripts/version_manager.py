@@ -8,9 +8,9 @@ a part rolls over into the next one once it passes 99::
 Behavior (wired into the ``pre-commit`` hook so it runs on every commit):
 
 * root ``package.json`` and root ``pyproject.toml`` are bumped on EVERY run.
-* a package manifest (``packages/*/package.json`` or
-  ``packages/*/pyproject.toml``) is bumped only when the staged commit
-  touches files under that package directory. Packages without a manifest
+* a package manifest (``packages/*/package.json``, ``packages/*/pyproject.toml``
+  or ``apps/*/package.json``) is bumped only when the staged commit touches
+  files under that scope directory. Scopes without a manifest
   (e.g. ``packages/ingest``) only contribute to the root bump.
 
 Bumped manifests are staged with ``git add`` so they land in the same commit.
@@ -107,12 +107,18 @@ def staged_files(root: Path) -> list[str]:
     return [p for p in out.stdout.split("\0") if p]
 
 
+SCOPE_DIRS = ("packages", "apps")
+
+
 def package_dirs(root: Path) -> list[str]:
-    """Top-level package scopes, e.g. ``packages/node`` (sorted, POSIX separators)."""
-    base = root / "packages"
-    if not base.is_dir():
-        return []
-    return sorted(f"packages/{entry.name}" for entry in base.iterdir() if entry.is_dir())
+    """Top-level scopes, e.g. ``packages/node`` or ``apps/web`` (sorted, POSIX)."""
+    scopes: list[str] = []
+    for scope_dir in SCOPE_DIRS:
+        base = root / scope_dir
+        if not base.is_dir():
+            continue
+        scopes.extend(f"{scope_dir}/{entry.name}" for entry in base.iterdir() if entry.is_dir())
+    return sorted(scopes)
 
 
 def owning_scope(path: str, scopes: list[str]) -> str | None:

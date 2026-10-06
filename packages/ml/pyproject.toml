@@ -1,6 +1,6 @@
 [project]
 name = "ho-ml"
-version = "0.1.0"
+version = "0.1.1"
 description = "Learning-to-rank and contextual bandits for ho — ranking, calibration, and policy optimization"
 requires-python = ">=3.11"
 dependencies = [

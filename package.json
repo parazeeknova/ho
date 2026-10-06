@@ -1,10 +1,11 @@
 {
   "name": "ho",
-  "version": "0.1.3",
+  "version": "0.1.5",
   "private": true,
-  "description": "ho monorepo - ingest radar pipeline",
+  "description": "ho monorepo",
   "workspaces": [
-    "packages/node"
+    "packages/node",
+    "apps/*"
   ],
   "scripts": {
     "run": "PYTHONPATH=.:packages/ingest:packages uv run python packages/ingest/scripts/run_all.py",
@@ -18,7 +19,11 @@
     "check-types": "uv run ty check packages/ingest/src packages/ingest/scripts packages/autofill packages/ml && bun --cwd packages/node typecheck",
     "bump": "uv run python scripts/version_manager.py",
     "bump:dry": "uv run python scripts/version_manager.py --dry-run",
-    "test": "uv run python -m pytest . -v --ignore=refs && bun run --filter 'autofill-node*' test",
+    "docker:web": "docker build -f apps/web/Dockerfile -t ho-web .",
+    "docker:node": "docker build -f packages/node/Dockerfile -t ho-node-service .",
+    "docker:ingest": "docker build -f packages/ingest/Dockerfile -t ho-ingest .",
+    "docker:ml": "docker build -f packages/ml/Dockerfile -t ho-ml .",
+    "test": "uv run python -m pytest . -v --ignore=refs && bun run --filter 'autofill-node*' test && bun run --filter 'ho-web' test",
     "prepare": "lefthook install"
   },
   "devDependencies": {

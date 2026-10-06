@@ -13,5 +13,7 @@ pre-commit:
       run: uv run ty check packages/ingest/src packages/ingest/scripts packages/autofill packages/ml
     tsc:
       run: bun --cwd packages/node typecheck
+    tsc-web:
+      run: bun --cwd apps/web typecheck
     version-bump:
       run: uv run python scripts/version_manager.py

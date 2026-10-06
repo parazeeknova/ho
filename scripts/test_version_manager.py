@@ -83,8 +83,23 @@ def test_owning_scope_prefers_longest_prefix() -> None:
 def test_package_dirs_lists_sorted_subdirs(tmp_path: Path) -> None:
     (tmp_path / "packages" / "node").mkdir(parents=True)
     (tmp_path / "packages" / "autofill").mkdir()
+    (tmp_path / "apps" / "web").mkdir(parents=True)
     (tmp_path / "package.json").write_text("{}")
-    assert vm.package_dirs(tmp_path) == ["packages/autofill", "packages/node"]
+    assert vm.package_dirs(tmp_path) == [
+        "apps/web",
+        "packages/autofill",
+        "packages/node",
+    ]
+
+
+def test_plan_bumps_touched_app_scope(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    (root / "apps" / "web").mkdir(parents=True)
+    (root / "package.json").write_text('{"name": "r", "version": "0.0.1"}\n')
+    (root / "pyproject.toml").write_text('[project]\nname = "r"\nversion = "0.0.1"\n')
+    (root / "apps" / "web" / "package.json").write_text('{"name": "w", "version": "0.0.1"}\n')
+    plan = vm.plan_bumps(root, ["apps/web/src/routes/index.tsx"])
+    assert {b.manifest.scope for b in plan} == {"root", "apps/web"}
 
 
 def test_package_dirs_missing_packages_dir(tmp_path: Path) -> None:
