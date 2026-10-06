@@ -10,11 +10,11 @@ jobs:
     name: lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.2.0
       - run: uvx ruff check .
-      - uses: oven-sh/setup-bun@v2
-      - uses: actions/cache@v6
+      - uses: oven-sh/setup-bun@v2.2.0
+      - uses: actions/cache@v6.1.0
         with:
           path: ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
@@ -26,11 +26,11 @@ jobs:
     name: format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.2.0
       - run: uvx ruff format --check .
-      - uses: oven-sh/setup-bun@v2
-      - uses: actions/cache@v6
+      - uses: oven-sh/setup-bun@v2.2.0
+      - uses: actions/cache@v6.1.0
         with:
           path: ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
@@ -42,11 +42,11 @@ jobs:
     name: typecheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.2.0
       - run: uvx ty check packages/ingest/src packages/ingest/scripts packages/autofill packages/ml
-      - uses: oven-sh/setup-bun@v2
-      - uses: actions/cache@v6
+      - uses: oven-sh/setup-bun@v2.2.0
+      - uses: actions/cache@v6.1.0
         with:
           path: ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
@@ -59,11 +59,11 @@ jobs:
     name: test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.2.0
       - run: uvx pytest scripts/ -q
-      - uses: oven-sh/setup-bun@v2
-      - uses: actions/cache@v6
+      - uses: oven-sh/setup-bun@v2.2.0
+      - uses: actions/cache@v6.1.0
         with:
           path: ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
