@@ -1,6 +1,6 @@
 {
   "name": "ho-web",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "type": "module",
   "sideEffects": false,
@@ -9,6 +9,7 @@
     "build": "vite build",
     "start": "node .output/server/index.mjs",
     "lint": "oxlint",
+    "format:check": "oxfmt --check .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"

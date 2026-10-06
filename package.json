@@ -1,6 +1,6 @@
 {
   "name": "ho",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "private": true,
   "description": "ho monorepo",
   "workspaces": [
@@ -15,19 +15,24 @@
     "export": "PYTHONPATH=.:packages/ingest:packages uv run python packages/ingest/scripts/tools/export_accepted.py",
     "health": "uv run python packages/ingest/scripts/tools/health.py",
     "backup": "uv run python packages/ingest/scripts/backup/checkpoint_backup.py",
-    "check": "uv run ruff format . && uv run ruff check . --fix && bunx oxfmt && bunx oxlint --fix",
-    "check-types": "uv run ty check packages/ingest/src packages/ingest/scripts packages/autofill packages/ml && bun --cwd packages/node typecheck",
+    "check": "bun run lint && bun run format:check && bun run check-types",
+    "fix": "uv run ruff format . && uv run ruff check . --fix && bunx oxfmt && bunx oxlint --fix",
+    "check-types": "uv run ty check packages/ingest/src packages/ingest/scripts packages/autofill packages/ml && lerna run typecheck",
+    "format:check": "uv run ruff format --check . && lerna run format:check",
     "bump": "uv run python scripts/version_manager.py",
     "bump:dry": "uv run python scripts/version_manager.py --dry-run",
     "docker:web": "docker build -f apps/web/Dockerfile -t ho-web .",
     "docker:node": "docker build -f packages/node/Dockerfile -t ho-node-service .",
     "docker:ingest": "docker build -f packages/ingest/Dockerfile -t ho-ingest .",
     "docker:ml": "docker build -f packages/ml/Dockerfile -t ho-ml .",
-    "test": "uv run python -m pytest . -v --ignore=refs && bun run --filter 'autofill-node*' test && bun run --filter 'ho-web' test",
+    "test": "uv run python -m pytest . --ignore=refs -n 4 --dist loadfile -q && lerna run test",
+    "lint": "uv run ruff check . && lerna run lint",
+    "build:web": "lerna run build --scope=ho-web",
     "prepare": "lefthook install"
   },
   "devDependencies": {
     "lefthook": "^2.1.17",
+    "lerna": "^10.0.1",
     "oxfmt": "^0.72.0",
     "oxlint": "^1.87.0",
     "ultracite": "^7.12.4"

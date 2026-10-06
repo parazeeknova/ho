@@ -17,3 +17,8 @@ pre-commit:
       run: bun --cwd apps/web typecheck
     version-bump:
       run: uv run python scripts/version_manager.py
+
+pre-push:
+  commands:
+    pytest:
+      run: uv run python -m pytest . --ignore=refs -n 4 --dist loadfile -q --tb=short

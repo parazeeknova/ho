@@ -44,12 +44,31 @@ async def test_build_job_embed() -> None:
 
 def test_autofill_queue_lines_guards() -> None:
     import asyncio
+    from unittest.mock import AsyncMock, patch
 
     from src.agent.discord_agent import autofill_queue_lines
 
-    lines = asyncio.run(autofill_queue_lines())
+    # Hermetic: the helper reads the live autofill queue DB; stub the store so
+    # the test exercises the line formatting, not the database.
+    fake = AsyncMock()
+    fake.queue_summary = AsyncMock(
+        return_value={
+            "applied": 3,
+            "awaiting_review": 1,
+            "deferred": 2,
+            "failed": 0,
+            "filling": 0,
+            "open": 5,
+            "pending": 1,
+        }
+    )
+    with patch("autofill.src.core.db.AutofillDB.create", new=AsyncMock(return_value=fake)):
+        lines = asyncio.run(autofill_queue_lines())
     assert isinstance(lines, list)
     assert any("Applied" in line for line in lines)
+    assert "**Applied:** 3" in lines
+    assert "**Remaining:** 1" in lines
+    assert "**Need Review:** 3" in lines
 
 
 def test_parse_instruction_urls() -> None:

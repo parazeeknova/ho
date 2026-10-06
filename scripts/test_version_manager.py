@@ -237,6 +237,28 @@ def test_e2e_pyproject_bump_syncs_and_stages_lock(
     assert "uv.lock" in _git(root, "diff", "--cached", "--name-only")
 
 
+@needs_git
+def test_e2e_root_bump_syncs_lerna_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "package.json").write_text('{"name": "r", "version": "0.0.1"}\n')
+    (root / "pyproject.toml").write_text('[project]\nname = "r"\nversion = "0.0.1"\n')
+    (root / "lerna.json").write_text('{"packages": ["apps/*"], "version": "0.0.1"}\n')
+    _git(root, "init", "-q")
+    _git(root, "config", "user.email", "t@t.t")
+    _git(root, "config", "user.name", "t")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-qm", "init")
+
+    monkeypatch.chdir(root)
+    assert vm.main([]) == 0
+    assert "synced lerna.json" in capsys.readouterr().out
+    assert json.loads((root / "lerna.json").read_text())["version"] == "0.0.2"
+    assert "lerna.json" in _git(root, "diff", "--cached", "--name-only")
+
+
 # -- planning ------------------------------------------------------------------
 
 

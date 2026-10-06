@@ -16,7 +16,8 @@ Behavior (wired into the ``pre-commit`` hook so it runs on every commit):
 Bumped manifests are staged with ``git add`` so they land in the same commit.
 When a ``pyproject.toml`` version moves, the matching ``[[package]]`` entry in
 ``uv.lock`` is synced to the same version (otherwise ``uv run`` would dirty the
-tree right after every commit).
+tree right after every commit). The root ``package.json`` bump also syncs
+``lerna.json``'s ``version`` field when that file exists.
 The tool never fails the commit: unreadable files or unparseable versions
 produce a warning and are skipped.
 """
@@ -328,6 +329,15 @@ def main(argv: list[str] | None = None) -> int:
             print(f"synced uv.lock ({project_name}): -> {bump.new}")
             if not args.no_stage:
                 stage_files(root, ["uv.lock"])
+    for bump in plan:
+        if bump.manifest.kind == "package-json" and bump.manifest.scope == "root":
+            lerna_json = root / "lerna.json"
+            if lerna_json.is_file() and _read_package_json_version(lerna_json) is not None:
+                write_package_json_version(lerna_json, bump.new)
+                print(f"synced lerna.json: -> {bump.new}")
+                if not args.no_stage:
+                    stage_files(root, ["lerna.json"])
+            break
     return 0
 
 

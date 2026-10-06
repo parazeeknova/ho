@@ -1,6 +1,6 @@
 [project]
 name = "ho"
-version = "0.1.6"
+version = "0.1.7"
 description = "Thy Job shall be mine"
 requires-python = ">=3.14"
 dependencies = [
@@ -78,6 +78,7 @@ dev = [
   "pytest>=9.1.1",
   "pytest-asyncio>=1.4.0",
   "pytest-mock>=3.15.1",
+  "pytest-xdist>=3.8.0,<4.0.0",
   "ruff>=0.16.0",
   "ty>=0.0.84",
 ]

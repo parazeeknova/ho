@@ -48,7 +48,10 @@ async def test_lookup_identity_field_matches_identity_chunk():
             {"category": "identity", "question": "?", "answer": "too far", "distance": 0.9},
         ]
     )
-    assert await _lookup_identity_field(store, "firstName") == "Aman"
+    # Hermetic: the lookup embeds the query first; stub it so the test does not
+    # need a live embedding provider (EMBED_URL).
+    with patch("autofill.src.screener.rag._embed_text", new=AsyncMock(return_value=[0.1, 0.2])):
+        assert await _lookup_identity_field(store, "firstName") == "Aman"
 
 
 @pytest.mark.asyncio

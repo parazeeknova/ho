@@ -1,0 +1,20 @@
+{
+  "$schema": "https://nx.dev/reference/nx-json",
+  "targetDefaults": {
+    "build": {
+      "cache": true
+    },
+    "test": {
+      "cache": true
+    },
+    "lint": {
+      "cache": true
+    },
+    "format:check": {
+      "cache": true
+    },
+    "typecheck": {
+      "cache": true
+    }
+  }
+}
