@@ -1,0 +1,106 @@
+name: publish
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  packages: write
+  actions: write
+
+jobs:
+  checks:
+    uses: ./.github/workflows/checks.yml
+
+  detect:
+    name: detect-changed-images
+    needs: checks
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.diff.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: diff
+        run: |
+          before=${{ github.event.before }}
+          sha=${{ github.sha }}
+          if [[ "$before" == 0000* ]]; then
+            # No history to diff against (fresh branch): build everything once.
+            echo 'matrix={"include":[{"image":"ho-web","dockerfile":"apps/web/Dockerfile"},{"image":"ho-node-service","dockerfile":"packages/node/Dockerfile"},{"image":"ho-ingest","dockerfile":"packages/ingest/Dockerfile"},{"image":"ho-ml","dockerfile":"packages/ml/Dockerfile"}]}' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          files=$(git diff --name-only "$before" "$sha")
+          echo "changed files:"; echo "$files"
+          has() { echo "$files" | grep -qE "$1"; }
+          # True only when uv.lock changed beyond the routine root-version sync
+          # the version manager performs on every commit (that line alone must
+          # NOT rebuild the python images). Compares the resolved third-party
+          # package sets, ignoring the virtual root project itself.
+          uv_real_change() {
+            if ! git show "$before":uv.lock > /tmp/uv-old.lock 2>/dev/null; then
+              return 0
+            fi
+            python3 - "$PWD/uv.lock" /tmp/uv-old.lock <<'EOF'
+          import sys, tomllib
+          def pkgs(p):
+              with open(p, "rb") as f:
+                  d = tomllib.load(f)
+              return {pkg["name"]: pkg.get("version") for pkg in d.get("package", []) if pkg.get("source") != {"virtual": "."}}
+          sys.exit(0 if pkgs(sys.argv[1]) != pkgs(sys.argv[2]) else 1)
+          EOF
+          }
+          web=false; nodesvc=false; ingest=false; ml=false
+          if has '^apps/web/'; then web=true; fi
+          if has '^packages/node/'; then nodesvc=true; fi
+          if has '^packages/ingest/'; then ingest=true; fi
+          if has '^packages/ml/'; then ml=true; fi
+          # bun.lock carries no project versions (only dep ranges), so any
+          # change there is a real dependency change for both node images.
+          if git diff --name-only "$before" "$sha" -- bun.lock | grep -q .; then
+            web=true; nodesvc=true
+          fi
+          if git diff --name-only "$before" "$sha" -- uv.lock | grep -q .; then
+            if uv_real_change; then
+              ingest=true; ml=true
+            fi
+          fi
+          entries=""
+          if $web; then entries="$entries{\"image\":\"ho-web\",\"dockerfile\":\"apps/web/Dockerfile\"},"; fi
+          if $nodesvc; then entries="$entries{\"image\":\"ho-node-service\",\"dockerfile\":\"packages/node/Dockerfile\"},"; fi
+          if $ingest; then entries="$entries{\"image\":\"ho-ingest\",\"dockerfile\":\"packages/ingest/Dockerfile\"},"; fi
+          if $ml; then entries="$entries{\"image\":\"ho-ml\",\"dockerfile\":\"packages/ml/Dockerfile\"},"; fi
+          echo "matrix={\"include\":[${entries%,}]}" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: build+push ${{ matrix.image }}
+    needs: detect
+    if: needs.detect.outputs.matrix != '{"include":[]}'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJSON(needs.detect.outputs.matrix) }}
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v7
+      - id: repo
+        run: echo "owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          # Per-image scoped cache: unchanged layers (deps, browsers) restore
+          # in seconds; only the layers after changed files rebuild.
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+          tags: |
+            ghcr.io/${{ steps.repo.outputs.owner }}/${{ matrix.image }}:latest
+            ghcr.io/${{ steps.repo.outputs.owner }}/${{ matrix.image }}:sha-${{ github.sha }}

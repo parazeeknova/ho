@@ -26,15 +26,18 @@ class FakePage {
   }
 
   locator(sel: string) {
+    const readBanner = async () => {
+      if (sel.includes("alert") || sel.includes("error")) {
+        return this._errors[0] ?? "";
+      }
+      return "";
+    };
     return {
       first: () => ({
-        innerText: async () => {
-          if (sel.includes("alert") || sel.includes("error")) {
-            return this._errors[0] ?? "";
-          }
-          return "";
-        },
+        innerText: readBanner,
         isVisible: async () => this._submitVisible,
+        // verifySubmitOutcome reads error banners via textContent(); mirror it.
+        textContent: readBanner,
       }),
     };
   }
@@ -68,6 +71,8 @@ class FakePage {
       document: {
         body: {
           innerText: this._bodyText,
+          // verifySubmitOutcome reads document.body.textContent, not innerText.
+          textContent: this._bodyText,
         },
       },
     };
