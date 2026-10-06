@@ -248,7 +248,6 @@ def get_system_metrics() -> dict[str, str]:
 
 async def run_health_checks() -> str:
     checks = [
-        ("llama-server (Embed)", _check_http("http://localhost:8900/health")),
         ("SearXNG", _check_http("http://localhost:8080")),
         ("agent-memory-db (pgvector)", _check_port("localhost", 5433)),
         ("Neo4j Graph Store", _check_port("localhost", 7687)),

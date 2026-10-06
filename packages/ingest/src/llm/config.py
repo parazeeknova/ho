@@ -1,4 +1,4 @@
-"""Local llama.cpp model routing and configuration (backward compat re-exports)."""
+"""LLM model routing and embedding configuration (backward compat re-exports)."""
 
 from __future__ import annotations
 
@@ -18,12 +18,8 @@ EMBED_QUERY_INSTRUCTION = (
 class EmbedConfig:
     """Backward-compat wrapper matching the old api."""
 
-    base_url: str = field(
-        default_factory=lambda: os.getenv("EMBED_URL", "http://127.0.0.1:8900/v1")
-    )
-    model: str = field(
-        default_factory=lambda: os.getenv("EMBED_MODEL", "Qwen/Qwen3-Embedding-0.6B")
-    )
+    base_url: str = field(default_factory=lambda: os.getenv("EMBED_URL", ""))
+    model: str = field(default_factory=lambda: os.getenv("EMBED_MODEL", "gemini-embedding-001"))
     context_length: int = 32768
 
 

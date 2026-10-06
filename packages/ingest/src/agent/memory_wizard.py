@@ -9,7 +9,7 @@ build/embed logic (``build_persona``), but instead of a rich prompt the host
   answer; ``None`` means the user skipped. ``meta`` carries ``buttons``
   (labels to render) and ``hint`` (current value to show).
 
-The wizard checks infra (postgres + embedding server), indexes the resume,
+The wizard checks infra (postgres), indexes the resume,
 grills only the persona data that is still missing, accepts optional extra
 Q&A, rebuilds memory, and returns a summary line.
 """
@@ -20,7 +20,6 @@ import asyncio
 import json
 import os
 import re
-import subprocess
 import sys
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -60,7 +59,6 @@ from grill_persona import (  # type: ignore[import-not-found]  # noqa: E402
 )
 from init_memory import (  # type: ignore[import-not-found]  # noqa: E402
     _start_postgres,
-    embed_server_ready,
 )
 
 AskFn = Callable[[str, dict[str, Any]], Awaitable[str | None]]
@@ -202,31 +200,7 @@ class MemoryWizard:
                     "Could not start Postgres. Start it manually:\n"
                     "`docker compose -f packages/ingest/docker-compose.yaml up -d agent-memory-db`"
                 ) from None
-        if not await embed_server_ready():
-            await self.log("Embedding server is down — spawning `scripts/serve.py`...")
-            if not await self._ensure_embed_server():
-                raise MemoryWizardError(
-                    "Embedding server unavailable. Start it with "
-                    "`uv run python packages/ingest/scripts/serve.py` and run /memory again."
-                ) from None
-        await self.log("Infra ready · Postgres :5433 · embeddings :8900")
-
-    async def _ensure_embed_server(self) -> bool:
-        log = Path("/tmp/opencode") if Path("/tmp/opencode").exists() else Path("/tmp")
-        log = log / "embed_server.log"
-        with open(log, "a") as out:
-            proc = subprocess.Popen(
-                [sys.executable, str(ROOT / "scripts" / "serve.py")],
-                stdout=out,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-            )
-        await self.log(f"Spawned serve.py (pid {proc.pid}); waiting for health...")
-        for _ in range(60):
-            if await embed_server_ready():
-                return True
-            await asyncio.sleep(1)
-        return False
+        await self.log("Infra ready · Postgres :5433")
 
     # ── resume ────────────────────────────────────────────────────────
 

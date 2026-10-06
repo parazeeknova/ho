@@ -1,4 +1,4 @@
-"""Batch-embed the job corpus into ``obs_embeddings`` via the local embed server.
+"""Batch-embed the job corpus into ``obs_embeddings`` via the embed provider.
 
 Usage:
     uv run python3 scripts/embed/embed_obs.py [--all] [--limit N]
@@ -8,9 +8,8 @@ so re-running just continues from where it stopped. Software-role titles are
 embedded first (the matcher budget lives there); pass ``--all`` to embed the
 whole corpus rather than the software-first default.
 
-The embed server (llama-server on :8900, Qwen3-Embedding-0.6B) is local and
-free, so this costs no LLM tokens. It shares the server with the live
-pipeline, so it throttles itself politely.
+Embeddings are fetched from the external provider configured via EMBED_URL /
+EMBED_MODEL. Batch backfills are throttled politely.
 """
 
 from __future__ import annotations

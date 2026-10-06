@@ -32,6 +32,6 @@ class TestLLMConfig:
 class TestEmbedConfig:
     def test_default_values(self) -> None:
         cfg = EmbedConfig()
-        assert cfg.base_url == "http://127.0.0.1:8900/v1"
-        assert cfg.model == "Qwen/Qwen3-Embedding-0.6B"
+        assert cfg.base_url == ""
+        assert cfg.model == "gemini-embedding-001"
         assert cfg.context_length == 32768

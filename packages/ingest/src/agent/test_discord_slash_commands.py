@@ -281,7 +281,7 @@ async def test_status_includes_last_error() -> None:
 @pytest.mark.asyncio
 async def test_health_reports_services(monkeypatch) -> None:
     async def fake_health() -> str:
-        return "**System Health Check**\n\n✅ llama-server (Embed)\n✅ agent-memory-db (pgvector)"
+        return "**System Health Check**\n\n✅ agent-memory-db (pgvector)"
 
     from src.agent import discord_agent
 

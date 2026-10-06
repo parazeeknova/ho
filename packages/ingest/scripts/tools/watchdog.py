@@ -2,7 +2,6 @@
 """Self-healing watchdog for the ho pipeline.
 
 Runs every CHECK_INTERVAL seconds and repairs any component that died:
-  * llama-server embedding service (:8900)          -> relaunch scripts/serve.py
   * infra containers (searxng, neo4j, agent-memory) -> podman start / compose up
   * pipeline supervisor (scripts/run.py)            -> full relaunch if dead
 
@@ -30,7 +29,6 @@ CHECK_INTERVAL = 60
 COOLDOWN = 180  # per-component minimum seconds between heal attempts
 PIPELINE_COOLDOWN = 300  # run.py can take >3min to come up; avoid double relaunch
 
-EMBED_HEALTH = "http://127.0.0.1:8900/health"
 CONTAINERS = [
     "ho_searxng_1",
     "ho_neo4j_1",
@@ -95,18 +93,6 @@ class Watchdog:
         self._last[key] = now
         return True
 
-    def heal_embed(self) -> None:
-        code, _ = sh(f"curl -s -o /dev/null -w '%{{http_code}}' {EMBED_HEALTH}")
-        if code == 0 and "200" in _:
-            return
-        log("embedding server down, relaunching serve.py")
-        sh("pkill -f 'scripts/serve.py' 2>/dev/null; pkill -x llama-server 2>/dev/null")
-        time.sleep(2)
-        run_detached(
-            f"cd {PROJECT} && nohup uv run python3 scripts/serve.py "
-            f"> {PROJECT / 'logs' / 'serve.out'} 2>&1 &"
-        )
-
     def heal_containers(self) -> dict[str, str]:
         statuses: dict[str, str] = {}
         for name in CONTAINERS:
@@ -141,7 +127,6 @@ class Watchdog:
 
     def cycle(self) -> None:
         try:
-            self.heal_embed()
             statuses = self.heal_containers()
             self.heal_pipeline(statuses)
         except Exception as exc:
@@ -258,7 +243,6 @@ def main() -> None:
         sys.exit(0)
     log(f"watchdog started (interval={CHECK_INTERVAL}s, ingest_only={ingest_only})")
     wd = Watchdog()
-    time.sleep(15)  # let a mid-start embedding server finish loading before first check
     if ingest_only:
         wd.cycle_ingest_only()
     else:

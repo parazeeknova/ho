@@ -11,7 +11,7 @@ Candidates are matched in two passes:
 - Pass 2 (expensive LLM): only high-similarity JDs are sent to the
   GeneralCompute LLM for the final verdict and skill extraction.
 
-If the gate cannot run (no store, empty embedding index, embed server
+If the gate cannot run (no store, empty embedding index, embedding provider
 down) the candidate passes through to the LLM so infra hiccups never
 drop candidates.
 """
@@ -479,7 +479,7 @@ async def _resume_chunks_for(
     prompt's resume digest, so a single embed + search serves both.
 
     Returns ``None`` when the gate cannot run (no store, no chunk index,
-    embed server down). Callers must pass ``None`` through to the LLM.
+    embedding provider down). Callers must pass ``None`` through to the LLM.
     """
     if store is None or not hasattr(store, "search_similar_chunks"):
         return None

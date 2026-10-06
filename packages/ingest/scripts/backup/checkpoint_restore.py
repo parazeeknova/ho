@@ -13,7 +13,7 @@ Run:
     uv run python scripts/backup/checkpoint_restore.py                # latest
     uv run python scripts/backup/checkpoint_restore.py --dir checkpoints/20260802-123456
     uv run python scripts/backup/checkpoint_restore.py \
-        --vol firecrawl_agent_memory_data  # latest, one vol
+        --vol ho_agent_memory_data  # latest, one vol
 """
 
 from __future__ import annotations
@@ -31,9 +31,9 @@ CHECKPOINT_DIR = PROJECT / "checkpoints"
 
 # Which container mounts a given volume (so we can restart it safely).
 VOLUME_TO_CONTAINER = {
-    "firecrawl_agent_memory_data": "firecrawl_agent-memory-db_1",
-    "firecrawl_neo4j_data": "firecrawl_neo4j_1",
-    "firecrawl_neo4j_logs": "firecrawl_neo4j_1",
+    "ho_agent_memory_data": "ho_agent-memory-db_1",
+    "ho_neo4j_data": "ho_neo4j_1",
+    "ho_neo4j_logs": "ho_neo4j_1",
 }
 
 
