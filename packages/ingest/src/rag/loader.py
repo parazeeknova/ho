@@ -181,7 +181,7 @@ def load_resume(default_url: str | None = None) -> tuple[str, dict[str, str]]:
 
     import questionary
 
-    url = default_url or os.environ.get("RESUME_URL")
+    url = default_url
     is_non_interactive = (
         bool(url)
         or os.environ.get("NON_INTERACTIVE", "false").lower() == "true"
@@ -190,14 +190,23 @@ def load_resume(default_url: str | None = None) -> tuple[str, dict[str, str]]:
 
     if not url:
         if is_non_interactive:
-            url = "https://f.przknv.cc/raw/ayEBJQ.pdf"
+            # No resume configured (single-user links are gone; per-user
+            # onboarding owns this long-term). Boot degraded: callers fall
+            # back to persona text for matching context.
+            print("  No resume source configured — continuing without resume text.")
+            return "", {}
         else:
             url = questionary.text("Resume URL (PDF/DOCX/HTML):").ask()
 
     if not url:
-        raise ValueError("No URL provided")
+        print("  No resume URL provided — continuing without resume text.")
+        return "", {}
 
-    path, content_type = download_resume(url)
+    try:
+        path, content_type = download_resume(url)
+    except Exception as e:
+        print(f"  Resume download failed ({e}) — continuing without resume text.")
+        return "", {}
 
     text = extract_text(path)
 
@@ -260,19 +269,19 @@ def chunk_resume(text: str) -> dict[str, str]:
 async def index_resume_in_pgvector(
     chunks: dict[str, str],
     store,
+    portfolio_url: str | None = None,
 ) -> dict[str, int]:
     """Index resume (+ portfolio) chunks into resume_embeddings.
 
     Returns {section: count} of chunks actually indexed this call, so callers
     can report what was refreshed (e.g. a fresh portfolio scrape).
     """
-    import os
-
-    # Enrich the resume chunks with the candidate's portfolio site (PORTFOLIO_URL)
-    # when set. The portfolio carries richer project data (real stacks, revenue,
+    # Enrich the resume chunks with the candidate's portfolio site when the
+    # caller passes one explicitly (per-user onboarding owns this long-term).
+    # The portfolio carries richer project data (real stacks, revenue,
     # detailed descriptions) than the resume PDF, which is what the matcher
     # should ground on. Best-effort: a scrape failure never fails indexing.
-    portfolio_url = os.environ.get("PORTFOLIO_URL", "").strip()
+    portfolio_url = (portfolio_url or "").strip()
     portfolio_source = ""
     if portfolio_url:
         try:

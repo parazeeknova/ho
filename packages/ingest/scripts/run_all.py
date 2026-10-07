@@ -116,24 +116,6 @@ def _compose_up() -> bool:
     return True
 
 
-def _preflight_backup() -> None:
-    """Checkpoint volumes before the sweep starts (fire-and-forget, 90s cap)."""
-    import subprocess as _sp
-
-    try:
-        print("[ho] pre-run backup (checkpoint)...", flush=True)
-        r = _sp.run(
-            ["uv", "run", "python", "scripts/backup/auto_backup.py"],
-            cwd=str(PROJECT),
-            capture_output=True,
-            text=True,
-            timeout=90,
-        )
-        print(f"[ho] backup: {r.stdout.strip()[-200:] if r.stdout else 'ok'}", flush=True)
-    except Exception as e:
-        print(f"[ho] backup skipped: {e}", flush=True)
-
-
 async def _ensure_infra() -> bool:
     if not _compose_up():
         return False
@@ -144,8 +126,6 @@ async def _ensure_infra() -> bool:
             ok = False
         else:
             print(f"[ho] ✓ {name} ready", flush=True)
-    # Pre-run backup once infra is confirmed
-    _preflight_backup()
     return ok
 
 
@@ -265,6 +245,34 @@ def _ensure_memory() -> None:
                     )
         except Exception as e:
             print(f"[ho] persona wizard prompt skipped ({e})", flush=True)
+
+
+async def _check_embeds() -> bool:
+    """Ping the embedding provider once before spawning workers.
+
+    Semantic matching/RAG cannot run without vectors; fail fast with a clear
+    message instead of letting every worker die on its first embed call.
+    """
+    sys.path.insert(0, str(PROJECT))
+    if str(REPO / "packages") not in sys.path:
+        sys.path.insert(0, str(REPO / "packages"))
+    try:
+        from src.llm.embed_client import embed_one
+    except Exception as e:
+        print(f"[ho] embeddings: client import failed ({e}); aborting", flush=True)
+        return False
+    try:
+        vec = await embed_one("connectivity check")
+    except Exception as e:
+        print(f"[ho] embeddings: request failed ({e}); aborting", flush=True)
+        return False
+    if not vec:
+        print("[ho] embeddings unreachable — matching is dead without vectors.", flush=True)
+        print("[ho] fix: set GEMINI_API_KEY and enable billing for Gemini API", flush=True)
+        return False
+    model = os.environ.get("EMBED_MODEL", "?")
+    print(f"[ho] embeddings: ok ({len(vec)}d via {model})", flush=True)
+    return True
 
 
 async def _run_loop(args: argparse.Namespace) -> int:
@@ -848,7 +856,7 @@ def _status_report(watch: bool = False) -> int:
                         stats = await _collect_all_stats()
                         live.update(_render(stats))
                         await asyncio.sleep(1.5)
-            except KeyboardInterrupt, asyncio.CancelledError:
+            except (KeyboardInterrupt, asyncio.CancelledError):  # fmt: skip
                 console.print("\n[dim]Status monitor exited.[/dim]")
                 return 0
         else:
@@ -893,7 +901,7 @@ def _reap_pipeline_orphans(sig: str = "KILL", grace_s: float = 1.0) -> None:
                             continue
                         seen.add(pid_i)
                         os.kill(pid_i, getattr(signal, "SIG" + signal_name))
-                    except ValueError, ProcessLookupError:
+                    except (ValueError, ProcessLookupError):  # fmt: skip
                         pass
 
     _sig("INT")
@@ -1112,7 +1120,7 @@ def main() -> int:
             _stop_pipeline_tree(old_pid)
             time.sleep(2)
             lock_path.unlink(missing_ok=True)
-        except ProcessLookupError, ValueError:
+        except (ProcessLookupError, ValueError):  # fmt: skip
             lock_path.unlink(missing_ok=True)
     else:
         # No lock file, but a pipeline may still be running (e.g. a run started
@@ -1128,6 +1136,8 @@ def main() -> int:
     async def _run() -> int:
         if not await _ensure_infra():
             print("[ho] infra failed; aborting", flush=True)
+            return 1
+        if not await _check_embeds():
             return 1
         # Autoheal: if containers exist but are Exited, restart them
         _autoheal_containers()
@@ -1233,10 +1243,10 @@ def _autoheal_containers() -> None:
     import subprocess as _sp
 
     for name in (
-        "ho_searxng_1",
-        "ho_agent-memory-db_1",
-        "ho_neo4j_1",
-        "ho_redis_1",
+        "ho-searxng",
+        "ho-agent-memory-db",
+        "ho-neo4j",
+        "ho-redis",
     ):
         try:
             r = _sp.run(
@@ -1251,7 +1261,7 @@ def _autoheal_containers() -> None:
                 _sp.run(["podman", "start", name], capture_output=True, timeout=15)
             elif status == "missing":
                 print(f"[ho] autoheal: {name} missing — compose up", flush=True)
-                svc = name.replace("ho_", "").replace("_1", "")
+                svc = name.removeprefix("ho-")
                 _sp.run(
                     ["docker", "compose", "-f", str(COMPOSE), "up", "-d", svc],
                     capture_output=True,

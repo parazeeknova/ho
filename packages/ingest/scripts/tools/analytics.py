@@ -97,7 +97,7 @@ def _volume_sizes() -> dict[str, str]:
             try:
                 sizes[vol] = _fmt(int(out.split()[0]) * 1024)
                 continue
-            except ValueError, IndexError:
+            except (ValueError, IndexError):  # fmt: skip
                 pass
         # fallback to raw path
         p = Path.home() / ".local/share/containers/storage/volumes" / vol / "_data"

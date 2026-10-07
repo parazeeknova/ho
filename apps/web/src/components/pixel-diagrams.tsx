@@ -1,5 +1,7 @@
 // Pixel diagrams for the landing page. Everything is drawn on integer grids
 // with crispEdges so it reads as pixel art, not vector illustration.
+import { useEffect, useState } from "react";
+
 const T = { fontFamily: "var(--font-pixel)" } as const;
 
 /* ---------- 1. The decision loop ---------- */
@@ -287,108 +289,280 @@ const EDGES: [string, string][] = [
 ];
 const H = 12;
 
+/* ---------- 3b. Pixel walkers that hop the pipeline ---------- */
+// One small, simple side-view sprite in the classic platformer idiom: red cap
+// or green cap, blue overalls, two little legs. It faces right, hops from block
+// to block along the graph and drops into each node. Drawn on a 10x13 grid.
+type Palette = Record<string, string>;
+const RED: Palette = {
+  B: "oklch(0.3 0.05 55)",
+  C: "oklch(0.58 0.16 28)",
+  K: "oklch(0.2 0.02 60)",
+  O: "oklch(0.5 0.16 258)",
+  S: "oklch(0.78 0.09 62)",
+};
+const GREEN: Palette = { ...RED, C: "oklch(0.5 0.13 148)" };
+
+const WALKER = [
+  "..CCC.....",
+  ".CCCCCC...",
+  ".CCCCCCC..",
+  ".KKKKKK...",
+  ".KSSSSK...",
+  ".KSKSS....",
+  "..SSSS....",
+  "..COOC....",
+  ".COOOO....",
+  "..OOOO....",
+  "..OO.OO...",
+  "..OO.OO...",
+  ".BB..BB...",
+];
+
+function toCells(rows: string[]) {
+  const out: [number, number, string][] = [];
+  for (const [y, row] of rows.entries()) {
+    for (const [x, c] of [...row].entries()) {
+      if (c !== ".") {
+        out.push([x, y, c]);
+      }
+    }
+  }
+  return out;
+}
+const WALKER_CELLS = toCells(WALKER);
+const WALKER_BODY = WALKER_CELLS.filter(([, cy]) => cy < 11);
+const WALKER_LEG_FRONT = WALKER_CELLS.filter(([cx, cy]) => cy >= 11 && cx >= 5);
+const WALKER_LEG_BACK = WALKER_CELLS.filter(([cx, cy]) => cy >= 11 && cx < 5);
+
+function Walker({ palette, delay }: { palette: Palette; delay: number }) {
+  const scale = 1.5;
+  const paint = (cells: [number, number, string][]) =>
+    cells.map(([cx, cy, ch]) => (
+      <rect
+        key={`${cx}-${cy}`}
+        x={cx}
+        y={cy}
+        width={1}
+        height={1}
+        fill={palette[ch]}
+      />
+    ));
+  return (
+    <g transform={`scale(${scale})`}>
+      <g transform={`translate(1 ${-WALKER.length})`}>{paint(WALKER_BODY)}</g>
+      <g
+        transform={`translate(1 ${-WALKER.length})`}
+        className="walker-leg-front"
+        style={{ animationDelay: `${delay + 0.15}s` }}
+      >
+        {paint(WALKER_LEG_FRONT)}
+      </g>
+      <g
+        transform={`translate(1 ${-WALKER.length})`}
+        className="walker-leg-back"
+        style={{ animationDelay: `${delay}s` }}
+      >
+        {paint(WALKER_LEG_BACK)}
+      </g>
+    </g>
+  );
+}
+
+const NARRATION: { at: number; who: 0 | 1; line: string }[] = [
+  { at: 0, line: "Fresh postings land here first", who: 0 },
+  { at: 1, line: "Queued and leased out, one at a time", who: 1 },
+  { at: 2, line: "Parsed into clean, structured fields", who: 0 },
+  { at: 3, line: "Same role from ten boards collapses to one", who: 1 },
+  { at: 5, line: "Skills go to the graph, meaning to the vectors", who: 0 },
+  { at: 6, line: "Both feed one honest feature set", who: 1 },
+  { at: 7, line: "The ranker scores every role against you", who: 0 },
+  { at: 8, line: "The bandit decides what is worth applying to", who: 1 },
+];
+
+function Narration() {
+  const [step, setStep] = useState(0);
+  useEffect(() => {
+    const reduce =
+      typeof window !== "undefined" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduce) {
+      return;
+    }
+    const id = setInterval(
+      () => setStep((s) => (s + 1) % NARRATION.length),
+      3200
+    );
+    return () => clearInterval(id);
+  }, []);
+
+  const current = NARRATION[step];
+
+  return (
+    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-sm">
+      <span
+        className="font-pixel shrink-0"
+        style={{ color: current?.who === 0 ? RED["C"] : GREEN["C"] }}
+      >
+        {current?.who === 0 ? "RED" : "GREEN"}
+      </span>
+      <span className="text-muted-foreground">{current?.line}</span>
+      <span className="font-pixel text-foreground/40 text-xs">
+        {`0${(current?.at ?? 0) + 1}`}
+      </span>
+    </div>
+  );
+}
+
 export function PipelineDiagram() {
   const by = Object.fromEntries(NODES.map((n) => [n.id, n]));
+  const walkers = [
+    {
+      dur: "24s",
+      id: "w0",
+      palette: RED,
+      path: ["s", "f", "p", "d", "g", "x", "r"],
+    },
+    {
+      dur: "31s",
+      id: "w1",
+      palette: GREEN,
+      path: ["s", "f", "p", "d", "v", "x", "e"],
+    },
+  ];
   return (
-    <div className="no-scrollbar -mx-2 overflow-x-auto px-2">
-      <svg
-        viewBox="0 0 264 58"
-        shapeRendering="crispEdges"
-        className="w-full min-w-[760px]"
-        role="img"
-        aria-label="Discovery pipeline from sources to ranking"
-      >
-        {EDGES.map(([a, b]) => {
-          const A = by[a];
-          const B = by[b];
-          if (A === undefined || B === undefined) {
-            throw new Error(`Missing node for edge ${a}-${b}`);
-          }
-          const x1 = A.x + A.w;
-          const y1 = A.y + H / 2;
-          const x2 = B.x;
-          const y2 = B.y + H / 2;
-          const mx = Math.round((x1 + x2) / 2);
-          const segs: [number, number][] = [];
-          for (let x = x1 + 1; x < mx; x += 2) {
-            segs.push([x, y1]);
-          }
-          for (let y = Math.min(y1, y2); y <= Math.max(y1, y2); y += 2) {
-            segs.push([mx, y]);
-          }
-          for (let x = mx; x < x2 - 1; x += 2) {
-            segs.push([x, y2]);
-          }
-          return (
-            <g key={a + b}>
-              {segs.map(([x, y]) => (
+    <div>
+      <Narration />
+      <div className="no-scrollbar -mx-2 overflow-x-auto px-2">
+        <svg
+          viewBox="0 0 264 58"
+          shapeRendering="crispEdges"
+          className="w-full min-w-[760px]"
+          role="img"
+          aria-label="Discovery pipeline from sources to ranking"
+        >
+          {EDGES.map(([a, b]) => {
+            const A = by[a];
+            const B = by[b];
+            if (A === undefined || B === undefined) {
+              throw new Error(`Missing node for edge ${a}-${b}`);
+            }
+            const x1 = A.x + A.w;
+            const y1 = A.y + H / 2;
+            const x2 = B.x;
+            const y2 = B.y + H / 2;
+            const mx = Math.round((x1 + x2) / 2);
+            const segs: [number, number][] = [];
+            for (let x = x1 + 1; x < mx; x += 2) {
+              segs.push([x, y1]);
+            }
+            for (let y = Math.min(y1, y2); y <= Math.max(y1, y2); y += 2) {
+              segs.push([mx, y]);
+            }
+            for (let x = mx; x < x2 - 1; x += 2) {
+              segs.push([x, y2]);
+            }
+            return (
+              <g key={a + b}>
+                {segs.map(([x, y]) => (
+                  <rect
+                    key={`${x}-${y}`}
+                    x={x}
+                    y={y - 0.5}
+                    width={1}
+                    height={1}
+                    className="fill-bark/60"
+                  />
+                ))}
                 <rect
-                  key={`${x}-${y}`}
-                  x={x}
-                  y={y - 0.5}
+                  x={x2 - 2}
+                  y={y2 - 1.5}
                   width={1}
-                  height={1}
-                  className="fill-bark/60"
+                  height={3}
+                  className="fill-bark"
                 />
-              ))}
+              </g>
+            );
+          })}
+          {NODES.map((n) => (
+            <g key={n.id}>
               <rect
-                x={x2 - 2}
-                y={y2 - 1.5}
-                width={1}
-                height={3}
-                className="fill-bark"
+                x={n.x}
+                y={n.y}
+                width={n.w}
+                height={H}
+                className={n.hot ? "fill-honey/25" : "fill-moss/15"}
               />
-            </g>
-          );
-        })}
-        {NODES.map((n) => (
-          <g key={n.id}>
-            <rect
-              x={n.x}
-              y={n.y}
-              width={n.w}
-              height={H}
-              className={n.hot ? "fill-honey/25" : "fill-moss/15"}
-            />
-            <rect
-              x={n.x}
-              y={n.y}
-              width={n.w}
-              height={1}
-              className={n.hot ? "fill-honey" : "fill-moss"}
-            />
-            <rect
-              x={n.x}
-              y={n.y + H - 1}
-              width={n.w}
-              height={1}
-              className="fill-foreground/10"
-            />
-            <text
-              x={n.x + n.w / 2}
-              y={n.y + (n.sub ? 5.4 : 7.3)}
-              textAnchor="middle"
-              fontSize={3.6}
-              style={T}
-              className="fill-foreground"
-            >
-              {n.label}
-            </text>
-            {n.sub && (
+              <rect
+                x={n.x}
+                y={n.y}
+                width={n.w}
+                height={1}
+                className={n.hot ? "fill-honey" : "fill-moss"}
+              />
+              <rect
+                x={n.x}
+                y={n.y + H - 1}
+                width={n.w}
+                height={1}
+                className="fill-foreground/10"
+              />
               <text
                 x={n.x + n.w / 2}
-                y={n.y + 9.6}
+                y={n.y + (n.sub ? 5.4 : 7.3)}
                 textAnchor="middle"
-                fontSize={2.5}
-                className="fill-muted-foreground"
-                style={{ fontFamily: "var(--font-sans)" }}
+                fontSize={3.6}
+                style={T}
+                className="fill-foreground"
               >
-                {n.sub}
+                {n.label}
               </text>
-            )}
-          </g>
-        ))}
-      </svg>
+              {n.sub && (
+                <text
+                  x={n.x + n.w / 2}
+                  y={n.y + 9.6}
+                  textAnchor="middle"
+                  fontSize={2.5}
+                  className="fill-muted-foreground"
+                  style={{ fontFamily: "var(--font-sans)" }}
+                >
+                  {n.sub}
+                </text>
+              )}
+            </g>
+          ))}
+          {walkers.map((wk) => {
+            const hops = wk.path
+              .map((id) => by[id])
+              .filter((n) => n !== undefined);
+            const [first] = hops;
+            if (first === undefined) {
+              return null;
+            }
+            const x0 = first.x + first.w / 2 - 5;
+            const y0 = first.y + H;
+            let d = `M${x0} ${y0}`;
+            for (const n of hops.slice(1)) {
+              d += ` Q ${n.x + n.w / 2 - 5} ${n.y - 12} ${n.x + n.w / 2 - 5} ${n.y + H}`;
+            }
+            return (
+              <g key={wk.id}>
+                <g transform={`translate(${x0} ${y0})`}>
+                  <animateMotion
+                    dur={wk.dur}
+                    repeatCount="indefinite"
+                    path={d}
+                    keyPoints="0;1;1"
+                    keyTimes="0;0.96;1"
+                    calcMode="linear"
+                  />
+                  <Walker palette={wk.palette} delay={0} />
+                </g>
+              </g>
+            );
+          })}
+        </svg>
+      </div>
     </div>
   );
 }

@@ -141,6 +141,10 @@ def _build_embed_text(title: str, raw_json: Any) -> str:
 
 
 CREATE_TABLES_SQL = f"""
+-- Self-healing: volumes created before the init script was wired never got
+-- the extension, which surfaces as `unknown type: public.vector` at pool init.
+CREATE EXTENSION IF NOT EXISTS vector;
+
 CREATE TABLE IF NOT EXISTS processed_jobs (
     url            TEXT PRIMARY KEY,
     role           TEXT,
@@ -688,6 +692,15 @@ class MemoryStore:
     async def create(cls, config: PostgresConfig | None = None) -> MemoryStore:
         """Initialise pool, register vector type, create tables."""
         cfg = config or get_config().postgres
+
+        # Volumes created before the init script was wired lack the extension,
+        # which surfaces as `unknown type: public.vector` during pool init.
+        # Ensure it on a throwaway connection first so pool creation survives.
+        bootstrap = await asyncpg.connect(cfg.dsn)
+        try:
+            await bootstrap.execute("CREATE EXTENSION IF NOT EXISTS vector")
+        finally:
+            await bootstrap.close()
 
         async def _init(conn) -> None:
             await register_vector(conn)

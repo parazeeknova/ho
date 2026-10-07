@@ -1252,7 +1252,7 @@ def _parse_json(val: Any) -> dict[str, Any]:
     if isinstance(val, str):
         try:
             return json.loads(val)
-        except json.JSONDecodeError, TypeError:
+        except (json.JSONDecodeError, TypeError):  # fmt: skip
             return {}
     if isinstance(val, dict):
         return val
@@ -1267,6 +1267,6 @@ def _parse_dt(val: Any) -> datetime:
     if isinstance(val, str):
         try:
             return datetime.fromisoformat(val.replace("Z", "+00:00"))
-        except ValueError, TypeError:
+        except (ValueError, TypeError):  # fmt: skip
             return datetime.now(UTC)
     return datetime.now(UTC)

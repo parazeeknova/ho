@@ -51,7 +51,7 @@ def _input(prompt: str = "") -> str:
     an interactive prompt can never crash init-memory with a traceback."""
     try:
         return input(prompt)
-    except EOFError, KeyboardInterrupt:
+    except (EOFError, KeyboardInterrupt):  # fmt: skip
         raise SystemExit(_INPUT_ABORT) from None
 
 
@@ -73,7 +73,7 @@ async def index_resume(resume_url: str | None, resume_path: str | None) -> None:
             raise SystemExit(_INPUT_ABORT)
         ux.chip(
             "warn",
-            "Resume indexing failed; continuing (fix RESUME_URL/RESUME_PATH and re-run).",
+            "Resume indexing failed; continuing (re-run with --resume-url/--resume-path).",
         )
 
 
@@ -154,10 +154,6 @@ async def run_script(name: str, *extra: str) -> int:
     return subprocess.run([sys.executable, str(script), *extra], cwd=REPO).returncode
 
 
-def has_env(source: str) -> bool:
-    return bool(os.environ.get(source))
-
-
 def _missing_persona_items(persona_json: Path) -> set[str]:
     """Wizard questions and identity contact fields not yet answered.
 
@@ -192,8 +188,8 @@ def _missing_persona_items(persona_json: Path) -> set[str]:
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Build the user memory base for a fresh checkout.")
     parser.add_argument("--no-resume", action="store_true", help="Skip resume indexing")
-    parser.add_argument("--resume-url", help="Resume download URL (overrides RESUME_URL)")
-    parser.add_argument("--resume-path", help="Local resume file path (overrides RESUME_PATH)")
+    parser.add_argument("--resume-url", help="Resume download URL")
+    parser.add_argument("--resume-path", help="Local resume file path")
     parser.add_argument("--no-grill", action="store_true", help="Never run the interactive wizard")
     parser.add_argument(
         "--grill",
@@ -240,13 +236,12 @@ async def main() -> None:
     ux.section(3, 4, "Resume")
     if args.no_resume:
         ux.chip("info", "Skipping resume indexing (--no-resume).")
-    elif args.resume_url or args.resume_path or has_env("RESUME_URL") or has_env("RESUME_PATH"):
+    elif args.resume_url or args.resume_path:
         await index_resume(args.resume_url, args.resume_path)
     else:
         ux.chip(
             "warn",
-            "No resume source found; set RESUME_URL/RESUME_PATH in .env "
-            "or pass --resume-url/--resume-path.",
+            "No resume source found; pass --resume-url/--resume-path.",
         )
 
     # 4. Persona -> persona_embeddings + resume_summary in persona.json

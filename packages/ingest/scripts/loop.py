@@ -235,7 +235,7 @@ class Child:
                 # just the direct child.
                 os.killpg(self.proc.pid, sig)
                 print(f"[loop] sent interrupt to {self.name}", flush=True)
-            except ProcessLookupError, PermissionError:
+            except (ProcessLookupError, PermissionError):  # fmt: skip
                 pass
 
     async def wait(self, timeout: float = 45.0) -> None:
@@ -346,7 +346,7 @@ async def main() -> None:
         loop = asyncio.get_running_loop()
         loop.add_signal_handler(signal.SIGINT, _on_signal, signal.SIGINT, None)
         loop.add_signal_handler(signal.SIGTERM, _on_signal, signal.SIGTERM, None)
-    except NotImplementedError, RuntimeError:
+    except (NotImplementedError, RuntimeError):  # fmt: skip
         signal.signal(signal.SIGINT, _on_signal)
         signal.signal(signal.SIGTERM, _on_signal)
 

@@ -140,7 +140,7 @@ def _ask(label: str, default: str = "") -> str:
     label = re.sub(r"[.!?]+\s*$", "", label).strip()
     try:
         value = Prompt.ask(f"  {label}", default=default) if default else Prompt.ask(f"  {label}")
-    except EOFError, KeyboardInterrupt:
+    except (EOFError, KeyboardInterrupt):  # fmt: skip
         return default
     return value.strip()
 
@@ -994,7 +994,7 @@ if __name__ == "__main__":
         print("\n[ho] Quit persona wizard? (y/N) ", flush=True)
         try:
             ans = input().strip().lower()
-        except KeyboardInterrupt, EOFError:
+        except (KeyboardInterrupt, EOFError):  # fmt: skip
             ans = "y"
         if ans in ("y", "yes"):
             print("[ho] Exiting. No changes saved unless a question was answered.", flush=True)

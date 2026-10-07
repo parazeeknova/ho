@@ -96,7 +96,7 @@ class ProxyRelay:
                 await self._handle_connect(reader, writer, target)
             else:
                 await self._handle_plain(reader, writer, method, target, headers)
-        except asyncio.CancelledError, ConnectionError, OSError:
+        except (asyncio.CancelledError, ConnectionError, OSError):  # fmt: skip
             pass
         except Exception:
             logger.warning("ProxyRelay client error", exc_info=True)
@@ -204,7 +204,7 @@ class ProxyRelay:
                         break
                     dst.write(data)
                     await dst.drain()
-            except ConnectionError, OSError, asyncio.CancelledError:
+            except (ConnectionError, OSError, asyncio.CancelledError):  # fmt: skip
                 pass
 
         async def close_writer(dst: asyncio.StreamWriter) -> None:

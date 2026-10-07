@@ -462,134 +462,34 @@
   }
 }
 
-/* HO sprout-bot: floats in place, blinks, pulses its core, sways its leaf and
-   sweeps a scan line down the body. Everything animates on top of a visible,
-   fully-rendered sprite, so nothing is ever hidden behind the motion. */
-.ho-bot {
-  transform-origin: 50% 60%;
-  animation: ho-bot-float 3.4s steps(10) infinite;
-}
-.ho-bot-shadow {
-  transform-origin: center;
-  animation: ho-bot-shadow 3.4s steps(10) infinite;
-}
-.ho-bot-eyes {
+/* Pixel walkers hopping the pipeline. The legs swing so the sprite reads as
+   walking; the hop itself is an SVG motion path, so the walker stays a fully
+   drawn sprite at every frame and never disappears. */
+.walker-leg-front,
+.walker-leg-back {
   transform-box: fill-box;
-  transform-origin: center;
-  animation: ho-bot-blink 4.6s steps(1) infinite;
+  transform-origin: 50% 0;
+  animation: walker-stride 0.5s steps(2) infinite;
 }
-.ho-bot-leaf {
-  transform-box: fill-box;
-  transform-origin: 50% 100%;
-  animation: ho-bot-leaf 2.4s steps(8) infinite;
-}
-.ho-bot-core {
-  transform-box: fill-box;
-  transform-origin: center;
-  animation: ho-bot-core 1.6s steps(6) infinite;
-}
-.ho-bot-scan {
-  animation: ho-bot-scan 2.8s steps(12) infinite;
-}
-.ho-bot-mote {
-  transform-box: fill-box;
-  transform-origin: center;
-  animation: ho-bot-mote 3.2s steps(8) infinite;
+.walker-leg-back {
+  animation-direction: reverse;
 }
 
-@keyframes ho-bot-float {
-  0%,
-  100% {
-    transform: translateY(0);
-  }
-  50% {
-    transform: translateY(-3px);
-  }
-}
-@keyframes ho-bot-shadow {
-  0%,
-  100% {
-    transform: scaleX(1);
-    opacity: 0.75;
-  }
-  50% {
-    transform: scaleX(0.78);
-    opacity: 0.45;
-  }
-}
-@keyframes ho-bot-blink {
-  0%,
-  92%,
-  100% {
-    transform: scaleY(1);
-  }
-  95% {
-    transform: scaleY(0.1);
-  }
-}
-@keyframes ho-bot-leaf {
-  0%,
-  100% {
-    transform: rotate(-5deg);
-  }
-  50% {
-    transform: rotate(6deg);
-  }
-}
-@keyframes ho-bot-core {
-  0%,
-  100% {
-    opacity: 0.55;
-  }
-  50% {
-    opacity: 1;
-  }
-}
-@keyframes ho-bot-scan {
+@keyframes walker-stride {
   0% {
-    transform: translateY(0);
-    opacity: 0;
+    transform: translateX(-0.4px);
   }
-  15% {
-    opacity: 0.85;
-  }
-  70% {
-    opacity: 0.85;
-  }
-  85%,
-  100% {
-    transform: translateY(6px);
-    opacity: 0;
-  }
-}
-@keyframes ho-bot-mote {
-  0% {
-    transform: translateY(2px);
-    opacity: 0;
-  }
-  30% {
-    opacity: 0.9;
-  }
-  70% {
-    opacity: 0.9;
+  50% {
+    transform: translateX(0.4px);
   }
   100% {
-    transform: translateY(-5px);
-    opacity: 0;
+    transform: translateX(-0.4px);
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .ho-bot,
-  .ho-bot-shadow,
-  .ho-bot-eyes,
-  .ho-bot-leaf,
-  .ho-bot-core,
-  .ho-bot-scan,
-  .ho-bot-mote {
+  .walker-leg-front,
+  .walker-leg-back {
     animation: none;
-  }
-  .ho-bot-scan {
-    opacity: 0.5;
   }
 }

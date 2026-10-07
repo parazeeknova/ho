@@ -16,7 +16,6 @@ import {
   MoonIcon,
   SparkleIcon,
 } from "@/components/pixel-icons";
-import { PipelineMascot } from "@/components/pixel-mascot";
 import { PixelSword } from "@/components/pixel-sword";
 import { JOBS } from "@/lib/jobs-data";
 
@@ -194,14 +193,11 @@ function Landing() {
       {/* Pipeline */}
       <section className="mx-auto max-w-6xl pb-20">
         <div className="glass rounded-[1.8rem] p-5 sm:p-8">
-          <div className="flex items-center gap-4 sm:gap-6">
-            <PipelineMascot />
-            <div className="min-w-0">
-              <h2 className="text-xl sm:text-2xl">Discovery to decision</h2>
-              <p className="text-muted-foreground mt-1 max-w-md text-sm leading-relaxed">
-                Ranking is kept apart from discovery, so new sources earn trust.
-              </p>
-            </div>
+          <div className="flex flex-wrap items-baseline justify-between gap-3">
+            <h2 className="text-xl sm:text-2xl">Discovery to decision</h2>
+            <span className="text-muted-foreground text-sm">
+              Ranking is kept apart from discovery, so new sources earn trust.
+            </span>
           </div>
           <div className="engraved mt-6 rounded-[1.2rem] p-4 sm:p-6">
             <PipelineDiagram />

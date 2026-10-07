@@ -231,7 +231,7 @@ def acquire_lock() -> bool:
             pid = int(LOCK_PATH.read_text().strip())
             os.kill(pid, 0)
             return False
-        except ValueError, ProcessLookupError:
+        except (ValueError, ProcessLookupError):  # fmt: skip
             pass
     LOCK_PATH.write_text(str(os.getpid()))
     return True

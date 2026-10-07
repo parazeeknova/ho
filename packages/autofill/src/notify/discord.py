@@ -331,7 +331,7 @@ class DiscordQuestionBridge:
         try:
             if msg_id is not None and str(msg_id).isdigit():
                 msg_id_int = int(msg_id)
-        except TypeError, ValueError:
+        except (TypeError, ValueError):  # fmt: skip
             msg_id_int = None
         if msg_id_int is None and msg_id is not None:
             msg_id_int = msg_id  # non-numeric id (tests, legacy): keep as-is
@@ -363,7 +363,7 @@ class DiscordQuestionBridge:
         if answer.startswith("opt:") and not numbered:
             try:
                 return opts[int(answer[4:])]
-            except ValueError, IndexError:
+            except (ValueError, IndexError):  # fmt: skip
                 return None
         return self._match_reply_to_option(answer, opts, numbered)
 
@@ -383,7 +383,7 @@ class DiscordQuestionBridge:
                 try:
                     idx = int(low[1:])
                     return opts[idx - 1] if idx >= 1 else None
-                except ValueError, IndexError:
+                except (ValueError, IndexError):  # fmt: skip
                     return None
         return self._fuzzy_option(reply, opts)
 

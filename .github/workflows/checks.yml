@@ -20,7 +20,9 @@ jobs:
       - uses: astral-sh/setup-uv@v10.2.0
       - run: uvx ruff check .
       - run: uvx ruff format --check .
-      - run: uvx pytest scripts/ -q
+      # Pin 3.14: the repo requires it, and uvx otherwise provisions whatever
+      # is handy (3.12 broke on 3.14-only `except A, B:` syntax).
+      - run: uvx --python 3.14 pytest scripts/ -q
       - uses: oven-sh/setup-bun@v2.2.0
       - uses: actions/cache@v6.1.0
         with:

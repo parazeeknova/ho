@@ -9,7 +9,6 @@ No LLM calls happen here; the resolution is fully deterministic.
 
 import json
 import re
-from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -62,33 +61,21 @@ class Profile(BaseModel):
 
 
 def _load_persona_json() -> dict[str, Any]:
-    """Locate and load data/persona.json at the repo root.
+    """Load an explicitly configured persona file (CANDIDATE_PERSONA_FILE).
 
-    ``profile.py`` lives at ``packages/autofill/src/screener/`` so the
-    repo root is FOUR parents up (screener -> src -> autofill -> packages ->
-    root).
-    A CWD-relative lookup is also tried first (covers running from the repo
-    root). Previously the path resolved to ``packages/data/`` (wrong), so the
-    persona was never loaded — identity fell back to semantic-search garbage
-    and ``customAnswers`` stayed empty.
+    There are no repo-level persona defaults; per-user onboarding supplies
+    the file long-term. Empty dict when unconfigured.
     """
     import os
 
-    base = Path(__file__).resolve().parents[4]  # repo root
-    candidates = (
-        Path.cwd() / "data" / "persona.json",
-        base / "data" / "persona.json",
-        Path(os.environ.get("CANDIDATE_PERSONA_FILE", "")),
-    )
-    for path in candidates:
-        if not str(path):
-            continue
-        try:
-            with open(path) as f:
-                return json.load(f)
-        except OSError:
-            continue
-    return {}
+    path = os.environ.get("CANDIDATE_PERSONA_FILE", "")
+    if not path:
+        return {}
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except OSError:
+        return {}
 
 
 def _regex_extract(text: str) -> dict[str, str]:

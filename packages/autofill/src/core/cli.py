@@ -409,7 +409,7 @@ async def run_apply(url: str, mode: str = "review"):
     if not profile.resumePath:
         print(
             "[Python CLI] WARNING: No resume available to upload "
-            "(RESUME_URL unreachable / RESUME_PATH not set). "
+            "(RESUME_PATH not set). "
             "The form will be filled without a resume attachment."
         )
     rag = ScreenerRAG(profile=profile, store=store)

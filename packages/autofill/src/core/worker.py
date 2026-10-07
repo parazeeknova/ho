@@ -455,7 +455,7 @@ class AutofillWorker:
         base = _NODE_DIR / "artifacts" / "profiles"
         try:
             pool_size = int(os.getenv("AUTOFILL_PROFILE_POOL_SIZE", "4"))
-        except TypeError, ValueError:
+        except (TypeError, ValueError):  # fmt: skip
             pool_size = 4
         pool_size = max(min_size, pool_size)
         pool_size = max(1, min(pool_size, 16))
@@ -511,7 +511,7 @@ class AutofillWorker:
                 if self._debug_path.exists():
                     try:
                         data = json.loads(self._debug_path.read_text())
-                    except OSError, json.JSONDecodeError:
+                    except (OSError, json.JSONDecodeError):  # fmt: skip
                         data = {}
                 jobs = data.setdefault("jobs", {})
                 jobs[rec["job_id"]] = rec

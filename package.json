@@ -1,6 +1,6 @@
 {
   "name": "ho",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "private": true,
   "description": "ho monorepo",
   "workspaces": [
@@ -17,7 +17,6 @@
     "intel": "PYTHONPATH=.:packages/ingest:packages uv run python packages/ingest/scripts/intel/radar_intel.py",
     "export": "PYTHONPATH=.:packages/ingest:packages uv run python packages/ingest/scripts/tools/export_accepted.py",
     "health": "uv run python packages/ingest/scripts/tools/health.py",
-    "backup": "uv run python packages/ingest/scripts/backup/checkpoint_backup.py",
     "check": "bun run lint && bun run format:check && bun run check-types",
     "fix": "uv run ruff format . && uv run ruff check . --fix && bunx oxfmt && bunx oxlint --fix",
     "check-types": "uv run ty check packages/ingest/src packages/ingest/scripts packages/autofill packages/ml && lerna run typecheck",
