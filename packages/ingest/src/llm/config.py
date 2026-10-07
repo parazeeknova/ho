@@ -19,7 +19,7 @@ class EmbedConfig:
     """Backward-compat wrapper matching the old api."""
 
     base_url: str = field(default_factory=lambda: os.getenv("EMBED_URL", ""))
-    model: str = field(default_factory=lambda: os.getenv("EMBED_MODEL", "gemini-embedding-001"))
+    model: str = field(default_factory=lambda: os.getenv("EMBED_MODEL", "gemini-embedding-2"))
     context_length: int = 32768
 
 

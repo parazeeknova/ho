@@ -868,7 +868,7 @@ wheels = [
 
 [[package]]
 name = "ho"
-version = "0.1.11"
+version = "0.1.12"
 source = { virtual = "." }
 dependencies = [
     { name = "asyncpg" },

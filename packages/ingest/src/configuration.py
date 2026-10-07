@@ -150,7 +150,7 @@ class PostgresConfig:
 
     dsn: str = field(
         default_factory=lambda: _env_str(
-            "POSTGRES_DSN", "postgresql://postgres:postgres@localhost:5433/agent_memory"
+            "POSTGRES_DSN", "postgresql://postgres:postgres@localhost:5443/agent_memory"
         )
     )
     min_pool: int = field(default_factory=lambda: _env_int("POSTGRES_MIN_POOL", 2))
@@ -228,7 +228,7 @@ class EmbedConfig:
     """Embedding provider settings (external API; no local server)."""
 
     url: str = field(default_factory=lambda: _env_str("EMBED_URL", ""))
-    model: str = field(default_factory=lambda: _env_str("EMBED_MODEL", "gemini-embedding-001"))
+    model: str = field(default_factory=lambda: _env_str("EMBED_MODEL", "gemini-embedding-2"))
     timeout: float = field(default_factory=lambda: _env_float("EMBED_TIMEOUT", 30.0))
 
 
@@ -358,7 +358,7 @@ class LlmQueueConfig:
     budget_radar_rpm: int = field(default_factory=lambda: _env_int("LLM_BUDGET_RADAR_RPM", 60))
     budget_radar_tpm: int = field(default_factory=lambda: _env_int("LLM_BUDGET_RADAR_TPM", 120000))
     budget_redis_url: str = field(
-        default_factory=lambda: _env_str("LLM_BUDGET_REDIS_URL", "redis://127.0.0.1:6379/1")
+        default_factory=lambda: _env_str("LLM_BUDGET_REDIS_URL", "redis://127.0.0.1:6380/1")
     )
     budget_redis_enabled: bool = field(
         default_factory=lambda: _env_bool("LLM_BUDGET_REDIS_ENABLED", True)

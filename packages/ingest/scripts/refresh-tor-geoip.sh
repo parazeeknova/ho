@@ -20,6 +20,6 @@ echo ">>> geoip: $(stat -c%s .tor-geoip/geoip) bytes, geoip6: $(stat -c%s .tor-g
 
 if [[ "${1:-}" != "--quiet" ]]; then
   echo ">>> Restarting torproxy..."
-  docker compose -f docker-compose.yaml up -d torproxy
+  docker compose -f ../../docker/docker-compose.yml up -d torproxy
 fi
 echo "Done."

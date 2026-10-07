@@ -78,15 +78,15 @@ async def index_resume(resume_url: str | None, resume_path: str | None) -> None:
 
 
 def _compose_file() -> Path:
-    return REPO / "packages" / "ingest" / "docker-compose.yaml"
+    return REPO / "docker" / "docker-compose.yml"
 
 
 async def _start_postgres() -> bool:
     """Auto-start the agent-memory Postgres + redis containers and wait for
     Postgres.
 
-    The app database is the ``agent-memory-db`` service (host port 5433,
-    pgvector image, persistent volume). ``redis`` (port 6379) is also brought
+    The app database is the ``agent-memory-db`` service (host port 5443,
+    pgvector image, persistent volume). ``redis`` (port 6380) is also brought
     up because the LLM governor uses it as the shared token/RPM budget store —
     without it every LLM call logs "Redis budget unavailable, local-only".
     """
@@ -137,7 +137,7 @@ async def _ensure_redis() -> None:
     """Confirm redis (the LLM governor budget store) is reachable; warn only."""
     import redis.asyncio as aioredis
 
-    url = os.environ.get("LLM_BUDGET_REDIS_URL", "redis://127.0.0.1:6379/1")
+    url = os.environ.get("LLM_BUDGET_REDIS_URL", "redis://127.0.0.1:6380/1")
     try:
         r = aioredis.from_url(url, socket_connect_timeout=2)
         await r.ping()
@@ -224,13 +224,13 @@ async def main() -> None:
             )
             ux.bullet(
                 "  (First-time setup only, after the volume is initialized:)\n"
-                "  PGPASSWORD=postgres psql -h localhost -p 5433 -U postgres "
+                "  PGPASSWORD=postgres psql -h localhost -p 5443 -U postgres "
                 "-d agent_memory -f packages/ingest/scripts/sql/init-pgvector.sql",
                 style="cyan",
             )
             sys.exit(1)
     await store.close()
-    ux.chip("ok", "Postgres connected (localhost:5433/agent_memory)")
+    ux.chip("ok", "Postgres connected (localhost:5443/agent_memory)")
     await _ensure_redis()
 
     # 2. Embedding provider

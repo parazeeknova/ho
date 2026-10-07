@@ -1,69 +1,25 @@
-# Shared gates: lint + format + types + tests. Called by `ci` (PRs into
-# main) and by `publish` (pushes to main) so images only build from green code.
+# Shared gates, called by `ci` (PRs into main). Single job on purpose: one
+# install, one status check, everything scoped to what the PR actually
+# changed via `lerna run --since` (unchanged packages restore from the Nx
+# cache instead of re-running). Root-level tools (ruff/ty/pytest-scripts)
+# always run — they are fast and span all packages.
 name: checks
 
 on:
   workflow_call:
 
 jobs:
-  lint:
-    name: lint
+  checks:
+    name: checks
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+      - run: git fetch origin main --quiet || true
       - uses: astral-sh/setup-uv@v10.2.0
       - run: uvx ruff check .
-      - uses: oven-sh/setup-bun@v2.2.0
-      - uses: actions/cache@v6.1.0
-        with:
-          path: ~/.bun/install/cache
-          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
-          restore-keys: bun-${{ runner.os }}-
-      - run: bun install --frozen-lockfile --ignore-scripts
-      - run: bunx oxlint
-
-  format:
-    name: format
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: astral-sh/setup-uv@v10.2.0
       - run: uvx ruff format --check .
-      - uses: oven-sh/setup-bun@v2.2.0
-      - uses: actions/cache@v6.1.0
-        with:
-          path: ~/.bun/install/cache
-          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
-          restore-keys: bun-${{ runner.os }}-
-      - run: bun install --frozen-lockfile --ignore-scripts
-      - run: bunx oxfmt --check
-
-  typecheck:
-    name: typecheck
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: astral-sh/setup-uv@v10.2.0
-      # ty needs the real project environment to resolve third-party imports;
-      # uvx's isolated env cannot see them. setup-uv caches the venv between runs.
-      - run: uv sync --frozen
-      - run: uv run ty check packages/ingest/src packages/ingest/scripts packages/autofill packages/ml
-      - uses: oven-sh/setup-bun@v2.2.0
-      - uses: actions/cache@v6.1.0
-        with:
-          path: ~/.bun/install/cache
-          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
-          restore-keys: bun-${{ runner.os }}-
-      - run: bun install --frozen-lockfile --ignore-scripts
-      - run: bun --cwd packages/node typecheck
-      - run: bun --cwd apps/web typecheck
-
-  test:
-    name: test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: astral-sh/setup-uv@v10.2.0
       - run: uvx pytest scripts/ -q
       - uses: oven-sh/setup-bun@v2.2.0
       - uses: actions/cache@v6.1.0
@@ -72,5 +28,12 @@ jobs:
           key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
           restore-keys: bun-${{ runner.os }}-
       - run: bun install --frozen-lockfile --ignore-scripts
-      - run: bun run --filter 'ho-web' test
-      - run: bun run --filter 'autofill-node*' test
+      - run: bunx oxfmt --check
+      - run: uv sync --frozen
+      - run: uv run ty check packages/ingest/src packages/ingest/scripts packages/autofill packages/ml
+      # Workspace tasks, cached per package and scoped to PR changes.
+      # Root manifests (ruff/ty/pytest above) are intentionally unscoped.
+      - run: bunx lerna run lint --since origin/main
+      - run: bunx lerna run format:check --since origin/main
+      - run: bunx lerna run typecheck --since origin/main
+      - run: bunx lerna run test --since origin/main

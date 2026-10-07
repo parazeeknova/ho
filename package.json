@@ -1,6 +1,6 @@
 {
   "name": "ho",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "private": true,
   "description": "ho monorepo",
   "workspaces": [
@@ -8,6 +8,9 @@
     "apps/*"
   ],
   "scripts": {
+    "dev": "cross-env NODE_ENV=development bun scripts/dev.mjs",
+    "infra:up": "docker compose -f docker/docker-compose.yml up -d",
+    "infra:down": "docker compose -f docker/docker-compose.yml down",
     "run": "PYTHONPATH=.:packages/ingest:packages uv run python packages/ingest/scripts/run_all.py",
     "status": "PYTHONPATH=.:packages/ingest:packages uv run python packages/ingest/scripts/run_all.py --status",
     "initm": "PYTHONPATH=.:packages/ingest:packages uv run python packages/autofill/scripts/init_memory.py",
@@ -21,16 +24,14 @@
     "format:check": "uv run ruff format --check . && bunx oxfmt --check && lerna run format:check",
     "bump": "uv run python scripts/version_manager.py",
     "bump:dry": "uv run python scripts/version_manager.py --dry-run",
-    "docker:web": "docker build -f apps/web/Dockerfile -t ho-web .",
-    "docker:node": "docker build -f packages/node/Dockerfile -t ho-node-service .",
-    "docker:ingest": "docker build -f packages/ingest/Dockerfile -t ho-ingest .",
-    "docker:ml": "docker build -f packages/ml/Dockerfile -t ho-ml .",
+    "docker:build": "docker build -f apps/web/Dockerfile -t ho-web . && docker build -f packages/node/Dockerfile -t ho-node-service . && docker build -f packages/ingest/Dockerfile -t ho-ingest . && docker build -f packages/ml/Dockerfile -t ho-ml .",
     "test": "uv run python -m pytest . --ignore=refs -n 4 --dist loadfile -q && lerna run test",
     "lint": "uv run ruff check . && lerna run lint",
     "build:web": "lerna run build --scope=ho-web",
     "prepare": "lefthook install"
   },
   "devDependencies": {
+    "cross-env": "^10.1.0",
     "lefthook": "^2.1.17",
     "lerna": "^10.0.1",
     "oxfmt": "^0.72.0",

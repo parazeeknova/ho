@@ -22,7 +22,7 @@ from src.logging import get_logger
 
 logger = get_logger("memory_store")
 
-VECTOR_DIM = 1024
+VECTOR_DIM = 3072
 
 
 def _url_hash(url: str) -> str:
@@ -808,7 +808,7 @@ class MemoryStore:
 
         Each chunk dict must have keys: ``section``, ``content``,
         ``content_hash`` (sha256 of content) and ``embedding`` (list[float]
-        of length 1024).
+        of length 3072).
 
         Rows whose hash is absent from *current_hashes* (the full set of
         chunks in the resume right now) are deleted as stale, so a changed
@@ -898,7 +898,7 @@ class MemoryStore:
         """Insert persona Q&A chunks with their pre-computed embeddings.
 
         Each chunk dict must have keys: ``category``, ``question``, ``answer``,
-        ``content`` and ``embedding`` (list[float] of length 1024).
+        ``content`` and ``embedding`` (list[float] of length 3072).
         """
         async with self._pool.acquire() as conn, conn.transaction():
             for ch in chunks:

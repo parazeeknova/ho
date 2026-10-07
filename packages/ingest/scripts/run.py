@@ -27,7 +27,7 @@ from rich.table import Table
 from rich.text import Text
 
 PROJECT = Path(__file__).resolve().parent.parent
-DOCKER_COMPOSE = f"docker compose -f {PROJECT}/docker-compose.yaml"
+DOCKER_COMPOSE = f"docker compose -f {PROJECT.parent.parent}/docker/docker-compose.yml"
 
 console = Console()
 
@@ -139,7 +139,7 @@ def deep_stats() -> dict[str, Any]:
                 break
 
     # pgvector row counts
-    if check_port("localhost", 5433):
+    if check_port("localhost", 5443):
         for table in ("job_observations", "job_candidates", "discovered_sources"):
             raw = _docker_exec(
                 "ho_agent-memory-db_1",
@@ -294,7 +294,7 @@ def main() -> None:
     services: list[tuple[str, Any, str]] = [
         ("searxng", lambda: check_http("http://localhost:8080"), ":8080"),
         ("neo4j", check_neo4j_ready, ":7687"),
-        ("agent-memory-db", lambda: check_port("localhost", 5433), ":5433"),
+        ("agent-memory-db", lambda: check_port("localhost", 5443), ":5443"),
     ]
 
     # Kick off startup in background

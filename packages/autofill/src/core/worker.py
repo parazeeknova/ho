@@ -51,7 +51,7 @@ logger = get_logger("autofill.src.core.worker")
 
 # Repo root: worker.py now lives at packages/autofill/src/core/worker.py, so
 # the repo root is parents[4]. Used to locate the docker-compose that runs
-# torproxy (packages/ingest/docker-compose.yaml) and the Node/TS runner.
+# torproxy (docker/docker-compose.yml) and the Node/TS runner.
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 _PROJECT_ROOT = _REPO_ROOT / "packages" / "ingest"
 
@@ -318,7 +318,7 @@ async def _ensure_torproxy() -> None:
             "docker",
             "compose",
             "-f",
-            str(_PROJECT_ROOT / "docker-compose.yaml"),
+            str(_PROJECT_ROOT / "docker" / "docker-compose.yml"),
             "up",
             "-d",
             "torproxy",
@@ -346,7 +346,7 @@ async def _read_tor_cookie_hex() -> str:
             "docker",
             "compose",
             "-f",
-            str(_PROJECT_ROOT / "docker-compose.yaml"),
+            str(_PROJECT_ROOT / "docker" / "docker-compose.yml"),
             "ps",
             "-q",
             "torproxy",

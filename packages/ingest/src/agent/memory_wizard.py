@@ -198,9 +198,9 @@ class MemoryWizard:
             if not await _start_postgres():
                 raise MemoryWizardError(
                     "Could not start Postgres. Start it manually:\n"
-                    "`docker compose -f packages/ingest/docker-compose.yaml up -d agent-memory-db`"
+                    "`docker compose -f docker/docker-compose.yml up -d agent-memory-db`"
                 ) from None
-        await self.log("Infra ready · Postgres :5433")
+        await self.log("Infra ready · Postgres :5443")
 
     # ── resume ────────────────────────────────────────────────────────
 

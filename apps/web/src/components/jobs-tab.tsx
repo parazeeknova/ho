@@ -92,7 +92,7 @@ export function JobsTab() {
   return (
     <div className="tab-in mx-auto w-full max-w-6xl pb-12">
       <label className="glass flex items-center gap-3 rounded-[1.4rem] p-2">
-        <span className="engraved focus-within:ring-ring flex h-12 flex-1 items-center gap-3 rounded-[1rem] px-4 focus-within:ring-2">
+        <span className="engraved focus-within:ring-ring flex h-12 flex-1 items-center gap-3 rounded-2xl px-4 focus-within:ring-2">
           <SearchIcon size={16} className="text-muted-foreground" />
           <input
             value={q}

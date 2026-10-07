@@ -41,7 +41,7 @@ from pathlib import Path
 
 PROJECT = Path(__file__).resolve().parent.parent  # packages/ingest
 REPO = PROJECT.parent.parent  # repo root
-COMPOSE = PROJECT / "docker-compose.yaml"
+COMPOSE = REPO / "docker" / "docker-compose.yml"
 
 DOCKER_SERVICES = [
     "searxng",
@@ -54,8 +54,8 @@ DOCKER_SERVICES = [
 HOST_PROBES = {
     "searxng": (8080, 15),
     "neo4j": (7687, 15),
-    "agent-memory-db": (5433, 20),
-    "redis": (6379, 15),
+    "agent-memory-db": (5443, 20),
+    "redis": (6380, 15),
 }
 
 
