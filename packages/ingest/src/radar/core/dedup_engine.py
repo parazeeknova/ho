@@ -27,7 +27,7 @@ class FastDeduplicationEngine:
 
     def __init__(
         self,
-        redis_url: str = "redis://localhost:6379",
+        redis_url: str = "redis://localhost:6380",
         enable_redis: bool = True,
         cache_ttl_seconds: int = 86400 * 7,
     ) -> None:

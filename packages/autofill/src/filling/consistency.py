@@ -178,7 +178,7 @@ def _live_persona_answers() -> dict[str, str]:
     """
     try:
         data = json.loads(_PERSONA_JSON.read_text())
-    except OSError, json.JSONDecodeError:
+    except (OSError, json.JSONDecodeError):  # fmt: skip
         return {}
     answers: dict[str, str] = {}
     for a in data.get("answers", []) or []:

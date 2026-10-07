@@ -827,7 +827,7 @@ def _load_compensation_by_currency() -> dict[str, dict[str, str]]:
                         "annual": str(entry.get("annual") or ""),
                         "monthly": str(entry.get("monthly") or ""),
                     }
-    except OSError, json.JSONDecodeError, AttributeError:
+    except (OSError, json.JSONDecodeError, AttributeError):  # fmt: skip
         pass
     out: dict[str, dict[str, str]] = {}
     for code in _COMP_CURRENCY_DEFAULT_MONTHLY:
@@ -2109,7 +2109,7 @@ class ScreenerRAG:
         """
         try:
             data = json.loads(PERSONA_JSON.read_text())
-        except OSError, json.JSONDecodeError:
+        except (OSError, json.JSONDecodeError):  # fmt: skip
             return {}
         out: dict[tuple[str, str], str] = {}
         for entry in data.get("answers", []):
@@ -2125,7 +2125,7 @@ class ScreenerRAG:
         """Deterministic tier-0 index: learned answers keyed by normalised question."""
         try:
             data = json.loads(PERSONA_JSON.read_text())
-        except OSError, json.JSONDecodeError:
+        except (OSError, json.JSONDecodeError):  # fmt: skip
             return {}
         answers: dict[str, str] = {}
         for entry in data.get("answers", []):
@@ -2813,7 +2813,7 @@ class ScreenerRAG:
                     mm = int(grad_month)
                     if 1 <= mm <= 12:
                         return f"{mm:02d}/{grad}"
-                except TypeError, ValueError:
+                except (TypeError, ValueError):  # fmt: skip
                     pass
             return grad or None
         if re.search(
@@ -3919,7 +3919,7 @@ candidate has submitted; never copy phrasing verbatim across applications.
         """
         try:
             data = json.loads(PERSONA_JSON.read_text())
-        except OSError, json.JSONDecodeError:
+        except (OSError, json.JSONDecodeError):  # fmt: skip
             return False
         category, country = key
         norm = _normalise_question(question)
@@ -3948,7 +3948,7 @@ candidate has submitted; never copy phrasing verbatim across applications.
         """
         try:
             data = json.loads(PERSONA_JSON.read_text())
-        except OSError, json.JSONDecodeError:
+        except (OSError, json.JSONDecodeError):  # fmt: skip
             data = {"name": "", "version": 1, "answers": []}
         raw_version = data.get("version", 1)
         data["version"] = (int(raw_version) if isinstance(raw_version, (int, str)) else 1) + 1

@@ -145,7 +145,7 @@ async def _pg_cache_pool() -> Any:
         import asyncpg
 
         url = os.environ.get(
-            "AGENT_MEMORY_DB_URL", "postgresql://postgres:postgres@127.0.0.1:5433/agent_memory"
+            "AGENT_MEMORY_DB_URL", "postgresql://postgres:postgres@127.0.0.1:5443/agent_memory"
         )
         _pg_cache = await asyncpg.create_pool(url, min_size=0, max_size=2, command_timeout=3)
     except Exception as e:

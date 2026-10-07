@@ -2,7 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 
 import { JobCard } from "@/components/jobs-tab";
-import { MarketingSections } from "@/components/marketing-sections";
+import { HowItWorks, MarketingSections } from "@/components/marketing-sections";
 import {
   GateDiagram,
   LearningCurve,
@@ -204,6 +204,8 @@ function Landing() {
           </div>
         </div>
       </section>
+
+      <HowItWorks />
 
       {/* Charts */}
       <section className="mx-auto max-w-6xl pb-8">

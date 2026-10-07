@@ -59,7 +59,7 @@ async def test_live_verify_sample_boards():
                     f"Failed verification for {sid} ({url}): HTTP {resp.status_code}"
                 )
                 reachable += 1
-            except httpx.TimeoutException, httpx.ConnectError:
+            except (httpx.TimeoutException, httpx.ConnectError):  # fmt: skip
                 # Transient network issues should not fail CI
                 pass
     # At least 2 of 5 should be reachable in any network environment

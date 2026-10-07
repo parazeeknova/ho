@@ -27,9 +27,9 @@ logger = get_logger("analytics")
 PROJECT = Path(__file__).resolve().parents[2]
 
 CONTAINER_VOLUME_MAP = {
-    "ho_agent-memory-db_1": "ho_agent_memory_data",
-    "ho_neo4j_1": "ho_neo4j_data",
-    "ho_searxng_1": None,
+    "ho-agent-memory-db": "ho_agent_memory_data",
+    "ho-neo4j": "ho_neo4j_data",
+    "ho-searxng": None,
 }
 
 
@@ -86,9 +86,9 @@ def _volume_sizes() -> dict[str, str]:
     measure inside the mounting container with `du` for accuracy."""
     # container -> (volume, path-in-container)
     known: list[tuple[str, str, str]] = [
-        ("ho_agent-memory-db_1", "ho_agent_memory_data", "/var/lib/postgresql"),
-        ("ho_neo4j_1", "ho_neo4j_data", "/data"),
-        ("ho_neo4j_1", "ho_neo4j_logs", "/logs"),
+        ("ho-agent-memory-db", "ho_agent_memory_data", "/var/lib/postgresql"),
+        ("ho-neo4j", "ho_neo4j_data", "/data"),
+        ("ho-neo4j", "ho_neo4j_logs", "/logs"),
     ]
     sizes: dict[str, str] = {}
     for container, vol, dest in known:
@@ -97,7 +97,7 @@ def _volume_sizes() -> dict[str, str]:
             try:
                 sizes[vol] = _fmt(int(out.split()[0]) * 1024)
                 continue
-            except ValueError, IndexError:
+            except (ValueError, IndexError):  # fmt: skip
                 pass
         # fallback to raw path
         p = Path.home() / ".local/share/containers/storage/volumes" / vol / "_data"

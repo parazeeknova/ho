@@ -158,13 +158,13 @@ export function ChatTab({ onOpenJobs }: { onOpenJobs: () => void }) {
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             placeholder="Ask about roles, fit, or companies"
-            className="engraved placeholder:text-muted-foreground focus-visible:ring-ring h-12 flex-1 rounded-[1rem] bg-transparent px-4 text-[15px] outline-none focus-visible:ring-2"
+            className="engraved placeholder:text-muted-foreground focus-visible:ring-ring h-12 flex-1 rounded-2xl bg-transparent px-4 text-[15px] outline-none focus-visible:ring-2"
           />
           <button
             type="submit"
             aria-label="Send"
             disabled={!draft.trim() || typing}
-            className="btn-honey grid size-12 place-items-center rounded-[1rem] disabled:opacity-60"
+            className="btn-honey grid size-12 place-items-center rounded-2xl disabled:opacity-60"
           >
             <SendIcon size={18} />
           </button>

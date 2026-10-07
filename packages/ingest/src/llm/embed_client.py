@@ -12,6 +12,7 @@ which returns None instead of raising.
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import httpx
@@ -47,16 +48,23 @@ async def embed(
     cfg = get_config().embed
     url = embed_url()
     payload: dict[str, Any] = {"model": model or cfg.model, "input": inputs}
-    if task_type:
-        # Providers that support task-typed embeddings (Gemini, Cohere, ...)
-        # use this to optimize query vs document vectors.
+    headers: dict[str, str] | None = None
+    if "googleapis.com" in url:
+        # Google's OpenAI-compatibility layer: Bearer auth, and no task_type
+        # field (unsupported there — Gemini embeddings work fine without it).
+        gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
+        if gemini_key:
+            headers = {"Authorization": f"Bearer {gemini_key}"}
+    elif task_type:
+        # Providers that support task-typed embeddings (e.g. Cohere) use this
+        # to optimize query vs document vectors.
         payload["task_type"] = task_type
 
     owns_client = client is None
     if client is None:
         client = httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=10.0))
     try:
-        resp = await client.post(f"{url}/embeddings", json=payload)
+        resp = await client.post(f"{url}/embeddings", json=payload, headers=headers)
         resp.raise_for_status()
         data = resp.json()["data"]
         return [[float(v) for v in item["embedding"]] for item in data]

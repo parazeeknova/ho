@@ -38,8 +38,8 @@ logger = get_logger("index_resume")
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Index a resume into resume_embeddings.")
-    parser.add_argument("--url", help="Resume download URL (overrides RESUME_URL)")
-    parser.add_argument("--path", help="Local PDF/txt resume path (overrides RESUME_PATH)")
+    parser.add_argument("--url", help="Resume download URL")
+    parser.add_argument("--path", help="Local PDF/txt resume path")
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -64,7 +64,7 @@ async def main() -> None:
                 full_text, chunks = await asyncio.to_thread(load_resume, args.url)
         except Exception as e:
             ux.chip("err", f"Failed to load resume: {e}")
-            ux.bullet("Provide --url/--path or set RESUME_URL/RESUME_PATH in .env")
+            ux.bullet("Provide --url/--path")
             sys.exit(1)
 
     ux.chip("ok", f"Extracted {len(full_text)} chars across {len(chunks)} sections")
@@ -86,8 +86,6 @@ async def main() -> None:
         src = indexed.get("_portfolio_source", "")
         if src:
             ux.chip("ok", f"Portfolio scraped fresh: {src}")
-        elif os.environ.get("PORTFOLIO_URL", "").strip():
-            ux.chip("warn", "Portfolio scrape returned nothing; kept existing chunks")
     finally:
         await store.close()
     ux.chip("ok", f"Done - {count} resume chunks indexed.")
@@ -96,7 +94,7 @@ async def main() -> None:
 if __name__ == "__main__":
     try:
         asyncio.run(main())
-    except KeyboardInterrupt, asyncio.CancelledError:
+    except (KeyboardInterrupt, asyncio.CancelledError):  # fmt: skip
         # Ctrl+C during a download/embed: exit with 130 (SIGINT's code) so the
         # caller (init_memory) sees a non-zero exit and aborts the whole run —
         # not 0, which would look like success and let setup continue.

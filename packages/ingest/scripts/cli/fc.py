@@ -22,7 +22,7 @@ import sys
 from pathlib import Path
 
 PROJECT = Path(__file__).resolve().parents[2]
-COMPOSE = ["docker", "compose", "-f", str(PROJECT / "docker-compose.yaml")]
+COMPOSE = ["docker", "compose", "-f", str(PROJECT.parent.parent / "docker" / "docker-compose.yml")]
 SERVICES = ["searxng", "torproxy", "neo4j", "agent-memory-db"]
 
 

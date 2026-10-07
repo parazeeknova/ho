@@ -51,7 +51,7 @@ def _input(prompt: str = "") -> str:
     an interactive prompt can never crash init-memory with a traceback."""
     try:
         return input(prompt)
-    except EOFError, KeyboardInterrupt:
+    except (EOFError, KeyboardInterrupt):  # fmt: skip
         raise SystemExit(_INPUT_ABORT) from None
 
 
@@ -73,20 +73,20 @@ async def index_resume(resume_url: str | None, resume_path: str | None) -> None:
             raise SystemExit(_INPUT_ABORT)
         ux.chip(
             "warn",
-            "Resume indexing failed; continuing (fix RESUME_URL/RESUME_PATH and re-run).",
+            "Resume indexing failed; continuing (re-run with --resume-url/--resume-path).",
         )
 
 
 def _compose_file() -> Path:
-    return REPO / "packages" / "ingest" / "docker-compose.yaml"
+    return REPO / "docker" / "docker-compose.yml"
 
 
 async def _start_postgres() -> bool:
     """Auto-start the agent-memory Postgres + redis containers and wait for
     Postgres.
 
-    The app database is the ``agent-memory-db`` service (host port 5433,
-    pgvector image, persistent volume). ``redis`` (port 6379) is also brought
+    The app database is the ``agent-memory-db`` service (host port 5443,
+    pgvector image, persistent volume). ``redis`` (port 6380) is also brought
     up because the LLM governor uses it as the shared token/RPM budget store —
     without it every LLM call logs "Redis budget unavailable, local-only".
     """
@@ -137,7 +137,7 @@ async def _ensure_redis() -> None:
     """Confirm redis (the LLM governor budget store) is reachable; warn only."""
     import redis.asyncio as aioredis
 
-    url = os.environ.get("LLM_BUDGET_REDIS_URL", "redis://127.0.0.1:6379/1")
+    url = os.environ.get("LLM_BUDGET_REDIS_URL", "redis://127.0.0.1:6380/1")
     try:
         r = aioredis.from_url(url, socket_connect_timeout=2)
         await r.ping()
@@ -152,10 +152,6 @@ async def run_script(name: str, *extra: str) -> int:
     if not script.exists():
         script = REPO / "packages" / "ingest" / "scripts" / name
     return subprocess.run([sys.executable, str(script), *extra], cwd=REPO).returncode
-
-
-def has_env(source: str) -> bool:
-    return bool(os.environ.get(source))
 
 
 def _missing_persona_items(persona_json: Path) -> set[str]:
@@ -192,8 +188,8 @@ def _missing_persona_items(persona_json: Path) -> set[str]:
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Build the user memory base for a fresh checkout.")
     parser.add_argument("--no-resume", action="store_true", help="Skip resume indexing")
-    parser.add_argument("--resume-url", help="Resume download URL (overrides RESUME_URL)")
-    parser.add_argument("--resume-path", help="Local resume file path (overrides RESUME_PATH)")
+    parser.add_argument("--resume-url", help="Resume download URL")
+    parser.add_argument("--resume-path", help="Local resume file path")
     parser.add_argument("--no-grill", action="store_true", help="Never run the interactive wizard")
     parser.add_argument(
         "--grill",
@@ -224,13 +220,13 @@ async def main() -> None:
             )
             ux.bullet(
                 "  (First-time setup only, after the volume is initialized:)\n"
-                "  PGPASSWORD=postgres psql -h localhost -p 5433 -U postgres "
+                "  PGPASSWORD=postgres psql -h localhost -p 5443 -U postgres "
                 "-d agent_memory -f packages/ingest/scripts/sql/init-pgvector.sql",
                 style="cyan",
             )
             sys.exit(1)
     await store.close()
-    ux.chip("ok", "Postgres connected (localhost:5433/agent_memory)")
+    ux.chip("ok", "Postgres connected (localhost:5443/agent_memory)")
     await _ensure_redis()
 
     # 2. Embedding provider
@@ -240,13 +236,12 @@ async def main() -> None:
     ux.section(3, 4, "Resume")
     if args.no_resume:
         ux.chip("info", "Skipping resume indexing (--no-resume).")
-    elif args.resume_url or args.resume_path or has_env("RESUME_URL") or has_env("RESUME_PATH"):
+    elif args.resume_url or args.resume_path:
         await index_resume(args.resume_url, args.resume_path)
     else:
         ux.chip(
             "warn",
-            "No resume source found; set RESUME_URL/RESUME_PATH in .env "
-            "or pass --resume-url/--resume-path.",
+            "No resume source found; pass --resume-url/--resume-path.",
         )
 
     # 4. Persona -> persona_embeddings + resume_summary in persona.json

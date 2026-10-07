@@ -461,3 +461,74 @@
     animation: none;
   }
 }
+
+/* Pixel walkers hopping the pipeline. The motion path owns the jump arc; the
+   sprite owns a separate stepped three-frame gait so the character never
+   smears or turns into a generic moving SVG shape. */
+.walker-motion {
+  pointer-events: none;
+}
+.walker-sprite {
+  transform-box: fill-box;
+  transform-origin: center bottom;
+}
+.walker-frame {
+  opacity: 0;
+}
+.walker-frame-0 {
+  animation: walker-frame-a 0.42s steps(1, end) infinite;
+}
+.walker-frame-1 {
+  animation: walker-frame-b 0.42s steps(1, end) infinite;
+}
+.walker-frame-2 {
+  animation: walker-frame-c 0.42s steps(1, end) infinite;
+}
+
+@keyframes walker-frame-a {
+  0%,
+  33.333% {
+    opacity: 1;
+  }
+  33.334%,
+  100% {
+    opacity: 0;
+  }
+}
+@keyframes walker-frame-b {
+  0%,
+  33.333% {
+    opacity: 0;
+  }
+  33.334%,
+  66.666% {
+    opacity: 1;
+  }
+  66.667%,
+  100% {
+    opacity: 0;
+  }
+}
+@keyframes walker-frame-c {
+  0%,
+  66.666% {
+    opacity: 0;
+  }
+  66.667%,
+  100% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .walker-frame {
+    animation: none;
+    opacity: 0;
+  }
+  .walker-frame-0 {
+    opacity: 1;
+  }
+  .walker-motion > animateTransform {
+    display: none;
+  }
+}

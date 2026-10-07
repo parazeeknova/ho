@@ -117,33 +117,6 @@ export function MarketingSections() {
         </p>
       </section>
 
-      {/* How it works */}
-      <section id="how" className="mx-auto max-w-6xl pb-20">
-        <h2 className="text-2xl sm:text-4xl">How it works</h2>
-        <p className="text-muted-foreground mt-3 max-w-md">
-          Five minutes of setup. Then it just keeps going.
-        </p>
-        <div className="mt-10 flex flex-col gap-6">
-          {STEPS.map((s, i) => (
-            <div
-              key={s.t}
-              className="glass grid items-center gap-6 rounded-[1.8rem] p-5 sm:p-8 lg:grid-cols-2 lg:gap-12"
-            >
-              <div className={i % 2 ? "lg:order-2" : ""}>
-                <span className="font-pixel text-honey text-3xl">0{i + 1}</span>
-                <h3 className="mt-3 text-xl sm:text-2xl">{s.t}</h3>
-                <p className="text-muted-foreground mt-3 max-w-sm leading-relaxed">
-                  {s.d}
-                </p>
-              </div>
-              <div className="engraved rounded-[1.4rem] p-4 sm:p-6">
-                <StepDemo i={i} />
-              </div>
-            </div>
-          ))}
-        </div>
-      </section>
-
       {/* Pricing */}
       <section id="pricing" className="mx-auto max-w-6xl pb-20">
         <div className="text-center">
@@ -226,6 +199,36 @@ export function MarketingSections() {
         </p>
       </section>
     </>
+  );
+}
+
+export function HowItWorks() {
+  return (
+    <section id="how" className="mx-auto max-w-6xl pb-20">
+      <h2 className="text-2xl sm:text-4xl">How it works</h2>
+      <p className="text-muted-foreground mt-3 max-w-md">
+        Five minutes of setup. Then it just keeps going.
+      </p>
+      <div className="mt-10 flex flex-col gap-6">
+        {STEPS.map((s, i) => (
+          <div
+            key={s.t}
+            className="glass grid items-center gap-6 rounded-[1.8rem] p-5 sm:p-8 lg:grid-cols-2 lg:gap-12"
+          >
+            <div className={i % 2 ? "lg:order-2" : ""}>
+              <span className="font-pixel text-honey text-3xl">0{i + 1}</span>
+              <h3 className="mt-3 text-xl sm:text-2xl">{s.t}</h3>
+              <p className="text-muted-foreground mt-3 max-w-sm leading-relaxed">
+                {s.d}
+              </p>
+            </div>
+            <div className="engraved rounded-[1.4rem] p-4 sm:p-6">
+              <StepDemo i={i} />
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 

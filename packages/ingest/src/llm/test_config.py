@@ -33,5 +33,5 @@ class TestEmbedConfig:
     def test_default_values(self) -> None:
         cfg = EmbedConfig()
         assert cfg.base_url == ""
-        assert cfg.model == "gemini-embedding-001"
+        assert cfg.model == "gemini-embedding-2"
         assert cfg.context_length == 32768

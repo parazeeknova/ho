@@ -198,9 +198,9 @@ class MemoryWizard:
             if not await _start_postgres():
                 raise MemoryWizardError(
                     "Could not start Postgres. Start it manually:\n"
-                    "`docker compose -f packages/ingest/docker-compose.yaml up -d agent-memory-db`"
+                    "`docker compose -f docker/docker-compose.yml up -d agent-memory-db`"
                 ) from None
-        await self.log("Infra ready · Postgres :5433")
+        await self.log("Infra ready · Postgres :5443")
 
     # ── resume ────────────────────────────────────────────────────────
 
@@ -415,21 +415,19 @@ class MemoryWizard:
     async def _resolve_website(self, data: dict[str, Any], parsed: dict[str, Any], low: str) -> str:
         """Set persona identity.website.
 
-        Source of truth: explicit command URL > PORTFOLIO_URL env > saved value.
-        An explicit choice never gets overwritten by the env default. Returns
+        Source of truth: explicit command URL > saved value. Per-user
+        onboarding supplies the URL; there is no shared default. Returns
         the resolved website ("" if none).
         """
         explicit = parsed["website"]
-        website = explicit or os.getenv("PORTFOLIO_URL") or ""
+        website = explicit or ""
         if website:
             existing_website = (data.get("identity", {}) or {}).get("website", "")
             if explicit or not existing_website:
                 data.setdefault("identity", {})["website"] = _sanitize_link(website)
                 await self.log(f"✅ Portfolio/website set · {website}")
         elif "portfolio" in low or "website" in low:
-            await self.log(
-                "No portfolio URL provided — set PORTFOLIO_URL or pass one to `/memory`."
-            )
+            await self.log("No portfolio URL provided — pass one to `/memory`.")
         return website
 
     async def run(
@@ -451,11 +449,8 @@ class MemoryWizard:
 
         await self.log("**Step 2 · Resume**")
         indexed = False
-        if resume_url or resume_path or os.getenv("RESUME_URL") or os.getenv("RESUME_PATH"):
-            indexed = await self._index_resume(
-                resume_url or os.getenv("RESUME_URL"),
-                resume_path or os.getenv("RESUME_PATH"),
-            )
+        if resume_url or resume_path:
+            indexed = await self._index_resume(resume_url, resume_path)
         elif "resume" in low and not parsed["no_resume"]:
             answer = await self.ask(
                 "No resume source set. Drop the resume URL here, or press Skip.",
@@ -464,9 +459,7 @@ class MemoryWizard:
             if answer and not _is_skip(answer):
                 indexed = await self._index_resume(answer, None)
         if not indexed and not parsed["no_resume"]:
-            await self.log(
-                "No resume indexed — set RESUME_URL/RESUME_PATH or pass one to `/memory`."
-            )
+            await self.log("No resume indexed — pass one to `/memory`.")
 
         await self.log("**Step 3 · Persona Q&A**")
         if self.persona_json.exists():

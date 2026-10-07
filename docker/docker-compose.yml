@@ -2,6 +2,7 @@ name: ho
 
 services:
   searxng:
+    container_name: ho-searxng
     image: searxng/searxng:latest
     restart: "no"
     ports:
@@ -25,27 +26,29 @@ services:
         max-file: "1"
 
   torproxy:
+    container_name: ho-torproxy
     image: dperson/torproxy
     restart: "no"
     network_mode: "host"
     environment:
       LOCATION: "${TOR_EXIT_COUNTRY:-IN}"
     volumes:
-      - ./.tor-geoip/geoip:/usr/share/tor/geoip:ro
-      - ./.tor-geoip/geoip6:/usr/share/tor/geoip6:ro
+      - ../packages/ingest/.tor-geoip/geoip:/usr/share/tor/geoip:ro
+      - ../packages/ingest/.tor-geoip/geoip6:/usr/share/tor/geoip6:ro
 
   agent-memory-db:
+    container_name: ho-agent-memory-db
     image: pgvector/pgvector:pg18
     restart: "no"
     ports:
-      - "5433:5432"
+      - "5443:5432"
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: agent_memory
     volumes:
       - agent_memory_data:/var/lib/postgresql
-      - ./scripts/init-pgvector.sql:/docker-entrypoint-initdb.d/init.sql
+      - ../packages/ingest/scripts/sql/init-pgvector.sql:/docker-entrypoint-initdb.d/init.sql
     logging:
       driver: "json-file"
       options:
@@ -53,10 +56,11 @@ services:
         max-file: "1"
 
   redis:
+    container_name: ho-redis
     image: redis:alpine
     restart: "no"
     ports:
-      - "6379:6379"
+      - "6380:6379"
     volumes:
       - redis_data:/data
     command: redis-server --appendonly yes
@@ -67,6 +71,7 @@ services:
         max-file: "1"
 
   neo4j:
+    container_name: ho-neo4j
     image: neo4j:community-ubi10
     ports:
       - "7474:7474"

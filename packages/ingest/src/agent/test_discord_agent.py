@@ -153,20 +153,22 @@ def test_parse_instruction_explicit_portfolio_wins(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_resolve_website_uses_env_when_no_explicit(monkeypatch) -> None:
+async def test_resolve_website_empty_when_no_explicit(monkeypatch) -> None:
     from src.agent.memory_wizard import MemoryWizard
 
+    # No shared default: without an explicit URL nothing resolves, even when
+    # a legacy PORTFOLIO_URL happens to be exported.
     monkeypatch.setenv("PORTFOLIO_URL", "https://env.example.com")
     w = MemoryWizard(ask=lambda q, m: _noop_ask(), log=_noop_log)
 
     data: dict = {"identity": {}}
     resolved = await w._resolve_website(data, {"website": ""}, "update this")
-    assert resolved == "https://env.example.com"
-    assert data["identity"]["website"] == "https://env.example.com"
+    assert resolved == ""
+    assert data["identity"] == {}
 
 
 @pytest.mark.asyncio
-async def test_resolve_website_explicit_wins_over_env(monkeypatch) -> None:
+async def test_resolve_website_explicit_wins(monkeypatch) -> None:
     from src.agent.memory_wizard import MemoryWizard
 
     monkeypatch.setenv("PORTFOLIO_URL", "https://env.example.com")

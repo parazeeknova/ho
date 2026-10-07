@@ -22,7 +22,7 @@ from src.logging import get_logger
 
 logger = get_logger("memory_store")
 
-VECTOR_DIM = 1024
+VECTOR_DIM = 3072
 
 
 def _url_hash(url: str) -> str:
@@ -141,6 +141,10 @@ def _build_embed_text(title: str, raw_json: Any) -> str:
 
 
 CREATE_TABLES_SQL = f"""
+-- Self-healing: volumes created before the init script was wired never got
+-- the extension, which surfaces as `unknown type: public.vector` at pool init.
+CREATE EXTENSION IF NOT EXISTS vector;
+
 CREATE TABLE IF NOT EXISTS processed_jobs (
     url            TEXT PRIMARY KEY,
     role           TEXT,
@@ -689,6 +693,15 @@ class MemoryStore:
         """Initialise pool, register vector type, create tables."""
         cfg = config or get_config().postgres
 
+        # Volumes created before the init script was wired lack the extension,
+        # which surfaces as `unknown type: public.vector` during pool init.
+        # Ensure it on a throwaway connection first so pool creation survives.
+        bootstrap = await asyncpg.connect(cfg.dsn)
+        try:
+            await bootstrap.execute("CREATE EXTENSION IF NOT EXISTS vector")
+        finally:
+            await bootstrap.close()
+
         async def _init(conn) -> None:
             await register_vector(conn)
             # Every pool connection must share the same jsonb codec. Registering
@@ -808,7 +821,7 @@ class MemoryStore:
 
         Each chunk dict must have keys: ``section``, ``content``,
         ``content_hash`` (sha256 of content) and ``embedding`` (list[float]
-        of length 1024).
+        of length 3072).
 
         Rows whose hash is absent from *current_hashes* (the full set of
         chunks in the resume right now) are deleted as stale, so a changed
@@ -898,7 +911,7 @@ class MemoryStore:
         """Insert persona Q&A chunks with their pre-computed embeddings.
 
         Each chunk dict must have keys: ``category``, ``question``, ``answer``,
-        ``content`` and ``embedding`` (list[float] of length 1024).
+        ``content`` and ``embedding`` (list[float] of length 3072).
         """
         async with self._pool.acquire() as conn, conn.transaction():
             for ch in chunks:

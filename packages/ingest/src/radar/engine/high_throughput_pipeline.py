@@ -29,7 +29,7 @@ logger = get_logger("high_throughput_pipeline")
 class Stage1HighThroughputPipeline:
     """Stage 1 Job Discovery & Ingestion Engine."""
 
-    def __init__(self, redis_url: str = "redis://localhost:6379") -> None:
+    def __init__(self, redis_url: str = "redis://localhost:6380") -> None:
         self.discovery_engine = HighVolumeDiscoveryEngine()
         self.dedup_engine = FastDeduplicationEngine(redis_url=redis_url)
         self.fetcher_engine = HighSpeedFetcherEngine(concurrency=100)

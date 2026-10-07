@@ -23,6 +23,7 @@ import time
 from pathlib import Path
 
 PROJECT = Path(__file__).resolve().parents[2]
+COMPOSE_YML = PROJECT.parent.parent / "docker" / "docker-compose.yml"
 LOG_PATH = PROJECT / "logs" / "watchdog.log"
 LOCK_PATH = PROJECT / "logs" / "watchdog.lock"
 CHECK_INTERVAL = 60
@@ -30,9 +31,9 @@ COOLDOWN = 180  # per-component minimum seconds between heal attempts
 PIPELINE_COOLDOWN = 300  # run.py can take >3min to come up; avoid double relaunch
 
 CONTAINERS = [
-    "ho_searxng_1",
-    "ho_neo4j_1",
-    "ho_agent-memory-db_1",
+    "ho-searxng",
+    "ho-neo4j",
+    "ho-agent-memory-db",
 ]
 
 
@@ -107,8 +108,8 @@ class Watchdog:
                     log(f"restarted container {name}: rc={rc} {err[:80]}")
                 else:
                     log(f"container {name} missing, running compose up")
-                    svc = name.replace("ho_", "")
-                    sh(f"docker compose -f {PROJECT / 'docker-compose.yaml'} up -d {svc}")
+                    svc = name.removeprefix("ho-")
+                    sh(f"docker compose -f {COMPOSE_YML} up -d {svc}")
         return statuses
 
     def heal_pipeline(self, container_statuses: dict[str, str]) -> None:
@@ -230,7 +231,7 @@ def acquire_lock() -> bool:
             pid = int(LOCK_PATH.read_text().strip())
             os.kill(pid, 0)
             return False
-        except ValueError, ProcessLookupError:
+        except (ValueError, ProcessLookupError):  # fmt: skip
             pass
     LOCK_PATH.write_text(str(os.getpid()))
     return True

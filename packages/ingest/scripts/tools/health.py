@@ -133,10 +133,10 @@ except Exception as e:
 
 print()
 print("Infra")
-_register("searxng", lambda: container_running("ho_searxng_1"))
-_register("neo4j", lambda: container_running("ho_neo4j_1"))
-_register("agent-memory-db", lambda: container_running("ho_agent-memory-db_1"))
-pgvector_ok = _register("pgvector :5433", lambda: check_port("localhost", 5433))
+_register("searxng", lambda: container_running("ho-searxng"))
+_register("neo4j", lambda: container_running("ho-neo4j"))
+_register("agent-memory-db", lambda: container_running("ho-agent-memory-db"))
+pgvector_ok = _register("pgvector :5443", lambda: check_port("localhost", 5443))
 
 if pgvector_ok:
     try:

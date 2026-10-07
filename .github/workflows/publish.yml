@@ -10,12 +10,12 @@ permissions:
   actions: write
 
 jobs:
-  checks:
-    uses: ./.github/workflows/checks.yml
-
+  # No checks re-run here by design: the `ci` workflow already gated the PR,
+  # and branch protection (required checks + require-branches-up-to-date)
+  # guarantees main only receives green, up-to-date code. Rerunning the same
+  # gates on the merge commit would be pure duplication.
   detect:
     name: detect-changed-images
-    needs: checks
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.diff.outputs.matrix }}

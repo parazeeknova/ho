@@ -249,7 +249,7 @@ def get_system_metrics() -> dict[str, str]:
 async def run_health_checks() -> str:
     checks = [
         ("SearXNG", _check_http("http://localhost:8080")),
-        ("agent-memory-db (pgvector)", _check_port("localhost", 5433)),
+        ("agent-memory-db (pgvector)", _check_port("localhost", 5443)),
         ("Neo4j Graph Store", _check_port("localhost", 7687)),
     ]
     results = await asyncio.gather(*[coro for _, coro in checks])
