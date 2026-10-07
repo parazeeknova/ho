@@ -290,36 +290,56 @@ const EDGES: [string, string][] = [
 const H = 12;
 
 /* ---------- 3b. Pixel walkers that hop the pipeline ---------- */
-// One small, simple side-view sprite in the classic platformer idiom: red cap
-// or green cap, blue overalls, two little legs. It faces right, hops from block
-// to block along the graph and drops into each node. Drawn on a 10x13 grid.
+// These are deliberately hand-authored sprites instead of a transformed SVG
+// icon. Each frame is painted on the same tiny 7x9 grid, like a classic
+// platformer NPC. The small silhouette keeps the graph readable at every width.
 type Palette = Record<string, string>;
 const RED: Palette = {
-  B: "oklch(0.3 0.05 55)",
-  C: "oklch(0.58 0.16 28)",
-  K: "oklch(0.2 0.02 60)",
-  O: "oklch(0.5 0.16 258)",
-  S: "oklch(0.78 0.09 62)",
+  C: "oklch(0.6 0.18 28)",
+  D: "oklch(0.28 0.05 145)",
+  H: "oklch(0.35 0.08 55)",
+  S: "oklch(0.82 0.12 74)",
 };
 const GREEN: Palette = { ...RED, C: "oklch(0.5 0.13 148)" };
+const GOLD: Palette = { ...RED, C: "oklch(0.76 0.14 72)" };
 
-const WALKER = [
-  "..CCC.....",
-  ".CCCCCC...",
-  ".CCCCCCC..",
-  ".KKKKKK...",
-  ".KSSSSK...",
-  ".KSKSS....",
-  "..SSSS....",
-  "..COOC....",
-  ".COOOO....",
-  "..OOOO....",
-  "..OO.OO...",
-  "..OO.OO...",
-  ".BB..BB...",
-];
+const WALKER_FRAMES = [
+  [
+    "..HH...",
+    ".HHHH..",
+    "..SS...",
+    ".SSSS..",
+    ".C..C..",
+    "..CCC..",
+    "..CCC..",
+    ".D..D..",
+    "DD..DD.",
+  ],
+  [
+    "..HH...",
+    ".HHHH..",
+    "..SS...",
+    ".SSSS..",
+    ".C..C..",
+    "..CCC..",
+    "..CCC..",
+    "..D.D..",
+    ".DD.DD.",
+  ],
+  [
+    "..HH...",
+    ".HHHH..",
+    "..SS...",
+    ".SSSS..",
+    ".C..C..",
+    "..CCC..",
+    "..CCC..",
+    "...D...",
+    ".DDDD..",
+  ],
+] as const;
 
-function toCells(rows: string[]) {
+function toCells(rows: readonly string[]) {
   const out: [number, number, string][] = [];
   for (const [y, row] of rows.entries()) {
     for (const [x, c] of [...row].entries()) {
@@ -330,43 +350,49 @@ function toCells(rows: string[]) {
   }
   return out;
 }
-const WALKER_CELLS = toCells(WALKER);
-const WALKER_BODY = WALKER_CELLS.filter(([, cy]) => cy < 11);
-const WALKER_LEG_FRONT = WALKER_CELLS.filter(([cx, cy]) => cy >= 11 && cx >= 5);
-const WALKER_LEG_BACK = WALKER_CELLS.filter(([cx, cy]) => cy >= 11 && cx < 5);
+const WALKER_FRAMES_CELLS = WALKER_FRAMES.map(toCells);
+const WALKER_HEIGHT = 9;
+const WALKER_WIDTH = 7;
 
 function Walker({ palette, delay }: { palette: Palette; delay: number }) {
-  const scale = 1.5;
-  const paint = (cells: [number, number, string][]) =>
+  const paint = (cells: [number, number, string][], frame: number) =>
     cells.map(([cx, cy, ch]) => (
       <rect
-        key={`${cx}-${cy}`}
+        key={`${frame}-${cx}-${cy}`}
         x={cx}
-        y={cy}
+        y={cy - WALKER_HEIGHT}
         width={1}
         height={1}
         fill={palette[ch]}
       />
     ));
   return (
-    <g transform={`scale(${scale})`}>
-      <g transform={`translate(1 ${-WALKER.length})`}>{paint(WALKER_BODY)}</g>
-      <g
-        transform={`translate(1 ${-WALKER.length})`}
-        className="walker-leg-front"
-        style={{ animationDelay: `${delay + 0.15}s` }}
-      >
-        {paint(WALKER_LEG_FRONT)}
-      </g>
-      <g
-        transform={`translate(1 ${-WALKER.length})`}
-        className="walker-leg-back"
-        style={{ animationDelay: `${delay}s` }}
-      >
-        {paint(WALKER_LEG_BACK)}
-      </g>
+    <g
+      className="walker-sprite"
+      style={{ animationDelay: `${delay}s` }}
+      aria-hidden
+    >
+      {WALKER_FRAMES_CELLS.map((cells, i) => (
+        <g key={i} className={`walker-frame walker-frame-${i}`}>
+          {paint(cells, i)}
+        </g>
+      ))}
     </g>
   );
+}
+
+function appendJumpFrames(
+  points: [number, number][],
+  from: [number, number],
+  to: [number, number]
+) {
+  const lifts = [2, 4, 7, 9, 11, 12, 12, 11, 9, 7, 4, 2, 0];
+  for (const [i, lift] of lifts.entries()) {
+    const t = (i + 1) / lifts.length;
+    const x = Math.round(from[0] + (to[0] - from[0]) * t);
+    const y = Math.round(from[1] + (to[1] - from[1]) * t - lift);
+    points.push([x, y]);
+  }
 }
 
 const NARRATION: { at: number; who: 0 | 1; line: string }[] = [
@@ -418,16 +444,23 @@ export function PipelineDiagram() {
   const by = Object.fromEntries(NODES.map((n) => [n.id, n]));
   const walkers = [
     {
-      dur: "24s",
+      dur: "14s",
       id: "w0",
       palette: RED,
       path: ["s", "f", "p", "d", "g", "x", "r"],
     },
     {
-      dur: "31s",
+      dur: "18s",
       id: "w1",
       palette: GREEN,
       path: ["s", "f", "p", "d", "v", "x", "e"],
+    },
+    {
+      begin: "-5s",
+      dur: "16s",
+      id: "w2",
+      palette: GOLD,
+      path: ["s", "f", "p", "d", "x", "e"],
     },
   ];
   return (
@@ -435,9 +468,9 @@ export function PipelineDiagram() {
       <Narration />
       <div className="no-scrollbar -mx-2 overflow-x-auto px-2">
         <svg
-          viewBox="0 0 264 58"
+          viewBox="0 -16 264 78"
           shapeRendering="crispEdges"
-          className="w-full min-w-[760px]"
+          className="w-full min-w-190"
           role="img"
           aria-label="Discovery pipeline from sources to ranking"
         >
@@ -501,6 +534,13 @@ export function PipelineDiagram() {
                 className={n.hot ? "fill-honey" : "fill-moss"}
               />
               <rect
+                x={n.x + 2}
+                y={n.y - 2}
+                width={Math.max(2, n.w - 4)}
+                height={1}
+                className={n.hot ? "fill-honey" : "fill-moss"}
+              />
+              <rect
                 x={n.x}
                 y={n.y + H - 1}
                 width={n.w}
@@ -539,24 +579,41 @@ export function PipelineDiagram() {
             if (first === undefined) {
               return null;
             }
-            const x0 = first.x + first.w / 2 - 5;
-            const y0 = first.y + H;
-            let d = `M${x0} ${y0}`;
+            let x0 = Math.round(first.x + first.w / 2 - WALKER_WIDTH / 2);
+            let y0 = first.y;
+            const points: [number, number][] = [[x0, y0]];
             for (const n of hops.slice(1)) {
-              d += ` Q ${n.x + n.w / 2 - 5} ${n.y - 12} ${n.x + n.w / 2 - 5} ${n.y + H}`;
+              const x1 = Math.round(n.x + n.w / 2 - WALKER_WIDTH / 2);
+              const y1 = n.y;
+              appendJumpFrames(points, [x0, y0], [x1, y1]);
+              points.push([x1, y1]);
+              x0 = x1;
+              y0 = y1;
             }
+            const keyTimes = points
+              .map((_, i) => (i / (points.length - 1)).toFixed(4))
+              .join(";");
+            const values = points.map(([x, y]) => `${x} ${y}`).join(";");
             return (
               <g key={wk.id}>
-                <g transform={`translate(${x0} ${y0})`}>
-                  <animateMotion
+                <g
+                  className="walker-motion"
+                  transform={`translate(${points[0]?.[0] ?? 0} ${points[0]?.[1] ?? 0})`}
+                >
+                  <animateTransform
+                    attributeName="transform"
+                    type="translate"
                     dur={wk.dur}
                     repeatCount="indefinite"
-                    path={d}
-                    keyPoints="0;1;1"
-                    keyTimes="0;0.96;1"
-                    calcMode="linear"
+                    values={values}
+                    keyTimes={keyTimes}
+                    calcMode="discrete"
+                    begin={wk.begin ?? (wk.id === "w1" ? "-8s" : "0s")}
                   />
-                  <Walker palette={wk.palette} delay={0} />
+                  <Walker
+                    palette={wk.palette}
+                    delay={wk.id === "w1" ? 0.18 : 0}
+                  />
                 </g>
               </g>
             );
